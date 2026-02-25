@@ -1,11 +1,15 @@
-# JS CMS Tool — Phase 1 Spike
+# Kiln — Phase 1 Spike
 
 > A framework-agnostic, click-to-edit visual CMS for static sites.
 > GitHub as the backend. Cloudflare Pages as the host. Completely free.
+>
+> **kilncms.com**
 
 ---
 
 ## What This Is
+
+Kiln fires your edits into permanent static pages — that's the metaphor and the mechanism.
 
 A proof-of-concept demonstrating the full edit loop:
 
@@ -151,4 +155,6 @@ This is a spike — known rough edges:
 
 ## The Philosophy
 
-The static site ecosystem is missing something obvious: a visual editor that doesn't require a specific framework, doesn't cost money, and treats Git as the source of truth. This is that thing.
+The static site ecosystem is missing something obvious: a visual editor that doesn't require a specific framework, doesn't cost money, and treats Git as the source of truth.
+
+Kiln is that thing. You put raw content in. It gets fired into a permanent, fast, free static site. No monthly bill. No bloat.

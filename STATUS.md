@@ -1,6 +1,9 @@
-# Project Status — JS CMS Tool
+# Kiln — Project Status
 
 _Last updated: session 1_
+
+**Domain:** kilncms.com
+**Tagline:** "Put raw content in. Get a permanent, fast, free static site out."
 
 ---
 
@@ -9,7 +12,7 @@ _Last updated: session 1_
 A framework-agnostic, click-to-edit visual CMS for static sites.
 GitHub as the CMS backend. Cloudflare Pages as the host. Completely free.
 
-**The gap it fills:** TinaCMS requires React. Decap CMS is form-based (no visual editing). CloudCannon has visual editing but is a paid host. Nothing exists that is framework-agnostic, visual, AND free. This is that.
+**The gap it fills:** TinaCMS requires React. Decap CMS is form-based (no visual editing). CloudCannon has visual editing but is a paid host. Nothing exists that is framework-agnostic, visual, AND free. Kiln is that.
 
 ---
 
@@ -47,29 +50,11 @@ All code is written. Sitting at:
 
 ---
 
-## Name Decision — PENDING
+## Name — DECIDED: Kiln ✅
 
-**Shortlist:**
-- **Etch** — clean verb, etching into static. Strong metaphor.
-- **Kiln** — raw material fired into permanent static output. More interesting story.
-
-**Domain availability (confirmed):**
-
-| Name | Domain | Available |
-|------|--------|-----------|
-| Etch | `etch.build` | ✅ |
-| Etch | `etchcms.com` | ✅ |
-| Kiln | `kilncms.com` | ✅ |
-| Rivet | `rivet.build` | ✅ |
-| Weld | `weld.build` | ✅ |
-| Glyph | `glyphcms.com` | ✅ |
-
-**Not available:** etch.dev, etch.app, kiln.dev, kiln.app, kiln.build, etch.tools, chisel.dev, getkiln.com
-
-**Best picks by domain elegance:**
-1. `etch.build` — perfect TLD for a build tool. Short, clean.
-2. `kiln.build` — taken. Fallback: `kilncms.com`
-3. `rivet.build` — Rivet is an interesting alt if Etch/Kiln don't land
+**Domain:** `kilncms.com`
+**Why Kiln:** Warmer than Etch. Better metaphor — raw material (your edits) goes into the kiln (the build process) and comes out as hardened, permanent static pages. Rolls off the tongue. Has aesthetic appeal.
+**Why kilncms.com:** kiln.dev, kiln.app, kiln.build are all taken. kilncms.com is clean, descriptive (immediately communicates what it is), and .com is right for a product targeting small businesses. Many leading tools (Decap, Tina, Forestry) kept "cms" in their domain fine.
 
 ---
 
