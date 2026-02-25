@@ -1,0 +1,12 @@
+name = "cms-auth-worker"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+# Set these in Cloudflare dashboard → Workers → Settings → Variables
+# Never commit secrets to git.
+# [vars]
+# GITHUB_CLIENT_ID = "your_client_id_here"
+# ALLOWED_ORIGIN = "https://yoursite.pages.dev"
+#
+# GITHUB_CLIENT_SECRET must be set as an *encrypted* secret:
+#   wrangler secret put GITHUB_CLIENT_SECRET
