@@ -1485,15 +1485,25 @@ function renderAdminBar() {
   document.body.appendChild(fab);
 
   // Restore position (default: bottom-right).
+  function clampFab() {
+    const r = fab.getBoundingClientRect();
+    if (r.left < 4 || r.top < 4 || r.right > window.innerWidth - 4 || r.bottom > window.innerHeight - 4) {
+      const x = Math.max(8, Math.min(r.left, window.innerWidth - 56));
+      const y = Math.max(8, Math.min(r.top, window.innerHeight - 56));
+      fab.style.left = x + 'px'; fab.style.top = y + 'px';
+      fab.style.right = 'auto'; fab.style.bottom = 'auto';
+      localStorage.setItem('kiln_fab_pos', JSON.stringify({ x, y }));
+    }
+  }
   try {
     const pos = JSON.parse(localStorage.getItem('kiln_fab_pos'));
     if (pos) {
-      const x = Math.min(Math.max(pos.x, 8), window.innerWidth - 56);
-      const y = Math.min(Math.max(pos.y, 8), window.innerHeight - 56);
-      fab.style.left = x + 'px'; fab.style.top = y + 'px';
+      fab.style.left = pos.x + 'px'; fab.style.top = pos.y + 'px';
       fab.style.right = 'auto'; fab.style.bottom = 'auto';
     }
   } catch { /* default position */ }
+  requestAnimationFrame(clampFab);
+  window.addEventListener('resize', clampFab);
 
   const btn = fab.querySelector('#kiln-fab');
   const menu = fab.querySelector('#kiln-fab-menu');
@@ -1520,26 +1530,27 @@ function renderAdminBar() {
     if (drag && drag.moved) {
       localStorage.setItem('kiln_fab_pos', JSON.stringify({ x: fab.offsetLeft, y: fab.offsetTop }));
     } else {
-      menu.hidden = !menu.hidden;
-      positionMenu();
+      if (menu.hidden) positionMenu(); else menu.hidden = true;
     }
     drag = null;
   });
 
   function positionMenu() {
-    // Open the menu away from the nearest edges.
-    const r = fab.getBoundingClientRect();
-    menu.style.bottom = r.top > window.innerHeight / 2 ? '54px' : 'auto';
-    menu.style.top = r.top > window.innerHeight / 2 ? 'auto' : '54px';
-    menu.style.right = r.left > window.innerWidth / 2 ? '0' : 'auto';
-    menu.style.left = r.left > window.innerWidth / 2 ? 'auto' : '0';
-    requestAnimationFrame(() => {
-      const mr = menu.getBoundingClientRect();
-      if (mr.right > window.innerWidth - 8) { menu.style.left = 'auto'; menu.style.right = '0'; }
-      if (mr.left < 8) { menu.style.right = 'auto'; menu.style.left = '0'; }
-      if (mr.top < 8) { menu.style.bottom = 'auto'; menu.style.top = '54px'; }
-      if (mr.bottom > window.innerHeight - 8) { menu.style.top = 'auto'; menu.style.bottom = '54px'; }
-    });
+    // Fixed coordinates, measured then clamped — works wherever the FAB is parked.
+    menu.style.position = 'fixed';
+    menu.style.visibility = 'hidden';
+    menu.hidden = false;
+    const br = btn.getBoundingClientRect();
+    const mw = menu.offsetWidth, mh = menu.offsetHeight;
+    let left = br.right - mw;                       // right-align to the button…
+    left = Math.max(8, Math.min(left, window.innerWidth - mw - 8));   // …then clamp
+    let top = br.top > window.innerHeight / 2 ? br.top - mh - 10 : br.bottom + 10;
+    top = Math.max(8, Math.min(top, window.innerHeight - mh - 8));
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    menu.style.right = 'auto';
+    menu.style.bottom = 'auto';
+    menu.style.visibility = 'visible';
   }
 
   document.addEventListener('click', (e) => {
@@ -1550,7 +1561,11 @@ function renderAdminBar() {
   let hoverTimer = null;
   fab.addEventListener('mouseenter', () => {
     clearTimeout(hoverTimer);
-    if (menu.hidden) { menu.hidden = false; positionMenu(); }
+    if (menu.hidden) positionMenu();
+  });
+  menu.addEventListener('mouseenter', () => clearTimeout(hoverTimer));
+  menu.addEventListener('mouseleave', () => {
+    hoverTimer = setTimeout(() => { menu.hidden = true; }, 250);
   });
   fab.addEventListener('mouseleave', () => {
     hoverTimer = setTimeout(() => { menu.hidden = true; }, 350);
