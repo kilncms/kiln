@@ -11,3 +11,7 @@ ALLOWED_ORIGINS = "https://kiln-demo.pages.dev,http://localhost:8788,http://127.
 [[kv_namespaces]]
 binding = "KILN"
 id = "376ca9e637724d9fabebbc24ba149814"
+
+# Scheduled publishing: commit due posts every 5 minutes.
+[triggers]
+crons = ["*/5 * * * *"]

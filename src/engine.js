@@ -198,6 +198,62 @@ export function pageFileCandidates(pathname, root = '') {
   return [prefix + p + '.html', prefix + p + '/index.html'];
 }
 
+/**
+ * Edit <head> bits: page <title> and meta[name=description].
+ * Splices in place; inserts the meta tag (after <title>) if missing.
+ */
+export function editHead(raw, { title, description }) {
+  const doc = parse(raw, { sourceCodeLocationInfo: true });
+  let titleNode = null, metaDesc = null, headNode = null;
+  walk(doc, (n) => {
+    if (n.tagName === 'title' && !titleNode) titleNode = n;
+    if (n.tagName === 'head' && !headNode) headNode = n;
+    if (n.tagName === 'meta' && n.attrs?.some(a => a.name === 'name' && a.value === 'description')) metaDesc = n;
+  });
+  const splices = [];
+  const esc = (s) => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
+  if (title !== undefined && titleNode?.sourceCodeLocation?.startTag && titleNode.sourceCodeLocation.endTag) {
+    splices.push({ start: titleNode.sourceCodeLocation.startTag.endOffset,
+      end: titleNode.sourceCodeLocation.endTag.startOffset, text: esc(title) });
+  }
+  if (description !== undefined) {
+    if (metaDesc?.sourceCodeLocation) {
+      const loc = metaDesc.sourceCodeLocation.attrs?.content;
+      if (loc) {
+        const range = attrValueRange(raw, loc);
+        if (range) splices.push({ start: range.start, end: range.end, text: esc(description) });
+      } else {
+        const at = metaDesc.sourceCodeLocation.endOffset - (raw.slice(metaDesc.sourceCodeLocation.startOffset, metaDesc.sourceCodeLocation.endOffset).endsWith('/>') ? 2 : 1);
+        splices.push({ start: at, end: at, text: ` content="${esc(description)}"` });
+      }
+    } else if (titleNode?.sourceCodeLocation) {
+      const at = titleNode.sourceCodeLocation.endOffset;
+      splices.push({ start: at, end: at, text: `\n  <meta name="description" content="${esc(description)}" />` });
+    } else if (headNode?.sourceCodeLocation?.startTag) {
+      const at = headNode.sourceCodeLocation.startTag.endOffset;
+      splices.push({ start: at, end: at, text: `\n  <meta name="description" content="${esc(description)}" />` });
+    }
+  }
+  let out = raw;
+  for (const s of splices.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, s.start) + s.text + out.slice(s.end);
+  }
+  return out;
+}
+
+/** Read current head bits for prefilling the page-settings panel. */
+export function readHead(raw) {
+  const doc = parse(raw, { sourceCodeLocationInfo: true });
+  let title = '', description = '';
+  walk(doc, (n) => {
+    if (n.tagName === 'title' && n.childNodes?.[0]?.value) title = n.childNodes[0].value;
+    if (n.tagName === 'meta' && n.attrs?.some(a => a.name === 'name' && a.value === 'description')) {
+      description = n.attrs.find(a => a.name === 'content')?.value || '';
+    }
+  });
+  return { title, description };
+}
+
 function walk(node, fn) {
   fn(node);
   const kids = node.childNodes || [];

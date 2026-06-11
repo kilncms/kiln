@@ -1,6 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { indexHtml, applyEdits, readValues, pageFileCandidates } from '../src/engine.js';
+import { indexHtml, applyEdits, readValues, pageFileCandidates, editHead, readHead } from '../src/engine.js';
+
+test('editHead updates title and inserts/updates meta description', () => {
+  const html = '<html><head>\n  <title>Old</title>\n</head><body>x</body></html>';
+  const v1 = editHead(html, { title: 'New & Better', description: 'Hello "world"' });
+  assert.ok(v1.includes('<title>New &amp; Better</title>'));
+  assert.ok(v1.includes('<meta name="description" content="Hello &quot;world&quot;" />'));
+  const v2 = editHead(v1, { description: 'Second pass' });
+  assert.ok(v2.includes('content="Second pass"'));
+  assert.ok(!v2.includes('Hello &quot;world&quot;'));
+  const head = readHead(v2);
+  assert.equal(head.title, 'New &amp; Better'.replace('&amp;', '&'));
+  assert.equal(head.description, 'Second pass');
+});
 
 const PAGE = `<!DOCTYPE html>
 <html lang="en">

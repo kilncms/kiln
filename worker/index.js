@@ -37,6 +37,9 @@ const GH = 'https://api.github.com';
 const UA = 'kiln-auth-worker';
 
 export default {
+  async scheduled(_event, env) {
+    await runDueSchedules(env);
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -63,6 +66,9 @@ export default {
       if (path === '/admin/people' && request.method === 'GET') return cors(env, request, await peopleList(request, env, url));
       if (path === '/admin/people' && request.method === 'POST') return cors(env, request, await peopleUpsert(request, env));
       if (path === '/admin/people/remove' && request.method === 'POST') return cors(env, request, await peopleRemove(request, env));
+      if (path === '/schedule' && request.method === 'POST') return cors(env, request, await scheduleCreate(request, env));
+      if (path === '/schedules' && request.method === 'GET') return cors(env, request, await scheduleList(request, env, url));
+      if (path === '/schedule/cancel' && request.method === 'POST') return cors(env, request, await scheduleCancel(request, env));
       if (path === '/google/login') return googleLogin(url, env);
       if (path === '/google/callback') return googleCallback(url, env);
       if (path === '/google/claim' && request.method === 'POST') return googleClaim(request, env);
@@ -356,6 +362,91 @@ async function editorRedeem(request, env) {
     JSON.stringify({ ...inv, created: Date.now(), exp }),
     { expirationTtl: days * 24 * 3600 });
   return json({ session, name: inv.name, repo: inv.repo, role: inv.role, exp });
+}
+
+// ─── Scheduled publishing ────────────────────────────────────────────────────
+// sched:<id> → { repo, path, branch, content(b64), message, at, desc, by }
+// A cron tick commits every due entry using the App installation token.
+
+async function authActor(request, env, repo) {
+  // Either an admin's GitHub token (push access) or an editor session for this repo.
+  const sess = request.headers.get('X-Kiln-Session');
+  if (sess && /^[a-f0-9]{64}$/.test(sess)) {
+    const e = await env.KILN.get(`esess:${sess}`, 'json');
+    if (e && e.repo === repo && e.role === 'editor') return { name: e.name };
+  }
+  if (await requirePush(request, repo)) return { name: 'admin' };
+  return null;
+}
+
+async function scheduleCreate(request, env) {
+  const { repo, path, branch = 'main', content, message, at, desc } = await request.json().catch(() => ({}));
+  if (!repo || !path || !content || !at) return json({ error: 'missing fields' }, 400);
+  const actor = await authActor(request, env, repo);
+  if (!actor) return json({ error: 'forbidden' }, 403);
+  const when = Date.parse(at);
+  if (!when || when < Date.now() - 60000 || when > Date.now() + 366 * 24 * 3600 * 1000) {
+    return json({ error: 'bad time' }, 400);
+  }
+  const id = crypto.randomUUID().replaceAll('-', '');
+  await env.KILN.put(`sched:${id}`,
+    JSON.stringify({ repo, path, branch, content, message: message || 'Scheduled publish (via Kiln)', at: when, desc: desc || path, by: actor.name }),
+    { expirationTtl: Math.ceil((when - Date.now()) / 1000) + 14 * 24 * 3600 });
+  return json({ ok: true, id, at: when });
+}
+
+async function scheduleList(request, env, url) {
+  const repo = url.searchParams.get('repo') || '';
+  const actor = await authActor(request, env, repo);
+  if (!actor) return json({ error: 'forbidden' }, 403);
+  const out = [];
+  let cursor;
+  do {
+    const page = await env.KILN.list({ prefix: 'sched:', cursor });
+    for (const k of page.keys) {
+      const v = await env.KILN.get(k.name, 'json');
+      if (v && v.repo === repo) out.push({ id: k.name.slice(6), at: v.at, desc: v.desc, path: v.path, by: v.by });
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return json({ schedules: out.sort((a, b) => a.at - b.at) });
+}
+
+async function scheduleCancel(request, env) {
+  const { repo, id } = await request.json().catch(() => ({}));
+  const actor = await authActor(request, env, repo);
+  if (!actor || !/^[a-f0-9]{32}$/.test(id || '')) return json({ error: 'forbidden' }, 403);
+  const v = await env.KILN.get(`sched:${id}`, 'json');
+  if (!v || v.repo !== repo) return json({ error: 'not found' }, 404);
+  await env.KILN.delete(`sched:${id}`);
+  return json({ ok: true });
+}
+
+async function runDueSchedules(env) {
+  let cursor;
+  do {
+    const page = await env.KILN.list({ prefix: 'sched:', cursor });
+    for (const k of page.keys) {
+      const v = await env.KILN.get(k.name, 'json');
+      if (!v || v.at > Date.now()) continue;
+      try {
+        const itok = await installationToken(env, v.repo);
+        if (!itok) continue;
+        const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
+        const cur = await fetch(`${GH}/repos/${v.repo}/contents/${v.path}?ref=${v.branch}`, { headers: h });
+        const sha = cur.ok ? (await cur.json()).sha : undefined;
+        const res = await fetch(`${GH}/repos/${v.repo}/contents/${v.path}`, {
+          method: 'PUT', headers: h,
+          body: JSON.stringify({ message: v.message, content: v.content, branch: v.branch, sha,
+            author: { name: `${v.by} (via Kiln, scheduled)`, email: 'kiln-editor@users.noreply.github.com' } }),
+        });
+        if (res.ok || res.status === 409) await env.KILN.delete(k.name);
+      } catch (err) {
+        console.error('[kiln-cron]', k.name, err);
+      }
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
 }
 
 // ─── People (Google sign-in allowlist) ───────────────────────────────────────

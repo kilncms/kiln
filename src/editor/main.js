@@ -10,7 +10,7 @@
  */
 
 import DOMPurify from 'dompurify';
-import { indexHtml, applyEdits, pageFileCandidates } from '../engine.js';
+import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead } from '../engine.js';
 import {
   makeGh, getFile, resolvePageFile, editFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
@@ -87,6 +87,7 @@ async function init() {
   decorateFields();
   offerPendingRestore();
   if (journalAll().length) runJournal();
+  checkForDraft();
 
   window.addEventListener('beforeunload', (e) => {
     if (state.pending.size) { e.preventDefault(); e.returnValue = ''; }
@@ -260,6 +261,27 @@ function attachItemControls(container, key, item) {
     stageContainer(container, key);
   };
   item.appendChild(ctl);
+
+  // Drag to reorder (↑↓ still work; this is for mouse users)
+  item.draggable = true;
+  item.addEventListener('dragstart', (e) => {
+    if (state.active) { e.preventDefault(); return; }
+    e.dataTransfer.effectAllowed = 'move';
+    item.classList.add('kiln-dragging');
+  });
+  item.addEventListener('dragend', () => item.classList.remove('kiln-dragging'));
+  item.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    const dragging = container.querySelector('.kiln-dragging');
+    if (!dragging || dragging === item) return;
+    const r = item.getBoundingClientRect();
+    const before = (e.clientY - r.top) < r.height / 2;
+    container.insertBefore(dragging, before ? item : item.nextSibling);
+  });
+  item.addEventListener('drop', (e) => {
+    e.preventDefault();
+    stageContainer(container, key);
+  });
 }
 
 /** Stage a repeat container's full cleaned innerHTML as one pending edit. */
@@ -1085,6 +1107,319 @@ async function historyPanel() {
   }
 }
 
+// ─── Page settings (title + meta description) ────────────────────────────────
+
+function pageSettingsPanel() {
+  const cur = readHead(state.page.text);
+  const m = modal(`
+    <h3>Page settings — ${escapeHtml(state.page.path)}</h3>
+    <label>Page title (browser tab + search results)
+      <input type="text" id="kiln-ps-title" value="${escapeHtml(cur.title)}"></label>
+    <label>Description (search results &amp; link previews)
+      <input type="text" id="kiln-ps-desc" value="${escapeHtml(cur.description)}" maxlength="200"></label>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Cancel</button>
+      <button class="kiln-btn-publish" id="kiln-ps-go">Publish</button>
+    </div>
+    <p class="kiln-np-step" id="kiln-ps-status"></p>`);
+  m.querySelector('#kiln-ps-go').onclick = async () => {
+    const title = m.querySelector('#kiln-ps-title').value;
+    const description = m.querySelector('#kiln-ps-desc').value;
+    const status = m.querySelector('#kiln-ps-status');
+    status.textContent = 'Publishing…';
+    try {
+      const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
+        (text) => editHead(text, { title, description }),
+        `Page settings: ${state.page.path} (via Kiln)`);
+      if (result.unchanged) { status.textContent = 'Nothing changed.'; return; }
+      await loadPageSource();
+      journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: 'Page settings' });
+      status.textContent = 'Committed ✓ — safe to close; Kiln will confirm when live.';
+    } catch (err) { status.textContent = `Failed: ${err.message}`; }
+  };
+}
+
+// ─── Find & replace (site-wide) ──────────────────────────────────────────────
+
+function findReplacePanel() {
+  const m = modal(`
+    <h3>Find &amp; replace across the site</h3>
+    <label>Find <input type="text" id="kiln-fr-find" placeholder="Old phone number, name, address…"></label>
+    <label>Replace with <input type="text" id="kiln-fr-repl"></label>
+    <div class="kiln-modal-actions" style="justify-content:flex-start">
+      <button class="kiln-btn-publish" id="kiln-fr-scan">Preview matches</button>
+    </div>
+    <div id="kiln-fr-out" class="kiln-inv-list" style="margin-top:8px"></div>
+    <p class="kiln-np-step" id="kiln-fr-status"></p>`);
+  const status = m.querySelector('#kiln-fr-status');
+  m.querySelector('#kiln-fr-scan').onclick = async () => {
+    const find = m.querySelector('#kiln-fr-find').value;
+    const repl = m.querySelector('#kiln-fr-repl').value;
+    const out = m.querySelector('#kiln-fr-out');
+    if (!find || find.length < 2) { status.textContent = 'Type at least 2 characters to find.'; return; }
+    status.textContent = 'Scanning every page…';
+    out.innerHTML = '';
+    try {
+      const branch = cfg.branch || 'main';
+      const tree = await state.gh.request('GET', `/repos/${cfg.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+      const files = tree.tree.filter(x => x.type === 'blob' && x.path.endsWith('.html')).map(x => x.path).slice(0, 100);
+      const hits = [];
+      for (let i = 0; i < files.length; i++) {
+        status.textContent = `Scanning… ${i + 1}/${files.length}`;
+        const f = await getFile(state.gh, cfg.repo, files[i], branch);
+        const count = f.text.split(find).length - 1;
+        if (count) hits.push({ path: files[i], count, text: f.text });
+      }
+      if (!hits.length) { status.textContent = `No matches for “${find}”.`; return; }
+      out.innerHTML = hits.map(h => `<div class="kiln-inv-row"><span>${escapeHtml(h.path)}</span><small>${h.count}×</small></div>`).join('');
+      status.innerHTML = `${hits.reduce((n, h) => n + h.count, 0)} match(es) in ${hits.length} file(s).
+        <strong>This replaces matches anywhere in the page source</strong> — review on GitHub afterwards if unsure.`;
+      const act = document.createElement('div');
+      act.className = 'kiln-modal-actions';
+      act.innerHTML = `<button class="kiln-btn-ghost" data-close>Cancel</button>
+        <button class="kiln-btn-publish">Replace all (1 commit)</button>`;
+      out.after(act);
+      act.querySelector('.kiln-btn-publish').onclick = async () => {
+        status.textContent = 'Committing…';
+        try {
+          const changed = hits.map(h => ({ path: h.path, text: h.text.split(find).join(repl) }));
+          await commitFiles(state.gh, cfg.repo, branch, changed, `Replace “${find}” → “${repl}” on ${changed.length} pages (via Kiln)`);
+          const thisPage = changed.find(c => c.path === state.page.path);
+          if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Find & replace' });
+          status.textContent = 'Committed ✓ — rebuilding. Safe to close; Kiln will confirm when live.';
+          act.remove();
+        } catch (err) { status.textContent = `Failed: ${err.message}`; }
+      };
+    } catch (err) { status.textContent = `Scan failed: ${err.message}`; }
+  };
+}
+
+// ─── Drafts (kiln-drafts branch) ─────────────────────────────────────────────
+
+const DRAFT_BRANCH = 'kiln-drafts';
+
+async function ensureDraftBranch() {
+  try {
+    await state.gh.request('GET', `/repos/${cfg.repo}/git/ref/${encodeURIComponent('heads/' + DRAFT_BRANCH)}`);
+  } catch {
+    const main = await state.gh.request('GET', `/repos/${cfg.repo}/git/ref/${encodeURIComponent('heads/' + (cfg.branch || 'main'))}`);
+    await state.gh.request('POST', `/repos/${cfg.repo}/git/refs`, { ref: `refs/heads/${DRAFT_BRANCH}`, sha: main.object.sha });
+  }
+}
+
+async function saveDraft() {
+  if (!state.pending.size) return;
+  setStatus('Saving draft…', 'saving');
+  try {
+    await ensureDraftBranch();
+    const edits = flattenPending();
+    const drafted = applyEdits(state.page.text, edits).html;
+    let sha;
+    try { sha = (await getFile(state.gh, cfg.repo, state.page.path, DRAFT_BRANCH)).sha; } catch { /* new draft */ }
+    await putFile(state.gh, cfg.repo, state.page.path, {
+      text: drafted, sha, branch: DRAFT_BRANCH,
+      message: `Draft: ${state.page.path} (via Kiln)`,
+    });
+    state.pending.clear();
+    clearSavedPending();
+    document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
+    refreshPublishButton();
+    setStatus('Draft saved ✓ — nothing is live; resume it any time from this page', 'saved');
+  } catch (err) {
+    console.error('[kiln] draft', err);
+    setStatus(`Draft failed: ${err.message}`, 'error');
+  }
+}
+
+async function checkForDraft() {
+  let draft;
+  try { draft = await getFile(state.gh, cfg.repo, state.page.path, DRAFT_BRANCH); } catch { return; }
+  if (!draft || djb2(draft.text) === djb2(state.page.text)) return;
+  const m = modal(`
+    <h3>There's a saved draft of this page</h3>
+    <p class="kiln-dim">It isn't live. Resume editing it, publish it as-is, or leave it for later.</p>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Later</button>
+      ${mode === 'admin' ? '<button class="kiln-btn-ghost" id="kiln-dr-del">Delete draft</button>' : ''}
+      <button class="kiln-btn-ghost" id="kiln-dr-pub">Publish it now</button>
+      <button class="kiln-btn-publish" id="kiln-dr-resume">Resume draft</button>
+    </div>
+    <p class="kiln-np-step" id="kiln-dr-status"></p>`);
+  const status = m.querySelector('#kiln-dr-status');
+  m.querySelector('#kiln-dr-resume').onclick = () => {
+    const draftFields = indexHtml(draft.text).fields;
+    let applied = 0;
+    for (const [key, f] of draftFields) {
+      if (!f.inner) continue;
+      const value = draft.text.slice(f.inner.start, f.inner.end);
+      const liveF = state.fields.fields.get(key);
+      const liveValue = liveF?.inner ? state.page.text.slice(liveF.inner.start, liveF.inner.end) : null;
+      if (value === liveValue) continue;
+      const el = document.querySelector(`[data-cms="${CSS.escape(key)}"]`);
+      if (el && !el.closest('[data-cms-repeat]')) {
+        el.innerHTML = value;
+        el.classList.add('kiln-modified');
+        stagePending(key, { html: value });
+        applied++;
+      } else if (liveF?.kind === 'repeat' || el?.hasAttribute('data-cms-repeat')) {
+        const cont = document.querySelector(`[data-cms-repeat="${CSS.escape(key)}"]`);
+        if (cont) { cont.innerHTML = value; setupRepeat(cont, key); cont.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms'))); stagePending(key, { html: value }); applied++; }
+      }
+    }
+    refreshPublishButton();
+    setStatus(`Draft loaded (${applied} change${applied === 1 ? '' : 's'}) — Publish when ready`, 'saved');
+    m.remove();
+  };
+  m.querySelector('#kiln-dr-pub').onclick = async () => {
+    status.textContent = 'Publishing draft…';
+    try {
+      const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
+        () => draft.text, `Publish draft: ${state.page.path} (via Kiln)`);
+      journalAdd({ type: 'compare', target: location.pathname, expect: djb2(draft.text), desc: 'Draft publish' });
+      await loadPageSource();
+      status.textContent = 'Committed ✓ — Kiln will confirm when live. Reload to see it.';
+    } catch (err) { status.textContent = `Failed: ${err.message}`; }
+  };
+  const del = m.querySelector('#kiln-dr-del');
+  if (del) del.onclick = async () => {
+    status.textContent = 'Deleting…';
+    try {
+      await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
+        { message: `Discard draft: ${state.page.path} (via Kiln)`, sha: draft.sha, branch: DRAFT_BRANCH });
+      status.textContent = 'Draft deleted.';
+      setTimeout(() => m.remove(), 600);
+    } catch (err) { status.textContent = `Failed: ${err.message}`; }
+  };
+}
+
+// ─── Scheduled publishing ────────────────────────────────────────────────────
+
+function schedulePanel() {
+  if (!state.pending.size) return;
+  const inOneHour = new Date(Date.now() + 3600000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  const m = modal(`
+    <h3>Schedule these ${state.pending.size} edit${state.pending.size > 1 ? 's' : ''}</h3>
+    <p class="kiln-dim">Kiln commits them automatically at the time you pick (checked every 5 minutes), then the site rebuilds.</p>
+    <label>Publish at <input type="datetime-local" id="kiln-sc-at" value="${inOneHour}"></label>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Cancel</button>
+      <button class="kiln-btn-publish" id="kiln-sc-go">Schedule</button>
+    </div>
+    <h4>Already scheduled</h4>
+    <div id="kiln-sc-list" class="kiln-inv-list">Loading…</div>
+    <p class="kiln-np-step" id="kiln-sc-status"></p>`);
+  const status = m.querySelector('#kiln-sc-status');
+  const authHeaders = () => {
+    if (mode === 'admin') return { Authorization: `Bearer ${JSON.parse(localStorage.getItem(ADMIN_KEY)).token}` };
+    return { 'X-Kiln-Session': JSON.parse(localStorage.getItem(EDITOR_KEY)).session };
+  };
+  async function refreshList() {
+    const list = m.querySelector('#kiln-sc-list');
+    try {
+      const res = await fetch(`${cfg.worker}/schedules?repo=${encodeURIComponent(cfg.repo)}`, { headers: authHeaders() });
+      const data = await res.json();
+      list.innerHTML = (data.schedules || []).length ? '' : '<p class="kiln-dim">Nothing scheduled.</p>';
+      for (const s of data.schedules || []) {
+        const row = document.createElement('div');
+        row.className = 'kiln-inv-row';
+        row.innerHTML = `<span><strong>${escapeHtml(s.desc)}</strong>
+          <small>${new Date(s.at).toLocaleString()} · by ${escapeHtml(s.by)}</small></span>
+          <button class="kiln-btn-ghost">Cancel</button>`;
+        row.querySelector('button').onclick = async () => {
+          await fetch(`${cfg.worker}/schedule/cancel`, { method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ repo: cfg.repo, id: s.id }) });
+          refreshList();
+        };
+        list.appendChild(row);
+      }
+    } catch { list.innerHTML = '<p class="kiln-dim">Could not load.</p>'; }
+  }
+  refreshList();
+  m.querySelector('#kiln-sc-go').onclick = async () => {
+    const at = m.querySelector('#kiln-sc-at').value;
+    if (!at) return;
+    status.textContent = 'Scheduling…';
+    try {
+      const edits = flattenPending();
+      const futureText = applyEdits(state.page.text, edits).html;
+      const b64 = (await import('../github.js')).encodeContent(futureText);
+      const res = await fetch(`${cfg.worker}/schedule`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ repo: cfg.repo, path: state.page.path, branch: cfg.branch || 'main',
+          content: b64, at: new Date(at).toISOString(),
+          message: `Scheduled edit: ${state.page.path} (via Kiln)`,
+          desc: `${state.page.path} (${[...state.pending.keys()].slice(0, 3).join(', ')})` }) });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'failed');
+      state.pending.clear();
+      clearSavedPending();
+      document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
+      refreshPublishButton();
+      status.textContent = `Scheduled for ${new Date(data.at).toLocaleString()} ✓ — safe to close.`;
+      refreshList();
+    } catch (err) { status.textContent = `Failed: ${err.message}`; }
+  };
+}
+
+// ─── Settings (admin) ────────────────────────────────────────────────────────
+
+function settingsPanel() {
+  const ui = localStorage.getItem('kiln_ui_mode') || 'fab';
+  const auth = cfg.auth || {};
+  const m = modal(`
+    <h3>Settings</h3>
+    <h4>Your editor (this browser)</h4>
+    <div class="kiln-roles">
+      <label class="kiln-role"><input type="radio" name="kiln-uimode" value="fab" ${ui === 'fab' ? 'checked' : ''}>
+        <span><strong>Floating button</strong><br><small>Draggable circle; hover for the menu.</small></span></label>
+      <label class="kiln-role"><input type="radio" name="kiln-uimode" value="bar" ${ui === 'bar' ? 'checked' : ''}>
+        <span><strong>Top bar</strong><br><small>Fixed bar with all actions visible.</small></span></label>
+    </div>
+    <h4>This site (applies to everyone, committed to the repo)</h4>
+    <label class="kiln-role"><input type="checkbox" id="kiln-set-google" ${auth.google !== false ? 'checked' : ''}>
+      <span><strong>Google sign-in</strong><br><small>People on the allowlist sign in with their Google account.</small></span></label>
+    <label class="kiln-role"><input type="checkbox" id="kiln-set-links" ${auth.links !== false ? 'checked' : ''}>
+      <span><strong>Link invites</strong><br><small>Fallback one-time links for people without Google.</small></span></label>
+    <label class="kiln-role"><input type="checkbox" id="kiln-set-btn" ${cfg.loginButton ? 'checked' : ''}>
+      <span><strong>Visible sign-in pencil</strong><br><small>Off = sign in via yoursite.com/kiln only (recommended).</small></span></label>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Close</button>
+      <button class="kiln-btn-publish" id="kiln-set-save">Save</button>
+    </div>
+    <p class="kiln-np-step" id="kiln-set-status"></p>`);
+  const status = m.querySelector('#kiln-set-status');
+  m.querySelector('#kiln-set-save').onclick = async () => {
+    const newUi = m.querySelector('input[name="kiln-uimode"]:checked').value;
+    const uiChanged = newUi !== ui;
+    localStorage.setItem('kiln_ui_mode', newUi);
+    const google = m.querySelector('#kiln-set-google').checked;
+    const links = m.querySelector('#kiln-set-links').checked;
+    const btn = m.querySelector('#kiln-set-btn').checked;
+    const siteChanged = google !== (cfg.auth?.google !== false) || links !== (cfg.auth?.links !== false) || btn !== !!cfg.loginButton;
+    if (!siteChanged) {
+      status.textContent = uiChanged ? 'Saved — reloading to apply your editor layout…' : 'Saved.';
+      if (uiChanged) setTimeout(() => location.reload(), 600);
+      return;
+    }
+    status.textContent = 'Committing site settings…';
+    try {
+      const cfgPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + 'assets/kiln-config.js';
+      const result = await editFile(state.gh, cfg.repo, cfgPath, cfg.branch || 'main', (text) => {
+        let out = text;
+        const flags = `\n  // Managed by Kiln Settings\n  loginButton: ${btn},\n  auth: { google: ${google}, links: ${links} },\n`;
+        out = out.replace(/\n\s*\/\/ Managed by Kiln Settings\n\s*loginButton:[^\n]*\n\s*auth:[^\n]*\n/, '\n');
+        out = out.replace(/\n\s*loginButton:[^\n]*\n/, '\n');
+        const close = out.lastIndexOf('};');
+        return out.slice(0, close) + flags + out.slice(close);
+      }, 'Kiln settings (via Kiln)');
+      journalAdd({ type: 'compare', target: '/assets/kiln-config.js', expect: djb2(result.text), desc: 'Site settings' });
+      status.textContent = 'Committed ✓ — applies to everyone after the rebuild (~1 min).' + (uiChanged ? ' Reloading…' : '');
+      if (uiChanged) setTimeout(() => location.reload(), 1500);
+    } catch (err) { status.textContent = `Failed: ${err.message}`; }
+  };
+}
+
 // ─── Done / exit ─────────────────────────────────────────────────────────────
 
 function doneEditing() {
@@ -1117,6 +1452,7 @@ function exitEditMode() {
  * Position is remembered per-browser.
  */
 function renderAdminBar() {
+  if ((localStorage.getItem('kiln_ui_mode') || 'fab') === 'bar') { renderTopBar(); return; }
   const fab = document.createElement('div');
   fab.id = 'kiln-fab-wrap';
   fab.innerHTML = `
@@ -1127,10 +1463,15 @@ function renderAdminBar() {
       </div>
       <button id="kiln-publish" class="kiln-fab-item kiln-fab-primary" disabled>Publish</button>
       <button id="kiln-discard" class="kiln-fab-item" hidden>Discard edits</button>
+      <button id="kiln-schedule" class="kiln-fab-item" hidden>Schedule for later…</button>
+      <button id="kiln-draft" class="kiln-fab-item" hidden>Save as draft</button>
       <button id="kiln-newpost" class="kiln-fab-item">＋ New post or page</button>
       <button id="kiln-menu" class="kiln-fab-item">Site menu</button>
+      <button id="kiln-pagesettings" class="kiln-fab-item">Page settings</button>
+      <button id="kiln-findreplace" class="kiln-fab-item">Find &amp; replace</button>
       <button id="kiln-history" class="kiln-fab-item">History</button>
       ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
+      ${mode === 'admin' ? '<button id="kiln-settings" class="kiln-fab-item">Settings</button>' : ''}
       <div class="kiln-fab-foot">
         <button id="kiln-done" title="Hide Kiln and browse normally (stays signed in — return via #edit)">Done editing</button>
         <button id="kiln-signout">Sign out</button>
@@ -1222,6 +1563,12 @@ function renderAdminBar() {
   fab.querySelector('#kiln-history').onclick = close(historyPanel);
   fab.querySelector('#kiln-done').onclick = close(doneEditing);
   fab.querySelector('#kiln-discard').onclick = close(discardEdits);
+  fab.querySelector('#kiln-pagesettings').onclick = close(pageSettingsPanel);
+  fab.querySelector('#kiln-findreplace').onclick = close(findReplacePanel);
+  fab.querySelector('#kiln-schedule').onclick = close(schedulePanel);
+  fab.querySelector('#kiln-draft').onclick = close(saveDraft);
+  const settingsBtn = fab.querySelector('#kiln-settings');
+  if (settingsBtn) settingsBtn.onclick = close(settingsPanel);
   fab.querySelector('#kiln-signout').onclick = () => {
     if (state.pending.size && !confirm('Discard your unpublished edits and sign out?')) return;
     clearSavedPending();
@@ -1231,6 +1578,49 @@ function renderAdminBar() {
   if (inviteBtn) inviteBtn.onclick = close(invitePanel);
 
   setStatus(`Signed in as ${state.user} — click any outlined text to edit`, 'idle');
+}
+
+function renderTopBar() {
+  const bar = document.createElement('div');
+  bar.id = 'kiln-topbar';
+  bar.innerHTML = `
+    <span class="kiln-brand">Kiln</span>
+    <span class="kiln-user">${escapeHtml(state.user)}${mode === 'editor' ? ' · editor' : ''}</span>
+    <span class="kiln-status" id="kiln-status" hidden></span>
+    <span class="kiln-bar-spacer"></span>
+    <button id="kiln-newpost" class="kiln-btn-ghost">+ New</button>
+    <button id="kiln-menu" class="kiln-btn-ghost">Menu</button>
+    <button id="kiln-pagesettings" class="kiln-btn-ghost">Page</button>
+    <button id="kiln-findreplace" class="kiln-btn-ghost">Replace</button>
+    <button id="kiln-history" class="kiln-btn-ghost">History</button>
+    ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button><button id="kiln-settings" class="kiln-btn-ghost">Settings</button>' : ''}
+    <button id="kiln-draft" class="kiln-btn-ghost" hidden>Draft</button>
+    <button id="kiln-schedule" class="kiln-btn-ghost" hidden>Schedule</button>
+    <button id="kiln-discard" class="kiln-btn-ghost" hidden>Discard</button>
+    <button id="kiln-publish" class="kiln-btn-publish" disabled>Publish</button>
+    <button id="kiln-done" class="kiln-btn-ghost">Done</button>
+    <button id="kiln-signout" class="kiln-btn-link">sign out</button>`;
+  document.body.prepend(bar);
+  bar.querySelector('#kiln-publish').onclick = publish;
+  bar.querySelector('#kiln-newpost').onclick = newContent;
+  bar.querySelector('#kiln-menu').onclick = menuEditor;
+  bar.querySelector('#kiln-pagesettings').onclick = pageSettingsPanel;
+  bar.querySelector('#kiln-findreplace').onclick = findReplacePanel;
+  bar.querySelector('#kiln-history').onclick = historyPanel;
+  bar.querySelector('#kiln-done').onclick = doneEditing;
+  bar.querySelector('#kiln-discard').onclick = discardEdits;
+  bar.querySelector('#kiln-draft').onclick = saveDraft;
+  bar.querySelector('#kiln-schedule').onclick = schedulePanel;
+  bar.querySelector('#kiln-signout').onclick = () => {
+    if (state.pending.size && !confirm('Discard your unpublished edits and sign out?')) return;
+    clearSavedPending();
+    window.Kiln.logout();
+  };
+  const inviteBtn = bar.querySelector('#kiln-invite');
+  if (inviteBtn) inviteBtn.onclick = invitePanel;
+  const settingsBtn = bar.querySelector('#kiln-settings');
+  if (settingsBtn) settingsBtn.onclick = settingsPanel;
+  setStatus(`Signed in as ${state.user}`, 'idle');
 }
 
 function discardEdits() {
@@ -1374,6 +1764,10 @@ function refreshPublishButton() {
   if (badge) { badge.hidden = !n; badge.textContent = n; }
   const discard = document.getElementById('kiln-discard');
   if (discard) { discard.hidden = !n; discard.textContent = `Discard ${n} edit${n > 1 ? 's' : ''}`; }
+  const sched = document.getElementById('kiln-schedule');
+  if (sched) sched.hidden = !n;
+  const draftBtn = document.getElementById('kiln-draft');
+  if (draftBtn) draftBtn.hidden = !n;
   savePendingToStorage();
 }
 
@@ -1580,6 +1974,14 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-menu-row button{background:#f9fafb;border:1.5px solid #e5e7eb;border-radius:8px;width:28px;height:34px;
   cursor:pointer;font-size:12px;transition:background .12s}
 .kiln-menu-row button:hover{background:#eef2ff}
+#kiln-topbar{position:fixed;top:0;left:0;right:0;height:46px;background:var(--kiln-bg);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);color:#e7e7ee;display:flex;
+  align-items:center;gap:8px;padding:0 12px;z-index:99999;font-family:var(--kiln-font);
+  font-size:13px;border-bottom:1px solid rgba(255,255,255,.07);overflow-x:auto}
+#kiln-topbar .kiln-status{position:static;transform:none;box-shadow:none;border:none;background:none;max-width:30vw}
+.kiln-bar-spacer{flex:1}
+body:has(#kiln-topbar){padding-top:46px!important}
+.kiln-dragging{opacity:.45;outline:2px dashed var(--kiln-accent)!important}
 #kiln-menu-add{margin-top:4px;color:#4b5563;border-color:#e5e7eb;background:#f9fafb}`;
   document.head.appendChild(style);
 }

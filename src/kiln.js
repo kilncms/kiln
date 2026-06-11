@@ -147,14 +147,16 @@
     pop.style.cssText = 'position:fixed;bottom:66px;right:16px;background:#fff;color:#1c1c28;z-index:99999;' +
       'border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.22);padding:10px;width:240px;' +
       'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px';
+    var showGoogle = !(cfg.auth && cfg.auth.google === false);
     pop.innerHTML =
-      '<button data-kind="google" style="' + chooserBtnCss() + '">' +
+      (showGoogle ? '<button data-kind="google" style="' + chooserBtnCss() + '">' +
         '<svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z"/><path fill="#FBBC05" d="M5.84 14.1A6.6 6.6 0 0 1 5.5 12c0-.73.13-1.43.34-2.1V7.06H2.18A11 11 0 0 0 1 12c0 1.77.43 3.45 1.18 4.94l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.16-3.16A10.97 10.97 0 0 0 12 1 11 11 0 0 0 2.18 7.06l3.66 2.84C6.71 7.3 9.14 5.38 12 5.38z"/></svg>' +
-        '<span><strong>Continue with Google</strong><br><small style="color:#777">Invited editors &amp; members</small></span></button>' +
+        '<span><strong>Continue with Google</strong><br><small style="color:#777">Invited editors &amp; members</small></span></button>' : '') +
       '<button data-kind="github" style="' + chooserBtnCss() + '">' +
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="#1c1c28"><path d="M12 .5A11.5 11.5 0 0 0 .5 12.26c0 5.2 3.3 9.6 7.86 11.16.58.11.79-.26.79-.57v-2c-3.2.71-3.87-1.58-3.87-1.58-.53-1.37-1.28-1.73-1.28-1.73-1.05-.74.08-.72.08-.72 1.15.08 1.76 1.22 1.76 1.22 1.03 1.81 2.7 1.29 3.36.98.1-.77.4-1.29.73-1.58-2.55-.3-5.23-1.31-5.23-5.82 0-1.29.45-2.34 1.18-3.16-.12-.3-.51-1.5.11-3.12 0 0 .97-.32 3.17 1.21a10.7 10.7 0 0 1 5.78 0c2.2-1.53 3.16-1.21 3.16-1.21.63 1.62.24 2.82.12 3.12.74.82 1.18 1.87 1.18 3.16 0 4.52-2.69 5.51-5.25 5.8.41.37.78 1.08.78 2.18v3.23c0 .31.2.69.8.57a11.77 11.77 0 0 0 7.85-11.16A11.5 11.5 0 0 0 12 .5z"/></svg>' +
         '<span><strong>Continue with GitHub</strong><br><small style="color:#777">Site owner / developer</small></span></button>';
-    pop.querySelector('[data-kind="google"]').onclick = function () {
+    var gBtn = pop.querySelector('[data-kind="google"]');
+    if (gBtn) gBtn.onclick = function () {
       location.href = cfg.worker + '/google/login?' + q + '&repo=' + encodeURIComponent(cfg.repo || '');
     };
     pop.querySelector('[data-kind="github"]').onclick = function () {
