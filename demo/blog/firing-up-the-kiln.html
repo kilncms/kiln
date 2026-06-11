@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Firing up the kiln — Maple &amp; Co.</title>
+  <link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+
+  <nav>
+    <span class="nav-logo">Maple &amp; Co.</span>
+    <div class="nav-links">
+      <a href="/#about">About</a>
+      <a href="/blog/">Journal</a>
+      <a href="/members/">Members</a>
+      <a href="/#contact">Contact</a>
+    </div>
+  </nav>
+
+  <main class="page-wrap">
+    <a class="back-link" href="/blog/">← Back to the journal</a>
+    <header class="post-header">
+      <h1 data-cms="post_title">Firing up the kiln</h1>
+      <p class="post-date" data-cms="post_date">June 10, 2026</p>
+    </header>
+    <div class="post-body" data-cms="post_body">
+      <p>This post was created by Kiln itself — a static HTML file, committed to
+      GitHub, deployed for free. No database wrote it and no server renders it.</p>
+      <p>If you're signed in, you can click anywhere in this text and just…
+      change it. The edit becomes a Git commit, and the commit becomes the page
+      you're reading. That's the whole trick: the site is the database.</p>
+    </div>
+  </main>
+
+  <footer>
+    <span data-cms="footer_text">© 2026 Maple &amp; Co. All rights reserved.</span>
+  </footer>
+
+  <script>
+    window.KILN = {
+      repo:   'erikkurtu/kiln-demo',
+      branch: 'main',
+      worker: 'https://kiln-auth.erikkwilder.workers.dev',
+    };
+  </script>
+  <script src="/assets/kiln.js" defer></script>
+
+</body>
+</html>

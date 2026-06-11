@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Journal — Maple &amp; Co.</title>
+  <link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+
+  <nav>
+    <span class="nav-logo">Maple &amp; Co.</span>
+    <div class="nav-links">
+      <a href="/#about">About</a>
+      <a href="/blog/">Journal</a>
+      <a href="/members/">Members</a>
+      <a href="/#contact">Contact</a>
+    </div>
+  </nav>
+
+  <main class="page-wrap">
+    <h1 data-cms="blog_title">Journal</h1>
+    <p class="page-sub" data-cms="blog_sub">Notes from the workshop.</p>
+
+    <div class="post-list" data-cms="post_list">
+      <article class="post-card">
+        <a href="/blog/firing-up-the-kiln.html">
+          <h3>Firing up the kiln</h3>
+          <p class="post-date">June 10, 2026</p>
+        </a>
+      </article>
+    </div>
+  </main>
+
+  <footer>
+    <span data-cms="footer_text">© 2026 Maple &amp; Co. All rights reserved.</span>
+  </footer>
+
+  <script>
+    window.KILN = {
+      repo:   'erikkurtu/kiln-demo',
+      branch: 'main',
+      worker: 'https://kiln-auth.erikkwilder.workers.dev',
+    };
+  </script>
+  <script src="/assets/kiln.js" defer></script>
+
+</body>
+</html>

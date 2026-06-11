@@ -1,6 +1,5 @@
 node_modules/
-.next/
-.env
-.env.local
-dist/
+.wrangler/
+.dev.vars
+*.log
 .DS_Store

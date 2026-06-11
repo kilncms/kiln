@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400" width="600" height="400">
+  <rect width="600" height="400" fill="#e0d8cc"/>
+  <rect x="60" y="220" width="480" height="120" rx="4" fill="#c9bda9"/>
+  <rect x="100" y="140" width="120" height="80" rx="3" fill="#8a6d3b" opacity="0.8"/>
+  <rect x="240" y="120" width="90" height="100" rx="3" fill="#a08456" opacity="0.7"/>
+  <rect x="350" y="150" width="150" height="70" rx="3" fill="#7a5f33" opacity="0.6"/>
+  <circle cx="470" cy="90" r="34" fill="#c4a96f" opacity="0.9"/>
+  <text x="300" y="380" text-anchor="middle" font-family="Georgia, serif" font-size="16" fill="#8a7d68">the workshop — click me while signed in to swap this image</text>
+</svg>

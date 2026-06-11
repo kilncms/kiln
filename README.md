@@ -1,160 +1,166 @@
-# Kiln — Phase 1 Spike
+# Kiln
 
-> A framework-agnostic, click-to-edit visual CMS for static sites.
-> GitHub as the backend. Cloudflare Pages as the host. Completely free.
+> Click-to-edit CMS for static sites. GitHub is the backend. Free hosting is the host.
+> No database, no server, no monthly bill.
 >
-> **kilncms.com**
+> **Live demo:** [kiln-demo.pages.dev](https://kiln-demo.pages.dev) · **kilncms.com**
 
----
-
-## What This Is
-
-Kiln fires your edits into permanent static pages — that's the metaphor and the mechanism.
-
-A proof-of-concept demonstrating the full edit loop:
-
-**Click element on page → edit inline → save → GitHub commit → Cloudflare Pages rebuilds**
-
-No database. No paid CMS. No framework dependency.
-
----
-
-## How It Works
-
-1. Your static site has a `content.json` file with all editable text
-2. HTML elements are annotated: `<h1 data-cms="hero_headline">...</h1>`
-3. A tiny Cloudflare Worker handles GitHub OAuth (the only "server" needed)
-4. `cms.js` on the page handles login, editing, and writing back to GitHub
-
----
-
-## File Structure
+Kiln turns any static HTML site into an editable one. Sign in, click the text on the
+page, change it, hit **Publish** — the edit becomes a Git commit and your host rebuilds.
+The site IS the database.
 
 ```
-demo/
-  index.html      — example static site with data-cms annotations
-  content.json    — content values (the "database")
-  cms.js          — the editor overlay
-
-worker/
-  index.js        — Cloudflare Worker for GitHub OAuth
-  wrangler.toml   — Worker config
+visitor   →  plain static site (2.7 KB boot shim, nothing else)
+admin     →  clicks ✎ → GitHub sign-in → edits inline → commit → live in ~1 min
+editor    →  opens a magic link (no GitHub account!) → same editing → commits as the Kiln bot
+member    →  opens an invite link → gated /members/ pages and documents unlock
 ```
 
----
+## Why
 
-## Setup Guide (Phase 1 Spike)
+Every alternative fails on one axis: TinaCMS needs React, Decap/Sveltia/Pages CMS are
+form-dashboards not on-page editing, CloudCannon costs $45+/mo, Netlify Visual Editor
+locks you to Netlify, WordPress needs a database and patches. Kiln is framework-agnostic,
+truly inline, git-backed, and free — including for the AI era: if you generated a site
+with Claude, v0, Lovable, or Bolt and pushed it to GitHub, Kiln is the edit layer your
+client was missing.
 
-### Step 1 — Create a GitHub OAuth App
+## How it works
 
-1. Go to: https://github.com/settings/developers → OAuth Apps → New OAuth App
-2. Fill in:
-   - **Application name:** My Site CMS (or whatever)
-   - **Homepage URL:** `https://yoursite.pages.dev`
-   - **Authorization callback URL:** `https://your-worker-name.yourname.workers.dev/auth/callback`
-3. Note your **Client ID** and generate a **Client Secret**
+1. Annotate editable elements in your HTML:
+   ```html
+   <h1 data-cms="hero_headline">Welcome</h1>
+   <p  data-cms="tagline" data-cms-plain>Plain text only</p>
+   <img data-cms="hero_img" data-cms-attr="src" src="/assets/img/hero.jpg">
+   ```
+2. Drop two scripts at the end of `<body>`:
+   ```html
+   <script>
+     window.KILN = {
+       repo:   'you/your-site-repo',
+       branch: 'main',
+       worker: 'https://kiln-auth.you.workers.dev',
+     };
+   </script>
+   <script src="/assets/kiln.js" defer></script>
+   ```
+3. There is no step 3. No build pipeline, no content files. When someone signs in and
+   edits, Kiln fetches the page's own HTML from GitHub, splices the change at exact
+   source offsets (parse5 source locations — the same technique Vite uses), and commits.
+   Diffs are minimal; your hand-written formatting survives untouched.
 
-### Step 2 — Deploy the Cloudflare Worker
+### The pieces
+
+| Piece | What | Size / cost |
+|---|---|---|
+| `kiln.js` | boot shim every visitor loads | 2.7 KB |
+| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~205 KB, admins only |
+| `kiln-auth` worker | GitHub App OAuth + magic-link sessions + commit proxy | Cloudflare Workers free tier |
+| your repo | the content database (with full version history) | free |
+| Cloudflare Pages | hosting + members-area functions | free, commercial use allowed |
+
+## Setup (self-host, ~10 minutes)
+
+**1. Deploy the auth worker**
 
 ```bash
+git clone https://github.com/erikkurtu/kiln && cd kiln
+npm install
 cd worker
-npm install -g wrangler
-
-# Login to Cloudflare
-wrangler login
-
-# Deploy the Worker
-wrangler deploy
-
-# Set the secret (never commit this)
-wrangler secret put GITHUB_CLIENT_SECRET
-# → paste your GitHub OAuth Client Secret when prompted
-
-# Set the other variables in Cloudflare dashboard:
-#   GITHUB_CLIENT_ID   = your OAuth app client ID
-#   ALLOWED_ORIGIN     = https://yoursite.pages.dev
+npx wrangler kv namespace create KILN     # put the id in wrangler.toml
+npx wrangler deploy
 ```
 
-After deploying, note your Worker URL (e.g. `https://cms-auth-worker.yourname.workers.dev`)
+**2. Register your GitHub App — one click**
 
-### Step 3 — Configure Your Site
+Open `https://<your-worker>.workers.dev/setup` and press the button. The manifest flow
+registers the app and the worker captures the credentials itself; you never copy a secret.
+Then install the app on your site's repo (pick **Only select repositories**).
 
-Edit `demo/index.html` — update the `CMS_CONFIG` block at the bottom:
+**3. Allow your site's origin**
 
-```js
-window.CMS_CONFIG = {
-  repo:        'yourusername/your-repo',   // GitHub repo containing this site
-  branch:      'main',
-  contentFile: 'content.json',             // path to your content file in the repo
-  authWorker:  'https://cms-auth-worker.yourname.workers.dev',
-};
+Add your site URL to `ALLOWED_ORIGINS` in `worker/wrangler.toml`, redeploy.
+
+**4. Add the script tags + `data-cms` attributes to your site** (see above), build the
+assets (`npm run build`) and copy `dist/kiln.js` + `dist/kiln-editor.js` into your site's
+`/assets/`. Push. Done — visit your site and click ✎.
+
+> **Hosting note:** use Cloudflare Pages (or GitHub Pages) for business sites.
+> Vercel's free Hobby tier prohibits commercial use in its ToS.
+
+## Editors without GitHub accounts (magic links)
+
+Admins click **Invite…** in the admin bar → a one-time link is minted (e.g. for a client
+or teammate). Opening it grants a 30-day editing session — no GitHub account, ever.
+Their commits land authored with their name, committed by your GitHub App's bot, and the
+worker enforces a strict allowlist: that one repo, content paths only, no deletes.
+
+## Blog posts with no build step
+
+Put two files in your repo — `_templates/post.html` (a full page using
+`data-cms="post_title|post_date|post_body"`) and `_templates/post-card.html` (the list
+card with `{{title}}/{{href}}/{{date}}` placeholders) — and give your blog index a
+`data-cms="post_list"` container. The **+ New post** button clones the template and
+splices a card into the index as ONE atomic commit (Git Data API), so the site never
+deploys half-written. The new post page is itself click-editable.
+
+## Members area & gated documents
+
+Static sites can have private sections. Everything under `/members/` — pages **and**
+files like PDFs — is gated at the edge by a Cloudflare Pages Function
+(`functions/members/_middleware.js`) checking an HMAC-signed cookie. Invites are minted
+by admins (verified by GitHub push access), redeemed at `/members-login.html`. No
+database, no auth provider, no per-seat pricing. See `demo/functions/` for the three
+small files, then:
+
+```bash
+openssl rand -hex 32 | npx wrangler pages secret put KILN_MEMBER_SECRET --project-name <project>
+printf 'you/your-repo'  | npx wrangler pages secret put KILN_REPO --project-name <project>
 ```
 
-### Step 4 — Push to GitHub + Cloudflare Pages
+## Security model
 
-1. Create a GitHub repo and push your site files
-2. Connect the repo to Cloudflare Pages:
-   - Cloudflare Dashboard → Pages → Create a project → Connect to Git
-   - Build command: (leave empty for now — plain HTML)
-   - Build output directory: `demo/` (or `/` if files are at root)
-3. Deploy
+- **GitHub App, not OAuth app** — installed per-repo; an admin sign-in grants access to
+  the selected repos only, with 8-hour expiring tokens. Refresh tokens never reach the
+  browser (held server-side in Workers KV; the browser holds an opaque session id).
+- **Magic-link editors** never hold GitHub credentials at all; the worker proxies their
+  commits through the App installation token behind a method+path allowlist
+  (contents read/write, git-data create, deploy status — nothing else, one repo only).
+- OAuth `state` nonces are single-use with a 10-minute TTL; editor invites are single-use;
+  member cookies are HMAC-signed, HttpOnly, Secure.
+- Rich-text edits are sanitized with DOMPurify before they touch the repo;
+  `data-cms-plain` fields are entity-escaped plain text.
 
-### Step 5 — Test the Loop
+## Development
 
-1. Visit your Cloudflare Pages URL
-2. Click **"✎ Admin Login"** (bottom right)
-3. Authorize with GitHub (you must be a collaborator on the repo)
-4. You're in admin mode — hover over any text to see the edit outline
-5. Click any text, edit it, click **Save**
-6. Click **Publish Changes** in the admin bar
-7. Wait ~30 seconds — Cloudflare Pages will auto-rebuild
-8. Reload the page — your changes are live
-
----
-
-## Annotating Elements
-
-Any HTML element can be made editable with `data-cms="key"`:
-
-```html
-<h1 data-cms="hero_headline">Welcome</h1>
-<p  data-cms="hero_body">We make great things.</p>
+```bash
+npm install
+npm test               # splice engine + transport suite (node --test)
+npm run build          # dist/kiln.js + dist/kiln-editor.js (+ demo/assets sync)
+GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   # full live-loop verification
 ```
 
-The `key` must match a key in your `content.json`:
+Repo layout:
 
-```json
-{
-  "hero_headline": "Welcome",
-  "hero_body": "We make great things."
-}
+```
+src/engine.js        the splice engine (parse5 offsets, batch edits, attr edits)
+src/github.js        transports (direct / proxied), 409-retry edits, atomic commits
+src/kiln.js          boot shim
+src/editor/main.js   editor UI bundle source
+worker/              kiln-auth Cloudflare Worker
+demo/                the Maple & Co. demo site (deployed to kiln-demo.pages.dev)
+test/                engine + transport tests
+scripts/             build + live e2e
 ```
 
----
+## Limitations (honest list)
 
-## Limitations (Phase 1)
+- One CMS instance edits one repo per site config; monorepos work via `root`.
+- Editing happens per-page; site-wide find-replace is not a thing (yet).
+- `<title>`/`<head>` content isn't click-editable (no DOM affordance) — planned via a page-settings panel.
+- Member invite links are bearer tokens until redeemed — send them over a private channel.
+- Concurrent edits to the *same* field: last write wins (different fields merge cleanly).
 
-This is a spike — known rough edges:
+## License
 
-- **No build step:** Content changes are written directly to HTML's data-cms values. In a real setup, a build script would inject content.json values into templates at build time.
-- **HTML in content:** The editor saves `innerHTML` — includes any HTML tags in the content. Fine for now, handle carefully.
-- **No image editing yet:** Coming in Phase 2.
-- **Single content file:** All content in one `content.json`. Phase 2 will support nested paths.
-- **No conflict resolution:** Last write wins if two admins edit simultaneously.
-- **Auth is GitHub account-based:** Anyone who is a repo collaborator can log in and edit. Phase 3 will add a configurable allowlist.
-
----
-
-## What's Next
-
-- **Phase 2:** Image swap, rich text toolbar, multi-file content, cleaner UX
-- **Phase 3:** `npx cms-tool init` — scaffolds everything from scratch
-- **Phase 4:** Blog support (Markdown posts, post list, WYSIWYG editor)
-
----
-
-## The Philosophy
-
-The static site ecosystem is missing something obvious: a visual editor that doesn't require a specific framework, doesn't cost money, and treats Git as the source of truth.
-
-Kiln is that thing. You put raw content in. It gets fired into a permanent, fast, free static site. No monthly bill. No bloat.
+MIT

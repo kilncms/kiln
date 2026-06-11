@@ -1,12 +1,13 @@
-name = "cms-auth-worker"
+name = "kiln-auth"
 main = "index.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2026-06-01"
 
-# Set these in Cloudflare dashboard → Workers → Settings → Variables
-# Never commit secrets to git.
-# [vars]
-# GITHUB_CLIENT_ID = "your_client_id_here"
-# ALLOWED_ORIGIN = "https://yoursite.pages.dev"
-#
-# GITHUB_CLIENT_SECRET must be set as an *encrypted* secret:
-#   wrangler secret put GITHUB_CLIENT_SECRET
+# Site origins allowed to authenticate through this worker (comma-separated).
+# localhost entries are for `wrangler pages dev` testing.
+[vars]
+ALLOWED_ORIGINS = "https://kiln-demo.pages.dev,http://localhost:8788,http://127.0.0.1:8788"
+
+# KV: app credentials, OAuth state nonces, sessions, invites, installation-token cache.
+[[kv_namespaces]]
+binding = "KILN"
+id = "376ca9e637724d9fabebbc24ba149814"

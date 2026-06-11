@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Member sign-in — Maple &amp; Co.</title>
+  <link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+
+  <div class="login-card">
+    <h1>Members area</h1>
+    <p id="msg">This section is for Maple &amp; Co. members. If someone sent you
+       an invite link, opening it signs you in automatically. You can also paste
+       the invite code below.</p>
+    <input id="code" type="text" placeholder="Paste your invite code" autocomplete="off" />
+    <button id="go">Sign in</button>
+  </div>
+
+  <script>
+    (function () {
+      var msg = document.getElementById('msg');
+
+      function redeem(invite) {
+        msg.textContent = 'Checking your invite…';
+        fetch('/api/member-redeem', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ invite: invite }),
+        }).then(function (r) { return r.json(); }).then(function (data) {
+          if (data.ok) {
+            msg.textContent = 'Welcome, ' + data.name + '! Taking you in…';
+            var to = new URLSearchParams(location.search).get('to') || '/members/';
+            location.href = to.indexOf('/') === 0 ? to : '/members/';
+          } else {
+            msg.textContent = 'That invite is invalid or expired. Ask for a new link.';
+          }
+        }).catch(function () { msg.textContent = 'Network error — try again.'; });
+      }
+
+      var m = location.hash.match(/kiln-member=([^&]+)/);
+      if (m) {
+        history.replaceState(null, '', location.pathname + location.search);
+        redeem(decodeURIComponent(m[1]));
+      }
+      document.getElementById('go').onclick = function () {
+        var v = document.getElementById('code').value.trim();
+        if (v) redeem(v);
+      };
+    })();
+  </script>
+
+</body>
+</html>

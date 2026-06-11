@@ -3,189 +3,18 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title data-cms="page_title">Maple & Co. — Handcrafted Goods</title>
-
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: Georgia, 'Times New Roman', serif;
-      color: #2c2c2c;
-      background: #faf9f7;
-    }
-
-    nav {
-      background: #2c2c2c;
-      padding: 16px 40px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .nav-logo {
-      color: white;
-      font-size: 20px;
-      letter-spacing: 0.05em;
-    }
-    .nav-links a {
-      color: #ccc;
-      text-decoration: none;
-      margin-left: 24px;
-      font-size: 14px;
-    }
-
-    /* Hero */
-    .hero {
-      background: #2c2c2c;
-      color: white;
-      padding: 100px 40px;
-      text-align: center;
-    }
-    .hero h1 {
-      font-size: clamp(2.4rem, 5vw, 4rem);
-      font-weight: normal;
-      line-height: 1.15;
-      letter-spacing: -0.01em;
-      max-width: 700px;
-      margin: 0 auto 24px;
-    }
-    .hero p {
-      font-size: 1.15rem;
-      color: #ccc;
-      max-width: 520px;
-      margin: 0 auto 36px;
-      line-height: 1.7;
-    }
-    .hero-cta {
-      display: inline-block;
-      background: #c4a96f;
-      color: #2c2c2c;
-      padding: 14px 32px;
-      text-decoration: none;
-      font-family: -apple-system, sans-serif;
-      font-size: 14px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    /* About */
-    .about {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0;
-      max-width: 1100px;
-      margin: 80px auto;
-      padding: 0 40px;
-    }
-    .about-img {
-      width: 100%;
-      height: 400px;
-      object-fit: cover;
-      background: #e0d8cc;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 4rem;
-    }
-    .about-text {
-      padding: 48px 48px 48px 56px;
-    }
-    .about-text .label {
-      font-family: -apple-system, sans-serif;
-      font-size: 11px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #999;
-      margin-bottom: 16px;
-    }
-    .about-text h2 {
-      font-size: 2rem;
-      font-weight: normal;
-      line-height: 1.3;
-      margin-bottom: 20px;
-    }
-    .about-text p {
-      font-size: 1rem;
-      color: #555;
-      line-height: 1.8;
-    }
-
-    /* Services */
-    .services {
-      background: #f0ece4;
-      padding: 80px 40px;
-      text-align: center;
-    }
-    .services h2 {
-      font-size: 2rem;
-      font-weight: normal;
-      margin-bottom: 12px;
-    }
-    .services .intro {
-      color: #777;
-      margin-bottom: 56px;
-      max-width: 500px;
-      margin-left: auto;
-      margin-right: auto;
-    }
-    .service-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 32px;
-      max-width: 1000px;
-      margin: 0 auto;
-    }
-    .service-card {
-      background: white;
-      padding: 36px 28px;
-      text-align: left;
-    }
-    .service-icon { font-size: 2rem; margin-bottom: 16px; }
-    .service-card h3 { font-size: 1.1rem; font-weight: normal; margin-bottom: 12px; }
-    .service-card p { font-size: 0.9rem; color: #666; line-height: 1.7; }
-
-    /* Contact */
-    .contact {
-      padding: 80px 40px;
-      text-align: center;
-      max-width: 600px;
-      margin: 0 auto;
-    }
-    .contact h2 {
-      font-size: 2rem;
-      font-weight: normal;
-      margin-bottom: 16px;
-    }
-    .contact p {
-      color: #666;
-      line-height: 1.7;
-      margin-bottom: 8px;
-    }
-
-    footer {
-      background: #2c2c2c;
-      color: #777;
-      text-align: center;
-      padding: 24px;
-      font-family: -apple-system, sans-serif;
-      font-size: 13px;
-    }
-
-    @media (max-width: 768px) {
-      .about { grid-template-columns: 1fr; }
-      .service-grid { grid-template-columns: 1fr; }
-      .about-text { padding: 32px 0; }
-    }
-  </style>
+  <title>Maple &amp; Co. — Handcrafted Goods</title>
+  <link rel="stylesheet" href="/assets/site.css" />
 </head>
 <body>
 
   <nav>
-    <span class="nav-logo" data-cms="nav_logo">Maple & Co.</span>
+    <span class="nav-logo" data-cms="nav_logo">Maple &amp; Co.</span>
     <div class="nav-links">
-      <a href="#">About</a>
-      <a href="#">Work</a>
-      <a href="#">Contact</a>
+      <a href="/#about">About</a>
+      <a href="/blog/">Journal</a>
+      <a href="/members/">Members</a>
+      <a href="/#contact">Contact</a>
     </div>
   </nav>
 
@@ -195,16 +24,17 @@
       We design and build small-batch goods for people who appreciate
       the craft behind the object.
     </p>
-    <a href="#contact" class="hero-cta" data-cms="hero_cta_text">See Our Work</a>
+    <a href="/#contact" class="hero-cta" data-cms="hero_cta_text">See Our Work</a>
   </section>
 
-  <section class="about">
-    <div class="about-img">🌿</div>
+  <section class="about" id="about">
+    <img class="about-img" data-cms="about_img" data-cms-attr="src"
+         src="/assets/img/workshop.svg" alt="Our workshop" />
     <div class="about-text">
       <p class="label">Our Story</p>
       <h2 data-cms="about_headline">Made by hand, made to last.</h2>
       <p data-cms="about_body">
-        We started Maple & Co. out of a small workshop in 2018.
+        We started Maple &amp; Co. out of a small workshop in 2018.
         Every piece we make is designed to outlive trends, built
         from materials we can trace, and finished with the kind of
         care that disappears into the object itself. We're a small
@@ -242,29 +72,21 @@
     <p data-cms="contact_body">
       We don't have a form. Just email us directly — we respond within a day.
     </p>
-    <p><strong data-cms="contact_email">hello@mapleandco.com</strong></p>
+    <p><strong data-cms="contact_email" data-cms-plain>hello@mapleandco.com</strong></p>
   </section>
 
   <footer>
-    <span data-cms="footer_text">© 2025 Maple & Co. All rights reserved.</span>
+    <span data-cms="footer_text">© 2026 Maple &amp; Co. All rights reserved.</span>
   </footer>
 
-  <!--
-    ============================================================
-    CMS CONFIGURATION
-    Replace these values with your own repo and Worker URL
-    before deploying.
-    ============================================================
-  -->
   <script>
-    window.CMS_CONFIG = {
-      repo:        'YOUR_GITHUB_USERNAME/YOUR_REPO_NAME',
-      branch:      'main',
-      contentFile: 'content.json',
-      authWorker:  'https://YOUR_WORKER_NAME.YOUR_SUBDOMAIN.workers.dev',
+    window.KILN = {
+      repo:   'erikkurtu/kiln-demo',
+      branch: 'main',
+      worker: 'https://kiln-auth.erikkwilder.workers.dev',
     };
   </script>
-  <script src="cms.js"></script>
+  <script src="/assets/kiln.js" defer></script>
 
 </body>
 </html>

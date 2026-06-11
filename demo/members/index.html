@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Members — Maple &amp; Co.</title>
+  <link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+
+  <nav>
+    <span class="nav-logo">Maple &amp; Co.</span>
+    <div class="nav-links">
+      <a href="/#about">About</a>
+      <a href="/blog/">Journal</a>
+      <a href="/members/">Members</a>
+      <a href="/#contact">Contact</a>
+    </div>
+  </nav>
+
+  <main class="page-wrap">
+    <h1 data-cms="members_title">Member Resources</h1>
+    <p class="page-sub" data-cms="members_sub">
+      Documents and downloads for the Maple &amp; Co. community. This whole
+      section — including the files — is gated at the edge. No database involved.
+    </p>
+
+    <ul class="doc-list" data-cms="doc_list">
+      <li>
+        <a href="/members/welcome-pack.pdf">
+          <span class="doc-icon">📄</span>
+          <span class="doc-name">Member welcome pack</span>
+          <span class="doc-meta">PDF</span>
+        </a>
+      </li>
+      <li>
+        <a href="/members/care-guide.html">
+          <span class="doc-icon">📖</span>
+          <span class="doc-name">Hardwood care guide</span>
+          <span class="doc-meta">guide</span>
+        </a>
+      </li>
+    </ul>
+  </main>
+
+  <footer>
+    <span data-cms="footer_text">© 2026 Maple &amp; Co. All rights reserved.</span>
+  </footer>
+
+  <script>
+    window.KILN = {
+      repo:   'erikkurtu/kiln-demo',
+      branch: 'main',
+      worker: 'https://kiln-auth.erikkwilder.workers.dev',
+    };
+  </script>
+  <script src="/assets/kiln.js" defer></script>
+
+</body>
+</html>
