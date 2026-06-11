@@ -76,3 +76,18 @@ signs in with Google and edits; their entire "setup" is picking a template and a
 repo to their GitHub account (native GitHub transfer, full history preserved) and hand
 over or re-point the hosting — "your site, boxed up and handed to you, in minutes."
 Requires: kilncms GitHub org, acceptable-use terms, a transfer-request flow.
+
+## AI-builder onboarding (Lovable / Claude / v0 / Bolt → Kiln)
+
+All of them share the same bridge: project → GitHub repo → Kiln engine attach. Three artifacts:
+1. **Recipe pages** on kilncms.com (`/from/lovable`, `/from/claude`, `/from/v0`): a platform-tuned
+   prompt (KILN_PROMPT + "output plain static HTML, no framework") + connect-GitHub step + Kiln
+   attach. Lovable/Bolt have native GitHub sync; v0 needs the static-HTML instruction (and its
+   Vercel default conflicts with commercial-free hosting — steer to CF Pages). Claude is the
+   flagship: Claude Code can run KILN_PROMPT AND the setup wizard itself, end to end.
+2. **Kiln-ready starter templates** in each ecosystem: a public template repo users remix IN
+   Lovable/v0 so the AI builds on an already-annotated skeleton — retrofit becomes unnecessary.
+3. **Cloud Complete intake** (the premium funnel): customer pastes their AI project's repo URL or
+   export; Kiln imports into kilncms-sites, an agent applies the Kiln-ready pass, site goes live —
+   "from Lovable to client-editable, zero accounts." Formal marketplace listings (Lovable
+   integrations, Vercel marketplace) are partnership work for later; recipes don't need permission.
