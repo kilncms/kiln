@@ -49,3 +49,13 @@ The canonical hosted service's GitHub App and Google OAuth client should live un
 **Kiln-branded account** (kilncms Gmail now; hello@kilncms.com once domain email exists) —
 users see the app name on consent screens, and ownership should outlive any one person's
 personal account. Self-hosters register their own App + client (their worker = their identity).
+
+## Addendum 2026-06-11: two-product framing + fully-managed tier (Erik decision)
+
+- There is NO free shared-worker offering. Free = Open Source self-host. Hosted = paid
+  (Kiln Cloud, $5–9/mo; today an invite-only beta whose sites become founding accounts).
+- New planned premium tier — **Kiln Cloud Complete (~$15–19/mo)**: Kiln manages the GitHub
+  repo (kilncms-sites org) AND the Cloudflare Pages project; the customer needs zero
+  accounts — Google sign-in and edit, that's all. Sold WITH a contractual exit guarantee:
+  one-request GitHub repo transfer (native, full history) + hosting handover. The exit
+  guarantee is the trust feature that makes full management sellable.

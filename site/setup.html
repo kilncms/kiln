@@ -74,16 +74,14 @@
     <div class="warn"><strong>Hosting note:</strong> use Cloudflare Pages (or GitHub Pages) for business sites.
       Vercel's free Hobby tier prohibits commercial use in its terms.</div>
 
-    <h2><span class="n">2</span>Choose your path: Kiln's auth service, or your own</h2>
-    <p><strong>Path A — use Kiln's service (simplest).</strong> Skip running anything: your site uses
-      the official Kiln GitHub App and auth worker. Nothing to deploy or maintain. Currently
-      invite-only — <a href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">request access</a>
-      and your site's address gets allowlisted. Plain-language trust note: Kiln's worker holds the
-      app token that writes to your repo (that's what any hosted CMS backend does); your content
-      itself stays in YOUR GitHub repo either way, and you can switch to Path B at any time.</p>
-    <p style="margin-top:10px"><strong>Path B — self-host the worker (full independence).</strong>
-      One free Cloudflare Worker of your own; you trust no one but yourself. That's what the rest
-      of this step sets up — and the wizard does it for you.</p>
+    <h2><span class="n">2</span>Free or Cloud? (same editor either way)</h2>
+    <p><strong>Kiln Open Source — free forever.</strong> You self-host the small auth engine: one
+      free Cloudflare Worker of your own plus a one-click GitHub App. That's what this guide (and
+      the wizard) sets up. The price of free is these ten minutes; you trust no one but yourself.</p>
+    <p style="margin-top:10px"><strong>Kiln Cloud — hosted, paid (invite-only beta).</strong> We run the
+      engine; you skip the rest of this step entirely. Your content still lives in your repo and your
+      hosting, so you can switch to self-hosting whenever you like.
+      <a href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">Request a beta invite</a>.</p>
     <pre><code>git clone https://github.com/erikkurtu/kiln && cd kiln
 npm install
 cd worker

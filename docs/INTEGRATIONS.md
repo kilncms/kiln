@@ -47,29 +47,32 @@ customers entirely: they use Kiln's company-level App + worker (this exact archi
 already supports it — ALLOWED_ORIGINS and per-repo installs are the tenancy model). Their
 list shrinks to: repo, Pages connect, wiring, people. That's the $5–9/mo product.
 
-## The two paths (canonical definitions — use these names everywhere)
+## The two products (canonical framing — use everywhere)
 
-### Path A — Kiln service (shared worker)
-Your site uses the canonical `kiln-cms` GitHub App and the kiln-auth worker operated by Kiln.
-- **You do:** repo + Cloudflare Pages + install the App + site wiring. No worker, no App
-  registration, no Google client — those are Kiln's.
-- **Trust model (stated plainly):** the worker's operator holds the App installation token for
-  your repo — i.e., delegated write access to your site repo, exactly like any hosted CMS
-  backend (TinaCloud, DecapBridge). Admin edits go browser→GitHub directly; magic-link/Google
-  editor commits route through the worker. No site content is stored on the worker — only
-  sessions, people lists, and queued scheduled posts.
-- **Availability:** currently invite-only (each site's origin is added to ALLOWED_ORIGINS by
-  hand). This becomes self-serve with Kiln Cloud.
-- **Cost to operate (Kiln):** Cloudflare free tier ≈ 100k req/day and 1k KV writes/day ≈
-  roughly 50–100 actively-edited sites. Beyond that: Workers Paid, $5/mo TOTAL — the margin
-  basis for Kiln Cloud pricing in BUSINESS.md.
+The editor is 100% identical in both. The only difference is who babysits the engine
+(auth worker + GitHub App + Google client — holds sign-ins and sessions, never content).
 
-### Path B — Self-host (your own worker)
-You run the company layer yourself: your own worker (one `wrangler deploy`), your own GitHub
-App (one click at your worker's `/setup`), optionally your own Google client.
-- **You trust only yourself.** Nothing about your sites touches Kiln's infrastructure.
-- The setup wizard (`npx github:erikkurtu/kiln`) automates this path end to end.
-- Free at any realistic single-org scale (same free-tier math, all to yourself).
+### Kiln Open Source — free forever
+Self-host the engine: your own Cloudflare worker (wizard deploys it), your own GitHub App
+(one click at /setup), optionally your own Google client. The price of free is ~10 minutes
+of configuration. You trust only yourself. This is the open-source promise; it is never
+crippled and never gated.
 
-Docs rule: every setup surface (README, kilncms.com/setup, wizard prompts) must present these
-as an explicit either/or choice, Path A first for non-developers, Path B first for developers.
+### Kiln Cloud — hosted, paid ($5–9/mo per site)
+We run the engine; the customer deploys nothing and maintains nothing. Their content stays
+in THEIR GitHub repo, their hosting on THEIR Cloudflare Pages. Trust statement (always
+stated plainly): Cloud holds the App token that writes to their repo — like any hosted CMS
+backend — and they can switch to Open Source at any time because the content was always theirs.
+
+**Today's status:** Cloud exists as an invite-only free BETA on Erik's worker (sites are
+hand-allowlisted). Beta sites become founding accounts at launch. There is no free shared-
+worker product: free = self-host, full stop.
+
+### Kiln Cloud Complete — fully managed (planned premium tier, ~$15–19/mo)
+For people who want ZERO accounts: Kiln creates and owns the site repo (under a
+`kilncms-sites` GitHub org) and runs the Cloudflare Pages project too. The customer only
+signs in with Google and edits; their entire "setup" is picking a template and a domain.
+**The exit guarantee (non-negotiable, in the marketing):** at any time we transfer the
+repo to their GitHub account (native GitHub transfer, full history preserved) and hand
+over or re-point the hosting — "your site, boxed up and handed to you, in minutes."
+Requires: kilncms GitHub org, acceptable-use terms, a transfer-request flow.
