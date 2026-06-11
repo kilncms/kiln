@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Setup — Kiln</title>
+  <meta name="description" content="Set up Kiln on your static site in about 10 minutes: free hosting, the auth worker, and your first click-to-edit page." />
+  <style>
+    :root { --ink:#14141f; --muted:#5b5e6e; --soft:#9aa0b0; --bg:#fbfbfd; --card:#fff;
+      --accent:#6366f1; --line:#e8e9ef; --ok:#059669;
+      --font:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif;
+      --mono:ui-monospace,'SF Mono',Menlo,monospace; }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { font-family:var(--font); color:var(--ink); background:var(--bg); line-height:1.65; }
+    a { color:var(--accent); text-decoration:none; }
+    .wrap { max-width:760px; margin:0 auto; padding:0 24px 80px; }
+    nav { display:flex; justify-content:space-between; align-items:center; padding:22px 0 40px; }
+    .logo { font-weight:800; font-size:20px; letter-spacing:-.02em;
+      background:linear-gradient(135deg,#6366f1,#8b5cf6); -webkit-background-clip:text; background-clip:text; color:transparent; }
+    .nav-r a { color:var(--muted); margin-left:20px; font-size:14px; font-weight:500; }
+    h1 { font-size:2.1rem; font-weight:800; letter-spacing:-.03em; margin-bottom:10px; }
+    .lead { color:var(--muted); margin-bottom:8px; }
+    .est { font-size:13px; color:var(--soft); margin-bottom:34px; }
+    h2 { font-size:1.15rem; font-weight:750; margin:42px 0 10px; letter-spacing:-.01em; }
+    h2 .n { display:inline-flex; width:26px; height:26px; border-radius:50%; background:#eef2ff; color:var(--accent);
+      font-size:13px; font-weight:800; align-items:center; justify-content:center; margin-right:9px; vertical-align:-4px; }
+    p, li { font-size:14.5px; color:#3d4050; }
+    ul, ol { padding-left:22px; margin:8px 0; }
+    li { margin:5px 0; }
+    pre { background:#14141f; color:#e7e7f0; border-radius:12px; padding:16px 18px; font-family:var(--mono);
+      font-size:12.8px; overflow-x:auto; margin:12px 0; line-height:1.55; }
+    code { font-family:var(--mono); background:#eef0f5; padding:1px 6px; border-radius:5px; font-size:12.8px; }
+    pre code { background:none; padding:0; }
+    .tip { background:#f0fdf4; border:1.5px solid #bbf7d0; border-radius:12px; padding:13px 16px;
+      font-size:13.5px; color:#166534; margin:14px 0; }
+    .warn { background:#fffbeb; border:1.5px solid #fde68a; border-radius:12px; padding:13px 16px;
+      font-size:13.5px; color:#92400e; margin:14px 0; }
+    .done { background:#f5f6ff; border:1.5px solid #c7d2fe; border-radius:14px; padding:18px 20px; margin-top:40px; }
+    .done h3 { font-size:15px; margin-bottom:6px; }
+    hr { border:none; border-top:1.5px solid var(--line); margin:40px 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a class="logo" href="index.html">Kiln</a>
+      <span class="nav-r">
+        <a href="https://kiln-demo.pages.dev" target="_blank" rel="noopener">Live demo</a>
+        <a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">GitHub</a>
+      </span>
+    </nav>
+
+    <h1>Set up Kiln</h1>
+    <p class="lead">From "static files on your laptop" to "a site your client edits in the browser."</p>
+    <p class="est">⏱ About 10 minutes. Everything below is free. You'll need a GitHub account and a Cloudflare account (both free to create).</p>
+
+    <h2><span class="n">1</span>Put your site on GitHub + Cloudflare Pages</h2>
+    <ul>
+      <li>Push your static site (plain HTML/CSS/JS — hand-written or AI-generated) to a GitHub repository.</li>
+      <li>In the <a href="https://dash.cloudflare.com" target="_blank" rel="noopener">Cloudflare dashboard</a>:
+        <strong>Workers &amp; Pages → Create → Pages → Connect to Git</strong> → pick your repo →
+        leave <em>build command</em> empty, <em>output directory</em> <code>/</code> → Deploy.</li>
+      <li>Your site is now live at <code>yourproject.pages.dev</code>, and every Git commit auto-deploys. That auto-deploy <em>is</em> Kiln's publish button.</li>
+    </ul>
+    <div class="warn"><strong>Hosting note:</strong> use Cloudflare Pages (or GitHub Pages) for business sites.
+      Vercel's free Hobby tier prohibits commercial use in its terms.</div>
+
+    <h2><span class="n">2</span>Deploy the Kiln auth worker</h2>
+    <p>This is the one tiny piece of infrastructure: a free Cloudflare Worker that handles sign-in
+      and (optionally) lets editors work without GitHub accounts.</p>
+    <pre><code>git clone https://github.com/erikkurtu/kiln && cd kiln
+npm install
+cd worker
+npx wrangler kv namespace create KILN   # paste the printed id into wrangler.toml
+npx wrangler deploy</code></pre>
+    <p>Note the worker URL it prints (like <code>https://kiln-auth.yourname.workers.dev</code>).</p>
+
+    <h2><span class="n">3</span>Register your GitHub App — one click</h2>
+    <ul>
+      <li>Open <code>https://YOUR-WORKER.workers.dev/setup</code> and press the button. The app is
+        registered under your account and the worker captures its credentials automatically — you never copy a secret.</li>
+      <li>On the page that follows, click <strong>Install</strong>, choose <em>Only select repositories</em>,
+        and pick your site's repo. This is the security model: Kiln can only ever touch repos you explicitly select.</li>
+    </ul>
+
+    <h2><span class="n">4</span>Allow your site's origin</h2>
+    <p>In <code>worker/wrangler.toml</code>, add your site URL to <code>ALLOWED_ORIGINS</code>
+      (comma-separated), then run <code>npx wrangler deploy</code> again.</p>
+
+    <h2><span class="n">5</span>Make your site editable</h2>
+    <p>Create <code>/assets/kiln-config.js</code> in your site:</p>
+    <pre><code>window.KILN = {
+  repo:   'you/your-site-repo',
+  branch: 'main',
+  worker: 'https://kiln-auth.yourname.workers.dev',
+  styles: [ { label: 'Accent', class: 'accent' } ],  // optional editor style palette
+};</code></pre>
+    <p>Copy <code>dist/kiln.js</code> and <code>dist/kiln-editor.js</code> from the Kiln repo into
+      your site's <code>/assets/</code>, then add two script tags at the end of <code>&lt;body&gt;</code> on every page:</p>
+    <pre><code>&lt;script src="/assets/kiln-config.js"&gt;&lt;/script&gt;
+&lt;script src="/assets/kiln.js" defer&gt;&lt;/script&gt;</code></pre>
+    <p>Then annotate what's editable:</p>
+    <pre><code>&lt;h1 data-cms="headline"&gt;Welcome&lt;/h1&gt;
+&lt;img data-cms="hero" data-cms-attr="src" src="/img/hero.jpg"&gt;
+&lt;div class="cards" data-cms-repeat="services"&gt; …repeatable blocks… &lt;/div&gt;
+&lt;div class="nav-links" data-cms-menu="main"&gt; …site menu… &lt;/div&gt;</code></pre>
+    <div class="tip"><strong>Using AI?</strong> Skip the manual work: paste
+      <a href="https://github.com/erikkurtu/kiln/blob/main/KILN_PROMPT.md" target="_blank" rel="noopener">KILN_PROMPT.md</a>
+      into Claude / v0 / Lovable along with your site, and it wires all of this — annotations,
+      blog templates, the members area — for you.</div>
+
+    <h2><span class="n">6</span>Sign in and edit</h2>
+    <ul>
+      <li>Push everything. After the deploy, visit <code>yoursite.com<strong>/#edit</strong></code> — that's
+        the secret knock. No edit buttons clutter your site for normal visitors.</li>
+      <li>Choose <strong>Continue with GitHub</strong> (you're the owner), click any outlined text, type, and hit
+        <strong>Publish</strong> on the floating Kiln button. ~A minute later it's live.</li>
+    </ul>
+
+    <hr>
+
+    <h2>Optional: editors &amp; members with Google sign-in</h2>
+    <p>Let your client, team, or community in — no GitHub accounts:</p>
+    <ol>
+      <li>Create a Google OAuth client (<a href="https://console.cloud.google.com" target="_blank" rel="noopener">console.cloud.google.com</a>
+        → Credentials → OAuth client ID → Web application) with redirect URI
+        <code>https://YOUR-WORKER.workers.dev/google/callback</code>.</li>
+      <li><code>printf 'ID' | npx wrangler secret put GOOGLE_CLIENT_ID</code> and same for
+        <code>GOOGLE_CLIENT_SECRET</code> (run in <code>worker/</code>).</li>
+      <li>In your Kiln menu → <strong>People &amp; access</strong>: add their Gmail, pick
+        <em>Editor</em> or <em>Member</em>, set how many days access lasts (1–360). They sign in with Google. Done.</li>
+    </ol>
+
+    <h2>Optional: members-only area with gated documents</h2>
+    <ol>
+      <li>Copy the <code>demo/functions/</code> folder and <code>demo/members-login.html</code> from the Kiln repo into your site.</li>
+      <li>Set two secrets on your Pages project:
+        <pre><code>openssl rand -hex 32 | npx wrangler pages secret put KILN_MEMBER_SECRET --project-name YOUR_PROJECT
+printf 'you/your-repo' | npx wrangler pages secret put KILN_REPO --project-name YOUR_PROJECT
+printf 'https://YOUR-WORKER.workers.dev' | npx wrangler pages secret put KILN_WORKER --project-name YOUR_PROJECT</code></pre></li>
+      <li>Everything under <code>/members/</code> — pages and files, PDFs included — is now invite-only.</li>
+    </ol>
+
+    <h2>Optional: blog &amp; new pages</h2>
+    <p>Add three small template files and Kiln's <strong>＋ New</strong> button does the rest —
+      see the <a href="https://github.com/erikkurtu/kiln#blog-posts-with-no-build-step" target="_blank" rel="noopener">README section</a>
+      or let KILN_PROMPT.md generate them.</p>
+
+    <div class="done">
+      <h3>That's the whole stack.</h3>
+      <p>A GitHub repo, a free static host, one tiny worker — and a site that edits itself.
+        No database to patch, no monthly bill, no platform that owns your content.
+        Questions or stuck? <a href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">Open an issue</a>.</p>
+    </div>
+  </div>
+</body>
+</html>

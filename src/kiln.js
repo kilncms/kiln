@@ -43,6 +43,14 @@
         localStorage.removeItem(EDITOR_KEY);
         editor = null;
       }
+      // The edit flow is summoned by visiting yoursite.com/#edit (or #kiln) —
+      // no always-visible button cluttering the site. Set KILN.loginButton = true
+      // to show a discreet pencil button anyway.
+      var summoned = /^#(edit|kiln)$/.test(location.hash);
+      if (summoned) {
+        history.replaceState(null, '', location.pathname + location.search);
+        sessionStorage.removeItem('kiln_pause');
+      }
       if (admin || editor) {
         if (sessionStorage.getItem('kiln_pause') === '1') {
           renderResumeButton();
@@ -52,7 +60,9 @@
         var s = document.createElement('script');
         s.src = scriptSrc.replace(/kiln(\.min)?\.js([?#].*)?$/, 'kiln-editor.js');
         document.head.appendChild(s);
-      } else {
+      } else if (summoned) {
+        renderLoginChooser();
+      } else if (cfg.loginButton) {
         renderLoginButton();
       }
     });
@@ -124,6 +134,7 @@
   function renderLoginChooser() {
     var old = document.getElementById('kiln-login-pop');
     if (old) { old.remove(); return; }
+    if (!cfg.worker) return;
     var returnTo = location.pathname + location.search;
     var q = 'origin=' + encodeURIComponent(location.origin) + '&return_to=' + encodeURIComponent(returnTo);
     var pop = document.createElement('div');

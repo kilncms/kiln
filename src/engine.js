@@ -63,10 +63,16 @@ export function indexHtml(raw) {
       }
     }
 
-    if (loc.startTag && loc.startTag.attrs) {
-      for (const [name, aloc] of Object.entries(loc.startTag.attrs)) {
-        const valueRange = attrValueRange(raw, aloc);
-        if (valueRange) field.attrs.set(name, valueRange);
+    if (loc.startTag) {
+      // Where a brand-new attribute can be inserted: just before the start
+      // tag's closing '>' (or '/>').
+      const tagText = raw.slice(loc.startTag.startOffset, loc.startTag.endOffset);
+      field.attrInsert = loc.startTag.endOffset - (tagText.endsWith('/>') ? 2 : 1);
+      if (loc.startTag.attrs) {
+        for (const [name, aloc] of Object.entries(loc.startTag.attrs)) {
+          const valueRange = attrValueRange(raw, aloc);
+          if (valueRange) field.attrs.set(name, valueRange);
+        }
       }
     }
 
@@ -122,7 +128,16 @@ export function applyEdits(raw, edits) {
       splices.push({ start: field.inner.start, end: field.inner.start, text: String(edit.prepend), key: edit.key });
     } else if (edit.attr !== undefined) {
       const range = field.attrs.get(edit.attr);
-      if (!range) { skipped.push({ key: edit.key, reason: `attribute "${edit.attr}" not found` }); continue; }
+      if (!range) {
+        // Attribute doesn't exist in the source yet — insert it into the start tag.
+        if (field.attrInsert === undefined || !/^[a-zA-Z][\w-]*$/.test(edit.attr)) {
+          skipped.push({ key: edit.key, reason: `attribute "${edit.attr}" not found` });
+          continue;
+        }
+        const value = String(edit.value).replaceAll('"', '&quot;');
+        splices.push({ start: field.attrInsert, end: field.attrInsert, text: ` ${edit.attr}="${value}"`, key: edit.key });
+        continue;
+      }
       const value = range.quote === "'"
         ? String(edit.value).replaceAll("'", '&#39;')
         : String(edit.value).replaceAll('"', '&quot;');

@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kiln — the free click-to-edit CMS for static sites</title>
+  <meta name="description" content="Turn any static site — including the one your AI just built — into a site your client can edit. GitHub is the backend. Cloudflare Pages is the host. $0/month, open source." />
+  <style>
+    :root {
+      --ink: #14141f; --muted: #5b5e6e; --soft: #9aa0b0; --bg: #fbfbfd; --card: #ffffff;
+      --accent: #6366f1; --accent-2: #8b5cf6; --line: #e8e9ef; --ok: #059669;
+      --font: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: var(--font); color: var(--ink); background: var(--bg); line-height: 1.6; }
+    a { color: var(--accent); text-decoration: none; }
+    .wrap { max-width: 1020px; margin: 0 auto; padding: 0 24px; }
+
+    nav { display: flex; justify-content: space-between; align-items: center; padding: 22px 0; }
+    .logo { font-weight: 800; font-size: 20px; letter-spacing: -0.02em;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .nav-r { display: flex; gap: 22px; align-items: center; font-size: 14px; font-weight: 500; }
+    .nav-r a { color: var(--muted); }
+    .nav-r a:hover { color: var(--ink); }
+    .btn { display: inline-block; background: var(--accent); color: #fff !important; padding: 11px 22px;
+      border-radius: 11px; font-weight: 600; font-size: 14.5px; transition: all .15s;
+      box-shadow: 0 4px 14px rgba(99,102,241,.3); }
+    .btn:hover { background: #4f46e5; transform: translateY(-1px); }
+    .btn-ghost { display: inline-block; color: var(--ink) !important; padding: 11px 22px; border-radius: 11px;
+      font-weight: 600; font-size: 14.5px; border: 1.5px solid var(--line); background: #fff; transition: all .15s; }
+    .btn-ghost:hover { border-color: var(--accent); color: var(--accent) !important; }
+
+    .hero { text-align: center; padding: 88px 0 30px; }
+    .pill { display: inline-block; font-size: 12.5px; font-weight: 600; color: var(--accent);
+      background: #eef2ff; border: 1px solid #e0e7ff; padding: 6px 14px; border-radius: 99px; margin-bottom: 26px; }
+    h1 { font-size: clamp(2.4rem, 6vw, 4rem); font-weight: 800; letter-spacing: -0.035em; line-height: 1.06; }
+    h1 .grad { background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .sub { font-size: 1.18rem; color: var(--muted); max-width: 620px; margin: 24px auto 36px; }
+    .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .tagline { margin-top: 18px; font-size: 13px; color: var(--soft); }
+
+    /* edit-loop strip */
+    .loop { display: flex; justify-content: center; gap: 0; flex-wrap: wrap; margin: 64px auto 0;
+      font-size: 14px; color: var(--muted); font-weight: 500; }
+    .loop span { padding: 10px 16px; background: var(--card); border: 1.5px solid var(--line); }
+    .loop span:first-child { border-radius: 12px 0 0 12px; }
+    .loop span:last-child { border-radius: 0 12px 12px 0; color: var(--ok); font-weight: 700; }
+    .loop b { color: var(--ink); }
+
+    section { padding: 76px 0 12px; }
+    .kicker { font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); }
+    h2 { font-size: clamp(1.6rem, 3.4vw, 2.2rem); font-weight: 800; letter-spacing: -0.025em; margin: 8px 0 14px; }
+    .lead { color: var(--muted); max-width: 640px; }
+
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 38px; }
+    .card { background: var(--card); border: 1.5px solid var(--line); border-radius: 16px; padding: 24px; }
+    .card .ico { font-size: 21px; margin-bottom: 12px; }
+    .card h3 { font-size: 15.5px; font-weight: 700; margin-bottom: 7px; }
+    .card p { font-size: 13.8px; color: var(--muted); line-height: 1.65; }
+
+    .compare { width: 100%; border-collapse: collapse; margin-top: 36px; font-size: 14px;
+      background: var(--card); border-radius: 16px; overflow: hidden; box-shadow: 0 1px 0 var(--line); }
+    .compare th, .compare td { padding: 13px 16px; text-align: left; border-bottom: 1px solid var(--line); }
+    .compare th { font-size: 12.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--soft); background: #f7f7fa; }
+    .compare td:first-child { font-weight: 600; }
+    .compare .yes { color: var(--ok); font-weight: 700; }
+    .compare .no { color: #b91c1c; }
+    .compare .kiln-row { background: #f5f6ff; }
+
+    .ai-band { background: linear-gradient(135deg, #14141f, #1e1b3a); color: #e7e7f0; border-radius: 24px;
+      padding: 56px 48px; margin-top: 70px; }
+    .ai-band h2 { color: #fff; }
+    .ai-band .lead { color: #b8bccd; }
+    .ai-band code { font-family: var(--mono); background: rgba(255,255,255,.09); padding: 2px 8px;
+      border-radius: 6px; font-size: 13px; color: #c4b5fd; }
+    .ai-band .btn { background: #fff; color: var(--ink) !important; box-shadow: none; margin-top: 22px; }
+
+    .steps { counter-reset: step; margin-top: 38px; display: grid; gap: 14px; }
+    .step { background: var(--card); border: 1.5px solid var(--line); border-radius: 16px; padding: 22px 24px 22px 66px; position: relative; }
+    .step::before { counter-increment: step; content: counter(step); position: absolute; left: 22px; top: 22px;
+      width: 28px; height: 28px; border-radius: 50%; background: #eef2ff; color: var(--accent);
+      font-weight: 800; font-size: 14px; display: flex; align-items: center; justify-content: center; }
+    .step h3 { font-size: 15px; font-weight: 700; margin-bottom: 5px; }
+    .step p { font-size: 13.8px; color: var(--muted); }
+    .step code { font-family: var(--mono); background: #f3f4f8; padding: 1px 7px; border-radius: 5px; font-size: 12.5px; }
+
+    .faq { margin-top: 36px; display: grid; gap: 10px; }
+    .faq details { background: var(--card); border: 1.5px solid var(--line); border-radius: 14px; padding: 16px 20px; }
+    .faq summary { font-weight: 650; font-size: 14.5px; cursor: pointer; }
+    .faq p { font-size: 13.8px; color: var(--muted); margin-top: 10px; }
+
+    footer { margin-top: 90px; border-top: 1.5px solid var(--line); padding: 34px 0 50px;
+      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 14px;
+      font-size: 13.5px; color: var(--soft); }
+    footer a { color: var(--muted); margin-left: 18px; }
+
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+      .ai-band { padding: 38px 26px; }
+      .compare { font-size: 12.5px; }
+      .compare th, .compare td { padding: 10px 8px; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="wrap">
+    <nav>
+      <span class="logo">Kiln</span>
+      <div class="nav-r">
+        <a href="https://kiln-demo.pages.dev" target="_blank" rel="noopener">Live demo</a>
+        <a href="setup.html">Setup guide</a>
+        <a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">GitHub</a>
+        <a class="btn" href="setup.html">Get started — it's free</a>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <span class="pill">Open source · MIT · $0/month forever</span>
+      <h1>Your site. <span class="grad">Click. Edit. Live.</span></h1>
+      <p class="sub">Kiln turns any static site into one its owner can edit — right on the page.
+        No database, no servers, no $25/month page builder. GitHub is the backend.
+        Free hosting is the host. The site <em>is</em> the CMS.</p>
+      <div class="cta-row">
+        <a class="btn" href="https://kiln-demo.pages.dev/#edit" target="_blank" rel="noopener">Try the live demo</a>
+        <a class="btn-ghost" href="setup.html">Set it up in 10 minutes</a>
+      </div>
+      <p class="tagline">The demo is a real site editing itself. Every change you see is a Git commit.</p>
+
+      <div class="loop">
+        <span><b>Click</b> the text on your page</span>
+        <span><b>Type</b> the change</span>
+        <span><b>Publish</b> → a Git commit</span>
+        <span>Live in ~1 minute ✓</span>
+      </div>
+    </header>
+
+    <section>
+      <span class="kicker">What you get</span>
+      <h2>Everything a small site actually needs</h2>
+      <p class="lead">Not a page builder. Not a dashboard with 400 settings. Just the editing
+        layer your site is missing — designed so an owner can't accidentally break the design.</p>
+      <div class="grid">
+        <div class="card"><div class="ico">✏️</div><h3>True on-page editing</h3>
+          <p>Click any text and type. Bold, italics, links, lists, quotes, headings — plus the
+          site's own styles offered as a palette, so typography stays designed.</p></div>
+        <div class="card"><div class="ico">🖼️</div><h3>Images &amp; files</h3>
+          <p>Click a photo to replace it (auto-resized), drop images into articles, attach PDFs
+          and documents to any link. Everything versioned in Git.</p></div>
+        <div class="card"><div class="ico">📰</div><h3>Blog &amp; new pages</h3>
+          <p>"+ New post" creates the page and the listing card as one atomic change — no build
+          pipeline. New standalone pages from your own template.</p></div>
+        <div class="card"><div class="ico">🧱</div><h3>Repeatable blocks</h3>
+          <p>Cards, galleries, document lists: duplicate, reorder, and remove blocks with one
+          click — without ever touching the layout.</p></div>
+        <div class="card"><div class="ico">🧭</div><h3>Site-wide menu editing</h3>
+          <p>Add, rename, and reorder navigation once — Kiln updates every page of the site in a
+          single commit.</p></div>
+        <div class="card"><div class="ico">🔒</div><h3>Members-only areas</h3>
+          <p>Gate <code>/members/</code> pages and files (yes, PDFs too) at the edge. Invite people
+          for 1–360 days. No database, no per-seat pricing.</p></div>
+        <div class="card"><div class="ico">🔑</div><h3>Google sign-in</h3>
+          <p>Add someone's Gmail address and a role — they sign in with Google. Editors don't need
+          GitHub accounts; members just click and they're in.</p></div>
+        <div class="card"><div class="ico">🕘</div><h3>Full history, built in</h3>
+          <p>Every publish is a Git commit. Browse a page's timeline and restore any previous
+          version with one click. Nothing is ever lost.</p></div>
+        <div class="card"><div class="ico">🪶</div><h3>Invisible to visitors</h3>
+          <p>Visitors load 6 KB. The editor only loads for signed-in people — summoned by visiting
+          <code>yoursite.com/#edit</code>. No admin bar haunting your design.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="ai-band">
+        <span class="kicker" style="color:#c4b5fd">The 2026 problem</span>
+        <h2>You vibe-coded a site. Now what?</h2>
+        <p class="lead">Claude, v0, Lovable, and Bolt generate beautiful static sites and push them
+        to GitHub — and then every text change means re-prompting an AI or editing HTML. Kiln is
+        the missing edit layer: paste <code>KILN_PROMPT.md</code> into your AI tool and it wires
+        your site for click-to-edit. Hand the site to your client. They edit. You're done.</p>
+        <a class="btn" href="https://github.com/erikkurtu/kiln/blob/main/KILN_PROMPT.md" target="_blank" rel="noopener">Get the AI prompt →</a>
+      </div>
+    </section>
+
+    <section>
+      <span class="kicker">The honest comparison</span>
+      <h2>Why is this free when everything else isn't?</h2>
+      <p class="lead">Because the expensive parts — databases, render servers, asset pipelines —
+      aren't needed. Your repo stores content. Your host serves files. Kiln just connects your
+      clicks to commits.</p>
+      <table class="compare">
+        <tr><th></th><th>Edit on the page</th><th>Works with any HTML</th><th>Backend to maintain</th><th>Price</th></tr>
+        <tr class="kiln-row"><td>Kiln</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">None — GitHub</td><td class="yes">$0, open source</td></tr>
+        <tr><td>WordPress</td><td>Partly</td><td class="no">No — PHP + themes</td><td class="no">Server + DB + patches</td><td>$5–25+/mo hosting</td></tr>
+        <tr><td>Squarespace / Webflow</td><td class="yes">Yes</td><td class="no">No — their platform</td><td>—</td><td class="no">$16–25+/mo</td></tr>
+        <tr><td>CloudCannon</td><td class="yes">Yes</td><td>SSGs</td><td>—</td><td class="no">$45+/mo</td></tr>
+        <tr><td>Decap / Sveltia</td><td class="no">No — form dashboard</td><td class="yes">Yes</td><td class="yes">None — Git</td><td class="yes">Free</td></tr>
+        <tr><td>TinaCMS</td><td>React only</td><td class="no">No</td><td>Cloud or DB</td><td>Free ≤ 2 users</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <span class="kicker">Setup</span>
+      <h2>Three pieces. Ten minutes. Zero bills.</h2>
+      <div class="steps">
+        <div class="step"><h3>Host your site free on Cloudflare Pages</h3>
+          <p>Push your static site to GitHub, connect it to Cloudflare Pages (free tier allows
+          commercial sites — unlike Vercel's). Every commit auto-deploys.</p></div>
+        <div class="step"><h3>Deploy Kiln's tiny auth worker</h3>
+          <p>One <code>wrangler deploy</code>, then open <code>/setup</code> and press one button —
+          it registers your GitHub App and captures the credentials itself. You never copy a secret.</p></div>
+        <div class="step"><h3>Annotate your HTML</h3>
+          <p>Add <code>data-cms</code> to anything editable and two script tags at the bottom —
+          or paste <code>KILN_PROMPT.md</code> into your AI and let it do this part.
+          Then visit <code>yoursite.com/#edit</code> and sign in.</p></div>
+      </div>
+      <p style="margin-top:24px"><a class="btn" href="setup.html">Full step-by-step setup guide →</a></p>
+    </section>
+
+    <section>
+      <span class="kicker">Questions</span>
+      <h2>The fine print, plainly</h2>
+      <div class="faq">
+        <details><summary>Is it really free? What's the catch?</summary>
+          <p>The software is MIT open source. GitHub repos are free. Cloudflare Pages' free tier
+          (unlimited static bandwidth, commercial use allowed) hosts the site, and a free-tier
+          Cloudflare Worker handles sign-in. The "catch" is that you self-host those two free
+          things — the setup guide walks you through it once, ~10 minutes.</p></details>
+        <details><summary>Do my editors need GitHub accounts?</summary>
+          <p>No. The site owner uses GitHub (it's their repo). Everyone else signs in with Google —
+          you add their email and a role. There are also one-time invite links for people without
+          Google. Editors' changes are committed on their behalf, attributed by name.</p></details>
+        <details><summary>Can editors break my design?</summary>
+          <p>That's the core design goal: editors change content, not layout. Text, images, links,
+          list items, menu entries — yes. Dragging boxes around, resizing things, changing fonts
+          arbitrarily — deliberately not. Styles come from a palette you define in CSS.</p></details>
+        <details><summary>What about my existing WordPress / Squarespace site?</summary>
+          <p>Export or rebuild it as static HTML (an AI tool does this well), push to GitHub, and
+          point Kiln at it. If it's currently costing you monthly, that bill goes to zero.</p></details>
+        <details><summary>Where does my content live? Can I leave?</summary>
+          <p>In your own GitHub repository, as plain HTML files with full version history.
+          "Leaving Kiln" means deleting two script tags. There is no export, because nothing was
+          ever imported.</p></details>
+        <details><summary>What does a published edit look like?</summary>
+          <p>A Git commit: <em>"Edit index.html: hero_headline (via Kiln)"</em>, authored by the
+          person who made it. Your site's history reads like a changelog, because it is one.</p></details>
+      </div>
+    </section>
+
+    <footer>
+      <span>Kiln — fire your edits into permanent pages. MIT licensed.</span>
+      <span>
+        <a href="https://kiln-demo.pages.dev" target="_blank" rel="noopener">Demo</a>
+        <a href="setup.html">Setup</a>
+        <a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">GitHub</a>
+      </span>
+    </footer>
+  </div>
+
+</body>
+</html>

@@ -34,9 +34,11 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function waitForLive(predicate, label, timeoutMs = 240000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const res = await fetch(`${SITE}/?cachebust=${Date.now()}`, { headers: { 'Cache-Control': 'no-cache' } });
-    const html = await res.text();
-    if (predicate(html)) return true;
+    try {
+      const res = await fetch(`${SITE}/?cachebust=${Date.now()}`, { headers: { 'Cache-Control': 'no-cache' } });
+      const html = await res.text();
+      if (predicate(html)) return true;
+    } catch { /* transient network blip — keep polling */ }
     await sleep(7000);
   }
   return false;

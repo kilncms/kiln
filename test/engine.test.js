@@ -67,6 +67,13 @@ test('attribute splice replaces only the value, escapes quotes', () => {
   assert.ok(html.includes('alt="hero"'));
 });
 
+test('missing attribute is inserted into the start tag', () => {
+  const html = '<img data-cms="pic" src="/a.jpg">';
+  const { html: out, applied } = applyEdits(html, [{ key: 'pic', attr: 'alt', value: 'A "nice" photo' }]);
+  assert.deepEqual(applied, ['pic']);
+  assert.equal(out, '<img data-cms="pic" src="/a.jpg" alt="A &quot;nice&quot; photo">');
+});
+
 test('single-quoted attribute handled', () => {
   const { html } = applyEdits(PAGE, [{ key: 'cta', attr: 'href', value: "/it's-here" }]);
   assert.ok(html.includes("href='/it&#39;s-here'"));
