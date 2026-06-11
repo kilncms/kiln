@@ -6,7 +6,7 @@ open-design/bravebrand as inspiration + component kits, not clones of recognizab
 
 ## Build first (the launch five — one per major audience)
 1. **Maple** — small business / maker (exists: kiln-demo). Hero, services repeat, journal, members.
-2. **Atelier** — artist/photographer portfolio. Full-bleed gallery repeat, statement page, CV, inquiry.
+2. **Atelier** — artist/photographer portfolio (exists: github.com/erikkurtu/kiln-atelier, template repo). Full-bleed gallery repeat, statement page, CV, inquiry.
 3. **Counter** — restaurant/café. Menu as repeat blocks (sections→items), hours/location, gallery, specials post.
 4. **Practice** — consultant/therapist/lawyer. Credibility-first: bio, services, FAQ repeat, intake CTA, resources members area.
 5. **Commons** — nonprofit/civic org (Atlanta Commons shape). Mission, programs repeat, events journal, documents members area, donate links.
