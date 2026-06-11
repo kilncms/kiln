@@ -282,10 +282,14 @@ async function adminInvite(request, env) {
   }
 
   const id = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
-  const ttl = Math.min(Math.max(days, 1), 90) * 24 * 3600;
-  await env.KILN.put(`inv:${id}`, JSON.stringify({ repo, name, role, created: Date.now(), exp: Date.now() + ttl * 1000 }),
+  // `days` = how long the ACCESS lasts once redeemed (1–360). The unredeemed
+  // link itself also expires after the same period.
+  const sessionDays = Math.min(Math.max(Number(days) || 30, 1), 360);
+  const ttl = sessionDays * 24 * 3600;
+  await env.KILN.put(`inv:${id}`,
+    JSON.stringify({ repo, name, role, sessionDays, created: Date.now(), exp: Date.now() + ttl * 1000 }),
     { expirationTtl: ttl });
-  return json({ invite: id, role, expires_in_days: Math.min(Math.max(days, 1), 90) });
+  return json({ invite: id, role, days: sessionDays });
 }
 
 /** Anyone with push access can see + revoke the invites/sessions for that repo. */
@@ -340,10 +344,12 @@ async function editorRedeem(request, env) {
   await env.KILN.delete(`inv:${invite}`); // single use
 
   const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
+  const days = Math.min(Math.max(Number(inv.sessionDays) || 30, 1), 360);
+  const exp = Date.now() + days * 24 * 3600 * 1000;
   await env.KILN.put(`esess:${session}`,
-    JSON.stringify({ ...inv, created: Date.now(), exp: Date.now() + 30 * 24 * 3600 * 1000 }),
-    { expirationTtl: 30 * 24 * 3600 });
-  return json({ session, name: inv.name, repo: inv.repo, role: inv.role, exp: Date.now() + 30 * 24 * 3600 * 1000 });
+    JSON.stringify({ ...inv, created: Date.now(), exp }),
+    { expirationTtl: days * 24 * 3600 });
+  return json({ session, name: inv.name, repo: inv.repo, role: inv.role, exp });
 }
 
 // ─── GitHub proxy for editor sessions ────────────────────────────────────────

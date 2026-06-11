@@ -14,8 +14,9 @@ export async function onRequestPost({ request, env }) {
   const auth = (request.headers.get('Authorization') || '').replace(/^(token|Bearer)\s+/i, '');
   if (!auth) return json({ error: 'missing Authorization' }, 401);
 
-  const { name } = await request.json().catch(() => ({}));
+  const { name, days } = await request.json().catch(() => ({}));
   if (!name || String(name).length > 64) return json({ error: 'bad name' }, 400);
+  const accessDays = Math.min(Math.max(Number(days) || 30, 1), 360);
 
   const res = await fetch(`https://api.github.com/repos/${env.KILN_REPO}`, {
     headers: {
@@ -29,8 +30,8 @@ export async function onRequestPost({ request, env }) {
   if (!repo.permissions?.push) return json({ error: 'you need push access to invite members' }, 403);
 
   const invite = await signToken(
-    { n: String(name), exp: Date.now() + 30 * 24 * 3600 * 1000, t: 'mi' },
+    { n: String(name), exp: Date.now() + accessDays * 24 * 3600 * 1000, t: 'mi', d: accessDays },
     env.KILN_MEMBER_SECRET
   );
-  return json({ invite });
+  return json({ invite, days: accessDays });
 }

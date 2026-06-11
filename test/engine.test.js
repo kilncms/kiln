@@ -146,6 +146,19 @@ test('data-cms fields are kind=field', () => {
   assert.equal(fields.get('x').kind, 'field');
 });
 
+test('repeat and menu containers index with their kinds and accept inner edits', () => {
+  const html = '<div data-cms-repeat="cards"><div>a</div><div>b</div></div><nav data-cms-menu="main"><a href="/">Home</a></nav>';
+  const { fields } = indexHtml(html);
+  assert.equal(fields.get('cards').kind, 'repeat');
+  assert.equal(fields.get('main').kind, 'menu');
+  const { html: out } = applyEdits(html, [
+    { key: 'cards', html: '<div>a</div><div>a-copy</div><div>b</div>' },
+    { key: 'main', html: '<a href="/">Home</a>\n<a href="/about.html">About</a>' },
+  ]);
+  assert.ok(out.includes('a-copy'));
+  assert.ok(out.includes('/about.html'));
+});
+
 test('readValues returns current source content', () => {
   const vals = readValues(PAGE);
   assert.equal(vals.cta, 'See Our Work');

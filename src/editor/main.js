@@ -24,7 +24,16 @@ const PAUSE_KEY = 'kiln_pause';
 const SANITIZE = {
   ALLOWED_TAGS: ['a', 'abbr', 'b', 'br', 'code', 'em', 'i', 'img', 'li', 'mark', 'ol', 'p',
     's', 'small', 'span', 'strong', 'sub', 'sup', 'u', 'ul'],
-  ALLOWED_ATTR: ['href', 'target', 'rel', 'title', 'class', 'src', 'alt'],
+  ALLOWED_ATTR: ['href', 'target', 'rel', 'title', 'class', 'src', 'alt', 'data-kiln-src'],
+};
+
+// Repeat containers carry the site's own structural markup, so the allowlist is wider.
+const CONTAINER_SANITIZE = {
+  ALLOWED_TAGS: ['a', 'abbr', 'article', 'b', 'br', 'code', 'div', 'em', 'figcaption', 'figure',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'i', 'img', 'li', 'mark', 'ol', 'p', 's', 'section',
+    'small', 'span', 'strong', 'sub', 'sup', 'u', 'ul'],
+  ALLOWED_ATTR: ['href', 'target', 'rel', 'title', 'class', 'src', 'alt',
+    'data-cms', 'data-cms-attr', 'data-cms-plain'],
 };
 
 const state = {
@@ -35,7 +44,6 @@ const state = {
   pending: new Map(),    // key → { html?, attrs?: {name: value} }
   active: null,
   originals: new Map(),
-  previewSwaps: [],      // [{el, realSrc, blobUrl}] — applied once the deploy is live
 };
 
 init().catch(err => {
@@ -123,25 +131,22 @@ function decorateFields() {
   document.querySelectorAll('[data-cms]').forEach((el) => {
     const key = el.getAttribute('data-cms');
     const source = state.fields.fields.get(key);
-    if (!source) {
+    const inRepeat = !!el.closest('[data-cms-repeat]');
+    if (!source && !inRepeat) {
       console.warn(`[kiln] "${key}" is on the page but not in ${state.page.path}`);
       return;
     }
-    if (source.kind === 'list') return; // structural anchor, never inline-editable
+    if (source && (source.kind === 'list' || source.kind === 'menu')) return; // structural, never inline-editable
+    decorateField(el, key);
+  });
 
-    el.classList.add('kiln-field');
-    el.title = `Edit: ${key}`;
-    el.addEventListener('click', (e) => {
-      // Cmd/Ctrl+click on a link follows it even in edit mode.
-      if ((e.metaKey || e.ctrlKey) && e.target.closest('a')) return;
-      if (el.getAttribute('data-cms-attr') === 'src' && el.tagName === 'IMG') {
-        e.preventDefault(); e.stopPropagation();
-        pickImage(el, key);
-        return;
-      }
-      e.preventDefault(); e.stopPropagation();
-      if (state.active !== el) startEditing(el, key);
-    });
+  document.querySelectorAll('[data-cms-repeat]').forEach((container) => {
+    const key = container.getAttribute('data-cms-repeat');
+    if (!state.fields.fields.has(key)) {
+      console.warn(`[kiln] repeat "${key}" not found in ${state.page.path}`);
+      return;
+    }
+    setupRepeat(container, key);
   });
 
   document.addEventListener('click', (e) => {
@@ -152,6 +157,79 @@ function decorateFields() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && state.active) cancelEditing();
   });
+}
+
+function decorateField(el, key) {
+  el.classList.add('kiln-field');
+  el.title = `Edit: ${key}`;
+  el.addEventListener('click', (e) => {
+    // Cmd/Ctrl+click on a link follows it even in edit mode.
+    if ((e.metaKey || e.ctrlKey) && e.target.closest('a')) return;
+    if (el.getAttribute('data-cms-attr') === 'src' && el.tagName === 'IMG') {
+      e.preventDefault(); e.stopPropagation();
+      pickImage(el, key);
+      return;
+    }
+    e.preventDefault(); e.stopPropagation();
+    if (state.active !== el) startEditing(el, key);
+  });
+}
+
+// ─── Repeatable blocks ───────────────────────────────────────────────────────
+
+function setupRepeat(container, key) {
+  container.classList.add('kiln-repeat');
+  [...container.children].forEach((item) => attachItemControls(container, key, item));
+}
+
+function attachItemControls(container, key, item) {
+  if (item.querySelector(':scope > .kiln-item-ctl')) return;
+  item.classList.add('kiln-repeat-item');
+  const ctl = document.createElement('div');
+  ctl.className = 'kiln-item-ctl';
+  ctl.innerHTML = `<button title="Duplicate this block">＋</button><button title="Remove this block">✕</button>`;
+  const [dup, del] = ctl.querySelectorAll('button');
+  dup.onclick = (e) => {
+    e.stopPropagation();
+    const clone = item.cloneNode(true);
+    clone.querySelectorAll('.kiln-item-ctl, #kiln-toolbar').forEach(n => n.remove());
+    clone.classList.remove('kiln-repeat-item');
+    clone.querySelectorAll('[data-cms]').forEach(n => {
+      n.classList.remove('kiln-field', 'kiln-editing', 'kiln-modified');
+      n.removeAttribute('contenteditable');
+    });
+    item.after(clone);
+    clone.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
+    attachItemControls(container, key, clone);
+    stageContainer(container, key);
+  };
+  del.onclick = (e) => {
+    e.stopPropagation();
+    if (container.children.length <= 1) { setStatus('Keep at least one block (edit it instead)', 'error'); return; }
+    if (!confirm('Remove this block? (You can still Cancel by leaving without publishing.)')) return;
+    item.remove();
+    stageContainer(container, key);
+  };
+  item.appendChild(ctl);
+}
+
+/** Stage a repeat container's full cleaned innerHTML as one pending edit. */
+function stageContainer(container, key) {
+  const clone = container.cloneNode(true);
+  clone.querySelectorAll('.kiln-item-ctl, #kiln-toolbar').forEach(n => n.remove());
+  clone.querySelectorAll('[contenteditable]').forEach(n => n.removeAttribute('contenteditable'));
+  clone.querySelectorAll('.kiln-field, .kiln-editing, .kiln-modified, .kiln-repeat-item').forEach(n => {
+    n.classList.remove('kiln-field', 'kiln-editing', 'kiln-modified', 'kiln-repeat-item');
+    if (n.getAttribute('class') === '') n.removeAttribute('class');
+    if (n.hasAttribute('data-cms')) n.removeAttribute('title');
+  });
+  clone.querySelectorAll('img[data-kiln-src]').forEach(img => {
+    img.setAttribute('src', img.getAttribute('data-kiln-src'));
+    img.removeAttribute('data-kiln-src');
+  });
+  const html = DOMPurify.sanitize(clone.innerHTML, CONTAINER_SANITIZE);
+  container.classList.add('kiln-modified');
+  stagePending(key, { html });
 }
 
 function startEditing(el, key) {
@@ -199,16 +277,34 @@ function commitEdit(el, key) {
   el.contentEditable = 'false';
   el.classList.remove('kiln-editing');
   el.classList.add('kiln-modified');
-  stagePending(key, { html: value });
 
-  // Link elements: stage the href too if it was changed in the toolbar.
+  // Link elements: apply the toolbar's href before staging.
   const hrefInput = document.querySelector('#kiln-toolbar .kiln-href-input');
-  if (hrefInput && el.tagName === 'A' && hrefInput.value !== el.getAttribute('href')) {
-    el.setAttribute('href', hrefInput.value);
-    stagePending(key, { attrs: { href: hrefInput.value } });
+  const hrefChanged = hrefInput && el.tagName === 'A' && hrefInput.value !== el.getAttribute('href');
+  if (hrefChanged) el.setAttribute('href', hrefInput.value);
+
+  const repeat = el.closest('[data-cms-repeat]');
+  if (repeat) {
+    // Fields inside repeatable blocks publish as the whole container,
+    // so duplicated blocks (with duplicate keys) stay unambiguous.
+    stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
+  } else {
+    stagePending(key, { html: committedHtml(el, plain, value) });
+    if (hrefChanged) stagePending(key, { attrs: { href: hrefInput.value } });
   }
   state.active = null;
   removeToolbar();
+}
+
+/** The HTML to commit for a field: blob previews are swapped for their real repo paths. */
+function committedHtml(el, plain, fallback) {
+  if (plain) return fallback;
+  const clone = el.cloneNode(true);
+  clone.querySelectorAll('img[data-kiln-src]').forEach(img => {
+    img.setAttribute('src', img.getAttribute('data-kiln-src'));
+    img.removeAttribute('data-kiln-src');
+  });
+  return DOMPurify.sanitize(clone.innerHTML, SANITIZE);
 }
 
 // ─── Images ──────────────────────────────────────────────────────────────────
@@ -233,11 +329,12 @@ function pickImage(img, key) {
       });
       // Show the LOCAL image immediately — the real URL only exists after the
       // next deploy, so pointing at it now would render a broken image.
-      const blobUrl = URL.createObjectURL(blob);
-      img.src = blobUrl;
-      state.previewSwaps.push({ el: img, realSrc: urlPath, blobUrl });
+      img.src = URL.createObjectURL(blob);
+      img.setAttribute('data-kiln-src', urlPath);
       img.classList.add('kiln-modified');
-      stagePending(key, { attrs: { src: urlPath } });
+      const repeat = img.closest('[data-cms-repeat]');
+      if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
+      else stagePending(key, { attrs: { src: urlPath } });
       setStatus('Image staged — hit Publish to put it live', 'saved');
     } catch (err) {
       console.error('[kiln] image upload', err);
@@ -260,6 +357,70 @@ async function downscale(file, maxDim = 1600) {
   let bin = '';
   for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
   return { blob, base64: btoa(bin), ext: blob.type === 'image/webp' ? 'webp' : (file.name.split('.').pop() || 'img') };
+}
+
+/** Insert an uploaded image at the cursor inside a rich-text field. */
+function insertInlineImage(el) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    try {
+      setStatus('Uploading image…', 'saving');
+      const { blob, base64, ext } = await downscale(file, 1200);
+      const slug = (file.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'image');
+      const name = `${slug}-${Date.now().toString(36)}.${ext}`;
+      const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `assets/uploads/${name}`;
+      const urlPath = `/assets/uploads/${name}`;
+      await putBinaryFile(state.gh, cfg.repo, repoPath, {
+        base64, branch: cfg.branch || 'main', message: `Upload ${name} (via Kiln)`,
+      });
+      const blobUrl = URL.createObjectURL(blob);
+      el.focus();
+      document.execCommand('insertHTML', false,
+        `<img src="${blobUrl}" data-kiln-src="${urlPath}" alt="" style="max-width:100%">`);
+      setStatus('Image inserted — Save, then Publish', 'saved');
+    } catch (err) {
+      console.error('[kiln] inline image', err);
+      setStatus('Image upload failed', 'error');
+    }
+  };
+  input.click();
+}
+
+/** Upload any file (PDF, doc, …) and return its site path. Members pages upload into the gated folder. */
+function uploadAnyFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.onchange = async () => {
+      const file = input.files[0];
+      if (!file) return resolve(null);
+      if (file.size > 15 * 1024 * 1024) { setStatus('Files over 15 MB don’t belong in a Git repo', 'error'); return resolve(null); }
+      try {
+        setStatus(`Uploading ${file.name}…`, 'saving');
+        const buf = new Uint8Array(await file.arrayBuffer());
+        let bin = '';
+        for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+        const safe = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, '-');
+        const gated = location.pathname.startsWith('/members');
+        const dir = gated ? 'members/files' : 'assets/files';
+        const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `${dir}/${safe}`;
+        await putBinaryFile(state.gh, cfg.repo, repoPath, {
+          base64: btoa(bin), branch: cfg.branch || 'main', message: `Upload ${safe} (via Kiln)`,
+        });
+        setStatus(`${file.name} uploaded ✓ ${gated ? '(members-only)' : ''} — goes live with your next Publish`, 'saved');
+        resolve(`/${dir}/${safe}`);
+      } catch (err) {
+        console.error('[kiln] file upload', err);
+        setStatus('File upload failed', 'error');
+        resolve(null);
+      }
+    };
+    input.click();
+  });
 }
 
 // ─── Publish ─────────────────────────────────────────────────────────────────
@@ -315,10 +476,11 @@ async function watchDeploy(sha, onLive) {
     }
     const s = await deployState(state.gh, cfg.repo, sha).catch(() => 'unknown');
     if (s === 'success') {
-      for (const swap of state.previewSwaps.splice(0)) {
-        swap.el.src = swap.realSrc;
-        URL.revokeObjectURL(swap.blobUrl);
-      }
+      document.querySelectorAll('img[data-kiln-src]').forEach(img => {
+        if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+        img.src = img.getAttribute('data-kiln-src');
+        img.removeAttribute('data-kiln-src');
+      });
       setStatus('Live ✓ — your edit is on the site', 'saved');
       if (onLive) onLive();
       setTimeout(() => setStatus(`Signed in as ${state.user}`, 'idle'), 8000);
@@ -332,62 +494,85 @@ async function watchDeploy(sha, onLive) {
   setTimeout(tick, 4000);
 }
 
-// ─── New blog post ───────────────────────────────────────────────────────────
+// ─── New post / new page ─────────────────────────────────────────────────────
 
-function newPost() {
+function newContent() {
   const m = modal(`
-    <h3>New post</h3>
-    <label>Title <input type="text" id="kiln-np-title" placeholder="What's it about?" autofocus></label>
+    <h3>Create something new</h3>
+    <div class="kiln-roles">
+      <label class="kiln-role"><input type="radio" name="kiln-new-kind" value="post" checked>
+        <span><strong>Blog post</strong><br><small>Appears in the journal automatically.</small></span></label>
+      <label class="kiln-role"><input type="radio" name="kiln-new-kind" value="page">
+        <span><strong>Page</strong><br><small>A standalone page (e.g. /services.html). Add it to the menu afterwards.</small></span></label>
+    </div>
+    <label>Title <input type="text" id="kiln-np-title" placeholder="What's it called?"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
-      <button class="kiln-btn-publish" id="kiln-np-go">Create post</button>
+      <button class="kiln-btn-publish" id="kiln-np-go">Create</button>
     </div>`);
   m.querySelector('#kiln-np-go').onclick = async () => {
     const title = m.querySelector('#kiln-np-title').value.trim();
+    const kind = m.querySelector('input[name="kiln-new-kind"]:checked').value;
     if (!title) return;
-    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'post';
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || kind;
     const date = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
     const root = cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '';
     const branch = cfg.branch || 'main';
+    const href = kind === 'post' ? `/blog/${slug}.html` : `/${slug}.html`;
     const body = m.querySelector('.kiln-modal-body');
     body.innerHTML = `<h3>Publishing “${escapeHtml(title)}”</h3>
       <p class="kiln-np-step" id="kiln-np-status">Committing to GitHub…</p>
       <div class="kiln-modal-actions">
         <button class="kiln-btn-ghost" data-close>Close</button>
-        <button class="kiln-btn-publish" id="kiln-np-open" disabled>Open post →</button>
+        <button class="kiln-btn-publish" id="kiln-np-open" disabled>Open it →</button>
       </div>`;
     const status = body.querySelector('#kiln-np-status');
     const openBtn = body.querySelector('#kiln-np-open');
     try {
-      const tpl = await getFile(state.gh, cfg.repo, root + '_templates/post.html', branch);
-      const cardTpl = await getFile(state.gh, cfg.repo, root + '_templates/post-card.html', branch);
-      const blogIndex = await getFile(state.gh, cfg.repo, root + 'blog/index.html', branch);
+      const filePath = root + href.slice(1);
+      const exists = await getFile(state.gh, cfg.repo, filePath, branch).catch(err => {
+        if (err.status === 404) return null;
+        throw err;
+      });
+      if (exists) throw new Error(`${href} already exists — pick a different title`);
 
-      const postHtml = applyEdits(tpl.text, [
-        { key: 'post_title', html: escapeHtml(title) },
-        { key: 'post_date', html: escapeHtml(date) },
-      ]).html.replaceAll('{{title}}', escapeHtml(title));
-      const card = cardTpl.text
-        .replaceAll('{{title}}', escapeHtml(title))
-        .replaceAll('{{href}}', `/blog/${slug}.html`)
-        .replaceAll('{{date}}', escapeHtml(date));
-      const newIndex = applyEdits(blogIndex.text, [{ key: 'post_list', prepend: '\n      ' + card.trim() }]);
-      if (!newIndex.applied.length) throw new Error('blog/index.html needs a data-cms-list="post_list" container');
+      const files = [];
+      if (kind === 'post') {
+        const tpl = await getFile(state.gh, cfg.repo, root + '_templates/post.html', branch);
+        const cardTpl = await getFile(state.gh, cfg.repo, root + '_templates/post-card.html', branch);
+        const blogIndex = await getFile(state.gh, cfg.repo, root + 'blog/index.html', branch);
+        const postHtml = applyEdits(tpl.text, [
+          { key: 'post_title', html: escapeHtml(title) },
+          { key: 'post_date', html: escapeHtml(date) },
+        ]).html.replaceAll('{{title}}', escapeHtml(title));
+        const card = cardTpl.text
+          .replaceAll('{{title}}', escapeHtml(title))
+          .replaceAll('{{href}}', href)
+          .replaceAll('{{date}}', escapeHtml(date));
+        const newIndex = applyEdits(blogIndex.text, [{ key: 'post_list', prepend: '\n      ' + card.trim() }]);
+        if (!newIndex.applied.length) throw new Error('blog/index.html needs a data-cms-list="post_list" container');
+        files.push({ path: filePath, text: postHtml }, { path: root + 'blog/index.html', text: newIndex.html });
+      } else {
+        const tpl = await getFile(state.gh, cfg.repo, root + '_templates/page.html', branch);
+        const pageHtml = applyEdits(tpl.text, [
+          { key: 'page_title', html: escapeHtml(title) },
+        ]).html.replaceAll('{{title}}', escapeHtml(title));
+        files.push({ path: filePath, text: pageHtml });
+      }
 
-      const commit = await commitFiles(state.gh, cfg.repo, branch, [
-        { path: root + `blog/${slug}.html`, text: postHtml },
-        { path: root + 'blog/index.html', text: newIndex.html },
-      ], `New post: ${title} (via Kiln)`);
+      const commit = await commitFiles(state.gh, cfg.repo, branch, files,
+        `New ${kind}: ${title} (via Kiln)`);
 
-      status.textContent = `Committed ✓ (${commit.sha.slice(0, 7)}) — your host is rebuilding. The button lights up the moment the post is live.`;
+      status.textContent = `Committed ✓ (${commit.sha.slice(0, 7)}) — your host is rebuilding. The button lights up the moment it's live.`;
       const started = Date.now();
       const poll = async () => {
-        if (!document.body.contains(m)) return; // modal closed
+        if (!document.body.contains(m)) return;
         const s = await deployState(state.gh, cfg.repo, commit.sha).catch(() => 'unknown');
         if (s === 'success') {
-          status.textContent = 'Live ✓ — open it and click into the text to write.';
+          status.innerHTML = `Live ✓ — open it and click into the text to write.${
+            kind === 'page' ? ' <br><small>Tip: use <strong>Menu…</strong> in the top bar to add it to your navigation.</small>' : ''}`;
           openBtn.disabled = false;
-          openBtn.onclick = () => { location.href = `/blog/${slug}.html`; };
+          openBtn.onclick = () => { location.href = href; };
           return;
         }
         if (s === 'failure' || s === 'error') { status.textContent = 'Deploy failed — check your host dashboard.'; return; }
@@ -397,10 +582,111 @@ function newPost() {
       };
       setTimeout(poll, 4000);
     } catch (err) {
-      console.error('[kiln] new post', err);
-      status.textContent = err.message.includes('post_list') || err.status === 404
-        ? 'This site has no blog templates (_templates/) — see the docs.'
+      console.error('[kiln] new', kind, err);
+      status.textContent = err.status === 404
+        ? `This site has no ${kind} template (_templates/${kind}.html) — see the docs.`
         : `Failed: ${err.message}`;
+    }
+  };
+}
+
+// ─── Menu editor ─────────────────────────────────────────────────────────────
+
+function menuEditor() {
+  const menuField = [...state.fields.fields.values()].find(f => f.kind === 'menu');
+  if (!menuField) {
+    modal(`<h3>No editable menu</h3>
+      <p class="kiln-dim">This page's navigation isn't marked with <code>data-cms-menu</code>,
+      so Kiln can't manage it. See the docs to enable menu editing.</p>
+      <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
+    return;
+  }
+  // Parse the current items from this page's source.
+  const innerHtml = state.page.text.slice(menuField.inner.start, menuField.inner.end);
+  const docFrag = new DOMParser().parseFromString(innerHtml, 'text/html');
+  let rows = [...docFrag.querySelectorAll('a')].map(a => ({
+    label: a.textContent.trim(), href: a.getAttribute('href') || '/',
+  }));
+
+  const m = modal(`
+    <h3>Site menu</h3>
+    <p class="kiln-dim">Changes apply to <strong>every page</strong> of the site (and to the
+    templates, so new pages get the updated menu) in one commit.</p>
+    <div id="kiln-menu-rows"></div>
+    <button class="kiln-btn-ghost" id="kiln-menu-add">+ Add menu item</button>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Cancel</button>
+      <button class="kiln-btn-publish" id="kiln-menu-save">Save to all pages</button>
+    </div>
+    <p class="kiln-np-step" id="kiln-menu-status"></p>`);
+
+  const rowsEl = m.querySelector('#kiln-menu-rows');
+  function render() {
+    rowsEl.innerHTML = '';
+    rows.forEach((row, i) => {
+      const div = document.createElement('div');
+      div.className = 'kiln-menu-row';
+      div.innerHTML = `
+        <input type="text" class="kiln-menu-label" value="${escapeHtml(row.label)}" placeholder="Label">
+        <input type="text" class="kiln-menu-href" value="${escapeHtml(row.href)}" placeholder="/page.html">
+        <button title="Move up">↑</button><button title="Move down">↓</button><button title="Remove">✕</button>`;
+      const [up, down, del] = div.querySelectorAll('button');
+      div.querySelector('.kiln-menu-label').oninput = (e) => { rows[i].label = e.target.value; };
+      div.querySelector('.kiln-menu-href').oninput = (e) => { rows[i].href = e.target.value; };
+      up.onclick = () => { if (i > 0) { [rows[i - 1], rows[i]] = [rows[i], rows[i - 1]]; render(); } };
+      down.onclick = () => { if (i < rows.length - 1) { [rows[i + 1], rows[i]] = [rows[i], rows[i + 1]]; render(); } };
+      del.onclick = () => { rows.splice(i, 1); render(); };
+      rowsEl.appendChild(div);
+    });
+  }
+  render();
+  m.querySelector('#kiln-menu-add').onclick = () => { rows.push({ label: 'New item', href: '/' }); render(); };
+
+  m.querySelector('#kiln-menu-save').onclick = async () => {
+    const status = m.querySelector('#kiln-menu-status');
+    const menuKey = menuField.key;
+    const newInner = '\n      ' + rows
+      .filter(r => r.label.trim())
+      .map(r => `<a href="${escapeHtml(r.href.trim() || '/')}">${escapeHtml(r.label.trim())}</a>`)
+      .join('\n      ') + '\n    ';
+    try {
+      status.textContent = 'Finding the site’s pages…';
+      const branch = cfg.branch || 'main';
+      const tree = await state.gh.request('GET',
+        `/repos/${cfg.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+      const htmlFiles = tree.tree
+        .filter(t => t.type === 'blob' && t.path.endsWith('.html'))
+        .map(t => t.path)
+        .slice(0, 100);
+
+      const changed = [];
+      let skippedPages = 0;
+      for (let i = 0; i < htmlFiles.length; i++) {
+        status.textContent = `Updating menus… ${i + 1}/${htmlFiles.length}`;
+        const file = await getFile(state.gh, cfg.repo, htmlFiles[i], branch);
+        const result = applyEdits(file.text, [{ key: menuKey, html: newInner }]);
+        if (result.applied.length) changed.push({ path: htmlFiles[i], text: result.html });
+        else skippedPages++;
+      }
+      if (!changed.length) throw new Error('no pages have a matching data-cms-menu container');
+
+      status.textContent = `Committing ${changed.length} page${changed.length > 1 ? 's' : ''} as one change…`;
+      const commit = await commitFiles(state.gh, cfg.repo, branch, changed,
+        `Update menu on ${changed.length} pages (via Kiln)`);
+      status.textContent = `Committed ✓ (${commit.sha.slice(0, 7)}) — rebuilding. ${skippedPages ? `${skippedPages} page(s) had no managed menu and were left alone.` : ''}`;
+      const started = Date.now();
+      const poll = async () => {
+        if (!document.body.contains(m)) return;
+        const s = await deployState(state.gh, cfg.repo, commit.sha).catch(() => 'unknown');
+        if (s === 'success') { status.textContent = 'Menu is live on every page ✓ — reload to see it.'; return; }
+        if (s === 'failure' || s === 'error') { status.textContent = 'Deploy failed — check your host.'; return; }
+        status.textContent = `Committed ✓ — rebuilding… ${Math.round((Date.now() - started) / 1000)}s`;
+        setTimeout(poll, 5000);
+      };
+      setTimeout(poll, 4000);
+    } catch (err) {
+      console.error('[kiln] menu', err);
+      status.textContent = `Failed: ${err.message}`;
     }
   };
 }
@@ -411,6 +697,7 @@ async function invitePanel() {
   const m = modal(`
     <h3>Invite someone</h3>
     <label>Their name <input type="text" id="kiln-inv-name" placeholder="e.g. Claudia"></label>
+    <label>Access lasts <input type="number" id="kiln-inv-days" value="30" min="1" max="360" style="width:80px"> days (1–360)</label>
     <div class="kiln-roles">
       <label class="kiln-role"><input type="radio" name="kiln-role" value="editor" checked>
         <span><strong>Editor</strong><br><small>Can click-to-edit pages, swap images, and publish. No GitHub account needed.</small></span></label>
@@ -468,6 +755,7 @@ async function invitePanel() {
   m.querySelector('#kiln-inv-go').onclick = async () => {
     const name = m.querySelector('#kiln-inv-name').value.trim();
     const role = m.querySelector('input[name="kiln-role"]:checked').value;
+    const days = Math.min(Math.max(Number(m.querySelector('#kiln-inv-days').value) || 30, 1), 360);
     const out = m.querySelector('#kiln-inv-result');
     if (!name) { out.innerHTML = '<p class="kiln-dim">Give them a name first.</p>'; return; }
     out.innerHTML = '<p class="kiln-dim">Creating…</p>';
@@ -477,7 +765,7 @@ async function invitePanel() {
         const res = await fetch(`${cfg.worker}/admin/invite`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
-          body: JSON.stringify({ repo: cfg.repo, name, role: 'editor', days: 14 }),
+          body: JSON.stringify({ repo: cfg.repo, name, role: 'editor', days }),
         });
         const data = await res.json();
         if (!data.invite) throw new Error(data.error || 'failed');
@@ -486,7 +774,7 @@ async function invitePanel() {
         const res = await fetch('/api/member-invite', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
-          body: JSON.stringify({ name }),
+          body: JSON.stringify({ name, days }),
         });
         const data = await res.json();
         if (!data.invite) throw new Error(data.error || 'is the members area configured?');
@@ -494,7 +782,7 @@ async function invitePanel() {
       }
       out.innerHTML = `
         <p class="kiln-inv-ok">Link for <strong>${escapeHtml(name)}</strong> — send it by text or email.
-        ${role === 'editor' ? 'It works ONCE and signs them in for 30 days.' : 'It signs them into the members area for 30 days.'}</p>
+        ${role === 'editor' ? `It works ONCE and signs them in for ${days} days.` : `It signs them into the members area for ${days} days.`}</p>
         <div class="kiln-linkrow"><input type="text" readonly value="${escapeHtml(link)}"><button class="kiln-btn-publish">Copy</button></div>`;
       const row = out.querySelector('.kiln-linkrow');
       row.querySelector('button').onclick = async () => {
@@ -544,7 +832,8 @@ function renderAdminBar() {
       <span class="kiln-status" id="kiln-status">Signed in</span>
     </div>
     <div class="kiln-right">
-      <button id="kiln-newpost" class="kiln-btn-ghost">+ New post</button>
+      <button id="kiln-newpost" class="kiln-btn-ghost">+ New…</button>
+      <button id="kiln-menu" class="kiln-btn-ghost">Menu…</button>
       ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">Invite…</button>' : ''}
       <button id="kiln-publish" class="kiln-btn-publish" disabled>Publish</button>
       <button id="kiln-done" class="kiln-btn-ghost" title="Stop editing and browse the site (stays signed in)">Done editing</button>
@@ -552,7 +841,8 @@ function renderAdminBar() {
     </div>`;
   document.body.prepend(bar);
   document.getElementById('kiln-publish').onclick = publish;
-  document.getElementById('kiln-newpost').onclick = newPost;
+  document.getElementById('kiln-newpost').onclick = newContent;
+  document.getElementById('kiln-menu').onclick = menuEditor;
   document.getElementById('kiln-done').onclick = doneEditing;
   document.getElementById('kiln-signout').onclick = () => {
     if (state.pending.size && !confirm('Discard your unpublished edits and sign out?')) return;
@@ -570,6 +860,7 @@ function renderToolbar(el, key) {
   const rect = el.getBoundingClientRect();
   const isLink = el.tagName === 'A';
   const plain = el.hasAttribute('data-cms-plain');
+  const styles = Array.isArray(cfg.styles) ? cfg.styles : [];
   tb.innerHTML = `
     <span class="kiln-tb-label">${escapeHtml(key)}</span>
     ${plain ? '' : `
@@ -577,8 +868,14 @@ function renderToolbar(el, key) {
       <button class="kiln-tb-fmt" data-cmd="italic" title="Italic"><i>I</i></button>
       <button class="kiln-tb-fmt" data-cmd="underline" title="Underline"><u>U</u></button>
       <button class="kiln-tb-fmt" data-cmd="link" title="Turn selection into a link">🔗</button>
-      <button class="kiln-tb-fmt" data-cmd="removeFormat" title="Clear formatting">⌫</button>`}
-    ${isLink ? `<input class="kiln-href-input" type="text" value="${escapeHtml(el.getAttribute('href') || '')}" title="Where this links to">` : ''}
+      <button class="kiln-tb-fmt" data-cmd="img" title="Insert an image at the cursor">🖼</button>
+      <button class="kiln-tb-fmt" data-cmd="removeFormat" title="Clear formatting">⌫</button>
+      ${styles.length ? `<select class="kiln-style-select" title="Apply one of this site's text styles">
+        <option value="">Style…</option>
+        ${styles.map(s => `<option value="${escapeHtml(s.class)}">${escapeHtml(s.label)}</option>`).join('')}
+      </select>` : ''}`}
+    ${isLink ? `<input class="kiln-href-input" type="text" value="${escapeHtml(el.getAttribute('href') || '')}" title="Where this links to">
+      <button class="kiln-tb-fmt" data-cmd="attach" title="Upload a file and link to it">📎</button>` : ''}
     <button class="kiln-tb-save">Save</button>
     <button class="kiln-tb-cancel">Cancel</button>`;
   tb.style.top = `${Math.max(rect.top + window.scrollY - 46, window.scrollY + 50)}px`;
@@ -587,18 +884,50 @@ function renderToolbar(el, key) {
 
   tb.querySelectorAll('.kiln-tb-fmt').forEach(btn => {
     btn.addEventListener('mousedown', (e) => e.preventDefault()); // keep the selection
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const cmd = btn.dataset.cmd;
       if (cmd === 'link') {
         const url = window.prompt('Link to (URL or /page):', 'https://');
         if (url) document.execCommand('createLink', false, url);
+      } else if (cmd === 'img') {
+        insertInlineImage(el);
+      } else if (cmd === 'attach') {
+        const input = tb.querySelector('.kiln-href-input');
+        const path = await uploadAnyFile();
+        if (path && input) input.value = path;
       } else {
         document.execCommand(cmd, false, null);
       }
       el.focus();
     });
   });
+  const styleSelect = tb.querySelector('.kiln-style-select');
+  if (styleSelect) {
+    styleSelect.addEventListener('mousedown', (e) => e.stopPropagation());
+    styleSelect.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const cls = styleSelect.value;
+      if (!cls) return;
+      const sel = window.getSelection();
+      if (sel.rangeCount && !sel.isCollapsed && el.contains(sel.anchorNode)) {
+        const range = sel.getRangeAt(0);
+        const span = document.createElement('span');
+        span.className = cls;
+        try {
+          range.surroundContents(span);
+        } catch {
+          // Selection crosses element boundaries — wrap via extract/insert.
+          span.appendChild(range.extractContents());
+          range.insertNode(span);
+        }
+      } else {
+        setStatus('Select some text first, then pick a style', 'idle');
+      }
+      styleSelect.value = '';
+      el.focus();
+    });
+  }
   tb.querySelector('.kiln-tb-save').onclick = (e) => { e.stopPropagation(); commitEdit(el, key); };
   tb.querySelector('.kiln-tb-cancel').onclick = (e) => { e.stopPropagation(); cancelEditing(); };
 }
@@ -702,6 +1031,19 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.92)}
   border-radius:6px;padding:8px 10px;font-size:13px}
 .kiln-inv-row small{color:#999;display:block}
 .kiln-dim{color:#999;font-size:12px;margin-top:10px}
-.kiln-np-step{font-size:13px;color:#555;min-height:20px}`;
+.kiln-np-step{font-size:13px;color:#555;min-height:20px}
+.kiln-style-select{background:#2e2e4e;border:1px solid #444;color:#fff;border-radius:4px;padding:3px 4px;font-size:12px;max-width:110px}
+.kiln-repeat-item{position:relative}
+.kiln-item-ctl{position:absolute;top:6px;right:6px;display:flex;gap:4px;z-index:9999;opacity:0;transition:opacity .15s}
+.kiln-repeat-item:hover>.kiln-item-ctl{opacity:1}
+.kiln-item-ctl button{background:#1a1a2e;color:#fff;border:none;width:24px;height:24px;border-radius:5px;
+  cursor:pointer;font-size:12px;box-shadow:0 2px 6px rgba(0,0,0,.3)}
+.kiln-item-ctl button:hover{background:#4f6ef7}
+.kiln-menu-row{display:flex;gap:6px;margin-bottom:6px;align-items:center}
+.kiln-menu-row input{flex:1;padding:7px!important;margin:0!important}
+.kiln-menu-row .kiln-menu-href{flex:1.2}
+.kiln-menu-row button{background:#f2f2f2;border:1px solid #ddd;border-radius:5px;width:26px;height:30px;cursor:pointer;font-size:12px}
+.kiln-menu-row button:hover{background:#e6e6e6}
+#kiln-menu-add{margin-top:4px;color:#555;border-color:#ccc}`;
   document.head.appendChild(style);
 }

@@ -32,7 +32,14 @@ client was missing.
    <h1 data-cms="hero_headline">Welcome</h1>
    <p  data-cms="tagline" data-cms-plain>Plain text only</p>
    <img data-cms="hero_img" data-cms-attr="src" src="/assets/img/hero.jpg">
+   <a  data-cms="cta" href="/contact.html">Editable label AND destination</a>
+
+   <div data-cms-repeat="services"> <!-- duplicatable/removable blocks --> </div>
+   <div data-cms-menu="main"> <!-- nav managed across ALL pages at once --> </div>
    ```
+   Full conventions (incl. blog templates, new-page template, members area):
+   **[KILN_PROMPT.md](KILN_PROMPT.md)** — written so you can paste it straight into
+   Claude/v0/Lovable and have your AI wire up an existing site.
 2. Drop two scripts at the end of `<body>`:
    ```html
    <script>
@@ -88,10 +95,22 @@ assets (`npm run build`) and copy `dist/kiln.js` + `dist/kiln-editor.js` into yo
 > **Hosting note:** use Cloudflare Pages (or GitHub Pages) for business sites.
 > Vercel's free Hobby tier prohibits commercial use in its ToS.
 
+## What editors can do
+
+Click any outlined text and type. The toolbar offers **bold / italic / underline / links /
+clear**, an **insert image** button (uploads, downscales, commits), and a **Style…**
+dropdown listing the site's own CSS classes (`window.KILN.styles`) — typography stays
+designed, editors pick from the palette. Repeatable blocks (`data-cms-repeat`) get
+duplicate/remove controls. Links get an href field plus a 📎 **attach file** upload
+(files land in `/assets/files/`, or `/members/files/` — auto-gated — when you're on a
+members page). **+ New…** creates blog posts or standalone pages from your `_templates/`.
+**Menu…** edits the navigation across every page of the site in one atomic commit.
+
 ## Editors without GitHub accounts (magic links)
 
 Admins click **Invite…** in the admin bar → a one-time link is minted (e.g. for a client
-or teammate). Opening it grants a 30-day editing session — no GitHub account, ever.
+or teammate) with an access duration you choose (**1–360 days**). Opening it grants an
+editing session — no GitHub account, ever.
 Their commits land authored with their name, committed by your GitHub App's bot, and the
 worker enforces a strict allowlist: that one repo, content paths only, no deletes.
 

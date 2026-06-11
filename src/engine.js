@@ -29,12 +29,14 @@ export function indexHtml(raw) {
 
   walk(doc, (node) => {
     if (!node.attrs || !node.sourceCodeLocation) return;
-    // data-cms = click-editable content; data-cms-list = structural splice anchor
-    // (e.g. a post list) that prepend targets but the editor never makes editable.
-    const keyAttr = node.attrs.find(a => a.name === 'data-cms') ||
-                    node.attrs.find(a => a.name === 'data-cms-list');
+    // data-cms        = click-editable content
+    // data-cms-list   = structural splice anchor (prepend target, never editable)
+    // data-cms-repeat = container of duplicatable/deletable blocks (staged whole)
+    // data-cms-menu   = navigation container (rewritten across pages by menu editor)
+    const KINDS = { 'data-cms': 'field', 'data-cms-list': 'list', 'data-cms-repeat': 'repeat', 'data-cms-menu': 'menu' };
+    const keyAttr = node.attrs.find(a => KINDS[a.name]);
     if (!keyAttr) return;
-    const kind = keyAttr.name === 'data-cms-list' ? 'list' : 'field';
+    const kind = KINDS[keyAttr.name];
     const key = keyAttr.value;
     if (!key) { warnings.push('empty data-cms attribute ignored'); return; }
     if (fields.has(key)) {

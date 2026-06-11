@@ -11,11 +11,12 @@ export async function onRequestPost({ request, env }) {
   const payload = await verifyToken(invite, env.KILN_MEMBER_SECRET);
   if (!payload || payload.t !== 'mi') return json({ error: 'invalid or expired invite' }, 403);
 
+  const days = Math.min(Math.max(Number(payload.d) || 30, 1), 360);
   const session = await signToken(
-    { n: payload.n, exp: Date.now() + 30 * 24 * 3600 * 1000, t: 'ms' },
+    { n: payload.n, exp: Date.now() + days * 24 * 3600 * 1000, t: 'ms' },
     env.KILN_MEMBER_SECRET
   );
-  return json({ ok: true, name: payload.n }, 200, {
-    'Set-Cookie': `kiln_member=${encodeURIComponent(session)}; Path=/; Max-Age=${30 * 24 * 3600}; HttpOnly; Secure; SameSite=Lax`,
+  return json({ ok: true, name: payload.n, days }, 200, {
+    'Set-Cookie': `kiln_member=${encodeURIComponent(session)}; Path=/; Max-Age=${days * 24 * 3600}; HttpOnly; Secure; SameSite=Lax`,
   });
 }
