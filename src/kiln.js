@@ -43,6 +43,10 @@
         editor = null;
       }
       if (admin || editor) {
+        if (sessionStorage.getItem('kiln_pause') === '1') {
+          renderResumeButton();
+          return;
+        }
         window.__KILN_MODE = admin ? 'admin' : 'editor';
         var s = document.createElement('script');
         s.src = scriptSrc.replace(/kiln(\.min)?\.js([?#].*)?$/, 'kiln-editor.js');
@@ -98,6 +102,20 @@
       var returnTo = location.pathname + location.search;
       location.href = cfg.worker + '/auth/login?origin=' + encodeURIComponent(location.origin) +
         '&return_to=' + encodeURIComponent(returnTo);
+    };
+    document.body.appendChild(btn);
+  }
+
+  function renderResumeButton() {
+    var btn = document.createElement('button');
+    btn.id = 'kiln-login';
+    btn.textContent = '✎ Resume editing';
+    btn.style.cssText = 'position:fixed;bottom:16px;right:16px;border-radius:20px;' +
+      'background:#1a1a2e;color:#fff;border:0;font-size:13px;padding:10px 16px;cursor:pointer;' +
+      'z-index:99999;box-shadow:0 2px 8px rgba(0,0,0,.25)';
+    btn.onclick = function () {
+      sessionStorage.removeItem('kiln_pause');
+      location.reload();
     };
     document.body.appendChild(btn);
   }

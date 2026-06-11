@@ -108,8 +108,9 @@ const liveRevert = await waitForLive(html => !html.includes(MARKER) && html.incl
 check('revert is LIVE', liveRevert);
 
 // ── 5. New post: atomic multi-file commit through the proxy ──────────────────
-const TITLE = 'Hello from the magic-link editor';
-const SLUG = 'hello-from-the-magic-link-editor';
+const RUN = Date.now().toString(36);
+const TITLE = `Hello from the magic-link editor (${RUN})`;
+const SLUG = `hello-from-the-magic-link-editor-${RUN}`;
 const date = 'June 10, 2026';
 const tpl = await getFile(gh, REPO, '_templates/post.html', 'main');
 const cardTpl = await getFile(gh, REPO, '_templates/post-card.html', 'main');

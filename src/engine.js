@@ -29,8 +29,12 @@ export function indexHtml(raw) {
 
   walk(doc, (node) => {
     if (!node.attrs || !node.sourceCodeLocation) return;
-    const keyAttr = node.attrs.find(a => a.name === 'data-cms');
+    // data-cms = click-editable content; data-cms-list = structural splice anchor
+    // (e.g. a post list) that prepend targets but the editor never makes editable.
+    const keyAttr = node.attrs.find(a => a.name === 'data-cms') ||
+                    node.attrs.find(a => a.name === 'data-cms-list');
     if (!keyAttr) return;
+    const kind = keyAttr.name === 'data-cms-list' ? 'list' : 'field';
     const key = keyAttr.value;
     if (!key) { warnings.push('empty data-cms attribute ignored'); return; }
     if (fields.has(key)) {
@@ -41,6 +45,7 @@ export function indexHtml(raw) {
     const loc = node.sourceCodeLocation;
     const field = {
       key,
+      kind,
       tag: node.tagName,
       range: { start: loc.startOffset, end: loc.endOffset },
       inner: null,

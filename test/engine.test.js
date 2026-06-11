@@ -133,6 +133,19 @@ test('prepend inserts at inner start without touching existing content', () => {
   assert.equal(html, '<div data-cms="posts">\n  <article>new post</article>\n  <article>old post</article>\n</div>');
 });
 
+test('data-cms-list indexes as kind=list and accepts prepend', () => {
+  const list = '<div data-cms-list="posts"><article>old</article></div>';
+  const { fields } = indexHtml(list);
+  assert.equal(fields.get('posts').kind, 'list');
+  const { html } = applyEdits(list, [{ key: 'posts', prepend: '<article>new</article>' }]);
+  assert.equal(html, '<div data-cms-list="posts"><article>new</article><article>old</article></div>');
+});
+
+test('data-cms fields are kind=field', () => {
+  const { fields } = indexHtml('<p data-cms="x">hi</p>');
+  assert.equal(fields.get('x').kind, 'field');
+});
+
 test('readValues returns current source content', () => {
   const vals = readValues(PAGE);
   assert.equal(vals.cta, 'See Our Work');

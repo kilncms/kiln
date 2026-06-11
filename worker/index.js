@@ -58,6 +58,8 @@ export default {
       if (path === '/auth/refresh' && request.method === 'POST') return cors(env, request, await authRefresh(request, env));
       if (path === '/auth/logout' && request.method === 'POST') return cors(env, request, await authLogout(request, env));
       if (path === '/admin/invite' && request.method === 'POST') return cors(env, request, await adminInvite(request, env));
+      if (path === '/admin/invites' && request.method === 'GET') return cors(env, request, await adminListInvites(request, env, url));
+      if (path === '/admin/revoke' && request.method === 'POST') return cors(env, request, await adminRevoke(request, env));
       if (path === '/editor/redeem' && request.method === 'POST') return cors(env, request, await editorRedeem(request, env));
       if (path.startsWith('/gh/')) return cors(env, request, await ghProxy(request, env, path.slice(3) + url.search));
 
@@ -281,8 +283,53 @@ async function adminInvite(request, env) {
 
   const id = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
   const ttl = Math.min(Math.max(days, 1), 90) * 24 * 3600;
-  await env.KILN.put(`inv:${id}`, JSON.stringify({ repo, name, role }), { expirationTtl: ttl });
+  await env.KILN.put(`inv:${id}`, JSON.stringify({ repo, name, role, created: Date.now(), exp: Date.now() + ttl * 1000 }),
+    { expirationTtl: ttl });
   return json({ invite: id, role, expires_in_days: Math.min(Math.max(days, 1), 90) });
+}
+
+/** Anyone with push access can see + revoke the invites/sessions for that repo. */
+async function requirePush(request, repo) {
+  const auth = (request.headers.get('Authorization') || '').replace(/^(token|Bearer)\s+/i, '');
+  if (!auth || !repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return false;
+  const res = await fetch(`${GH}/repos/${repo}`, {
+    headers: { Authorization: `Bearer ${auth}`, Accept: 'application/vnd.github+json', 'User-Agent': UA },
+  });
+  if (!res.ok) return false;
+  const info = await res.json();
+  return !!info.permissions?.push;
+}
+
+async function adminListInvites(request, env, url) {
+  const repo = url.searchParams.get('repo') || '';
+  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+
+  async function collect(prefix) {
+    const out = [];
+    let cursor;
+    do {
+      const page = await env.KILN.list({ prefix, cursor });
+      for (const k of page.keys) {
+        const v = await env.KILN.get(k.name, 'json');
+        if (v && v.repo === repo) out.push({ id: k.name.slice(prefix.length), ...v });
+      }
+      cursor = page.list_complete ? null : page.cursor;
+    } while (cursor);
+    return out;
+  }
+
+  return json({ invites: await collect('inv:'), sessions: await collect('esess:') });
+}
+
+async function adminRevoke(request, env) {
+  const { repo, kind, id } = await request.json().catch(() => ({}));
+  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  if (!['invite', 'session'].includes(kind) || !/^[a-f0-9]{64}$/.test(id || '')) return json({ error: 'bad request' }, 400);
+  const key = (kind === 'invite' ? 'inv:' : 'esess:') + id;
+  const existing = await env.KILN.get(key, 'json');
+  if (!existing || existing.repo !== repo) return json({ error: 'not found' }, 404);
+  await env.KILN.delete(key);
+  return json({ ok: true });
 }
 
 async function editorRedeem(request, env) {
@@ -293,7 +340,9 @@ async function editorRedeem(request, env) {
   await env.KILN.delete(`inv:${invite}`); // single use
 
   const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
-  await env.KILN.put(`esess:${session}`, JSON.stringify(inv), { expirationTtl: 30 * 24 * 3600 });
+  await env.KILN.put(`esess:${session}`,
+    JSON.stringify({ ...inv, created: Date.now(), exp: Date.now() + 30 * 24 * 3600 * 1000 }),
+    { expirationTtl: 30 * 24 * 3600 });
   return json({ session, name: inv.name, repo: inv.repo, role: inv.role, exp: Date.now() + 30 * 24 * 3600 * 1000 });
 }
 
