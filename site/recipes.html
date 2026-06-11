@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>From your AI builder to Kiln — recipes</title>
+<meta name="description" content="Take a site from Lovable, Claude, or v0 to client-editable with Kiln."/>
+<style>
+:root{--ink:#14141f;--muted:#5b5e6e;--bg:#fbfbfd;--accent:#6366f1;--line:#e8e9ef;
+--font:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif;--mono:ui-monospace,'SF Mono',Menlo,monospace}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:var(--font);color:var(--ink);background:var(--bg);line-height:1.65}
+a{color:var(--accent);text-decoration:none}.wrap{max-width:760px;margin:0 auto;padding:0 24px 80px}
+nav{display:flex;justify-content:space-between;align-items:center;padding:22px 0 40px}
+.logo{font-weight:800;font-size:20px;background:linear-gradient(135deg,#6366f1,#8b5cf6);-webkit-background-clip:text;background-clip:text;color:transparent}
+.nav-r a{color:var(--muted);margin-left:20px;font-size:14px;font-weight:500}
+h1{font-size:2rem;font-weight:800;letter-spacing:-.03em;margin-bottom:10px}
+.lead{color:var(--muted);margin-bottom:30px}
+h2{font-size:1.2rem;font-weight:750;margin:44px 0 10px}
+p,li{font-size:14.5px;color:#3d4050}ol{padding-left:22px}li{margin:6px 0}
+pre{background:#14141f;color:#e7e7f0;border-radius:12px;padding:14px 16px;font-family:var(--mono);font-size:12.5px;overflow-x:auto;margin:12px 0;white-space:pre-wrap}
+code{font-family:var(--mono);background:#eef0f5;padding:1px 6px;border-radius:5px;font-size:12.8px}
+.tip{background:#f5f6ff;border:1.5px solid #c7d2fe;border-radius:12px;padding:13px 16px;font-size:13.5px;color:#3730a3;margin:14px 0}
+</style></head><body><div class="wrap">
+<nav><a class="logo" href="index.html">Kiln</a><span class="nav-r">
+<a href="setup.html">Setup</a><a href="https://kiln-demo.pages.dev" target="_blank" rel="noopener">Demo</a>
+<a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">GitHub</a></span></nav>
+
+<h1>From your AI builder to Kiln</h1>
+<p class="lead">You built a site with AI. These recipes make it editable by humans —
+your client, your team, future-you — without re-prompting anything.</p>
+
+<div class="tip"><strong>Skip the retrofit entirely:</strong> start from the
+<a href="https://github.com/erikkurtu/kiln-demo/generate" target="_blank" rel="noopener">Kiln starter template</a>
+("Use this template" on GitHub) — annotations, blog, and members area pre-wired. Tell your AI to
+restyle <em>that</em>, and everything below is already done.</div>
+
+<h2>🤖 Claude (the zero-config path)</h2>
+<ol>
+<li>In Claude Code (or claude.ai with a connected repo), paste
+<a href="https://github.com/erikkurtu/kiln/blob/main/KILN_PROMPT.md" target="_blank" rel="noopener">KILN_PROMPT.md</a> and say:</li>
+</ol>
+<pre>Build me a site for [describe it] as plain static HTML — then make it Kiln-ready
+per the prompt above, and run: npx github:erikkurtu/kiln</pre>
+<p>Claude builds the site, annotates it, AND runs the setup wizard — you only click the
+three confirmation buttons it opens for you. End to end in one conversation.</p>
+
+<h2>💗 Lovable (and Bolt)</h2>
+<ol>
+<li>Build your site. Then paste KILN_PROMPT.md into the chat with: <em>"Refactor this into plain
+static HTML (no framework) and make it Kiln-ready per these conventions."</em></li>
+<li>Click <strong>Connect GitHub</strong> (native sync) — your project becomes a repo.</li>
+<li>Run <code>npx github:erikkurtu/kiln</code> in a clone of that repo (or request a Kiln Cloud
+invite and we attach the engine for you).</li>
+</ol>
+
+<h2>▲ v0</h2>
+<ol>
+<li>v0 defaults to Next.js — add this to your prompt: <em>"Output as plain static HTML/CSS,
+no React, no framework."</em> Then paste KILN_PROMPT.md and ask it to apply the conventions.</li>
+<li>Push the result to GitHub.</li>
+<li>Host on <strong>Cloudflare Pages</strong>, not Vercel — Vercel's free tier prohibits commercial
+sites; Cloudflare's allows them. Then <code>npx github:erikkurtu/kiln</code>.</li>
+</ol>
+
+<h2>What "Kiln-ready" means (any tool, any site)</h2>
+<p>Just conventions in the HTML: <code>data-cms</code> on editable text/images,
+<code>data-cms-repeat</code> on card lists, <code>data-cms-menu</code> on the nav, two script
+tags, optional <code>_templates/</code> for posts and pages. The full spec is
+<a href="https://github.com/erikkurtu/kiln/blob/main/KILN_PROMPT.md" target="_blank" rel="noopener">KILN_PROMPT.md</a> —
+written to be pasted into any AI tool verbatim.</p>
+</div></body></html>
