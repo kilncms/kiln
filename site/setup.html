@@ -54,6 +54,15 @@
     <p class="lead">From "static files on your laptop" to "a site your client edits in the browser."</p>
     <p class="est">⏱ About 10 minutes. Everything below is free. You'll need a GitHub account and a Cloudflare account (both free to create).</p>
 
+    <div class="tip" style="background:#f5f6ff;border-color:#c7d2fe;color:#3730a3">
+      <strong>The easy way — one command.</strong> Run this in your site's folder and the wizard
+      does every scriptable step itself, opening the right page and waiting whenever a platform
+      requires a human click (there are exactly three):
+      <pre style="margin:10px 0 4px"><code>npx github:erikkurtu/kiln</code></pre>
+      Already set up? Health-check everything with <code>npx github:erikkurtu/kiln doctor</code>.
+      The steps below are the same thing, by hand.
+    </div>
+
     <h2><span class="n">1</span>Put your site on GitHub + Cloudflare Pages</h2>
     <ul>
       <li>Push your static site (plain HTML/CSS/JS — hand-written or AI-generated) to a GitHub repository.</li>
