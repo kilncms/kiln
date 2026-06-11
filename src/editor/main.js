@@ -22,8 +22,9 @@ const EDITOR_KEY = 'kiln_editor';
 const PAUSE_KEY = 'kiln_pause';
 
 const SANITIZE = {
-  ALLOWED_TAGS: ['a', 'abbr', 'b', 'br', 'code', 'em', 'i', 'img', 'li', 'mark', 'ol', 'p',
-    's', 'small', 'span', 'strong', 'sub', 'sup', 'u', 'ul'],
+  ALLOWED_TAGS: ['a', 'abbr', 'b', 'blockquote', 'br', 'code', 'em', 'h1', 'h2', 'h3', 'h4',
+    'h5', 'h6', 'i', 'img', 'li', 'mark', 'ol', 'p', 's', 'small', 'span', 'strong', 'sub',
+    'sup', 'u', 'ul'],
   ALLOWED_ATTR: ['href', 'target', 'rel', 'title', 'class', 'src', 'alt', 'data-kiln-src'],
 };
 
@@ -149,9 +150,10 @@ function decorateFields() {
     setupRepeat(container, key);
   });
 
+  // Clicking away SAVES your edit (staged for Publish). Esc reverts it.
   document.addEventListener('click', (e) => {
     if (state.active && !state.active.contains(e.target) && !e.target.closest('#kiln-toolbar')) {
-      cancelEditing();
+      commitEdit(state.active, state.active.getAttribute('data-cms'));
     }
   });
   document.addEventListener('keydown', (e) => {
@@ -180,6 +182,33 @@ function decorateField(el, key) {
 function setupRepeat(container, key) {
   container.classList.add('kiln-repeat');
   [...container.children].forEach((item) => attachItemControls(container, key, item));
+
+  // A visible "+ Add" so adding a card/document doesn't depend on discovering
+  // the hover controls. It clones the last block, ready to edit.
+  const add = document.createElement('button');
+  add.className = 'kiln-repeat-add';
+  add.textContent = '+ Add block';
+  add.onclick = (e) => {
+    e.stopPropagation();
+    const last = [...container.children].filter(c => !c.classList.contains('kiln-repeat-add')).pop();
+    if (!last) return;
+    const clone = last.cloneNode(true);
+    clone.querySelectorAll('.kiln-item-ctl, #kiln-toolbar').forEach(n => n.remove());
+    clone.classList.remove('kiln-repeat-item');
+    clone.querySelectorAll('[data-cms]').forEach(n => {
+      n.classList.remove('kiln-field', 'kiln-editing', 'kiln-modified');
+      n.removeAttribute('contenteditable');
+    });
+    container.insertBefore(clone, add);
+    clone.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
+    attachItemControls(container, key, clone);
+    stageContainer(container, key);
+    clone.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    clone.classList.add('kiln-flash');
+    setTimeout(() => clone.classList.remove('kiln-flash'), 1600);
+    setStatus('Block added — click its text to edit, then Publish', 'saved');
+  };
+  container.appendChild(add);
 }
 
 function attachItemControls(container, key, item) {
@@ -216,7 +245,7 @@ function attachItemControls(container, key, item) {
 /** Stage a repeat container's full cleaned innerHTML as one pending edit. */
 function stageContainer(container, key) {
   const clone = container.cloneNode(true);
-  clone.querySelectorAll('.kiln-item-ctl, #kiln-toolbar').forEach(n => n.remove());
+  clone.querySelectorAll('.kiln-item-ctl, #kiln-toolbar, .kiln-repeat-add').forEach(n => n.remove());
   clone.querySelectorAll('[contenteditable]').forEach(n => n.removeAttribute('contenteditable'));
   clone.querySelectorAll('.kiln-field, .kiln-editing, .kiln-modified, .kiln-repeat-item').forEach(n => {
     n.classList.remove('kiln-field', 'kiln-editing', 'kiln-modified', 'kiln-repeat-item');
@@ -464,6 +493,35 @@ async function publish() {
   }
 }
 
+/**
+ * Is a change live yet? Three signals, because hosts (Cloudflare Pages) SKIP
+ * builds that are superseded by a newer commit — polling only our own commit's
+ * deployment can wait forever:
+ *   a) our commit's deployment succeeded
+ *   b) a NEWER deployment succeeded (it necessarily includes our commit)
+ *   c) for new files: the URL itself now answers
+ */
+async function isChangeLive(sha, sinceMs, checkUrl) {
+  const s = await deployState(state.gh, cfg.repo, sha).catch(() => 'unknown');
+  if (s === 'success') return true;
+  if (s === 'failure' || s === 'error') return 'failed';
+  try {
+    const deps = await state.gh.request('GET', `/repos/${cfg.repo}/deployments?per_page=1`);
+    if (deps.length && deps[0].sha !== sha && new Date(deps[0].created_at).getTime() > sinceMs) {
+      const st = await state.gh.request('GET', `/repos/${cfg.repo}/deployments/${deps[0].id}/statuses?per_page=1`);
+      if (st.length && st[0].state === 'success') return true;
+    }
+  } catch { /* keep polling */ }
+  if (checkUrl) {
+    try {
+      const r = await fetch(`${checkUrl}${checkUrl.includes('?') ? '&' : '?'}kilncb=${Date.now()}`,
+        { method: 'HEAD', cache: 'no-store' });
+      if (r.ok) return true;
+    } catch { /* keep polling */ }
+  }
+  return false;
+}
+
 async function watchDeploy(sha, onLive) {
   const started = Date.now();
   const short = sha ? sha.slice(0, 7) : '';
@@ -471,11 +529,11 @@ async function watchDeploy(sha, onLive) {
   const tick = async () => {
     const secs = Math.round((Date.now() - started) / 1000);
     if (Date.now() - started > 5 * 60 * 1000) {
-      setStatus(`Saved to GitHub ✓ (${short}) — deploy is taking longer than usual; it WILL go live`, 'saved');
+      setStatus(`Saved ✓ (${short}) — deploy is taking longer than usual; it WILL go live`, 'saved');
       return;
     }
-    const s = await deployState(state.gh, cfg.repo, sha).catch(() => 'unknown');
-    if (s === 'success') {
+    const live = await isChangeLive(sha, started - 60000);
+    if (live === true) {
       document.querySelectorAll('img[data-kiln-src]').forEach(img => {
         if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
         img.src = img.getAttribute('data-kiln-src');
@@ -486,11 +544,11 @@ async function watchDeploy(sha, onLive) {
       setTimeout(() => setStatus(`Signed in as ${state.user}`, 'idle'), 8000);
       return;
     }
-    if (s === 'failure' || s === 'error') { setStatus('Deploy failed — check your host dashboard', 'error'); return; }
-    setStatus(`Saved to GitHub ✓ (${short}) — host is rebuilding… ${secs}s`, 'saving');
+    if (live === 'failed') { setStatus('Deploy failed — check your host dashboard', 'error'); return; }
+    setStatus(`Saved ✓ (${short}) — site is rebuilding… ${secs}s`, 'saving');
     setTimeout(tick, 5000);
   };
-  setStatus(`Saved to GitHub ✓ (${short}) — host is rebuilding…`, 'saving');
+  setStatus(`Saved ✓ (${short}) — site is rebuilding…`, 'saving');
   setTimeout(tick, 4000);
 }
 
@@ -567,17 +625,23 @@ function newContent() {
       const started = Date.now();
       const poll = async () => {
         if (!document.body.contains(m)) return;
-        const s = await deployState(state.gh, cfg.repo, commit.sha).catch(() => 'unknown');
-        if (s === 'success') {
+        const live = await isChangeLive(commit.sha, started - 60000, href);
+        if (live === true) {
           status.innerHTML = `Live ✓ — open it and click into the text to write.${
             kind === 'page' ? ' <br><small>Tip: use <strong>Menu…</strong> in the top bar to add it to your navigation.</small>' : ''}`;
           openBtn.disabled = false;
           openBtn.onclick = () => { location.href = href; };
           return;
         }
-        if (s === 'failure' || s === 'error') { status.textContent = 'Deploy failed — check your host dashboard.'; return; }
+        if (live === 'failed') { status.textContent = 'Deploy failed — check your host dashboard.'; return; }
         const secs = Math.round((Date.now() - started) / 1000);
-        status.textContent = `Committed ✓ — host is rebuilding… ${secs}s (usually under a minute)`;
+        if (secs > 240) {
+          status.innerHTML = 'Taking longer than usual — it WILL appear. You can close this and check in a minute.';
+          openBtn.disabled = false;
+          openBtn.onclick = () => { location.href = href; };
+          return;
+        }
+        status.textContent = `Committed ✓ — site is rebuilding… ${secs}s (usually under a minute)`;
         setTimeout(poll, 5000);
       };
       setTimeout(poll, 4000);
@@ -650,7 +714,7 @@ function menuEditor() {
       .map(r => `<a href="${escapeHtml(r.href.trim() || '/')}">${escapeHtml(r.label.trim())}</a>`)
       .join('\n      ') + '\n    ';
     try {
-      status.textContent = 'Finding the site’s pages…';
+      status.textContent = 'Step 1 of 3 · Finding the site’s pages…';
       const branch = cfg.branch || 'main';
       const tree = await state.gh.request('GET',
         `/repos/${cfg.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
@@ -673,14 +737,22 @@ function menuEditor() {
       status.textContent = `Committing ${changed.length} page${changed.length > 1 ? 's' : ''} as one change…`;
       const commit = await commitFiles(state.gh, cfg.repo, branch, changed,
         `Update menu on ${changed.length} pages (via Kiln)`);
-      status.textContent = `Committed ✓ (${commit.sha.slice(0, 7)}) — rebuilding. ${skippedPages ? `${skippedPages} page(s) had no managed menu and were left alone.` : ''}`;
+      status.textContent = `Step 2 of 3 · Committed ✓ (${commit.sha.slice(0, 7)}) — the site is rebuilding. ${skippedPages ? `${skippedPages} page(s) had no managed menu and were left alone.` : ''}`;
       const started = Date.now();
       const poll = async () => {
         if (!document.body.contains(m)) return;
-        const s = await deployState(state.gh, cfg.repo, commit.sha).catch(() => 'unknown');
-        if (s === 'success') { status.textContent = 'Menu is live on every page ✓ — reload to see it.'; return; }
-        if (s === 'failure' || s === 'error') { status.textContent = 'Deploy failed — check your host.'; return; }
-        status.textContent = `Committed ✓ — rebuilding… ${Math.round((Date.now() - started) / 1000)}s`;
+        const live = await isChangeLive(commit.sha, started - 60000);
+        if (live === true) {
+          status.innerHTML = 'Step 3 of 3 · <strong>Menu is live on every page ✓</strong>';
+          const actions = m.querySelector('.kiln-modal-actions');
+          actions.innerHTML = '<button class="kiln-btn-publish" id="kiln-menu-reload">Reload to see it</button>';
+          actions.querySelector('#kiln-menu-reload').onclick = () => location.reload();
+          return;
+        }
+        if (live === 'failed') { status.textContent = 'Deploy failed — check your host.'; return; }
+        const secs = Math.round((Date.now() - started) / 1000);
+        if (secs > 240) { status.textContent = 'Committed ✓ — deploy is slow today but the menu WILL go live. Safe to close.'; return; }
+        status.textContent = `Step 2 of 3 · Committed ✓ — rebuilding… ${secs}s`;
         setTimeout(poll, 5000);
       };
       setTimeout(poll, 4000);
@@ -691,31 +763,112 @@ function menuEditor() {
   };
 }
 
-// ─── Invites (admin only) ────────────────────────────────────────────────────
+// ─── People & access (admin only) ────────────────────────────────────────────
 
 async function invitePanel() {
   const m = modal(`
-    <h3>Invite someone</h3>
-    <label>Their name <input type="text" id="kiln-inv-name" placeholder="e.g. Claudia"></label>
-    <label>Access lasts <input type="number" id="kiln-inv-days" value="30" min="1" max="360" style="width:80px"> days (1–360)</label>
-    <div class="kiln-roles">
-      <label class="kiln-role"><input type="radio" name="kiln-role" value="editor" checked>
-        <span><strong>Editor</strong><br><small>Can click-to-edit pages, swap images, and publish. No GitHub account needed.</small></span></label>
-      <label class="kiln-role"><input type="radio" name="kiln-role" value="member">
-        <span><strong>Member</strong><br><small>Can view the members-only area and its documents. Cannot edit anything.</small></span></label>
+    <h3>People &amp; access</h3>
+    <div id="kiln-gpeople">
+      <p class="kiln-dim" id="kiln-gstatus">Checking Google sign-in…</p>
+      <div id="kiln-people-form" style="display:none">
+        <label>Google email <input type="email" id="kiln-p-email" placeholder="them@gmail.com"></label>
+        <div class="kiln-2col">
+          <label>Name <input type="text" id="kiln-p-name" placeholder="Claudia"></label>
+          <label>Access (days) <input type="number" id="kiln-p-days" value="90" min="1" max="360"></label>
+        </div>
+        <div class="kiln-roles">
+          <label class="kiln-role"><input type="radio" name="kiln-p-role" value="editor" checked>
+            <span><strong>Editor</strong><br><small>Edits pages, images, posts. Signs in with their Google account.</small></span></label>
+          <label class="kiln-role"><input type="radio" name="kiln-p-role" value="member">
+            <span><strong>Member</strong><br><small>Views the members-only area and documents. Cannot edit.</small></span></label>
+        </div>
+        <div class="kiln-modal-actions" style="justify-content:flex-start;margin-top:8px">
+          <button class="kiln-btn-publish" id="kiln-p-add">Add person</button>
+        </div>
+        <div id="kiln-people-list" class="kiln-inv-list" style="margin-top:10px">Loading…</div>
+      </div>
     </div>
-    <div class="kiln-modal-actions">
-      <button class="kiln-btn-ghost" data-close>Cancel</button>
-      <button class="kiln-btn-publish" id="kiln-inv-go">Create link</button>
-    </div>
-    <div id="kiln-inv-result"></div>
     <hr class="kiln-hr">
-    <h4>Active editor invites &amp; sessions</h4>
-    <div id="kiln-inv-list" class="kiln-inv-list">Loading…</div>
-    <p class="kiln-dim">Member links are stateless and can't be listed here; rotating the
-    <code>KILN_MEMBER_SECRET</code> signs everyone out of the members area at once.</p>`);
+    <details>
+      <summary class="kiln-summary">Link invites (fallback, for people without Google)</summary>
+      <label>Their name <input type="text" id="kiln-inv-name" placeholder="e.g. Claudia"></label>
+      <label>Access lasts <input type="number" id="kiln-inv-days" value="30" min="1" max="360" style="width:80px"> days (1–360)</label>
+      <div class="kiln-roles">
+        <label class="kiln-role"><input type="radio" name="kiln-role" value="editor" checked>
+          <span><strong>Editor link</strong><br><small>Works once, then signs them in.</small></span></label>
+        <label class="kiln-role"><input type="radio" name="kiln-role" value="member">
+          <span><strong>Member link</strong><br><small>Opens the members area.</small></span></label>
+      </div>
+      <div class="kiln-modal-actions" style="justify-content:flex-start">
+        <button class="kiln-btn-publish" id="kiln-inv-go">Create link</button>
+      </div>
+      <div id="kiln-inv-result"></div>
+      <h4>Active link invites &amp; sessions</h4>
+      <div id="kiln-inv-list" class="kiln-inv-list">Loading…</div>
+    </details>
+    <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
 
   const admin = () => JSON.parse(localStorage.getItem(ADMIN_KEY));
+
+  // — Google people list —
+  async function refreshPeople() {
+    const status = m.querySelector('#kiln-gstatus');
+    const form = m.querySelector('#kiln-people-form');
+    try {
+      const res = await fetch(`${cfg.worker}/admin/people?repo=${encodeURIComponent(cfg.repo)}`, {
+        headers: { Authorization: `Bearer ${admin().token}` },
+      });
+      const data = await res.json();
+      if (!data.googleConfigured) {
+        status.innerHTML = 'Google sign-in isn’t configured on the auth worker yet — add '
+          + '<code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code> (see README). '
+          + 'Until then, use link invites below.';
+        return;
+      }
+      status.textContent = 'People on this list sign in with Google — no links, no passwords. Removing someone here revokes new sign-ins immediately.';
+      form.style.display = '';
+      const list = m.querySelector('#kiln-people-list');
+      list.innerHTML = (data.people || []).length ? '' : '<p class="kiln-dim">Nobody yet — add the first person above.</p>';
+      for (const p of data.people || []) {
+        const row = document.createElement('div');
+        row.className = 'kiln-inv-row';
+        row.innerHTML = `<span><strong>${escapeHtml(p.name)}</strong>
+          <small>${escapeHtml(p.email)} · ${p.role} · ${p.days}d access</small></span>
+          <button class="kiln-btn-ghost">Remove</button>`;
+        row.querySelector('button').onclick = async () => {
+          await fetch(`${cfg.worker}/admin/people/remove`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
+            body: JSON.stringify({ repo: cfg.repo, email: p.email }),
+          });
+          refreshPeople();
+        };
+        list.appendChild(row);
+      }
+    } catch {
+      status.textContent = 'Could not reach the auth worker.';
+    }
+  }
+  refreshPeople();
+
+  m.querySelector('#kiln-p-add').onclick = async () => {
+    const email = m.querySelector('#kiln-p-email').value.trim();
+    const name = m.querySelector('#kiln-p-name').value.trim();
+    const days = m.querySelector('#kiln-p-days').value;
+    const role = m.querySelector('input[name="kiln-p-role"]:checked').value;
+    if (!email) return;
+    const res = await fetch(`${cfg.worker}/admin/people`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
+      body: JSON.stringify({ repo: cfg.repo, email, name, role, days }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      m.querySelector('#kiln-p-email').value = '';
+      m.querySelector('#kiln-p-name').value = '';
+      refreshPeople();
+    }
+  };
 
   async function refreshList() {
     const list = m.querySelector('#kiln-inv-list');
@@ -796,6 +949,53 @@ async function invitePanel() {
   };
 }
 
+// ─── History (per-page restore points) ───────────────────────────────────────
+
+async function historyPanel() {
+  const m = modal(`
+    <h3>History — ${escapeHtml(state.page.path)}</h3>
+    <p class="kiln-dim">Every publish is a snapshot. Restoring puts that version of THIS page
+    back as a new change (nothing is ever lost).</p>
+    <div id="kiln-hist" class="kiln-inv-list">Loading…</div>
+    <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>
+    <p class="kiln-np-step" id="kiln-hist-status"></p>`);
+  const list = m.querySelector('#kiln-hist');
+  const status = m.querySelector('#kiln-hist-status');
+  try {
+    const commits = await state.gh.request('GET',
+      `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=15`);
+    list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No history yet.</p>';
+    commits.forEach((c, i) => {
+      const div = document.createElement('div');
+      div.className = 'kiln-inv-row';
+      const when = new Date(c.commit.author.date).toLocaleString(undefined,
+        { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      div.innerHTML = `<span><strong>${escapeHtml(c.commit.message.split('\n')[0].slice(0, 60))}</strong>
+        <small>${when} · ${escapeHtml(c.commit.author.name)}</small></span>
+        ${i === 0 ? '<small class="kiln-dim">current</small>' : '<button class="kiln-btn-ghost">Restore</button>'}`;
+      const btn = div.querySelector('button');
+      if (btn) btn.onclick = async () => {
+        btn.disabled = true;
+        status.textContent = 'Restoring…';
+        try {
+          const old = await getFile(state.gh, cfg.repo, state.page.path, c.sha);
+          const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
+            () => old.text, `Restore ${state.page.path} to ${c.sha.slice(0, 7)} (via Kiln)`);
+          if (result.unchanged) { status.textContent = 'That version is identical to the current one.'; btn.disabled = false; return; }
+          status.textContent = 'Restored ✓ — rebuilding. Reload the page in ~a minute.';
+          watchDeploy(result.commit?.sha);
+        } catch (err) {
+          status.textContent = `Restore failed: ${err.message}`;
+          btn.disabled = false;
+        }
+      };
+      list.appendChild(div);
+    });
+  } catch (err) {
+    list.innerHTML = `<p class="kiln-dim">Could not load history: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
 // ─── Done / exit ─────────────────────────────────────────────────────────────
 
 function doneEditing() {
@@ -827,22 +1027,24 @@ function renderAdminBar() {
   bar.id = 'kiln-bar';
   bar.innerHTML = `
     <div class="kiln-left">
-      <span class="kiln-flame">🔥</span>
-      <span class="kiln-user">${escapeHtml(state.user)}${mode === 'editor' ? ' (editor)' : ''}</span>
+      <span class="kiln-brand">Kiln</span>
+      <span class="kiln-user">${escapeHtml(state.user)}${mode === 'editor' ? ' · editor' : ''}</span>
       <span class="kiln-status" id="kiln-status">Signed in</span>
     </div>
     <div class="kiln-right">
-      <button id="kiln-newpost" class="kiln-btn-ghost">+ New…</button>
-      <button id="kiln-menu" class="kiln-btn-ghost">Menu…</button>
-      ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">Invite…</button>' : ''}
+      <button id="kiln-newpost" class="kiln-btn-ghost">+ New</button>
+      <button id="kiln-menu" class="kiln-btn-ghost">Menu</button>
+      <button id="kiln-history" class="kiln-btn-ghost">History</button>
+      ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
       <button id="kiln-publish" class="kiln-btn-publish" disabled>Publish</button>
-      <button id="kiln-done" class="kiln-btn-ghost" title="Stop editing and browse the site (stays signed in)">Done editing</button>
+      <button id="kiln-done" class="kiln-btn-ghost" title="Stop editing and browse the site (stays signed in)">Done</button>
       <button id="kiln-signout" class="kiln-btn-link" title="Sign out of Kiln completely">sign out</button>
     </div>`;
   document.body.prepend(bar);
   document.getElementById('kiln-publish').onclick = publish;
   document.getElementById('kiln-newpost').onclick = newContent;
   document.getElementById('kiln-menu').onclick = menuEditor;
+  document.getElementById('kiln-history').onclick = historyPanel;
   document.getElementById('kiln-done').onclick = doneEditing;
   document.getElementById('kiln-signout').onclick = () => {
     if (state.pending.size && !confirm('Discard your unpublished edits and sign out?')) return;
@@ -861,23 +1063,34 @@ function renderToolbar(el, key) {
   const isLink = el.tagName === 'A';
   const plain = el.hasAttribute('data-cms-plain');
   const styles = Array.isArray(cfg.styles) ? cfg.styles : [];
+  const LINK_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>';
+  const IMG_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>';
   tb.innerHTML = `
     <span class="kiln-tb-label">${escapeHtml(key)}</span>
     ${plain ? '' : `
+      <select class="kiln-style-select" title="Text format and site styles">
+        <option value="">Style</option>
+        <optgroup label="Format">
+          <option value="fmt:p">Body</option>
+          <option value="fmt:h2">Heading</option>
+          <option value="fmt:h3">Subheading</option>
+          <option value="fmt:blockquote">Quote</option>
+        </optgroup>
+        ${styles.length ? `<optgroup label="Site styles">
+          ${styles.map(s => `<option value="cls:${escapeHtml(s.class)}">${escapeHtml(s.label)}</option>`).join('')}
+        </optgroup>` : ''}
+      </select>
       <button class="kiln-tb-fmt" data-cmd="bold" title="Bold"><b>B</b></button>
       <button class="kiln-tb-fmt" data-cmd="italic" title="Italic"><i>I</i></button>
       <button class="kiln-tb-fmt" data-cmd="underline" title="Underline"><u>U</u></button>
-      <button class="kiln-tb-fmt" data-cmd="link" title="Turn selection into a link">🔗</button>
-      <button class="kiln-tb-fmt" data-cmd="img" title="Insert an image at the cursor">🖼</button>
-      <button class="kiln-tb-fmt" data-cmd="removeFormat" title="Clear formatting">⌫</button>
-      ${styles.length ? `<select class="kiln-style-select" title="Apply one of this site's text styles">
-        <option value="">Style…</option>
-        ${styles.map(s => `<option value="${escapeHtml(s.class)}">${escapeHtml(s.label)}</option>`).join('')}
-      </select>` : ''}`}
-    ${isLink ? `<input class="kiln-href-input" type="text" value="${escapeHtml(el.getAttribute('href') || '')}" title="Where this links to">
-      <button class="kiln-tb-fmt" data-cmd="attach" title="Upload a file and link to it">📎</button>` : ''}
-    <button class="kiln-tb-save">Save</button>
-    <button class="kiln-tb-cancel">Cancel</button>`;
+      <button class="kiln-tb-fmt" data-cmd="link" title="Turn selection into a link">${LINK_ICON}</button>
+      <button class="kiln-tb-fmt" data-cmd="img" title="Insert an image at the cursor">${IMG_ICON}</button>
+      <button class="kiln-tb-fmt kiln-tb-clear" data-cmd="removeFormat" title="Clear formatting">Clear</button>`}
+    ${isLink ? `<input class="kiln-href-input" type="text" value="${escapeHtml(el.getAttribute('href') || '')}" title="Where this links to" placeholder="/page.html or https://…">
+      <button class="kiln-tb-fmt kiln-tb-attach" data-cmd="attach" title="Upload a file (PDF, doc…) and point this link at it">Attach file…</button>` : ''}
+    <span class="kiln-tb-gap"></span>
+    <button class="kiln-tb-save" title="Keep this edit (you can still Esc-revert until you click away)">Done</button>
+    <button class="kiln-tb-cancel" title="Throw away this edit (Esc)">Revert</button>`;
   tb.style.top = `${Math.max(rect.top + window.scrollY - 46, window.scrollY + 50)}px`;
   tb.style.left = `${Math.min(rect.left + window.scrollX, window.innerWidth - 380)}px`;
   document.body.appendChild(tb);
@@ -907,24 +1120,31 @@ function renderToolbar(el, key) {
     styleSelect.addEventListener('mousedown', (e) => e.stopPropagation());
     styleSelect.addEventListener('change', (e) => {
       e.stopPropagation();
-      const cls = styleSelect.value;
-      if (!cls) return;
-      const sel = window.getSelection();
-      if (sel.rangeCount && !sel.isCollapsed && el.contains(sel.anchorNode)) {
-        const range = sel.getRangeAt(0);
-        const span = document.createElement('span');
-        span.className = cls;
-        try {
-          range.surroundContents(span);
-        } catch {
-          // Selection crosses element boundaries — wrap via extract/insert.
-          span.appendChild(range.extractContents());
-          range.insertNode(span);
-        }
-      } else {
-        setStatus('Select some text first, then pick a style', 'idle');
-      }
+      const value = styleSelect.value;
       styleSelect.value = '';
+      if (!value) return;
+      const sel = window.getSelection();
+      const inField = sel.rangeCount && el.contains(sel.anchorNode);
+      if (value.startsWith('fmt:')) {
+        // Block format: works on the block the cursor is in (no selection needed).
+        if (!inField) { el.focus(); }
+        document.execCommand('formatBlock', false, value.slice(4));
+      } else if (value.startsWith('cls:')) {
+        const cls = value.slice(4);
+        if (inField && !sel.isCollapsed) {
+          const range = sel.getRangeAt(0);
+          const span = document.createElement('span');
+          span.className = cls;
+          try {
+            range.surroundContents(span);
+          } catch {
+            span.appendChild(range.extractContents());
+            range.insertNode(span);
+          }
+        } else {
+          setStatus('Select some text first, then pick a site style', 'idle');
+        }
+      }
       el.focus();
     });
   }
@@ -971,79 +1191,111 @@ function escapeHtml(s) {
 function injectStyles() {
   const style = document.createElement('style');
   style.textContent = `
-#kiln-bar{position:fixed;top:0;left:0;right:0;height:44px;background:#1a1a2e;color:#e0e0e0;display:flex;
+:root{--kiln-bg:rgba(16,16,25,.92);--kiln-accent:#6366f1;--kiln-accent-h:#4f46e5;--kiln-ok:#34d399;
+  --kiln-warn:#fbbf24;--kiln-err:#f87171;--kiln-font:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif}
+#kiln-bar{position:fixed;top:0;left:0;right:0;height:46px;background:var(--kiln-bg);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);color:#e7e7ee;display:flex;
   align-items:center;justify-content:space-between;padding:0 14px;z-index:99999;
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.4)}
-.kiln-left,.kiln-right{display:flex;align-items:center;gap:10px;min-width:0}
-.kiln-flame{font-size:15px}
-.kiln-status{opacity:.6;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46vw}
-.kiln-status--saving{opacity:1;color:#f0c040}
-.kiln-status--saved{opacity:1;color:#4caf50}
-.kiln-status--error{opacity:1;color:#f44336}
-.kiln-btn-publish{background:#4f6ef7;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;
-  font-size:13px;font-weight:500}
-.kiln-btn-publish:hover:not(:disabled){background:#3a59e8}
-.kiln-btn-publish:disabled{opacity:.4;cursor:default}
-.kiln-btn-ghost{background:transparent;color:#aaa;border:1px solid #444;padding:5px 11px;border-radius:6px;
-  cursor:pointer;font-size:12px;white-space:nowrap}
-.kiln-btn-ghost:hover{color:#fff;border-color:#888}
-.kiln-btn-link{background:none;border:none;color:#666;font-size:11px;cursor:pointer;text-decoration:underline}
-.kiln-btn-link:hover{color:#aaa}
-body:has(#kiln-bar){padding-top:44px!important}
-.kiln-field{cursor:pointer;outline:2px dashed transparent;outline-offset:4px;border-radius:3px;transition:outline-color .15s}
-.kiln-field:hover{outline-color:#4f6ef7}
-.kiln-field.kiln-editing{outline:2px solid #4f6ef7;cursor:text;padding:2px 4px;min-width:40px}
-.kiln-field.kiln-modified{outline:2px solid #f0c040}
-img.kiln-field:hover{outline-style:solid;filter:brightness(.92)}
-#kiln-toolbar{position:absolute;background:#1a1a2e;color:#fff;padding:6px 8px;border-radius:6px;display:flex;
-  align-items:center;gap:6px;font-family:-apple-system,sans-serif;font-size:12px;z-index:999999;
-  box-shadow:0 4px 16px rgba(0,0,0,.4);flex-wrap:wrap;max-width:90vw}
-.kiln-tb-label{opacity:.6;margin-right:2px}
-.kiln-tb-fmt{background:#2e2e4e;color:#fff;border:none;width:26px;height:24px;border-radius:4px;cursor:pointer;font-size:12px}
-.kiln-tb-fmt:hover{background:#3d3d63}
-.kiln-href-input{background:#2e2e4e;border:1px solid #444;color:#fff;border-radius:4px;padding:4px 6px;
-  font-size:12px;width:200px}
-.kiln-tb-save{background:#4f6ef7;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px}
-.kiln-tb-cancel{background:transparent;color:#aaa;border:none;padding:4px 8px;cursor:pointer;font-size:12px}
+  font-family:var(--kiln-font);font-size:13px;border-bottom:1px solid rgba(255,255,255,.07)}
+.kiln-left,.kiln-right{display:flex;align-items:center;gap:8px;min-width:0}
+.kiln-brand{font-weight:700;letter-spacing:.02em;font-size:14px;
+  background:linear-gradient(135deg,#a5b4fc,#6366f1);-webkit-background-clip:text;background-clip:text;color:transparent}
+.kiln-user{color:#9ca3af;font-size:12px}
+.kiln-status{color:#6b7280;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40vw}
+.kiln-status--saving{color:var(--kiln-warn)}
+.kiln-status--saved{color:var(--kiln-ok)}
+.kiln-status--error{color:var(--kiln-err)}
+.kiln-btn-publish{background:var(--kiln-accent);color:#fff;border:none;padding:7px 16px;border-radius:9px;
+  cursor:pointer;font-size:13px;font-weight:600;font-family:var(--kiln-font);transition:background .15s,transform .1s}
+.kiln-btn-publish:hover:not(:disabled){background:var(--kiln-accent-h);transform:translateY(-1px)}
+.kiln-btn-publish:disabled{opacity:.35;cursor:default}
+.kiln-btn-ghost{background:rgba(255,255,255,.06);color:#c7c9d4;border:1px solid rgba(255,255,255,.1);
+  padding:6px 12px;border-radius:9px;cursor:pointer;font-size:12.5px;font-family:var(--kiln-font);
+  white-space:nowrap;transition:all .15s}
+.kiln-btn-ghost:hover{color:#fff;background:rgba(255,255,255,.12)}
+.kiln-btn-link{background:none;border:none;color:#565b68;font-size:11px;cursor:pointer;font-family:var(--kiln-font)}
+.kiln-btn-link:hover{color:#9ca3af}
+body:has(#kiln-bar){padding-top:46px!important}
+.kiln-field{cursor:pointer;outline:2px dashed transparent;outline-offset:4px;border-radius:4px;transition:outline-color .15s}
+.kiln-field:hover{outline-color:rgba(99,102,241,.75)}
+.kiln-field.kiln-editing{outline:2px solid var(--kiln-accent);cursor:text;padding:2px 4px;min-width:40px}
+.kiln-field.kiln-modified{outline:2px solid var(--kiln-warn)}
+img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
+.kiln-flash{animation:kilnflash 1.4s ease}
+@keyframes kilnflash{0%{outline:3px solid var(--kiln-ok);outline-offset:6px}100%{outline:3px solid transparent;outline-offset:4px}}
+#kiln-toolbar{position:absolute;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  color:#fff;padding:7px 9px;border-radius:12px;display:flex;align-items:center;gap:6px;
+  font-family:var(--kiln-font);font-size:12px;z-index:999999;border:1px solid rgba(255,255,255,.08);
+  box-shadow:0 10px 32px rgba(0,0,0,.35);flex-wrap:wrap;max-width:92vw}
+.kiln-tb-label{color:#8b8e9c;margin-right:2px;font-size:11px}
+.kiln-tb-gap{flex:0 0 2px;width:1px;height:18px;background:rgba(255,255,255,.12)}
+.kiln-tb-fmt{background:rgba(255,255,255,.08);color:#e7e7ee;border:none;min-width:27px;height:26px;
+  border-radius:7px;cursor:pointer;font-size:12px;display:inline-flex;align-items:center;justify-content:center;
+  padding:0 6px;font-family:var(--kiln-font);transition:background .12s}
+.kiln-tb-fmt:hover{background:rgba(99,102,241,.55)}
+.kiln-tb-clear,.kiln-tb-attach{font-size:11.5px}
+.kiln-href-input{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:#fff;
+  border-radius:7px;padding:5px 8px;font-size:12px;width:190px;font-family:var(--kiln-font)}
+.kiln-href-input::placeholder{color:#6b7280}
+.kiln-tb-save{background:var(--kiln-accent);color:#fff;border:none;padding:5px 12px;border-radius:7px;
+  cursor:pointer;font-size:12px;font-weight:600;font-family:var(--kiln-font)}
+.kiln-tb-save:hover{background:var(--kiln-accent-h)}
+.kiln-tb-cancel{background:transparent;color:#8b8e9c;border:none;padding:5px 8px;cursor:pointer;
+  font-size:12px;font-family:var(--kiln-font)}
 .kiln-tb-cancel:hover{color:#fff}
-#kiln-modal{position:fixed;inset:0;background:rgba(10,10,20,.55);z-index:9999999;display:flex;
-  align-items:flex-start;justify-content:center;padding-top:10vh;font-family:-apple-system,sans-serif}
-.kiln-modal-card{background:#fff;color:#222;border-radius:10px;max-width:480px;width:92%;
-  box-shadow:0 12px 48px rgba(0,0,0,.35);max-height:75vh;overflow:auto}
-.kiln-modal-body{padding:22px}
-.kiln-modal-body h3{margin:0 0 14px;font-size:17px}
-.kiln-modal-body h4{margin:14px 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#888}
-.kiln-modal-body label{display:block;font-size:13px;color:#555;margin-bottom:10px}
-.kiln-modal-body input[type=text]{width:100%;padding:9px;border:1px solid #ccc;border-radius:6px;font-size:14px;margin-top:4px}
+.kiln-style-select{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:#fff;
+  border-radius:7px;padding:4px 5px;font-size:12px;max-width:120px;font-family:var(--kiln-font)}
+.kiln-style-select option,.kiln-style-select optgroup{color:#1c1c28}
+#kiln-modal{position:fixed;inset:0;background:rgba(10,10,18,.45);-webkit-backdrop-filter:blur(6px);
+  backdrop-filter:blur(6px);z-index:9999999;display:flex;align-items:flex-start;justify-content:center;
+  padding-top:9vh;font-family:var(--kiln-font)}
+.kiln-modal-card{background:#fff;color:#1c1c28;border-radius:18px;max-width:500px;width:92%;
+  box-shadow:0 24px 80px rgba(0,0,0,.3);max-height:78vh;overflow:auto}
+.kiln-modal-body{padding:24px}
+.kiln-modal-body h3{margin:0 0 14px;font-size:17px;font-weight:700;letter-spacing:-.01em}
+.kiln-modal-body h4{margin:16px 0 8px;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af}
+.kiln-modal-body label{display:block;font-size:13px;color:#4b5563;margin-bottom:10px}
+.kiln-modal-body input[type=text],.kiln-modal-body input[type=email],.kiln-modal-body input[type=number]{
+  width:100%;padding:10px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:14px;margin-top:4px;
+  font-family:var(--kiln-font);transition:border-color .15s;outline:none}
+.kiln-modal-body input:focus{border-color:var(--kiln-accent)}
+.kiln-2col{display:grid;grid-template-columns:1.4fr 1fr;gap:10px}
 .kiln-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
-.kiln-modal-actions .kiln-btn-ghost{color:#666;border-color:#ccc}
-.kiln-modal-actions .kiln-btn-ghost:hover{color:#222;border-color:#888}
+.kiln-modal-actions .kiln-btn-ghost{color:#4b5563;border-color:#e5e7eb;background:#f9fafb}
+.kiln-modal-actions .kiln-btn-ghost:hover{color:#111;background:#f3f4f6}
 .kiln-roles{display:flex;flex-direction:column;gap:8px;margin:10px 0}
-.kiln-role{display:flex;gap:10px;align-items:flex-start;border:1px solid #ddd;border-radius:8px;padding:10px;cursor:pointer}
-.kiln-role:has(input:checked){border-color:#4f6ef7;background:#f5f7ff}
-.kiln-role small{color:#777}
+.kiln-role{display:flex;gap:10px;align-items:flex-start;border:1.5px solid #e5e7eb;border-radius:12px;
+  padding:11px;cursor:pointer;transition:all .15s}
+.kiln-role:has(input:checked){border-color:var(--kiln-accent);background:#eef2ff}
+.kiln-role small{color:#6b7280;line-height:1.45}
+.kiln-summary{cursor:pointer;font-size:13px;color:#6b7280;padding:4px 0;font-weight:600}
 .kiln-linkrow{display:flex;gap:8px;margin-top:8px}
-.kiln-linkrow input{flex:1;font-size:12px;color:#444}
-.kiln-inv-ok{font-size:13px;color:#2e7d32;margin-top:12px}
-.kiln-hr{border:none;border-top:1px solid #eee;margin:18px 0 6px}
+.kiln-linkrow input{flex:1;font-size:12px;color:#374151}
+.kiln-inv-ok{font-size:13px;color:#059669;margin-top:12px}
+.kiln-hr{border:none;border-top:1px solid #f3f4f6;margin:18px 0 10px}
 .kiln-inv-list{display:flex;flex-direction:column;gap:6px}
-.kiln-inv-row{display:flex;justify-content:space-between;align-items:center;border:1px solid #eee;
-  border-radius:6px;padding:8px 10px;font-size:13px}
-.kiln-inv-row small{color:#999;display:block}
-.kiln-dim{color:#999;font-size:12px;margin-top:10px}
-.kiln-np-step{font-size:13px;color:#555;min-height:20px}
-.kiln-style-select{background:#2e2e4e;border:1px solid #444;color:#fff;border-radius:4px;padding:3px 4px;font-size:12px;max-width:110px}
+.kiln-inv-row{display:flex;justify-content:space-between;align-items:center;border:1.5px solid #f3f4f6;
+  border-radius:10px;padding:9px 12px;font-size:13px;gap:8px}
+.kiln-inv-row small{color:#9ca3af;display:block;margin-top:1px}
+.kiln-dim{color:#9ca3af;font-size:12px;margin-top:10px;line-height:1.5}
+.kiln-np-step{font-size:13px;color:#4b5563;min-height:20px;line-height:1.5}
 .kiln-repeat-item{position:relative}
-.kiln-item-ctl{position:absolute;top:6px;right:6px;display:flex;gap:4px;z-index:9999;opacity:0;transition:opacity .15s}
+.kiln-item-ctl{position:absolute;top:8px;right:8px;display:flex;gap:5px;z-index:9999;opacity:0;transition:opacity .15s}
 .kiln-repeat-item:hover>.kiln-item-ctl{opacity:1}
-.kiln-item-ctl button{background:#1a1a2e;color:#fff;border:none;width:24px;height:24px;border-radius:5px;
-  cursor:pointer;font-size:12px;box-shadow:0 2px 6px rgba(0,0,0,.3)}
-.kiln-item-ctl button:hover{background:#4f6ef7}
+.kiln-item-ctl button{background:var(--kiln-bg);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+  color:#fff;border:1px solid rgba(255,255,255,.1);width:27px;height:27px;border-radius:8px;
+  cursor:pointer;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.25);transition:background .12s}
+.kiln-item-ctl button:hover{background:var(--kiln-accent)}
+.kiln-repeat-add{display:block;margin:10px auto 0;background:rgba(99,102,241,.08);color:var(--kiln-accent);
+  border:1.5px dashed rgba(99,102,241,.5);border-radius:10px;padding:8px 18px;cursor:pointer;
+  font-size:13px;font-weight:600;font-family:var(--kiln-font);transition:all .15s}
+.kiln-repeat-add:hover{background:rgba(99,102,241,.16)}
 .kiln-menu-row{display:flex;gap:6px;margin-bottom:6px;align-items:center}
-.kiln-menu-row input{flex:1;padding:7px!important;margin:0!important}
+.kiln-menu-row input{flex:1;padding:8px!important;margin:0!important}
 .kiln-menu-row .kiln-menu-href{flex:1.2}
-.kiln-menu-row button{background:#f2f2f2;border:1px solid #ddd;border-radius:5px;width:26px;height:30px;cursor:pointer;font-size:12px}
-.kiln-menu-row button:hover{background:#e6e6e6}
-#kiln-menu-add{margin-top:4px;color:#555;border-color:#ccc}`;
+.kiln-menu-row button{background:#f9fafb;border:1.5px solid #e5e7eb;border-radius:8px;width:28px;height:34px;
+  cursor:pointer;font-size:12px;transition:background .12s}
+.kiln-menu-row button:hover{background:#eef2ff}
+#kiln-menu-add{margin-top:4px;color:#4b5563;border-color:#e5e7eb;background:#f9fafb}`;
   document.head.appendChild(style);
 }

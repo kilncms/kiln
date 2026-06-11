@@ -60,6 +60,12 @@ export default {
       if (path === '/admin/invite' && request.method === 'POST') return cors(env, request, await adminInvite(request, env));
       if (path === '/admin/invites' && request.method === 'GET') return cors(env, request, await adminListInvites(request, env, url));
       if (path === '/admin/revoke' && request.method === 'POST') return cors(env, request, await adminRevoke(request, env));
+      if (path === '/admin/people' && request.method === 'GET') return cors(env, request, await peopleList(request, env, url));
+      if (path === '/admin/people' && request.method === 'POST') return cors(env, request, await peopleUpsert(request, env));
+      if (path === '/admin/people/remove' && request.method === 'POST') return cors(env, request, await peopleRemove(request, env));
+      if (path === '/google/login') return googleLogin(url, env);
+      if (path === '/google/callback') return googleCallback(url, env);
+      if (path === '/google/claim' && request.method === 'POST') return googleClaim(request, env);
       if (path === '/editor/redeem' && request.method === 'POST') return cors(env, request, await editorRedeem(request, env));
       if (path.startsWith('/gh/')) return cors(env, request, await ghProxy(request, env, path.slice(3) + url.search));
 
@@ -350,6 +356,147 @@ async function editorRedeem(request, env) {
     JSON.stringify({ ...inv, created: Date.now(), exp }),
     { expirationTtl: days * 24 * 3600 });
   return json({ session, name: inv.name, repo: inv.repo, role: inv.role, exp });
+}
+
+// ─── People (Google sign-in allowlist) ───────────────────────────────────────
+// people:{repo} → [{ email, name, role: 'editor'|'member', days }]
+
+async function getPeople(env, repo) {
+  return (await env.KILN.get(`people:${repo}`, 'json')) || [];
+}
+
+async function peopleList(request, env, url) {
+  const repo = url.searchParams.get('repo') || '';
+  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  return json({ people: await getPeople(env, repo), googleConfigured: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) });
+}
+
+async function peopleUpsert(request, env) {
+  const { repo, email, name, role, days } = await request.json().catch(() => ({}));
+  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  const addr = String(email || '').trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) return json({ error: 'bad email' }, 400);
+  if (!['editor', 'member'].includes(role)) return json({ error: 'bad role' }, 400);
+  const person = {
+    email: addr,
+    name: String(name || addr.split('@')[0]).slice(0, 64),
+    role,
+    days: Math.min(Math.max(Number(days) || 30, 1), 360),
+  };
+  const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
+  people.push(person);
+  await env.KILN.put(`people:${repo}`, JSON.stringify(people));
+  return json({ ok: true, person });
+}
+
+async function peopleRemove(request, env) {
+  const { repo, email } = await request.json().catch(() => ({}));
+  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  const addr = String(email || '').trim().toLowerCase();
+  const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
+  await env.KILN.put(`people:${repo}`, JSON.stringify(people));
+  return json({ ok: true });
+}
+
+// ─── Google sign-in ──────────────────────────────────────────────────────────
+
+function googleReady(env) {
+  return !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+}
+
+async function googleLogin(url, env) {
+  if (!googleReady(env)) {
+    return html(`<h1>Google sign-in isn't set up yet</h1>
+      <p>The site owner needs to add <code>GOOGLE_CLIENT_ID</code> and
+      <code>GOOGLE_CLIENT_SECRET</code> to this worker. See the Kiln README.</p>`, 503);
+  }
+  const origin = url.searchParams.get('origin') || '';
+  const returnTo = url.searchParams.get('return_to') || '/';
+  const repo = url.searchParams.get('repo') || '';
+  if (!allowedOrigins(env).includes(origin)) return html('<h1>Origin not allowed</h1>', 403);
+  if (!returnTo.startsWith('/') || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return html('<h1>Bad request</h1>', 400);
+
+  const nonce = crypto.randomUUID();
+  await env.KILN.put(`gstate:${nonce}`, JSON.stringify({ origin, returnTo, repo }), { expirationTtl: 600 });
+  const params = new URLSearchParams({
+    client_id: env.GOOGLE_CLIENT_ID,
+    redirect_uri: `${url.origin}/google/callback`,
+    response_type: 'code',
+    scope: 'openid email profile',
+    state: nonce,
+    prompt: 'select_account',
+  });
+  return Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`, 302);
+}
+
+async function googleCallback(url, env) {
+  const code = url.searchParams.get('code');
+  const nonce = url.searchParams.get('state');
+  if (!code || !nonce) return html('<h1>Missing code/state</h1>', 400);
+  const state = await env.KILN.get(`gstate:${nonce}`, 'json');
+  if (!state) return html('<h1>Sign-in expired</h1><p>Go back to the site and try again.</p>', 400);
+  await env.KILN.delete(`gstate:${nonce}`);
+
+  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
+      redirect_uri: `${url.origin}/google/callback`,
+      grant_type: 'authorization_code',
+    }),
+  });
+  const tok = await tokenRes.json();
+  if (!tok.id_token) return html(`<h1>Google sign-in failed</h1><pre>${esc(tok.error_description || tok.error || '?')}</pre>`, 400);
+
+  // Google validates the token's signature for us; we check it's OUR token.
+  const infoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(tok.id_token)}`);
+  const info = await infoRes.json();
+  if (!infoRes.ok || info.aud !== env.GOOGLE_CLIENT_ID || info.email_verified !== 'true') {
+    return html('<h1>Could not verify your Google account</h1>', 403);
+  }
+
+  const email = String(info.email).toLowerCase();
+  const person = (await getPeople(env, state.repo)).find(p => p.email === email);
+  if (!person) {
+    return html(`<h1>You're not on the list (yet)</h1>
+      <p>You signed in as <strong>${esc(email)}</strong>, but the owner of this site
+      hasn't added that address. Ask them to add you under <em>People</em> in their
+      Kiln admin bar, then try again.</p>
+      <p><a class="btn" href="${esc(state.origin + state.returnTo)}">Back to the site</a></p>`, 403);
+  }
+
+  const displayName = person.name || info.name || email.split('@')[0];
+  if (person.role === 'editor') {
+    const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
+    const exp = Date.now() + person.days * 24 * 3600 * 1000;
+    await env.KILN.put(`esess:${session}`,
+      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, created: Date.now(), exp }),
+      { expirationTtl: person.days * 24 * 3600 });
+    const frag = new URLSearchParams({
+      'kiln-esession': session, 'kiln-name': displayName, 'kiln-repo': state.repo, 'kiln-exp': String(exp),
+    });
+    return Response.redirect(`${state.origin}${state.returnTo}#${frag}`, 302);
+  }
+
+  // Member: hand the site a one-time code it can exchange for its own cookie.
+  const gcode = crypto.randomUUID().replaceAll('-', '');
+  await env.KILN.put(`gcode:${gcode}`, JSON.stringify({ name: displayName, days: person.days }),
+    { expirationTtl: 300 });
+  const dest = state.returnTo.startsWith('/members') ? state.returnTo : '/members/';
+  return Response.redirect(
+    `${state.origin}/members-login.html?to=${encodeURIComponent(dest)}#kiln-gcode=${gcode}`, 302);
+}
+
+async function googleClaim(request, env) {
+  const { code } = await request.json().catch(() => ({}));
+  if (!/^[a-f0-9]{32}$/.test(code || '')) return json({ error: 'bad code' }, 400);
+  const data = await env.KILN.get(`gcode:${code}`, 'json');
+  if (!data) return json({ error: 'expired' }, 404);
+  await env.KILN.delete(`gcode:${code}`);
+  return json({ ok: true, ...data });
 }
 
 // ─── GitHub proxy for editor sessions ────────────────────────────────────────

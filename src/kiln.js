@@ -31,6 +31,7 @@
 
   function boot() {
     captureAdminToken();
+    captureGoogleSession();
     captureEditorInvite().then(function () {
       var admin = read(ADMIN_KEY);
       var editor = read(EDITOR_KEY);
@@ -71,6 +72,23 @@
     cleanFragment(['kiln-token', 'kiln-exp', 'kiln-sid']);
   }
 
+  /** After Google sign-in the worker redirects editors back with a ready session. */
+  function captureGoogleSession() {
+    var m = matchFragment(/kiln-esession=([a-f0-9]{64})/);
+    if (!m) return;
+    var name = matchFragment(/kiln-name=([^&]+)/);
+    var repo = matchFragment(/kiln-repo=([^&]+)/);
+    var exp = matchFragment(/kiln-exp=(\d+)/);
+    write(EDITOR_KEY, {
+      session: m[1],
+      name: name ? decodeURIComponent(name[1].replace(/\+/g, ' ')) : 'Editor',
+      repo: repo ? decodeURIComponent(repo[1]) : (cfg.repo || ''),
+      role: 'editor',
+      exp: exp ? Number(exp[1]) : null,
+    });
+    cleanFragment(['kiln-esession', 'kiln-name', 'kiln-repo', 'kiln-exp']);
+  }
+
   /** Invite links look like https://site.com/#kiln-invite=<64 hex chars> */
   function captureEditorInvite() {
     var m = matchFragment(/kiln-invite=([a-f0-9]{64})/);
@@ -90,20 +108,54 @@
     if (!cfg.worker) return;
     var btn = document.createElement('button');
     btn.id = 'kiln-login';
-    btn.textContent = '✎';
-    btn.title = 'Site owner? Sign in to edit.';
+    btn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
+    btn.title = 'Sign in to edit this site';
     btn.setAttribute('aria-label', 'Sign in to edit this site');
-    btn.style.cssText = 'position:fixed;bottom:16px;right:16px;width:40px;height:40px;border-radius:50%;' +
-      'background:#1a1a2e;color:#fff;border:0;font-size:16px;cursor:pointer;opacity:.45;z-index:99999;' +
-      'box-shadow:0 2px 8px rgba(0,0,0,.25);transition:opacity .15s';
-    btn.onmouseenter = function () { btn.style.opacity = '1'; };
-    btn.onmouseleave = function () { btn.style.opacity = '.45'; };
-    btn.onclick = function () {
-      var returnTo = location.pathname + location.search;
-      location.href = cfg.worker + '/auth/login?origin=' + encodeURIComponent(location.origin) +
-        '&return_to=' + encodeURIComponent(returnTo);
-    };
+    btn.style.cssText = 'position:fixed;bottom:16px;right:16px;width:42px;height:42px;border-radius:50%;' +
+      'display:flex;align-items:center;justify-content:center;' +
+      'background:#101019;color:#fff;border:0;cursor:pointer;opacity:.5;z-index:99999;' +
+      'box-shadow:0 4px 14px rgba(0,0,0,.28);transition:opacity .15s,transform .15s';
+    btn.onmouseenter = function () { btn.style.opacity = '1'; btn.style.transform = 'scale(1.06)'; };
+    btn.onmouseleave = function () { btn.style.opacity = '.5'; btn.style.transform = 'scale(1)'; };
+    btn.onclick = function () { renderLoginChooser(); };
     document.body.appendChild(btn);
+  }
+
+  function renderLoginChooser() {
+    var old = document.getElementById('kiln-login-pop');
+    if (old) { old.remove(); return; }
+    var returnTo = location.pathname + location.search;
+    var q = 'origin=' + encodeURIComponent(location.origin) + '&return_to=' + encodeURIComponent(returnTo);
+    var pop = document.createElement('div');
+    pop.id = 'kiln-login-pop';
+    pop.style.cssText = 'position:fixed;bottom:66px;right:16px;background:#fff;color:#1c1c28;z-index:99999;' +
+      'border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.22);padding:10px;width:240px;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px';
+    pop.innerHTML =
+      '<button data-kind="google" style="' + chooserBtnCss() + '">' +
+        '<svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z"/><path fill="#FBBC05" d="M5.84 14.1A6.6 6.6 0 0 1 5.5 12c0-.73.13-1.43.34-2.1V7.06H2.18A11 11 0 0 0 1 12c0 1.77.43 3.45 1.18 4.94l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.16-3.16A10.97 10.97 0 0 0 12 1 11 11 0 0 0 2.18 7.06l3.66 2.84C6.71 7.3 9.14 5.38 12 5.38z"/></svg>' +
+        '<span><strong>Continue with Google</strong><br><small style="color:#777">Invited editors &amp; members</small></span></button>' +
+      '<button data-kind="github" style="' + chooserBtnCss() + '">' +
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="#1c1c28"><path d="M12 .5A11.5 11.5 0 0 0 .5 12.26c0 5.2 3.3 9.6 7.86 11.16.58.11.79-.26.79-.57v-2c-3.2.71-3.87-1.58-3.87-1.58-.53-1.37-1.28-1.73-1.28-1.73-1.05-.74.08-.72.08-.72 1.15.08 1.76 1.22 1.76 1.22 1.03 1.81 2.7 1.29 3.36.98.1-.77.4-1.29.73-1.58-2.55-.3-5.23-1.31-5.23-5.82 0-1.29.45-2.34 1.18-3.16-.12-.3-.51-1.5.11-3.12 0 0 .97-.32 3.17 1.21a10.7 10.7 0 0 1 5.78 0c2.2-1.53 3.16-1.21 3.16-1.21.63 1.62.24 2.82.12 3.12.74.82 1.18 1.87 1.18 3.16 0 4.52-2.69 5.51-5.25 5.8.41.37.78 1.08.78 2.18v3.23c0 .31.2.69.8.57a11.77 11.77 0 0 0 7.85-11.16A11.5 11.5 0 0 0 12 .5z"/></svg>' +
+        '<span><strong>Continue with GitHub</strong><br><small style="color:#777">Site owner / developer</small></span></button>';
+    pop.querySelector('[data-kind="google"]').onclick = function () {
+      location.href = cfg.worker + '/google/login?' + q + '&repo=' + encodeURIComponent(cfg.repo || '');
+    };
+    pop.querySelector('[data-kind="github"]').onclick = function () {
+      location.href = cfg.worker + '/auth/login?' + q;
+    };
+    document.addEventListener('click', function close(e) {
+      if (!pop.contains(e.target) && e.target.id !== 'kiln-login') {
+        pop.remove();
+        document.removeEventListener('click', close);
+      }
+    });
+    document.body.appendChild(pop);
+  }
+
+  function chooserBtnCss() {
+    return 'display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;' +
+      'border:0;border-radius:10px;padding:10px;cursor:pointer;font:inherit;line-height:1.25;';
   }
 
   function renderResumeButton() {
