@@ -7,10 +7,6 @@ window.KILN = {
   branch: 'main',
   worker: 'https://kiln-auth.erikkwilder.workers.dev',
 
-  // Demo only: show the pencil button to everyone. Real sites usually omit
-  // this and sign in by visiting yoursite.com/#edit instead.
-  loginButton: true,
-
   // The text styles editors may apply (classes defined in your site's CSS).
   // Typography stays designed; editors pick from your palette.
   styles: [

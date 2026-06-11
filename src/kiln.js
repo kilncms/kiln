@@ -29,6 +29,11 @@
     boot();
   }
 
+  // Typing #kiln in the address bar while already on the page also summons Kiln.
+  window.addEventListener('hashchange', function () {
+    if (/^#(kiln|edit)$/.test(location.hash)) location.reload();
+  });
+
   function boot() {
     captureAdminToken();
     captureGoogleSession();
@@ -46,7 +51,7 @@
       // The edit flow is summoned by visiting yoursite.com/#edit (or #kiln) —
       // no always-visible button cluttering the site. Set KILN.loginButton = true
       // to show a discreet pencil button anyway.
-      var summoned = /^#(edit|kiln)$/.test(location.hash);
+      var summoned = /^#(kiln|edit)$/.test(location.hash);
       if (summoned) {
         history.replaceState(null, '', location.pathname + location.search);
         sessionStorage.removeItem('kiln_pause');

@@ -108,7 +108,7 @@ export async function editFile(gh, repo, path, branch, transform, message, attem
     if (next === text) return { unchanged: true };
     try {
       const res = await putFile(gh, repo, path, { text: next, sha, branch, message });
-      return { unchanged: false, commit: res.commit };
+      return { unchanged: false, commit: res.commit, text: next };
     } catch (err) {
       lastErr = err;
       const conflict = err.status === 409 || (err.status === 422 && /sha/i.test(err.data?.message || ''));

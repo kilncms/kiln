@@ -86,6 +86,7 @@ async function init() {
   renderAdminBar();
   decorateFields();
   offerPendingRestore();
+  if (journalAll().length) runJournal();
 
   window.addEventListener('beforeunload', (e) => {
     if (state.pending.size) { e.preventDefault(); e.returnValue = ''; }
@@ -539,7 +540,7 @@ async function publish() {
     await loadPageSource();
     refreshPublishButton();
     if (result.unchanged) { setStatus('Nothing changed', 'idle'); return; }
-    watchDeploy(result.commit?.sha);
+    watchDeploy(result.commit?.sha, result.text);
   } catch (err) {
     console.error('[kiln] publish', err);
     setStatus('Publish failed — see console', 'error');
@@ -548,62 +549,92 @@ async function publish() {
 }
 
 /**
- * Is a change live yet? Three signals, because hosts (Cloudflare Pages) SKIP
- * builds that are superseded by a newer commit — polling only our own commit's
- * deployment can wait forever:
- *   a) our commit's deployment succeeded
- *   b) a NEWER deployment succeeded (it necessarily includes our commit)
- *   c) for new files: the URL itself now answers
+ * Publish verification — by checking REALITY, not deployment metadata.
+ * (Hosts skip superseded builds, so a commit's deployment record can hang
+ * forever even though the change shipped inside a later build.)
+ *
+ *   compare — fetch a page and hash-compare against the exact text we committed
+ *   url     — a brand-new file's URL starts answering 200
+ *
+ * Every publish goes into a localStorage journal, so closing a modal — or the
+ * whole tab — never strands you: verification resumes on the next page load
+ * and announces when the change is confirmed live.
  */
-async function isChangeLive(sha, sinceMs, checkUrl) {
-  const s = await deployState(state.gh, cfg.repo, sha).catch(() => 'unknown');
-  if (s === 'success') return true;
-  if (s === 'failure' || s === 'error') return 'failed';
-  try {
-    const deps = await state.gh.request('GET', `/repos/${cfg.repo}/deployments?per_page=1`);
-    if (deps.length && deps[0].sha !== sha && new Date(deps[0].created_at).getTime() > sinceMs) {
-      const st = await state.gh.request('GET', `/repos/${cfg.repo}/deployments/${deps[0].id}/statuses?per_page=1`);
-      if (st.length && st[0].state === 'success') return true;
-    }
-  } catch { /* keep polling */ }
-  if (checkUrl) {
-    try {
-      const r = await fetch(`${checkUrl}${checkUrl.includes('?') ? '&' : '?'}kilncb=${Date.now()}`,
-        { method: 'HEAD', cache: 'no-store' });
-      if (r.ok) return true;
-    } catch { /* keep polling */ }
-  }
-  return false;
+function djb2(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return String(h);
+}
+const journalKey = () => `kiln_publishing:${cfg.repo}`;
+function journalAll() {
+  try { return JSON.parse(localStorage.getItem(journalKey())) || []; } catch { return []; }
+}
+function journalSave(list) {
+  try { localStorage.setItem(journalKey(), JSON.stringify(list)); } catch { /* ignore */ }
+}
+function journalAdd(entry) {
+  const list = journalAll().filter(e => e.target !== entry.target);
+  list.push({ ...entry, id: Math.random().toString(36).slice(2), started: Date.now() });
+  journalSave(list);
+  runJournal();
 }
 
-async function watchDeploy(sha, onLive) {
-  const started = Date.now();
-  const short = sha ? sha.slice(0, 7) : '';
-  if (!sha) { setStatus('Saved to GitHub ✓', 'saved'); return; }
+let journalTimer = null;
+function runJournal() {
+  if (journalTimer) return;
   const tick = async () => {
-    const secs = Math.round((Date.now() - started) / 1000);
-    if (Date.now() - started > 5 * 60 * 1000) {
-      setStatus(`Saved ✓ (${short}) — deploy is taking longer than usual; it WILL go live`, 'saved');
-      return;
+    const list = journalAll();
+    if (!list.length) { clearInterval(journalTimer); journalTimer = null; setStatusIdle(); return; }
+    const keep = [];
+    for (const e of list) {
+      let live = false;
+      try {
+        if (e.type === 'url') {
+          live = (await fetch(`${e.target}${e.target.includes('?') ? '&' : '?'}kilncb=${Date.now()}`,
+            { method: 'HEAD', cache: 'no-store' })).ok;
+        } else {
+          const res = await fetch(`${e.target}?kilncb=${Date.now()}`, { cache: 'no-store' });
+          live = res.ok && djb2(await res.text()) === e.expect;
+        }
+      } catch { /* network blip — keep waiting */ }
+      if (live) {
+        setStatus(`${e.desc} — live ✓`, 'saved');
+        if (e.target === location.pathname || e.target === location.pathname + location.search) swapImagePreviews();
+      } else if (Date.now() - e.started > 6 * 60 * 1000) {
+        setStatus(`${e.desc} — published ✓ (taking longer than usual to appear; it will)`, 'saved');
+      } else {
+        keep.push(e);
+      }
     }
-    const live = await isChangeLive(sha, started - 60000);
-    if (live === true) {
-      document.querySelectorAll('img[data-kiln-src]').forEach(img => {
-        if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
-        img.src = img.getAttribute('data-kiln-src');
-        img.removeAttribute('data-kiln-src');
-      });
-      setStatus('Live ✓ — your edit is on the site', 'saved');
-      if (onLive) onLive();
-      setTimeout(() => setStatus(`Signed in as ${state.user}`, 'idle'), 8000);
-      return;
+    journalSave(keep);
+    if (keep.length) {
+      setStatus(`Publishing ${keep.length === 1 ? `“${keep[0].desc}”` : keep.length + ' changes'}… usually under a minute`, 'saving');
     }
-    if (live === 'failed') { setStatus('Deploy failed — check your host dashboard', 'error'); return; }
-    setStatus(`Saved ✓ (${short}) — site is rebuilding… ${secs}s`, 'saving');
-    setTimeout(tick, 5000);
   };
-  setStatus(`Saved ✓ (${short}) — site is rebuilding…`, 'saving');
-  setTimeout(tick, 4000);
+  journalTimer = setInterval(tick, 6000);
+  tick();
+}
+
+function setStatusIdle() {
+  setTimeout(() => setStatus(`Signed in as ${state.user}`, 'idle'), 4000);
+}
+
+function swapImagePreviews() {
+  document.querySelectorAll('img[data-kiln-src]').forEach(img => {
+    if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+    img.src = img.getAttribute('data-kiln-src');
+    img.removeAttribute('data-kiln-src');
+  });
+}
+
+/** Compatibility wrapper: page-edit publishes register a compare entry. */
+function watchDeploy(_sha, committedText) {
+  if (committedText) {
+    journalAdd({ type: 'compare', target: location.pathname, expect: djb2(committedText), desc: 'Your page edit' });
+  } else {
+    setStatus('Published to GitHub ✓', 'saved');
+    setStatusIdle();
+  }
 }
 
 // ─── New post / new page ─────────────────────────────────────────────────────
@@ -675,30 +706,30 @@ function newContent() {
       const commit = await commitFiles(state.gh, cfg.repo, branch, files,
         `New ${kind}: ${title} (via Kiln)`);
 
-      status.textContent = `Committed ✓ (${commit.sha.slice(0, 7)}) — your host is rebuilding. The button lights up the moment it's live.`;
+      journalAdd({ type: 'url', target: href, desc: `New ${kind} “${title}”` });
+      status.innerHTML = `Committed ✓ — the site is rebuilding (usually under a minute).<br>
+        <small>Safe to close this window: Kiln keeps watching in the background and the link below
+        starts working the moment the ${kind} is live${kind === 'page' ? ' — then add it to your navigation via <strong>Site menu</strong>' : ''}.</small>`;
       const started = Date.now();
       const poll = async () => {
         if (!document.body.contains(m)) return;
-        const live = await isChangeLive(commit.sha, started - 60000, href);
-        if (live === true) {
-          status.innerHTML = `Live ✓ — open it and click into the text to write.${
-            kind === 'page' ? ' <br><small>Tip: use <strong>Menu…</strong> in the top bar to add it to your navigation.</small>' : ''}`;
-          openBtn.disabled = false;
-          openBtn.onclick = () => { location.href = href; };
+        try {
+          const r = await fetch(`${href}?kilncb=${Date.now()}`, { method: 'HEAD', cache: 'no-store' });
+          if (r.ok) {
+            status.innerHTML = `<strong>Live ✓</strong> — open it and click into the text to write.${
+              kind === 'page' ? ' Then add it to your navigation via <strong>Site menu</strong>.' : ''}`;
+            openBtn.disabled = false;
+            openBtn.onclick = () => { window.location.assign(href); };
+            return;
+          }
+        } catch { /* keep polling */ }
+        if (Date.now() - started > 5 * 60 * 1000) {
+          status.textContent = 'Still building — Kiln keeps watching in the background. The page WILL appear; check the journal/menu in a minute.';
           return;
         }
-        if (live === 'failed') { status.textContent = 'Deploy failed — check your host dashboard.'; return; }
-        const secs = Math.round((Date.now() - started) / 1000);
-        if (secs > 240) {
-          status.innerHTML = 'Taking longer than usual — it WILL appear. You can close this and check in a minute.';
-          openBtn.disabled = false;
-          openBtn.onclick = () => { location.href = href; };
-          return;
-        }
-        status.textContent = `Committed ✓ — site is rebuilding… ${secs}s (usually under a minute)`;
         setTimeout(poll, 5000);
       };
-      setTimeout(poll, 4000);
+      poll();
     } catch (err) {
       console.error('[kiln] new', kind, err);
       status.textContent = err.status === 404
@@ -791,25 +822,29 @@ function menuEditor() {
       status.textContent = `Committing ${changed.length} page${changed.length > 1 ? 's' : ''} as one change…`;
       const commit = await commitFiles(state.gh, cfg.repo, branch, changed,
         `Update menu on ${changed.length} pages (via Kiln)`);
-      status.textContent = `Step 2 of 3 · Committed ✓ (${commit.sha.slice(0, 7)}) — the site is rebuilding. ${skippedPages ? `${skippedPages} page(s) had no managed menu and were left alone.` : ''}`;
+      const thisPage = changed.find(c => c.path === state.page.path);
+      if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Menu update' });
+      status.innerHTML = `Step 2 of 3 · Committed ✓ — the site is rebuilding.
+        ${skippedPages ? skippedPages + ' page(s) had no managed menu and were left alone.' : ''}<br>
+        <small><strong>Safe to close this window</strong> — Kiln keeps watching in the background and
+        will say “Menu update — live ✓” by the Kiln button when it's done.</small>`;
       const started = Date.now();
       const poll = async () => {
         if (!document.body.contains(m)) return;
-        const live = await isChangeLive(commit.sha, started - 60000);
-        if (live === true) {
-          status.innerHTML = 'Step 3 of 3 · <strong>Menu is live on every page ✓</strong>';
-          const actions = m.querySelector('.kiln-modal-actions');
-          actions.innerHTML = '<button class="kiln-btn-publish" id="kiln-menu-reload">Reload to see it</button>';
-          actions.querySelector('#kiln-menu-reload').onclick = () => location.reload();
-          return;
-        }
-        if (live === 'failed') { status.textContent = 'Deploy failed — check your host.'; return; }
-        const secs = Math.round((Date.now() - started) / 1000);
-        if (secs > 240) { status.textContent = 'Committed ✓ — deploy is slow today but the menu WILL go live. Safe to close.'; return; }
-        status.textContent = `Step 2 of 3 · Committed ✓ — rebuilding… ${secs}s`;
+        try {
+          const res = await fetch(`${location.pathname}?kilncb=${Date.now()}`, { cache: 'no-store' });
+          if (thisPage && res.ok && djb2(await res.text()) === djb2(thisPage.text)) {
+            status.innerHTML = 'Step 3 of 3 · <strong>Menu is live on every page ✓</strong>';
+            const actions = m.querySelector('.kiln-modal-actions');
+            actions.innerHTML = '<button class="kiln-btn-publish" id="kiln-menu-reload">Reload to see it</button>';
+            actions.querySelector('#kiln-menu-reload').onclick = () => location.reload();
+            return;
+          }
+        } catch { /* keep polling */ }
+        if (Date.now() - started > 5 * 60 * 1000) { status.textContent = 'Still building — watching continues in the background. Safe to close.'; return; }
         setTimeout(poll, 5000);
       };
-      setTimeout(poll, 4000);
+      poll();
     } catch (err) {
       console.error('[kiln] menu', err);
       status.textContent = `Failed: ${err.message}`;
@@ -1036,8 +1071,8 @@ async function historyPanel() {
           const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
             () => old.text, `Restore ${state.page.path} to ${c.sha.slice(0, 7)} (via Kiln)`);
           if (result.unchanged) { status.textContent = 'That version is identical to the current one.'; btn.disabled = false; return; }
-          status.textContent = 'Restored ✓ — rebuilding. Reload the page in ~a minute.';
-          watchDeploy(result.commit?.sha);
+          status.textContent = 'Restored ✓ — Kiln is watching for it to go live (safe to close this).';
+          watchDeploy(result.commit?.sha, result.text);
         } catch (err) {
           status.textContent = `Restore failed: ${err.message}`;
           btn.disabled = false;
@@ -1111,7 +1146,12 @@ function renderAdminBar() {
   // Restore position (default: bottom-right).
   try {
     const pos = JSON.parse(localStorage.getItem('kiln_fab_pos'));
-    if (pos) { fab.style.left = pos.x + 'px'; fab.style.top = pos.y + 'px'; fab.style.right = 'auto'; fab.style.bottom = 'auto'; }
+    if (pos) {
+      const x = Math.min(Math.max(pos.x, 8), window.innerWidth - 56);
+      const y = Math.min(Math.max(pos.y, 8), window.innerHeight - 56);
+      fab.style.left = x + 'px'; fab.style.top = y + 'px';
+      fab.style.right = 'auto'; fab.style.bottom = 'auto';
+    }
   } catch { /* default position */ }
 
   const btn = fab.querySelector('#kiln-fab');
@@ -1152,10 +1192,27 @@ function renderAdminBar() {
     menu.style.top = r.top > window.innerHeight / 2 ? 'auto' : '54px';
     menu.style.right = r.left > window.innerWidth / 2 ? '0' : 'auto';
     menu.style.left = r.left > window.innerWidth / 2 ? 'auto' : '0';
+    requestAnimationFrame(() => {
+      const mr = menu.getBoundingClientRect();
+      if (mr.right > window.innerWidth - 8) { menu.style.left = 'auto'; menu.style.right = '0'; }
+      if (mr.left < 8) { menu.style.right = 'auto'; menu.style.left = '0'; }
+      if (mr.top < 8) { menu.style.bottom = 'auto'; menu.style.top = '54px'; }
+      if (mr.bottom > window.innerHeight - 8) { menu.style.top = 'auto'; menu.style.bottom = '54px'; }
+    });
   }
 
   document.addEventListener('click', (e) => {
     if (!fab.contains(e.target)) menu.hidden = true;
+  });
+
+  // Hover opens the menu (click still works for touch); leaving the area closes it.
+  let hoverTimer = null;
+  fab.addEventListener('mouseenter', () => {
+    clearTimeout(hoverTimer);
+    if (menu.hidden) { menu.hidden = false; positionMenu(); }
+  });
+  fab.addEventListener('mouseleave', () => {
+    hoverTimer = setTimeout(() => { menu.hidden = true; }, 350);
   });
 
   const close = (fn) => () => { menu.hidden = true; fn(); };
