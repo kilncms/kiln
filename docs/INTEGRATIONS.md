@@ -46,3 +46,30 @@ When Kiln Cloud exists, per-site steps 4's app-creation half and the worker disa
 customers entirely: they use Kiln's company-level App + worker (this exact architecture
 already supports it — ALLOWED_ORIGINS and per-repo installs are the tenancy model). Their
 list shrinks to: repo, Pages connect, wiring, people. That's the $5–9/mo product.
+
+## The two paths (canonical definitions — use these names everywhere)
+
+### Path A — Kiln service (shared worker)
+Your site uses the canonical `kiln-cms` GitHub App and the kiln-auth worker operated by Kiln.
+- **You do:** repo + Cloudflare Pages + install the App + site wiring. No worker, no App
+  registration, no Google client — those are Kiln's.
+- **Trust model (stated plainly):** the worker's operator holds the App installation token for
+  your repo — i.e., delegated write access to your site repo, exactly like any hosted CMS
+  backend (TinaCloud, DecapBridge). Admin edits go browser→GitHub directly; magic-link/Google
+  editor commits route through the worker. No site content is stored on the worker — only
+  sessions, people lists, and queued scheduled posts.
+- **Availability:** currently invite-only (each site's origin is added to ALLOWED_ORIGINS by
+  hand). This becomes self-serve with Kiln Cloud.
+- **Cost to operate (Kiln):** Cloudflare free tier ≈ 100k req/day and 1k KV writes/day ≈
+  roughly 50–100 actively-edited sites. Beyond that: Workers Paid, $5/mo TOTAL — the margin
+  basis for Kiln Cloud pricing in BUSINESS.md.
+
+### Path B — Self-host (your own worker)
+You run the company layer yourself: your own worker (one `wrangler deploy`), your own GitHub
+App (one click at your worker's `/setup`), optionally your own Google client.
+- **You trust only yourself.** Nothing about your sites touches Kiln's infrastructure.
+- The setup wizard (`npx github:erikkurtu/kiln`) automates this path end to end.
+- Free at any realistic single-org scale (same free-tier math, all to yourself).
+
+Docs rule: every setup surface (README, kilncms.com/setup, wizard prompts) must present these
+as an explicit either/or choice, Path A first for non-developers, Path B first for developers.

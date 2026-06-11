@@ -183,3 +183,14 @@ scripts/             build + live e2e
 ## License
 
 MIT
+
+## Two ways to run Kiln
+
+**Path A — Kiln's auth service:** your site uses the official Kiln GitHub App + worker; you
+deploy nothing. Currently invite-only (origins are allowlisted manually). Trust note, stated
+plainly: the service holds the App token that writes to your repo — like any hosted CMS
+backend — while your content lives in YOUR repo and you can switch paths anytime.
+
+**Path B — self-host:** your own worker + your own GitHub App (+ optionally your own Google
+client). One `wrangler deploy` and one click at `/setup`; the wizard automates it. You trust
+only yourself. See docs/INTEGRATIONS.md for the full comparison.
