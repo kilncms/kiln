@@ -4,6 +4,9 @@
   "description": "Click-to-edit CMS for static sites. GitHub as the backend. Free hosting as the host.",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "kiln": "cli/index.mjs"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node --test test/",
