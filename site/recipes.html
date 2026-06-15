@@ -2,6 +2,7 @@
 <html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>From your AI builder to Kiln — recipes</title>
 <meta name="description" content="Take a site from Lovable, Claude, or v0 to client-editable with Kiln."/>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--ink:#14141f;--muted:#5b5e6e;--bg:#fbfbfd;--accent:#6366f1;--line:#e8e9ef;
 --font:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif;--mono:ui-monospace,'SF Mono',Menlo,monospace}
@@ -17,7 +18,26 @@ p,li{font-size:14.5px;color:#3d4050}ol{padding-left:22px}li{margin:6px 0}
 pre{background:#14141f;color:#e7e7f0;border-radius:12px;padding:14px 16px;font-family:var(--mono);font-size:12.5px;overflow-x:auto;margin:12px 0;white-space:pre-wrap}
 code{font-family:var(--mono);background:#eef0f5;padding:1px 6px;border-radius:5px;font-size:12.8px}
 .tip{background:#f5f6ff;border:1.5px solid #c7d2fe;border-radius:12px;padding:13px 16px;font-size:13.5px;color:#3730a3;margin:14px 0}
-</style></head><body><div class="wrap">
+</style><style>
+:root{--bg:#f6f2ea;--ink:#221d19;--muted:#6f655a;--soft:#a89d8c;--accent:#6366f1;--line:#e7ded0;--ember:#e9623a}
+body{background:#f6f2ea!important;color:#221d19!important;font-family:"Inter",-apple-system,BlinkMacSystemFont,sans-serif!important}
+h1,h2,h3{font-family:"Fraunces",Georgia,serif!important;letter-spacing:-.02em}
+.logo{font-family:"Fraunces",Georgia,serif!important;color:#221d19!important;background:none!important;
+  -webkit-text-fill-color:#221d19!important;display:inline-flex!important;align-items:center;gap:8px;font-weight:900}
+.logo::before{content:"";width:11px;height:11px;border-radius:50%;
+  background:radial-gradient(circle at 35% 30%,#ffd9a0,#e9623a 55%,#cf4d27);box-shadow:0 0 9px rgba(233,98,58,.6)}
+a{color:#4f46e5}
+.btn{background:#6366f1!important;color:#fff!important;border-radius:99px!important}
+pre{background:#221d19!important;border-radius:12px!important}
+.tip{background:#fff3e9!important;border-color:#f6c89e!important;color:#9a4a23!important;border-radius:12px!important}
+.warn{border-radius:12px!important}
+.done{background:#eef0ff!important;border-color:#c7d2fe!important;border-radius:14px!important}
+.est{color:#a89d8c!important}
+h2 .n{background:#221d19!important;color:#f6f2ea!important}
+code{background:#efe8da!important;color:#cf4d27!important}
+.step::before,.s::before{background:#221d19!important;color:#f6f2ea!important}
+</style>
+</head><body><div class="wrap">
 <nav><a class="logo" href="index.html">Kiln</a><span class="nav-r">
 <a href="setup.html">Setup</a><a href="https://kiln-demo.pages.dev" target="_blank" rel="noopener">Demo</a>
 <a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">GitHub</a></span></nav>
