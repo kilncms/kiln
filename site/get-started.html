@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Get started · Kiln</title>
+<meta name="description" content="Get Kiln running on your static site. Two tracks: wire it in with your AI builder, or add it to a site you already have. Free hosting, about 10 minutes." />
+<meta name="theme-color" content="#ebeae5" />
+<link rel="icon" href="assets/img/logo-k.png" />
+<link rel="stylesheet" href="assets/base.css" />
+<style>
+  .doc{max-width:780px;margin:0 auto;padding:0 28px}
+  .doc-head{padding:60px 0 4px}
+  .doc-head h1{font-family:var(--display);font-weight:780;font-size:clamp(2.4rem,5vw,3.4rem);line-height:1.0;letter-spacing:-.025em;margin:16px 0 14px}
+  .doc-head h1 .it{color:var(--clay)}
+  .doc-head .lead{font-size:1.2rem;color:var(--ink-soft);max-width:58ch;line-height:1.5}
+  /* two tracks */
+  .tracks{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:30px 0 14px}
+  .track{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--edge);border-radius:var(--r);padding:26px;transition:transform .15s,border-color .15s,box-shadow .15s}
+  .track,.track:hover{text-decoration:none}
+  .track:hover{border-color:var(--clay);box-shadow:var(--shadow);transform:translateY(-2px)}
+  .track .tl{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--clay-deep)}
+  .track h2{font-family:var(--display);font-weight:720;font-size:1.45rem;margin:10px 0 8px;letter-spacing:-.018em}
+  .track p{font-size:15.5px;color:var(--ink-soft);line-height:1.55;margin:0 0 18px}
+  .track .go{margin-top:auto;font-weight:600;color:var(--clay-deep)}
+  .converge{text-align:center;font-size:15px;color:var(--ink-soft);margin:6px auto 0;max-width:56ch;line-height:1.5}
+  /* doc sections */
+  .doc section{padding:46px 0 0;border:none}
+  .doc h2.sec{font-family:var(--display);font-weight:740;font-size:1.9rem;letter-spacing:-.02em;margin:18px 0 6px;padding-top:34px;border-top:2px solid var(--ink)}
+  .doc h2.sec .it{color:var(--clay)}
+  .doc h3{font-family:var(--display);font-weight:640;font-size:1.18rem;margin:30px 0 8px;letter-spacing:-.01em}
+  .doc .tool{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--clay-deep);margin:26px 0 4px}
+  .doc p{font-size:16.5px;color:var(--ink-soft);margin:12px 0;line-height:1.66;max-width:64ch}
+  .doc p strong,.doc li strong{color:var(--ink);font-weight:600}
+  .doc em{font-family:var(--serif);font-style:italic}
+  .doc ul,.doc ol{margin:12px 0;padding-left:24px;max-width:64ch}
+  .doc li{font-size:16.5px;color:var(--ink-soft);margin:8px 0;line-height:1.6}
+  .doc li::marker{color:var(--clay-deep)}
+  .doc a{color:var(--clay-deep);text-decoration:underline;text-decoration-color:var(--clay-soft);text-underline-offset:2px}
+  .doc a:hover{text-decoration-color:var(--clay-deep)}
+  .stepn{display:inline-flex;width:30px;height:30px;border-radius:9px;background:var(--clay);color:var(--cream);
+    font-family:var(--display);font-weight:740;font-size:.95rem;align-items:center;justify-content:center;margin-right:10px;vertical-align:-6px}
+  .doc code{font-family:var(--mono);font-size:14px;color:var(--clay-deep);background:var(--wash-clay);padding:1px 6px;border-radius:5px}
+  .doc pre{background:var(--kiln);color:#e9ddcf;border-radius:var(--r);padding:18px 20px;font-family:var(--mono);font-size:13.5px;line-height:1.6;overflow-x:auto;margin:16px 0;white-space:pre-wrap;box-shadow:var(--shadow)}
+  .doc pre code{background:none;color:#e9ddcf;padding:0;font-size:13.5px}
+  .doc pre code .c{color:var(--clay-soft)}
+  .callout{border-radius:var(--r);padding:18px 22px;margin:20px 0;font-size:15.5px;line-height:1.6}
+  .callout strong{color:var(--ink)}
+  .callout.tip{background:var(--wash-clay);border:1px solid var(--clay-soft)}
+  .callout.warn{background:#f4ead2;border:1px solid #e0c98c}
+  .callout.done{background:var(--card);border:1px solid var(--clay);box-shadow:var(--shadow);padding:24px 26px;margin:48px 0 0}
+  .callout.done h3{margin:0 0 6px}
+  .callout pre{margin:10px 0 2px}
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="index.html"><img src="assets/img/logo-k.png" alt="Kiln" />Kiln</a>
+    <nav class="nav-links" id="navlinks">
+      <a href="index.html#features">Features</a>
+      <a href="get-started.html">Get started</a>
+      <a class="gh" href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener" aria-label="Kiln on GitHub" title="Kiln on GitHub"><svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.91 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222 0 1.606-.014 2.898-.014 3.293 0 .322.216.694.825.576C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a>
+      <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the demo</a>
+    </nav>
+    <button class="menu-btn" id="menubtn" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  </div>
+</header>
+
+<main class="doc">
+  <div class="doc-head">
+    <span class="kick">Get started</span>
+    <h1>Get Kiln <span class="it">running.</span></h1>
+    <p class="lead">Two ways in, depending on how your site was built. Both end the same way: your client editing the live page, every change committed to your own repo. About ten minutes, free.</p>
+  </div>
+
+  <div class="tracks">
+    <a class="track" href="#ai">
+      <div class="tl">Track A</div>
+      <h2>Building with AI</h2>
+      <p>v0, Lovable, Bolt, or Claude built your site. Paste one prompt and it wires Kiln in, then runs the setup for you.</p>
+      <span class="go">The AI path &rarr;</span>
+    </a>
+    <a class="track" href="#manual">
+      <div class="tl">Track B</div>
+      <h2>A site I already have</h2>
+      <p>Hand-built HTML, or any static site. Add two script tags, mark what is editable, run the wizard.</p>
+      <span class="go">The manual path &rarr;</span>
+    </a>
+  </div>
+  <p class="converge">Either way you finish at the same place: deploy a tiny sign-in worker (or let Kiln Cloud run it), then visit <code style="font-family:var(--mono);font-size:14px;color:var(--clay-deep)">yoursite.com/kiln</code> and edit.</p>
+
+  <!-- TRACK A: AI -->
+  <section id="ai">
+    <h2 class="sec">Track A: building with <span class="it">AI</span></h2>
+    <p>You built a site with AI. These recipes make it editable by humans, your client, your team, future you, without re-prompting anything.</p>
+    <div class="callout tip"><strong>Skip the retrofit entirely:</strong> start from the <a href="https://github.com/erikkurtu/kiln-demo/generate" target="_blank" rel="noopener">Kiln starter template</a> ("Use this template" on GitHub), with annotations, blog, and members area pre-wired. Tell your AI to restyle <em>that</em>, and everything below is already done.</div>
+
+    <div class="tool">Claude</div>
+    <h3>The zero-config path</h3>
+    <p>In Claude Code (or claude.ai with a connected repo), paste <a href="https://github.com/erikkurtu/kiln/blob/main/KILN_PROMPT.md" target="_blank" rel="noopener">KILN_PROMPT.md</a> and say:</p>
+    <pre>Build me a site for [describe it] as plain static HTML, then make it Kiln-ready
+per the prompt above, and run: npx github:erikkurtu/kiln</pre>
+    <p>Claude builds the site, annotates it, and runs the setup wizard. You only click the three confirmation buttons it opens for you. End to end in one conversation.</p>
+
+    <div class="tool">Lovable and Bolt</div>
+    <h3>Refactor, then sync</h3>
+    <ol>
+      <li>Build your site, then paste KILN_PROMPT.md with: <em>"Refactor this into plain static HTML (no framework) and make it Kiln-ready per these conventions."</em></li>
+      <li>Click <strong>Connect GitHub</strong> (native sync). Your project becomes a repo.</li>
+      <li>Run <code>npx github:erikkurtu/kiln</code> in a clone of that repo, or request a Kiln Cloud invite and we attach the engine for you.</li>
+    </ol>
+
+    <div class="tool">v0</div>
+    <h3>Ask for plain HTML first</h3>
+    <ol>
+      <li>v0 defaults to Next.js. Add to your prompt: <em>"Output as plain static HTML and CSS, no React, no framework."</em> Then paste KILN_PROMPT.md and ask it to apply the conventions.</li>
+      <li>Push the result to GitHub.</li>
+      <li>Host on <strong>Cloudflare Pages</strong>, not Vercel. Vercel's free tier prohibits commercial sites, Cloudflare's allows them. Then <code>npx github:erikkurtu/kiln</code>.</li>
+    </ol>
+    <p>What "Kiln-ready" means is just conventions in the HTML: <code>data-cms</code> on editable text and images, <code>data-cms-repeat</code> on card lists, <code>data-cms-menu</code> on the nav, and two script tags. The full spec is <a href="https://github.com/erikkurtu/kiln/blob/main/KILN_PROMPT.md" target="_blank" rel="noopener">KILN_PROMPT.md</a>, written to paste into any AI tool verbatim.</p>
+  </section>
+
+  <!-- TRACK B: MANUAL -->
+  <section id="manual">
+    <h2 class="sec">Track B: a site you <span class="it">already have</span></h2>
+    <div class="callout tip">
+      <strong>The fast way, one command.</strong> Run this in your site's folder and the wizard does every scriptable step, opening the right page and waiting whenever a platform needs a human click (there are exactly three):
+      <pre><code>npx github:erikkurtu/kiln</code></pre>
+      Already set up? Health-check everything with <code>npx github:erikkurtu/kiln doctor</code>. The steps below are the same thing, by hand.
+    </div>
+
+    <h3><span class="stepn">1</span>Host on GitHub and Cloudflare Pages</h3>
+    <ul>
+      <li>Push your static site (plain HTML, CSS, JS) to a GitHub repository. <strong>This is where your code and content live.</strong></li>
+      <li>In the <a href="https://dash.cloudflare.com" target="_blank" rel="noopener">Cloudflare dashboard</a>: <strong>Workers and Pages, Create, Pages, Connect to Git</strong>, pick your repo, leave <em>build command</em> empty and <em>output directory</em> <code>/</code>, then Deploy. <strong>This is where your site is served, free.</strong></li>
+      <li>Your site is live at <code>yourproject.pages.dev</code>, and every Git commit auto-deploys. That auto-deploy <em>is</em> Kiln's publish button.</li>
+    </ul>
+    <div class="callout warn"><strong>Hosting note:</strong> use Cloudflare Pages (or GitHub Pages) for business sites. Vercel's free Hobby tier prohibits commercial use in its terms.</div>
+
+    <h3><span class="stepn">2</span>Deploy the sign-in worker (or use Kiln Cloud)</h3>
+    <p><strong>Self-host, free.</strong> You run one tiny Cloudflare Worker plus a one-click GitHub App. The wizard does it. The price of free is these ten minutes.</p>
+    <p><strong>Kiln Cloud, paid (invite beta).</strong> We run the worker, so you skip this step. Your content still lives in your repo. <a href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">Request a beta invite</a>.</p>
+    <pre><code>git clone https://github.com/erikkurtu/kiln && cd kiln
+npm install
+cd worker
+npx wrangler kv namespace create KILN   <span class="c"># paste the printed id into wrangler.toml</span>
+npx wrangler deploy</code></pre>
+    <p>Note the worker URL it prints, like <code>https://kiln-auth.yourname.workers.dev</code>.</p>
+
+    <h3><span class="stepn">3</span>Register your GitHub App, one click</h3>
+    <ul>
+      <li>Open <code>https://YOUR-WORKER.workers.dev/setup</code> and press the button. The app registers under your account and the worker captures its credentials. You never copy a secret.</li>
+      <li>Click <strong>Install</strong>, choose <em>Only select repositories</em>, and pick your site's repo. Kiln can only ever touch repos you select.</li>
+    </ul>
+
+    <h3><span class="stepn">4</span>Make your HTML editable</h3>
+    <p>Create <code>/assets/kiln-config.js</code>, copy <code>dist/kiln.js</code> into your <code>/assets/</code>, and add two script tags at the end of <code>&lt;body&gt;</code>:</p>
+    <pre><code>&lt;script src="/assets/kiln-config.js"&gt;&lt;/script&gt;
+&lt;script src="/assets/kiln.js" defer&gt;&lt;/script&gt;</code></pre>
+    <p>Then annotate what is editable:</p>
+    <pre><code>&lt;h1 data-cms="headline"&gt;Welcome&lt;/h1&gt;
+&lt;img data-cms="hero" data-cms-attr="src" src="/img/hero.jpg"&gt;
+&lt;div class="cards" data-cms-repeat="services"&gt; …repeatable blocks… &lt;/div&gt;
+&lt;div class="nav-links" data-cms-menu="main"&gt; …site menu… &lt;/div&gt;</code></pre>
+
+    <h3><span class="stepn">5</span>Sign in and edit</h3>
+    <p>Push everything. After the deploy, visit <code>yoursite.com/#edit</code>, the secret knock. Choose <strong>Continue with GitHub</strong>, click any outlined text, type, and hit <strong>Publish</strong> on the floating Kiln button. About a minute later it is live.</p>
+
+    <h3>Optional: editors and members with Google sign-in</h3>
+    <p>Let your client, team, or community in, with no GitHub accounts: create a Google OAuth client, set two secrets on the worker, then add people by email in your Kiln menu under <strong>People and access</strong> (Editor or Member, access lasting 1 to 360 days). Full commands are in the <a href="https://github.com/erikkurtu/kiln#google-sign-in" target="_blank" rel="noopener">README</a>.</p>
+
+    <h3>Optional: members-only area and gated documents</h3>
+    <p>Copy <code>demo/functions/</code> and <code>demo/members-login.html</code> into your site, set the member secrets on your Pages project, and everything under <code>/members/</code>, pages and PDFs included, becomes invite-only.</p>
+
+    <div class="callout done">
+      <h3>That is the whole stack.</h3>
+      <p style="margin-bottom:0">A GitHub repo, a free static host, one tiny worker, and a site that edits itself. No database to patch, no monthly bill, no platform that owns your content. Stuck? <a href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">Open an issue</a>.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot-grid">
+    <div class="foot-l">
+      <a class="brand" href="index.html"><img src="assets/img/logo-k.png" alt="Kiln" />Kiln</a>
+      <p>Made for people who would rather build than babysit a CMS.</p>
+    </div>
+    <div class="foot-links">
+      <a href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">demo</a>
+      <a href="get-started.html">get started</a>
+      <a href="index.html#features">features</a>
+      <a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">github</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){var mb=document.getElementById('menubtn'),nl=document.getElementById('navlinks');
+if(mb){mb.addEventListener('click',function(){nl.classList.toggle('show');});}})();
+</script>
+</body>
+</html>

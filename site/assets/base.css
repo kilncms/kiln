@@ -1,4 +1,4 @@
-/* Kiln shared design system, warm editorial. Used by setup.html, recipes.html.
+/* Kiln shared design system, warm editorial. Used by get-started.html.
    (index.html inlines the same tokens.) */
 @font-face{font-family:'Bricolage';src:url('fonts/bricolage-grotesque.woff2') format('woff2');font-weight:200 800;font-display:swap}
 @font-face{font-family:'Newsreader';src:url('fonts/newsreader.woff2') format('woff2');font-weight:200 700;font-style:normal;font-display:swap}
@@ -9,7 +9,7 @@
   --paper:#ebeae5; --paper-2:#e3e1da; --card:#f4f2ec;
   --wash-blue:#e0e2ec; --wash-sage:#e2e7dd; --wash-clay:#f4e1d7;
   --ink:#262630; --ink-soft:#5e5f6a; --ink-faint:#90909a;
-  --clay:#f0704f; --clay-deep:#c14a2c; --clay-soft:#f6a890; --cream:#fdeee7;
+  --clay:#f0704f; --clay-deep:#d2542f; --clay-soft:#f6a890; --cream:#fdeee7;
   --blue:#7c8bb4; --sage:#7e9472; --kiln:#23252f;
   --edge:rgba(36,38,47,.12); --edge-2:rgba(36,38,47,.2);
   --display:'Bricolage',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
@@ -44,6 +44,7 @@ header.nav{position:sticky;top:0;z-index:40;backdrop-filter:saturate(150%) blur(
 .nav-links a:hover{color:var(--ink);background:rgba(36,38,47,.05)}
 .nav-links a.gh{padding:8px 10px;display:inline-flex;align-items:center;color:var(--ink-soft)}
 .nav-links a.gh:hover{color:var(--ink)}
+.nav-links a.btn-clay,.nav-links a.btn-clay:hover{color:var(--cream)}
 .btn{font-family:var(--display);font-weight:600;cursor:pointer;border:1px solid transparent;
   display:inline-flex;align-items:center;gap:8px;transition:transform .14s,box-shadow .14s,background .16s,border-color .16s;white-space:nowrap}
 .btn:active{transform:translateY(1px)}

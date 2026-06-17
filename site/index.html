@@ -22,7 +22,7 @@
   --paper:#ebeae5; --paper-2:#e3e1da; --card:#f4f2ec;
   --wash-blue:#e0e2ec; --wash-sage:#e2e7dd; --wash-clay:#f4e1d7;
   --ink:#262630; --ink-soft:#5e5f6a; --ink-faint:#90909a;
-  --clay:#f0704f; --clay-deep:#c14a2c; --clay-soft:#f6a890; --cream:#fdeee7;
+  --clay:#f0704f; --clay-deep:#d2542f; --clay-soft:#f6a890; --cream:#fdeee7;
   --blue:#7c8bb4; --sage:#7e9472;
   --kiln:#23252f; --kiln-2:#2c2f3b;
   --edge:rgba(36,38,47,.12); --edge-2:rgba(36,38,47,.2);
@@ -60,6 +60,7 @@ header.nav{position:sticky;top:0;z-index:40;backdrop-filter:saturate(150%) blur(
 .nav-links a:hover{color:var(--ink);background:rgba(36,38,47,.05)}
 .nav-links a.gh{padding:8px 10px;display:inline-flex;align-items:center;color:var(--ink-soft)}
 .nav-links a.gh:hover{color:var(--ink)}
+.nav-links a.btn-clay,.nav-links a.btn-clay:hover{color:var(--cream)}
 .btn{font-family:var(--display);font-weight:600;cursor:pointer;border:1px solid transparent;
   display:inline-flex;align-items:center;gap:8px;transition:transform .14s,box-shadow .14s,background .16s,border-color .16s;white-space:nowrap}
 .btn:active{transform:translateY(1px)}
@@ -75,7 +76,7 @@ header.nav{position:sticky;top:0;z-index:40;backdrop-filter:saturate(150%) blur(
 .hero{padding:72px 0 24px}
 .hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center}
 .hero h1{font-family:var(--display);font-weight:780;font-size:clamp(2.9rem,6.2vw,5.1rem);line-height:.97;letter-spacing:-.025em}
-.hero h1 .it{color:var(--clay-deep)}
+.hero h1 .it{color:var(--clay)}
 .hero .sub{font-size:1.24rem;color:var(--ink-soft);max-width:30ch;margin-top:26px;line-height:1.5}
 .hero .kick{display:block;margin-bottom:22px}
 .hero-cta{display:flex;gap:13px;flex-wrap:wrap;margin-top:34px}
@@ -116,7 +117,7 @@ section{padding:84px 0;position:relative}
 .band-sage{background:var(--wash-sage)}
 .head{max-width:840px;margin:0 auto;text-align:center}
 .head h2{font-family:var(--display);font-weight:740;font-size:clamp(2rem,4.2vw,3.2rem);line-height:1.02;letter-spacing:-.022em}
-.head h2 .it{color:var(--clay-deep)}
+.head h2 .it{color:var(--clay)}
 .head .lead{font-size:1.15rem;color:var(--ink-soft);margin:18px auto 0;max-width:54ch;line-height:1.55}
 
 /* reveal: content visible by default; JS opts into hide-then-reveal so no-JS keeps content */
@@ -296,8 +297,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
     <a class="brand" href="/"><img src="assets/img/logo-k.png" alt="Kiln" />Kiln</a>
     <nav class="nav-links" id="navlinks">
       <a href="#features">Features</a>
-      <a href="recipes.html">AI recipes</a>
-      <a href="setup.html">Setup</a>
+      <a href="get-started.html">Get started</a>
       <a class="gh" href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener" aria-label="Kiln on GitHub" title="Kiln on GitHub"><svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.91 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222 0 1.606-.014 2.898-.014 3.293 0 .322.216.694.825.576C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a>
       <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the demo</a>
     </nav>
@@ -316,7 +316,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
       <p class="sub">Kiln turns any static site, even the one your AI just built, into one your client edits by clicking it. The content lives in your Git repo. Hosting stays free.</p>
       <div class="hero-cta">
         <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the live demo</a>
-        <a class="btn btn-line" href="setup.html">Set up in 10 minutes</a>
+        <a class="btn btn-line" href="get-started.html">Set up in 10 minutes</a>
       </div>
     </div>
     <div class="hero-art rise">
@@ -326,24 +326,49 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
   </div>
 </section>
 
-<!-- LIVE EDIT DEMO -->
-<section class="demo" style="padding-top:6px">
-  <div class="wrap rise">
-    <div class="demo-card">
-      <div class="demo-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="url">riverside-ceramics.com</span></div>
-      <div class="demo-body">
-        <div class="demo-stage">
-          <div class="eyetiny">This page runs on Kiln</div>
-          <p class="demo-line">We make <span class="ed" id="ed1">small-batch ceramics</span> in a studio by the river.</p>
-          <div class="demo-hint">That underlined phrase is a real Kiln field. Click it, type, press <span class="kbd">Enter</span>.</div>
+<!-- HOW IT WORKS -->
+<section class="how" style="padding-top:60px">
+  <div class="wrap">
+    <div class="head rise">
+      <h2>How it <span class="it">works.</span></h2>
+      <p class="lead">Kiln is a few small, boring pieces wired together. Your content in a GitHub repo, your site on Cloudflare Pages, and a tiny sign-in worker that turns clicks into commits. No database, no build server.</p>
+    </div>
+    <div class="paths rise">
+      <div class="flow">
+        <div class="node">
+          <div class="lbl">people</div>
+          <div class="t">You and your editors</div>
+          <div class="s">Sign in with Google, or a one-time link. No GitHub account needed.</div>
         </div>
-        <div class="demo-log" id="clog">
-          <div class="lh">git log</div>
-          <div class="row"><span class="sha">a1f9c2</span><span>Edit hero_subhead</span></div>
-          <div class="row"><span class="sha">7e0b13</span><span>New post: low tide</span></div>
-          <div class="row"><span class="sha">3c8d44</span><span>Swap about photo</span></div>
+        <div class="arrow">&rarr;</div>
+        <div class="node engine">
+          <div class="lbl">the one piece you choose</div>
+          <div class="t">The sign-in worker</div>
+          <div class="fork">
+            <div class="opt">
+              <div class="oh">Self-host <span class="pr">free</span></div>
+              <div class="op">A tiny Cloudflare Worker you deploy once. About 10 minutes.</div>
+            </div>
+            <div class="opt">
+              <div class="oh">Kiln Cloud <span class="pr">$5 to 9 / mo</span></div>
+              <div class="op">We run the worker for you. Nothing to deploy or maintain.</div>
+            </div>
+          </div>
+        </div>
+        <div class="arrow">&rarr;</div>
+        <div class="node">
+          <div class="lbl">your code</div>
+          <div class="t">A GitHub repo</div>
+          <div class="s">Plain HTML with full version history. Every edit is a commit.</div>
+        </div>
+        <div class="arrow">&rarr;</div>
+        <div class="node">
+          <div class="lbl">your site</div>
+          <div class="t">Cloudflare Pages</div>
+          <div class="s">Free hosting that auto-deploys on every commit.</div>
         </div>
       </div>
+      <p class="paths-cap">The same editor on both paths. The only choice is who runs the sign-in worker, you or us.</p>
     </div>
   </div>
 </section>
@@ -450,42 +475,8 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
 <section>
   <div class="wrap">
     <div class="head rise">
-      <h2>Same editor. You pick who runs <span class="it">the engine.</span></h2>
-      <p class="lead">The editor is identical on both paths. The only difference is who runs the small sign-in engine.</p>
-    </div>
-    <div class="paths rise">
-      <div class="flow">
-        <div class="node">
-          <div class="t">You and your editors</div>
-          <div class="s">sign in with Google, or a one-time link</div>
-        </div>
-        <div class="arrow">&rarr;</div>
-        <div class="node engine">
-          <div class="lbl">the one thing you choose</div>
-          <div class="t">The sign-in engine</div>
-          <div class="fork">
-            <div class="opt">
-              <div class="oh">Self-host <span class="pr">free</span></div>
-              <div class="op">You run a tiny Cloudflare Worker. About 10 minutes, once.</div>
-            </div>
-            <div class="opt">
-              <div class="oh">Kiln Cloud <span class="pr">$5 to 9 / mo</span></div>
-              <div class="op">We run it for you. Nothing to deploy or maintain.</div>
-            </div>
-          </div>
-        </div>
-        <div class="arrow">&rarr;</div>
-        <div class="node">
-          <div class="t">Your GitHub repo</div>
-          <div class="s">every edit lands as a commit</div>
-        </div>
-        <div class="arrow">&rarr;</div>
-        <div class="node">
-          <div class="t">Your live site</div>
-          <div class="s">auto-deploys on free hosting</div>
-        </div>
-      </div>
-      <p class="paths-cap">Same editor, same repo, same hosting on both paths. The only question is who runs the sign-in engine.</p>
+      <h2>Free, or <span class="it">hosted for you.</span></h2>
+      <p class="lead">Both run the same Kiln, with your content in your own repo. The only difference is who maintains the sign-in worker.</p>
     </div>
     <div class="plans">
       <div class="plan rise">
@@ -498,7 +489,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
           <li>Every feature, never gated</li>
           <li>You trust no one but yourself</li>
         </ul>
-        <a class="btn btn-clay" href="setup.html">Start free</a>
+        <a class="btn btn-clay" href="get-started.html">Start free</a>
       </div>
       <div class="plan feat-plan rise">
         <span class="pt">Kiln Cloud, invite beta</span>
@@ -525,7 +516,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
       <p>A kiln turns soft clay into something that lasts. Kiln turns a click into a Git commit: plain HTML in your own repo, with every version kept. Nothing to export later, because nothing was ever locked in.</p>
       <div class="kiln-cta">
         <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the live demo</a>
-        <a class="btn btn-line" href="setup.html">Read the setup guide</a>
+        <a class="btn btn-line" href="get-started.html">Read the setup guide</a>
       </div>
     </div>
     <div class="art-frame rise"><img src="assets/img/craft.webp" width="1100" height="1100" alt="A home ceramics studio with handmade mugs and a softly glowing kiln" /></div>
@@ -541,7 +532,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
       <details><summary>Do my editors need GitHub accounts?</summary><div class="ans">No. The owner uses GitHub because it is their repo. Everyone else signs in with Google, or with a one-time link. Their changes are committed on their behalf and attributed by name.</div></details>
       <details><summary>Can editors break my design?</summary><div class="ans">That is the whole point. Editors change content, not layout. Text, images, links, list items, menu entries: yes. Dragging boxes around or changing fonts: deliberately not. Styles come from a palette you define in CSS.</div></details>
       <details><summary>Where does my content live? Can I leave?</summary><div class="ans">In your own GitHub repository, as plain HTML with full version history. Leaving Kiln means deleting two script tags. There is no export, because nothing was ever imported.</div></details>
-      <details><summary>Does it work with a site my AI built?</summary><div class="ans">Yes, that is the common case. Paste <code>KILN_PROMPT.md</code> into v0, Lovable, Bolt, or Claude and it wires your existing HTML for click-to-edit. See the <a href="recipes.html" style="color:var(--clay-deep)">AI recipes</a>.</div></details>
+      <details><summary>Does it work with a site my AI built?</summary><div class="ans">Yes, that is the common case. Paste <code>KILN_PROMPT.md</code> into v0, Lovable, Bolt, or Claude and it wires your existing HTML for click-to-edit. See the <a href="get-started.html#ai" style="color:var(--clay-deep)">AI track</a>.</div></details>
     </div>
   </div>
 </section>
@@ -555,52 +546,23 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
     </div>
     <div class="foot-links">
       <a href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">demo</a>
-      <a href="recipes.html">recipes</a>
-      <a href="setup.html">setup</a>
+      <a href="get-started.html">get started</a>
       <a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">github</a>
     </div>
   </div>
 </footer>
-
-<!-- FAB: dogfood -->
-<button class="fab" id="fab" title="This page runs on Kiln">
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-  <span class="fab-txt">This page runs on Kiln. Try editing it.</span>
-</button>
 
 <script>
 (function(){
   // scroll reveal
   var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.12,rootMargin:'0px 0px -8% 0px'});
   document.querySelectorAll('.rise').forEach(function(el){io.observe(el);});
-
   // mobile menu
   var mb=document.getElementById('menubtn'), nl=document.getElementById('navlinks');
   if(mb){mb.addEventListener('click',function(){nl.classList.toggle('show');});}
-
   // copy command
   var cb=document.getElementById('copycmd');
   if(cb){cb.addEventListener('click',function(){navigator.clipboard&&navigator.clipboard.writeText('npx github:erikkurtu/kiln');var t=cb.textContent;cb.textContent='Copied';setTimeout(function(){cb.textContent=t;},1600);});}
-
-  // live-edit dogfood demo
-  var ed=document.getElementById('ed1'), clog=document.getElementById('clog'), fab=document.getElementById('fab');
-  var shas=['b4e1a0','d92f7c','0a7e51','5fc3d8','9e2b66','c14ad3','f07a21','3ab8e4'], i=0;
-  function commit(){
-    var row=document.createElement('div'); row.className='row fresh';
-    row.innerHTML='<span class="sha">'+shas[(i++)%shas.length]+'</span><span>Edit hero_subhead</span>';
-    var lh=clog.querySelector('.lh'); lh.after(row);
-    setTimeout(function(){row.classList.remove('fresh');},2400);
-    while(clog.querySelectorAll('.row').length>4){clog.querySelector('.row:last-child').remove();}
-  }
-  if(ed){
-    ed.addEventListener('click',function(){if(ed.classList.contains('on'))return;
-      ed.contentEditable='true';ed.classList.add('on');ed.focus();
-      var r=document.createRange();r.selectNodeContents(ed);var s=getSelection();s.removeAllRanges();s.addRange(r);});
-    ed.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();ed.blur();}});
-    ed.addEventListener('blur',function(){if(!ed.classList.contains('on'))return;
-      ed.contentEditable='false';ed.classList.remove('on');commit();});
-  }
-  if(fab){fab.addEventListener('click',function(){ed&&ed.scrollIntoView({behavior:'smooth',block:'center'});setTimeout(function(){ed&&ed.click();},420);});}
 })();
 </script>
 </body>
