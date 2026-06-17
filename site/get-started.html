@@ -71,7 +71,7 @@
   <div class="doc-head">
     <span class="kick">Get started</span>
     <h1>Get Kiln <span class="it">running.</span></h1>
-    <p class="lead">Two ways in, depending on how your site was built. Both end the same way: your client editing the live page, every change committed to your own repo. About ten minutes, free.</p>
+    <p class="lead">Two ways in, depending on how your site was built. Both end the same way: your client editing the live page, every change committed to a GitHub repo, yours or your client's. About ten minutes, free.</p>
   </div>
 
   <div class="tracks">
@@ -88,7 +88,7 @@
       <span class="go">The manual path &rarr;</span>
     </a>
   </div>
-  <p class="converge">Either way you finish at the same place: deploy the Kiln worker (or let Kiln run it), then visit <code style="font-family:var(--mono);font-size:14px;color:var(--clay-deep)">yoursite.com/kiln</code> and edit.</p>
+  <p class="converge">Either way you finish at the same place: deploy the Kiln worker (or let Kiln run it), then visit <code style="font-family:var(--mono);font-size:14px;color:var(--clay-deep)">yoursite.com/#kiln</code> and edit.</p>
   <div class="callout tip" style="margin-top:18px"><strong>Don't want to set any of this up?</strong> Kiln's <strong>fully-managed</strong> plan does it all, the hosting, the worker, and the config. You just bring a GitHub repo. <a href="index.html#plans">See the three plans</a> or <a href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">request access</a>.</div>
 
   <!-- TRACK A: AI -->
@@ -154,10 +154,11 @@ npx wrangler deploy</code></pre>
     <ul>
       <li>Open <code>https://YOUR-WORKER.workers.dev/setup</code> and press the button. The app registers under your account and the worker captures its credentials. You never copy a secret.</li>
       <li>Click <strong>Install</strong>, choose <em>Only select repositories</em>, and pick your site's repo. Kiln can only ever touch repos you select.</li>
+      <li>Add your site's URL to <code>ALLOWED_ORIGINS</code> in <code>worker/wrangler.toml</code>, then redeploy the worker once more.</li>
     </ul>
 
     <h3><span class="stepn">4</span>Make your HTML editable</h3>
-    <p>Create <code>/assets/kiln-config.js</code>, copy <code>dist/kiln.js</code> into your <code>/assets/</code>, and add two script tags at the end of <code>&lt;body&gt;</code>:</p>
+    <p>Create <code>/assets/kiln-config.js</code>, copy both <code>dist/kiln.js</code> and <code>dist/kiln-editor.js</code> into your <code>/assets/</code>, and add two script tags at the end of <code>&lt;body&gt;</code>:</p>
     <pre><code>&lt;script src="/assets/kiln-config.js"&gt;&lt;/script&gt;
 &lt;script src="/assets/kiln.js" defer&gt;&lt;/script&gt;</code></pre>
     <p>Then annotate what is editable:</p>
@@ -167,7 +168,7 @@ npx wrangler deploy</code></pre>
 &lt;div class="nav-links" data-cms-menu="main"&gt; …site menu… &lt;/div&gt;</code></pre>
 
     <h3><span class="stepn">5</span>Sign in and edit</h3>
-    <p>Push everything. After the deploy, visit <code>yoursite.com/#edit</code>, the secret knock. Choose <strong>Continue with GitHub</strong>, click any outlined text, type, and hit <strong>Publish</strong> on the floating Kiln button. About a minute later it is live.</p>
+    <p>Push everything. After the deploy, visit <code>yoursite.com/#kiln</code>, the secret knock. Choose <strong>Continue with GitHub</strong>, click any outlined text, type, and hit <strong>Publish</strong> on the floating Kiln button. About a minute later it is live.</p>
 
     <h3>Optional: editors and members with Google sign-in</h3>
     <p>Let your client, team, or community in, with no GitHub accounts: create a Google OAuth client, set two secrets on the worker, then add people by email in your Kiln menu under <strong>People and access</strong> (Editor or Member, access lasting 1 to 360 days). Full commands are in the <a href="https://github.com/erikkurtu/kiln#google-sign-in" target="_blank" rel="noopener">README</a>.</p>

@@ -314,8 +314,8 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
   <div class="wrap hero-grid">
     <div class="hero-copy rise">
       <span class="kick">Open-source CMS</span>
-      <h1>Your client edits the site.<br>You keep the <span class="it">code.</span></h1>
-      <p class="sub">Kiln turns any static site, even the one your AI just built, into one your client edits by clicking it. The content lives in your Git repo. Hosting stays free.</p>
+      <h1>Your client edits the site.<br>The code stays in <span class="it">GitHub.</span></h1>
+      <p class="sub">Kiln turns any static site, even one your AI just built, into one your client can edit by clicking it. The code lives in a GitHub repo you keep, or hand to your client to own. Never locked inside Kiln.</p>
       <div class="hero-cta">
         <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the live demo</a>
         <a class="btn btn-line" href="get-started.html">Set up in 10 minutes</a>
@@ -332,36 +332,36 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
 <section class="how" style="padding-top:60px">
   <div class="wrap">
     <div class="head rise">
-      <h2>Kiln is two pieces of <span class="it">code.</span></h2>
-      <p class="lead">One runs on your page and does the editing. One runs on Cloudflare and handles sign-in and commits. They plug into your own GitHub repo and the host you choose. No database, no build server.</p>
+      <h2>Kiln is two sets of <span class="it">code.</span></h2>
+      <p class="lead">One set runs on your page and does the editing. One runs on Cloudflare and handles sign-in and commits. They work against a GitHub repo and the host you choose. No database, no build server.</p>
     </div>
     <div class="paths rise">
       <div class="flow">
         <div class="node kiln">
           <div class="lbl">Kiln · on the page</div>
           <div class="t">The editor</div>
-          <div class="s">A JavaScript file your page loads. Click any text or image and edit it in place. Kiln rewrites your real HTML at the exact source offset, so only what you changed changes. Visitors load about 3 KB; the full editor loads only after you sign in.</div>
+          <div class="s">The JavaScript that loads on your page and handles the inline editing. Click any element, change it, and Kiln splices the edit into your real HTML at its exact source location.</div>
         </div>
         <div class="arrow">&rarr;</div>
         <div class="node kiln">
           <div class="lbl">Kiln · the backend</div>
           <div class="t">The worker</div>
-          <div class="s">A Cloudflare Worker that signs editors in, with Google or GitHub, no account needed for them, and writes each change to your repo as a commit. Run it yourself, or let Kiln run it.</div>
+          <div class="s">A Cloudflare Worker. It handles sign-in and saves each edit to GitHub as a commit. Run it yourself, or let Kiln run it for you.</div>
         </div>
         <div class="arrow">&rarr;</div>
         <div class="node">
-          <div class="lbl">yours</div>
-          <div class="t">Your GitHub repo</div>
-          <div class="s">Plain HTML with full version history. Your code and content, yours on every plan.</div>
+          <div class="lbl">yours, not ours</div>
+          <div class="t">A GitHub repo</div>
+          <div class="s">Your site's code and content, as plain HTML with full history. Owned by you or by your client. Never held by Kiln.</div>
         </div>
         <div class="arrow">&rarr;</div>
         <div class="node">
-          <div class="lbl">yours</div>
-          <div class="t">Your host</div>
+          <div class="lbl">your choice</div>
+          <div class="t">A host</div>
           <div class="s">Cloudflare Pages recommended, free and fine for commercial use. Any host that auto-deploys from GitHub works too, like Vercel or Netlify.</div>
         </div>
       </div>
-      <p class="paths-cap">You can run both pieces yourself for free, or let Kiln run them for you. Three ways to do that, just below.</p>
+      <p class="paths-cap">Run both sets yourself for free, or let Kiln run them for you. <a href="#plans" style="color:var(--clay-deep);text-decoration:underline;text-decoration-color:var(--clay-soft);text-underline-offset:2px">See the three plans</a> below.</p>
     </div>
   </div>
 </section>
@@ -401,7 +401,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
         <div class="cl-name">People &amp; access</div>
         <div class="feat"><h3>Google sign-in</h3><p>Add an email and a role. Editors sign in with Google and never touch GitHub.</p></div>
         <div class="feat"><h3>Members &amp; gated docs</h3><p>Lock <code>/members/</code> pages and PDFs at the edge. Invite people for 1 to 360 days.</p></div>
-        <div class="feat"><h3>Invisible to visitors</h3><p>Visitors load 6&nbsp;KB. The editor loads only for you, summoned at <code>/kiln</code>.</p></div>
+        <div class="feat"><h3>Invisible to visitors</h3><p>Visitors load about 3&nbsp;KB. The full editor loads only for signed-in editors, at <code>/#kiln</code>.</p></div>
       </div>
     </div>
   </div>
@@ -411,16 +411,16 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
 <section class="band-sage">
   <div class="wrap">
     <div class="head rise">
-      <h2>Owners set up once. Everyone else just <span class="it">signs in.</span></h2>
-      <p class="lead">All the platform setup is yours, one time. For the people you invite, there is none.</p>
+      <h2>You set it up once. Everyone you invite just <span class="it">signs in.</span></h2>
+      <p class="lead">The one-time setup is yours. For everyone you invite, to edit or to view, there is nothing to install.</p>
     </div>
     <div class="roles-grid">
       <div class="art-frame rise"><img src="assets/img/handoff.webp" width="1100" height="1100" alt="One person handing a key across a laptop to another, warmly" /></div>
       <div class="rise">
-        <div class="role"><div class="who">You, the owner</div><div><h3>About ten minutes, once</h3><p>A free GitHub account holds your content. A free Cloudflare account hosts it. Run the wizard, click three buttons, then just visit <code>yoursite.com/kiln</code>.</p></div></div>
-        <div class="role"><div class="who">Your editors</div><div><h3>Zero setup</h3><p>Add their Gmail, or send a one-time link. They open the site, sign in with Google, and edit. Nothing to install.</p></div></div>
-        <div class="role"><div class="who">Your members</div><div><h3>Zero setup</h3><p>Same path. Added by email or sent a link, they sign in and the members-only pages and files unlock for as long as you chose.</p></div></div>
-        <p class="req">The full requirements: a static site, a free GitHub account, a free Cloudflare account. <b>There is no fourth thing.</b></p>
+        <div class="role"><div class="who">You</div><div><h3>Set it up once</h3><p>You connect a GitHub repo and the worker, about ten minutes with the wizard. The repo can stay yours, or belong to your client. After that, editing happens at <code>yoursite.com/#kiln</code>.</p></div></div>
+        <div class="role"><div class="who">Editors</div><div><h3>Zero setup</h3><p>Anyone you invite to change content: your client, their team, or you. Add a Gmail or send a one-time link, they sign in and edit. No GitHub account, nothing to install.</p></div></div>
+        <div class="role"><div class="who">Members</div><div><h3>Zero setup</h3><p>People who only need the gated pages. Invited the same way, they sign in and the members-only pages and files unlock for as long as you set.</p></div></div>
+        <p class="req">The full list: a static site, a free GitHub account, and a free Cloudflare account for the worker. <b>There is no fourth thing.</b></p>
       </div>
     </div>
   </div>
@@ -518,7 +518,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
     <div class="rise">
       <span class="kick">Why "Kiln"</span>
       <h2>Your words, fired into <span class="in-it">permanent pages.</span></h2>
-      <p>A kiln turns soft clay into something that lasts. Kiln turns a click into a Git commit: plain HTML in your own repo, with every version kept. Nothing to export later, because nothing was ever locked in.</p>
+      <p>A kiln turns soft clay into something that lasts. Kiln turns a click into a Git commit: plain HTML in a repo you control, with every version kept. Nothing to export later, because nothing was ever locked in.</p>
       <div class="kiln-cta">
         <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the live demo</a>
         <a class="btn btn-line" href="get-started.html">Read the setup guide</a>
@@ -534,9 +534,9 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
     <div class="head rise"><h2>The fine print, <span class="it">plainly.</span></h2></div>
     <div class="faq rise">
       <details><summary>Is it really free? What is the catch?</summary><div class="ans">The software is MIT open source. GitHub repos are free. Cloudflare Pages hosts the site on a free tier that allows commercial use, and a free Cloudflare Worker handles sign-in. The catch is that you self-host those two free things, which the wizard sets up in about ten minutes.</div></details>
-      <details><summary>Do my editors need GitHub accounts?</summary><div class="ans">No. The owner uses GitHub because it is their repo. Everyone else signs in with Google, or with a one-time link. Their changes are committed on their behalf and attributed by name.</div></details>
+      <details><summary>Do my editors need GitHub accounts?</summary><div class="ans">No. Whoever owns the repo signs in with GitHub. Everyone else, your client, their team, or members, signs in with Google or a one-time link. Their changes are committed on their behalf and attributed by name.</div></details>
       <details><summary>Can editors break my design?</summary><div class="ans">That is the whole point. Editors change content, not layout. Text, images, links, list items, menu entries: yes. Dragging boxes around or changing fonts: deliberately not. Styles come from a palette you define in CSS.</div></details>
-      <details><summary>Where does my content live? Can I leave?</summary><div class="ans">In your own GitHub repository, as plain HTML with full version history. Leaving Kiln means deleting two script tags. There is no export, because nothing was ever imported.</div></details>
+      <details><summary>Where does my content live? Can I leave?</summary><div class="ans">In a GitHub repo you control, whether that is yours or your client's, as plain HTML with full version history. Leaving Kiln means deleting two script tags. There is no export, because nothing was ever imported.</div></details>
       <details><summary>Do I have to host on Cloudflare?</summary><div class="ans">The sign-in worker runs on Cloudflare Workers, which are free. Your site itself can live anywhere that auto-deploys from GitHub. Cloudflare Pages is recommended because it is free and allows commercial use, but Vercel, Netlify, and GitHub Pages work too. On the fully-managed plan, Kiln handles hosting for you.</div></details>
       <details><summary>Does it work with a site my AI built?</summary><div class="ans">Yes, that is the common case. Paste <code>KILN_PROMPT.md</code> into v0, Lovable, Bolt, or Claude and it wires your existing HTML for click-to-edit. See the <a href="get-started.html#ai" style="color:var(--clay-deep)">AI track</a>.</div></details>
     </div>
