@@ -183,7 +183,9 @@ section{padding:84px 0;position:relative}
 .cmp .n{color:var(--ink-faint)}
 
 /* ============ PLANS ============ */
-.plans{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:46px}
+.plans{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:46px}
+.plan h3{font-size:1.7rem}
+@media(max-width:980px){.plans{grid-template-columns:1fr}}
 .plan{background:var(--card);border:1px solid var(--edge);border-radius:var(--r);padding:34px;display:flex;flex-direction:column}
 .plan.feat-plan{border-color:var(--clay);background:linear-gradient(180deg,var(--wash-clay),var(--card) 55%)}
 .plan .pt{font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--clay-deep)}
@@ -199,7 +201,7 @@ section{padding:84px 0;position:relative}
 .flow{display:flex;align-items:stretch;gap:10px}
 .flow .node{flex:1;background:var(--card);border:1px solid var(--edge);border-radius:14px;padding:18px 16px;
   display:flex;flex-direction:column;justify-content:center;box-shadow:var(--shadow)}
-.flow .node.engine{flex:1.85;border-color:var(--clay);background:linear-gradient(180deg,var(--wash-clay),var(--card) 62%)}
+.flow .node.engine{flex:1.15;border-color:var(--clay);background:linear-gradient(180deg,var(--wash-clay),var(--card) 62%)}
 .flow .arrow{align-self:center;color:var(--clay);flex:none;font-size:18px;font-weight:700}
 .node .t{font-family:var(--display);font-weight:640;font-size:1.02rem;letter-spacing:-.01em}
 .node .s{font-size:12.5px;color:var(--ink-soft);margin-top:4px;line-height:1.4}
@@ -331,7 +333,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
   <div class="wrap">
     <div class="head rise">
       <h2>How it <span class="it">works.</span></h2>
-      <p class="lead">Kiln is a few small, boring pieces wired together. Your content in a GitHub repo, your site on Cloudflare Pages, and a tiny sign-in worker that turns clicks into commits. No database, no build server.</p>
+      <p class="lead">Kiln is a few small, boring pieces. Your content in a GitHub repo, a tiny sign-in worker on Cloudflare, and your site on the host you like. No database, no build server.</p>
     </div>
     <div class="paths rise">
       <div class="flow">
@@ -342,33 +344,24 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
         </div>
         <div class="arrow">&rarr;</div>
         <div class="node engine">
-          <div class="lbl">the one piece you choose</div>
-          <div class="t">The sign-in worker</div>
-          <div class="fork">
-            <div class="opt">
-              <div class="oh">Self-host <span class="pr">free</span></div>
-              <div class="op">A tiny Cloudflare Worker you deploy once. About 10 minutes.</div>
-            </div>
-            <div class="opt">
-              <div class="oh">Kiln Cloud <span class="pr">$5 to 9 / mo</span></div>
-              <div class="op">We run the worker for you. Nothing to deploy or maintain.</div>
-            </div>
-          </div>
+          <div class="lbl">sign-in</div>
+          <div class="t">The Kiln worker</div>
+          <div class="s">A tiny Cloudflare Worker that turns clicks into Git commits. Run it yourself, or let Kiln run it.</div>
         </div>
         <div class="arrow">&rarr;</div>
         <div class="node">
           <div class="lbl">your code</div>
           <div class="t">A GitHub repo</div>
-          <div class="s">Plain HTML with full version history. Every edit is a commit.</div>
+          <div class="s">Plain HTML, full version history. Yours on every plan.</div>
         </div>
         <div class="arrow">&rarr;</div>
         <div class="node">
           <div class="lbl">your site</div>
-          <div class="t">Cloudflare Pages</div>
-          <div class="s">Free hosting that auto-deploys on every commit.</div>
+          <div class="t">The host you like</div>
+          <div class="s">Cloudflare Pages recommended, free and fine for commercial use. Any host that auto-deploys from GitHub works too, like Vercel or Netlify.</div>
         </div>
       </div>
-      <p class="paths-cap">The same editor on both paths. The only choice is who runs the sign-in worker, you or us.</p>
+      <p class="paths-cap">Run every piece yourself for free, or let Kiln run some or all of it. Three ways to do that, just below.</p>
     </div>
   </div>
 </section>
@@ -472,36 +465,48 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
 </section>
 
 <!-- PLANS -->
-<section>
+<section id="plans">
   <div class="wrap">
     <div class="head rise">
-      <h2>Free, or <span class="it">hosted for you.</span></h2>
-      <p class="lead">Both run the same Kiln, with your content in your own repo. The only difference is who maintains the sign-in worker.</p>
+      <h2>Three ways to <span class="it">run it.</span></h2>
+      <p class="lead">From do-it-yourself to we-do-everything. The editor and your repo are the same on all three. You just choose how much Kiln runs for you.</p>
     </div>
     <div class="plans">
       <div class="plan rise">
-        <span class="pt">Kiln open source</span>
-        <h3>Free, forever</h3>
-        <p class="price">$0, self-hosted, MIT</p>
+        <span class="pt">Open source</span>
+        <h3>Self-hosted</h3>
+        <p class="price">Free forever, MIT</p>
         <ul>
-          <li>Run the tiny auth engine yourself. The wizard does it.</li>
-          <li>Your worker, your GitHub App, your data</li>
-          <li>Every feature, never gated</li>
+          <li>You run the sign-in worker. The wizard sets it up.</li>
+          <li>You host the site: Cloudflare Pages, Vercel, or Netlify</li>
+          <li>Your repo, your data, every feature</li>
           <li>You trust no one but yourself</li>
         </ul>
         <a class="btn btn-clay" href="get-started.html">Start free</a>
       </div>
       <div class="plan feat-plan rise">
         <span class="pt">Kiln Cloud, invite beta</span>
-        <h3>Hosted for you</h3>
-        <p class="price">$5 to 9/mo per site, we run the engine</p>
+        <h3>Hosted engine</h3>
+        <p class="price">$5 to 9 / mo per site</p>
         <ul>
-          <li>Deploy nothing, maintain nothing</li>
-          <li>Your content still lives in your own repo</li>
+          <li>We run the sign-in worker for you</li>
+          <li>You keep your own repo and your own hosting</li>
+          <li>Nothing to deploy or maintain</li>
           <li>Switch to self-hosting any time</li>
-          <li>Fully-managed tier coming soon</li>
         </ul>
         <a class="btn btn-line" href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">Request an invite</a>
+      </div>
+      <div class="plan rise">
+        <span class="pt">Fully managed, early access</span>
+        <h3>We run it all</h3>
+        <p class="price">Pricing on request</p>
+        <ul>
+          <li>You bring a GitHub repo. That is the only step.</li>
+          <li>We set up the hosting, the worker, and the config</li>
+          <li>Your content still lives in your repo, yours to take</li>
+          <li>The hands-off option for non-technical owners</li>
+        </ul>
+        <a class="btn btn-line" href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">Request access</a>
       </div>
     </div>
   </div>
@@ -532,6 +537,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
       <details><summary>Do my editors need GitHub accounts?</summary><div class="ans">No. The owner uses GitHub because it is their repo. Everyone else signs in with Google, or with a one-time link. Their changes are committed on their behalf and attributed by name.</div></details>
       <details><summary>Can editors break my design?</summary><div class="ans">That is the whole point. Editors change content, not layout. Text, images, links, list items, menu entries: yes. Dragging boxes around or changing fonts: deliberately not. Styles come from a palette you define in CSS.</div></details>
       <details><summary>Where does my content live? Can I leave?</summary><div class="ans">In your own GitHub repository, as plain HTML with full version history. Leaving Kiln means deleting two script tags. There is no export, because nothing was ever imported.</div></details>
+      <details><summary>Do I have to host on Cloudflare?</summary><div class="ans">The sign-in worker runs on Cloudflare Workers, which are free. Your site itself can live anywhere that auto-deploys from GitHub. Cloudflare Pages is recommended because it is free and allows commercial use, but Vercel, Netlify, and GitHub Pages work too. On the fully-managed plan, Kiln handles hosting for you.</div></details>
       <details><summary>Does it work with a site my AI built?</summary><div class="ans">Yes, that is the common case. Paste <code>KILN_PROMPT.md</code> into v0, Lovable, Bolt, or Claude and it wires your existing HTML for click-to-edit. See the <a href="get-started.html#ai" style="color:var(--clay-deep)">AI track</a>.</div></details>
     </div>
   </div>

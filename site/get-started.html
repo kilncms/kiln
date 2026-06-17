@@ -88,7 +88,8 @@
       <span class="go">The manual path &rarr;</span>
     </a>
   </div>
-  <p class="converge">Either way you finish at the same place: deploy a tiny sign-in worker (or let Kiln Cloud run it), then visit <code style="font-family:var(--mono);font-size:14px;color:var(--clay-deep)">yoursite.com/kiln</code> and edit.</p>
+  <p class="converge">Either way you finish at the same place: deploy a tiny sign-in worker (or let Kiln run it), then visit <code style="font-family:var(--mono);font-size:14px;color:var(--clay-deep)">yoursite.com/kiln</code> and edit.</p>
+  <div class="callout tip" style="margin-top:18px"><strong>Don't want to set any of this up?</strong> Kiln's <strong>fully-managed</strong> plan does it all, the hosting, the worker, and the config. You just bring a GitHub repo. <a href="index.html#plans">See the three plans</a> or <a href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">request access</a>.</div>
 
   <!-- TRACK A: AI -->
   <section id="ai">
@@ -130,13 +131,14 @@ per the prompt above, and run: npx github:erikkurtu/kiln</pre>
       Already set up? Health-check everything with <code>npx github:erikkurtu/kiln doctor</code>. The steps below are the same thing, by hand.
     </div>
 
-    <h3><span class="stepn">1</span>Host on GitHub and Cloudflare Pages</h3>
+    <h3><span class="stepn">1</span>Host your code on GitHub, your site anywhere</h3>
     <ul>
-      <li>Push your static site (plain HTML, CSS, JS) to a GitHub repository. <strong>This is where your code and content live.</strong></li>
-      <li>In the <a href="https://dash.cloudflare.com" target="_blank" rel="noopener">Cloudflare dashboard</a>: <strong>Workers and Pages, Create, Pages, Connect to Git</strong>, pick your repo, leave <em>build command</em> empty and <em>output directory</em> <code>/</code>, then Deploy. <strong>This is where your site is served, free.</strong></li>
-      <li>Your site is live at <code>yourproject.pages.dev</code>, and every Git commit auto-deploys. That auto-deploy <em>is</em> Kiln's publish button.</li>
+      <li>Push your static site (plain HTML, CSS, JS) to a GitHub repository. <strong>This is where your code and content live, on every plan.</strong></li>
+      <li>Connect that repo to a host that auto-deploys on each commit. <strong>Cloudflare Pages is recommended</strong>, free and fine for commercial use: in the <a href="https://dash.cloudflare.com" target="_blank" rel="noopener">Cloudflare dashboard</a>, <strong>Workers and Pages, Create, Pages, Connect to Git</strong>, pick your repo, leave <em>build command</em> empty and <em>output directory</em> <code>/</code>, then Deploy.</li>
+      <li>Prefer something else? <strong>Vercel, Netlify, or GitHub Pages</strong> work the same way. Any host that redeploys from a Git push is a valid Kiln host.</li>
+      <li>Every commit now auto-deploys. That auto-deploy <em>is</em> Kiln's publish button.</li>
     </ul>
-    <div class="callout warn"><strong>Hosting note:</strong> use Cloudflare Pages (or GitHub Pages) for business sites. Vercel's free Hobby tier prohibits commercial use in its terms.</div>
+    <div class="callout warn"><strong>One caveat:</strong> Vercel's free Hobby tier prohibits commercial use, so for business sites prefer Cloudflare Pages or GitHub Pages. The sign-in worker in the next step runs on Cloudflare either way.</div>
 
     <h3><span class="stepn">2</span>Deploy the sign-in worker (or use Kiln Cloud)</h3>
     <p><strong>Self-host, free.</strong> You run one tiny Cloudflare Worker plus a one-click GitHub App. The wizard does it. The price of free is these ten minutes.</p>
