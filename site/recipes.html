@@ -1,88 +1,119 @@
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>From your AI builder to Kiln — recipes</title>
-<meta name="description" content="Take a site from Lovable, Claude, or v0 to client-editable with Kiln."/>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>From your AI builder to Kiln · recipes</title>
+<meta name="description" content="Take a site from Claude, Lovable, or v0 and make it client-editable with Kiln." />
+<meta name="theme-color" content="#e9eaef" />
+<link rel="icon" href="assets/img/logo-k.png" />
+<link rel="stylesheet" href="assets/base.css" />
 <style>
-:root{--ink:#14141f;--muted:#5b5e6e;--bg:#fbfbfd;--accent:#6366f1;--line:#e8e9ef;
---font:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif;--mono:ui-monospace,'SF Mono',Menlo,monospace}
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:var(--font);color:var(--ink);background:var(--bg);line-height:1.65}
-a{color:var(--accent);text-decoration:none}.wrap{max-width:760px;margin:0 auto;padding:0 24px 80px}
-nav{display:flex;justify-content:space-between;align-items:center;padding:22px 0 40px}
-.logo{font-weight:800;font-size:20px;background:linear-gradient(135deg,#6366f1,#8b5cf6);-webkit-background-clip:text;background-clip:text;color:transparent}
-.nav-r a{color:var(--muted);margin-left:20px;font-size:14px;font-weight:500}
-h1{font-size:2rem;font-weight:800;letter-spacing:-.03em;margin-bottom:10px}
-.lead{color:var(--muted);margin-bottom:30px}
-h2{font-size:1.2rem;font-weight:750;margin:44px 0 10px}
-p,li{font-size:14.5px;color:#3d4050}ol{padding-left:22px}li{margin:6px 0}
-pre{background:#14141f;color:#e7e7f0;border-radius:12px;padding:14px 16px;font-family:var(--mono);font-size:12.5px;overflow-x:auto;margin:12px 0;white-space:pre-wrap}
-code{font-family:var(--mono);background:#eef0f5;padding:1px 6px;border-radius:5px;font-size:12.8px}
-.tip{background:#f5f6ff;border:1.5px solid #c7d2fe;border-radius:12px;padding:13px 16px;font-size:13.5px;color:#3730a3;margin:14px 0}
-</style><style>
-:root{--bg:#f6f2ea;--ink:#221d19;--muted:#6f655a;--soft:#a89d8c;--accent:#6366f1;--line:#e7ded0;--ember:#e9623a}
-body{background:#f6f2ea!important;color:#221d19!important;font-family:"Inter",-apple-system,BlinkMacSystemFont,sans-serif!important}
-h1,h2,h3{font-family:"Fraunces",Georgia,serif!important;letter-spacing:-.02em}
-.logo{font-family:"Fraunces",Georgia,serif!important;color:#221d19!important;background:none!important;
-  -webkit-text-fill-color:#221d19!important;display:inline-flex!important;align-items:center;gap:8px;font-weight:900}
-.logo::before{content:"";width:11px;height:11px;border-radius:50%;
-  background:radial-gradient(circle at 35% 30%,#ffd9a0,#e9623a 55%,#cf4d27);box-shadow:0 0 9px rgba(233,98,58,.6)}
-a{color:#4f46e5}
-.btn{background:#6366f1!important;color:#fff!important;border-radius:99px!important}
-pre{background:#221d19!important;border-radius:12px!important}
-.tip{background:#fff3e9!important;border-color:#f6c89e!important;color:#9a4a23!important;border-radius:12px!important}
-.warn{border-radius:12px!important}
-.done{background:#eef0ff!important;border-color:#c7d2fe!important;border-radius:14px!important}
-.est{color:#a89d8c!important}
-h2 .n{background:#221d19!important;color:#f6f2ea!important}
-code{background:#efe8da!important;color:#cf4d27!important}
-.step::before,.s::before{background:#221d19!important;color:#f6f2ea!important}
+  .doc{max-width:760px;margin:0 auto;padding:0 28px}
+  .doc-head{padding:64px 0 10px}
+  .doc-head h1{font-family:var(--display);font-weight:780;font-size:clamp(2.4rem,5vw,3.4rem);line-height:1.0;letter-spacing:-.025em;margin:16px 0 14px}
+  .doc-head .lead{font-size:1.2rem;color:var(--ink-soft);max-width:56ch;line-height:1.5}
+  .recipe{margin:14px 0;padding:30px 0;border-top:1px solid var(--edge)}
+  .recipe .tool{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--clay-deep);margin-bottom:8px}
+  .recipe h2{font-family:var(--display);font-weight:700;font-size:1.7rem;letter-spacing:-.02em}
+  .doc p{font-size:16.5px;color:var(--ink-soft);margin:12px 0;line-height:1.66;max-width:64ch}
+  .doc p strong,.doc li strong{color:var(--ink);font-weight:600}
+  .doc em{font-family:var(--serif);font-style:italic}
+  .doc ol{margin:14px 0;padding-left:24px;max-width:64ch}
+  .doc li{font-size:16.5px;color:var(--ink-soft);margin:9px 0;line-height:1.6}
+  .doc li::marker{color:var(--clay-deep);font-family:var(--display);font-weight:600}
+  .doc a{color:var(--clay-deep);text-decoration:underline;text-decoration-color:var(--clay-soft);text-underline-offset:2px}
+  .doc a:hover{text-decoration-color:var(--clay-deep)}
+  .doc code{font-family:var(--mono);font-size:14px;color:var(--clay-deep);background:var(--wash-clay);padding:1px 6px;border-radius:5px}
+  .doc pre{background:var(--kiln);color:#e9ddcf;border-radius:var(--r);padding:18px 20px;font-family:var(--mono);font-size:13.5px;
+    line-height:1.6;overflow-x:auto;margin:16px 0;white-space:pre-wrap;box-shadow:var(--shadow)}
+  .callout{border-radius:var(--r);padding:18px 22px;margin:22px 0;font-size:15.5px;line-height:1.6;background:var(--wash-clay);border:1px solid var(--clay-soft)}
+  .callout strong{color:var(--ink)}
+  .spec{margin-top:14px;padding:30px 0;border-top:2px solid var(--ink)}
+  .spec h2{font-family:var(--display);font-weight:700;font-size:1.5rem;letter-spacing:-.018em;margin-bottom:8px}
 </style>
-</head><body><div class="wrap">
-<nav><a class="logo" href="index.html">Kiln</a><span class="nav-r">
-<a href="setup.html">Setup</a><a href="https://kiln-demo.pages.dev" target="_blank" rel="noopener">Demo</a>
-<a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">GitHub</a></span></nav>
+</head>
+<body>
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="index.html"><img src="assets/img/logo-k.png" alt="Kiln" />Kiln</a>
+    <nav class="nav-links" id="navlinks">
+      <a href="index.html#features">Features</a>
+      <a href="recipes.html">AI recipes</a>
+      <a href="setup.html">Setup</a>
+      <a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the demo</a>
+    </nav>
+    <button class="menu-btn" id="menubtn" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+  </div>
+</header>
 
-<h1>From your AI builder to Kiln</h1>
-<p class="lead">You built a site with AI. These recipes make it editable by humans —
-your client, your team, future-you — without re-prompting anything.</p>
+<main class="doc">
+  <div class="doc-head">
+    <span class="kick">AI recipes</span>
+    <h1>From your AI builder to Kiln</h1>
+    <p class="lead">You built a site with AI. These recipes make it editable by humans (your client, your team, future you) without re-prompting anything.</p>
+  </div>
 
-<div class="tip"><strong>Skip the retrofit entirely:</strong> start from the
-<a href="https://github.com/erikkurtu/kiln-demo/generate" target="_blank" rel="noopener">Kiln starter template</a>
-("Use this template" on GitHub) — annotations, blog, and members area pre-wired. Tell your AI to
-restyle <em>that</em>, and everything below is already done.</div>
+  <div class="callout">
+    <strong>Skip the retrofit entirely:</strong> start from the <a href="https://github.com/erikkurtu/kiln-demo/generate" target="_blank" rel="noopener">Kiln starter template</a> ("Use this template" on GitHub), with annotations, blog, and members area pre-wired. Tell your AI to restyle <em>that</em>, and everything below is already done.
+  </div>
 
-<h2>🤖 Claude (the zero-config path)</h2>
-<ol>
-<li>In Claude Code (or claude.ai with a connected repo), paste
-<a href="https://github.com/erikkurtu/kiln/blob/main/KILN_PROMPT.md" target="_blank" rel="noopener">KILN_PROMPT.md</a> and say:</li>
-</ol>
-<pre>Build me a site for [describe it] as plain static HTML — then make it Kiln-ready
+  <div class="recipe">
+    <div class="tool">Claude</div>
+    <h2>The zero-config path</h2>
+    <ol>
+      <li>In Claude Code (or claude.ai with a connected repo), paste <a href="https://github.com/erikkurtu/kiln/blob/main/KILN_PROMPT.md" target="_blank" rel="noopener">KILN_PROMPT.md</a> and say:</li>
+    </ol>
+    <pre>Build me a site for [describe it] as plain static HTML, then make it Kiln-ready
 per the prompt above, and run: npx github:erikkurtu/kiln</pre>
-<p>Claude builds the site, annotates it, AND runs the setup wizard — you only click the
-three confirmation buttons it opens for you. End to end in one conversation.</p>
+    <p>Claude builds the site, annotates it, and runs the setup wizard. You only click the three confirmation buttons it opens for you. End to end in one conversation.</p>
+  </div>
 
-<h2>💗 Lovable (and Bolt)</h2>
-<ol>
-<li>Build your site. Then paste KILN_PROMPT.md into the chat with: <em>"Refactor this into plain
-static HTML (no framework) and make it Kiln-ready per these conventions."</em></li>
-<li>Click <strong>Connect GitHub</strong> (native sync) — your project becomes a repo.</li>
-<li>Run <code>npx github:erikkurtu/kiln</code> in a clone of that repo (or request a Kiln Cloud
-invite and we attach the engine for you).</li>
-</ol>
+  <div class="recipe">
+    <div class="tool">Lovable and Bolt</div>
+    <h2>Refactor, then sync</h2>
+    <ol>
+      <li>Build your site. Then paste KILN_PROMPT.md into the chat with: <em>"Refactor this into plain static HTML (no framework) and make it Kiln-ready per these conventions."</em></li>
+      <li>Click <strong>Connect GitHub</strong> (native sync). Your project becomes a repo.</li>
+      <li>Run <code>npx github:erikkurtu/kiln</code> in a clone of that repo, or request a Kiln Cloud invite and we attach the engine for you.</li>
+    </ol>
+  </div>
 
-<h2>▲ v0</h2>
-<ol>
-<li>v0 defaults to Next.js — add this to your prompt: <em>"Output as plain static HTML/CSS,
-no React, no framework."</em> Then paste KILN_PROMPT.md and ask it to apply the conventions.</li>
-<li>Push the result to GitHub.</li>
-<li>Host on <strong>Cloudflare Pages</strong>, not Vercel — Vercel's free tier prohibits commercial
-sites; Cloudflare's allows them. Then <code>npx github:erikkurtu/kiln</code>.</li>
-</ol>
+  <div class="recipe">
+    <div class="tool">v0</div>
+    <h2>Ask for plain HTML first</h2>
+    <ol>
+      <li>v0 defaults to Next.js. Add this to your prompt: <em>"Output as plain static HTML and CSS, no React, no framework."</em> Then paste KILN_PROMPT.md and ask it to apply the conventions.</li>
+      <li>Push the result to GitHub.</li>
+      <li>Host on <strong>Cloudflare Pages</strong>, not Vercel. Vercel's free tier prohibits commercial sites, Cloudflare's allows them. Then <code>npx github:erikkurtu/kiln</code>.</li>
+    </ol>
+  </div>
 
-<h2>What "Kiln-ready" means (any tool, any site)</h2>
-<p>Just conventions in the HTML: <code>data-cms</code> on editable text/images,
-<code>data-cms-repeat</code> on card lists, <code>data-cms-menu</code> on the nav, two script
-tags, optional <code>_templates/</code> for posts and pages. The full spec is
-<a href="https://github.com/erikkurtu/kiln/blob/main/KILN_PROMPT.md" target="_blank" rel="noopener">KILN_PROMPT.md</a> —
-written to be pasted into any AI tool verbatim.</p>
-</div></body></html>
+  <div class="spec">
+    <h2>What "Kiln-ready" means (any tool, any site)</h2>
+    <p>Just conventions in the HTML: <code>data-cms</code> on editable text and images, <code>data-cms-repeat</code> on card lists, <code>data-cms-menu</code> on the nav, two script tags, and an optional <code>_templates/</code> folder for posts and pages. The full spec is <a href="https://github.com/erikkurtu/kiln/blob/main/KILN_PROMPT.md" target="_blank" rel="noopener">KILN_PROMPT.md</a>, written to be pasted into any AI tool verbatim.</p>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap foot-grid">
+    <div class="foot-l">
+      <a class="brand" href="index.html"><img src="assets/img/logo-k.png" alt="Kiln" />Kiln</a>
+      <p>Made for people who would rather build than babysit a CMS.</p>
+    </div>
+    <div class="foot-links">
+      <a href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">demo</a>
+      <a href="recipes.html">recipes</a>
+      <a href="setup.html">setup</a>
+      <a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">github</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){var mb=document.getElementById('menubtn'),nl=document.getElementById('navlinks');
+if(mb){mb.addEventListener('click',function(){nl.classList.toggle('show');});}})();
+</script>
+</body>
+</html>
