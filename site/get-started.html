@@ -88,7 +88,7 @@
       <span class="go">The manual path &rarr;</span>
     </a>
   </div>
-  <p class="converge">Either way you finish at the same place: deploy a tiny sign-in worker (or let Kiln run it), then visit <code style="font-family:var(--mono);font-size:14px;color:var(--clay-deep)">yoursite.com/kiln</code> and edit.</p>
+  <p class="converge">Either way you finish at the same place: deploy the Kiln worker (or let Kiln run it), then visit <code style="font-family:var(--mono);font-size:14px;color:var(--clay-deep)">yoursite.com/kiln</code> and edit.</p>
   <div class="callout tip" style="margin-top:18px"><strong>Don't want to set any of this up?</strong> Kiln's <strong>fully-managed</strong> plan does it all, the hosting, the worker, and the config. You just bring a GitHub repo. <a href="index.html#plans">See the three plans</a> or <a href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">request access</a>.</div>
 
   <!-- TRACK A: AI -->
@@ -141,7 +141,7 @@ per the prompt above, and run: npx github:erikkurtu/kiln</pre>
     <div class="callout warn"><strong>One caveat:</strong> Vercel's free Hobby tier prohibits commercial use, so for business sites prefer Cloudflare Pages or GitHub Pages. The sign-in worker in the next step runs on Cloudflare either way.</div>
 
     <h3><span class="stepn">2</span>Deploy the sign-in worker (or use Kiln Cloud)</h3>
-    <p><strong>Self-host, free.</strong> You run one tiny Cloudflare Worker plus a one-click GitHub App. The wizard does it. The price of free is these ten minutes.</p>
+    <p><strong>Self-host, free.</strong> You run one small Cloudflare Worker plus a one-click GitHub App. The wizard does it. The price of free is these ten minutes.</p>
     <p><strong>Kiln Cloud, paid (invite beta).</strong> We run the worker, so you skip this step. Your content still lives in your repo. <a href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">Request a beta invite</a>.</p>
     <pre><code>git clone https://github.com/erikkurtu/kiln && cd kiln
 npm install
@@ -177,7 +177,7 @@ npx wrangler deploy</code></pre>
 
     <div class="callout done">
       <h3>That is the whole stack.</h3>
-      <p style="margin-bottom:0">A GitHub repo, a free static host, one tiny worker, and a site that edits itself. No database to patch, no monthly bill, no platform that owns your content. Stuck? <a href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">Open an issue</a>.</p>
+      <p style="margin-bottom:0">A GitHub repo, a free static host, the Kiln worker, and a site that edits itself. No database to patch, no monthly bill, no platform that owns your content. Stuck? <a href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">Open an issue</a>.</p>
     </div>
   </section>
 </main>

@@ -201,7 +201,7 @@ section{padding:84px 0;position:relative}
 .flow{display:flex;align-items:stretch;gap:10px}
 .flow .node{flex:1;background:var(--card);border:1px solid var(--edge);border-radius:14px;padding:18px 16px;
   display:flex;flex-direction:column;justify-content:center;box-shadow:var(--shadow)}
-.flow .node.engine{flex:1.15;border-color:var(--clay);background:linear-gradient(180deg,var(--wash-clay),var(--card) 62%)}
+.flow .node.kiln{flex:1.25;border-color:var(--clay);background:linear-gradient(180deg,var(--wash-clay),var(--card) 62%)}
 .flow .arrow{align-self:center;color:var(--clay);flex:none;font-size:18px;font-weight:700}
 .node .t{font-family:var(--display);font-weight:640;font-size:1.02rem;letter-spacing:-.01em}
 .node .s{font-size:12.5px;color:var(--ink-soft);margin-top:4px;line-height:1.4}
@@ -332,36 +332,36 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
 <section class="how" style="padding-top:60px">
   <div class="wrap">
     <div class="head rise">
-      <h2>How it <span class="it">works.</span></h2>
-      <p class="lead">Kiln is a few small, boring pieces. Your content in a GitHub repo, a tiny sign-in worker on Cloudflare, and your site on the host you like. No database, no build server.</p>
+      <h2>Kiln is two pieces of <span class="it">code.</span></h2>
+      <p class="lead">One runs on your page and does the editing. One runs on Cloudflare and handles sign-in and commits. They plug into your own GitHub repo and the host you choose. No database, no build server.</p>
     </div>
     <div class="paths rise">
       <div class="flow">
-        <div class="node">
-          <div class="lbl">people</div>
-          <div class="t">You and your editors</div>
-          <div class="s">Sign in with Google, or a one-time link. No GitHub account needed.</div>
+        <div class="node kiln">
+          <div class="lbl">Kiln · on the page</div>
+          <div class="t">The editor</div>
+          <div class="s">A JavaScript file your page loads. Click any text or image and edit it in place. Kiln rewrites your real HTML at the exact source offset, so only what you changed changes. Visitors load about 3 KB; the full editor loads only after you sign in.</div>
         </div>
         <div class="arrow">&rarr;</div>
-        <div class="node engine">
-          <div class="lbl">sign-in</div>
-          <div class="t">The Kiln worker</div>
-          <div class="s">A tiny Cloudflare Worker that turns clicks into Git commits. Run it yourself, or let Kiln run it.</div>
-        </div>
-        <div class="arrow">&rarr;</div>
-        <div class="node">
-          <div class="lbl">your code</div>
-          <div class="t">A GitHub repo</div>
-          <div class="s">Plain HTML, full version history. Yours on every plan.</div>
+        <div class="node kiln">
+          <div class="lbl">Kiln · the backend</div>
+          <div class="t">The worker</div>
+          <div class="s">A Cloudflare Worker that signs editors in, with Google or GitHub, no account needed for them, and writes each change to your repo as a commit. Run it yourself, or let Kiln run it.</div>
         </div>
         <div class="arrow">&rarr;</div>
         <div class="node">
-          <div class="lbl">your site</div>
-          <div class="t">The host you like</div>
+          <div class="lbl">yours</div>
+          <div class="t">Your GitHub repo</div>
+          <div class="s">Plain HTML with full version history. Your code and content, yours on every plan.</div>
+        </div>
+        <div class="arrow">&rarr;</div>
+        <div class="node">
+          <div class="lbl">yours</div>
+          <div class="t">Your host</div>
           <div class="s">Cloudflare Pages recommended, free and fine for commercial use. Any host that auto-deploys from GitHub works too, like Vercel or Netlify.</div>
         </div>
       </div>
-      <p class="paths-cap">Run every piece yourself for free, or let Kiln run some or all of it. Three ways to do that, just below.</p>
+      <p class="paths-cap">You can run both pieces yourself for free, or let Kiln run them for you. Three ways to do that, just below.</p>
     </div>
   </div>
 </section>
@@ -435,7 +435,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
     </div>
     <div class="steps">
       <div class="step rise"><div class="n">1</div><h3>Host free on Cloudflare Pages</h3><p>Push your static site to GitHub and connect it to Cloudflare Pages. The free tier allows commercial sites. Every commit auto-deploys.</p></div>
-      <div class="step rise"><div class="n">2</div><h3>Deploy the tiny auth worker</h3><p>One deploy, then open <code>/setup</code> and press a button. It registers your GitHub App and captures the credentials itself. You never copy a secret.</p></div>
+      <div class="step rise"><div class="n">2</div><h3>Deploy the Kiln worker</h3><p>One deploy, then open <code>/setup</code> and press a button. It registers your GitHub App and captures the credentials itself. You never copy a secret.</p></div>
       <div class="step rise"><div class="n">3</div><h3>Annotate your HTML</h3><p>Add <code>data-cms</code> to anything editable and two script tags. Or paste <code>KILN_PROMPT.md</code> into your AI and let it wire the site for you.</p></div>
     </div>
     <div class="cmd rise"><code>npx github:erikkurtu/kiln</code><span class="say">runs every scriptable step with you, and waits while you click the three platform buttons.</span><button class="copybtn" id="copycmd">Copy</button></div>
@@ -487,7 +487,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
       <div class="plan feat-plan rise">
         <span class="pt">Kiln Cloud, invite beta</span>
         <h3>Hosted engine</h3>
-        <p class="price">$5 to 9 / mo per site</p>
+        <p class="price">$4.99 / mo per site</p>
         <ul>
           <li>We run the sign-in worker for you</li>
           <li>You keep your own repo and your own hosting</li>
@@ -499,7 +499,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
       <div class="plan rise">
         <span class="pt">Fully managed, early access</span>
         <h3>We run it all</h3>
-        <p class="price">Pricing on request</p>
+        <p class="price">$19.99 / mo per site</p>
         <ul>
           <li>You bring a GitHub repo. That is the only step.</li>
           <li>We set up the hosting, the worker, and the config</li>
