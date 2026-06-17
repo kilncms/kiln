@@ -117,7 +117,7 @@ per the prompt above, and run: npx github:erikkurtu/kiln</pre>
     <ol>
       <li>v0 defaults to Next.js. Add to your prompt: <em>"Output as plain static HTML and CSS, no React, no framework."</em> Then paste KILN_PROMPT.md and ask it to apply the conventions.</li>
       <li>Push the result to GitHub.</li>
-      <li>Host on <strong>Cloudflare Pages</strong>, not Vercel. Vercel's free tier prohibits commercial sites, Cloudflare's allows them. Then <code>npx github:erikkurtu/kiln</code>.</li>
+      <li>Host on <strong>Cloudflare Pages</strong> or any host that auto-deploys from GitHub. One caveat: Vercel's free tier bans commercial use, so for business sites prefer Cloudflare Pages or GitHub Pages. Then <code>npx github:erikkurtu/kiln</code>.</li>
     </ol>
     <p>What "Kiln-ready" means is just conventions in the HTML: <code>data-cms</code> on editable text and images, <code>data-cms-repeat</code> on card lists, <code>data-cms-menu</code> on the nav, and two script tags. The full spec is <a href="https://github.com/erikkurtu/kiln/blob/main/KILN_PROMPT.md" target="_blank" rel="noopener">KILN_PROMPT.md</a>, written to paste into any AI tool verbatim.</p>
   </section>
