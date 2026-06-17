@@ -19,10 +19,10 @@
 
 /* ============ TOKENS ============ */
 :root{
-  --paper:#e9eaef; --paper-2:#e0e2ea; --card:#f3f3f7;
-  --wash-blue:#e0e2ec; --wash-sage:#e2e7dd; --wash-clay:#f0e0d6;
-  --ink:#24262f; --ink-soft:#5c5f6b; --ink-faint:#8e909c;
-  --clay:#d9603a; --clay-deep:#b4471f; --clay-soft:#eca88b;
+  --paper:#ebeae5; --paper-2:#e3e1da; --card:#f4f2ec;
+  --wash-blue:#e0e2ec; --wash-sage:#e2e7dd; --wash-clay:#f4e1d7;
+  --ink:#262630; --ink-soft:#5e5f6a; --ink-faint:#90909a;
+  --clay:#f0704f; --clay-deep:#c14a2c; --clay-soft:#f6a890; --cream:#fdeee7;
   --blue:#7c8bb4; --sage:#7e9472;
   --kiln:#23252f; --kiln-2:#2c2f3b;
   --edge:rgba(36,38,47,.12); --edge-2:rgba(36,38,47,.2);
@@ -58,11 +58,13 @@ header.nav{position:sticky;top:0;z-index:40;backdrop-filter:saturate(150%) blur(
 .nav-links{display:flex;align-items:center;gap:4px}
 .nav-links a{padding:8px 13px;font-size:15px;font-weight:480;color:var(--ink-soft);border-radius:9px;transition:.16s}
 .nav-links a:hover{color:var(--ink);background:rgba(36,38,47,.05)}
+.nav-links a.gh{padding:8px 10px;display:inline-flex;align-items:center;color:var(--ink-soft)}
+.nav-links a.gh:hover{color:var(--ink)}
 .btn{font-family:var(--display);font-weight:600;cursor:pointer;border:1px solid transparent;
   display:inline-flex;align-items:center;gap:8px;transition:transform .14s,box-shadow .14s,background .16s,border-color .16s;white-space:nowrap}
 .btn:active{transform:translateY(1px)}
-.btn-clay{background:var(--clay);color:var(--ink);border-color:var(--clay)}
-.btn-clay:hover{background:var(--clay-soft);border-color:var(--clay-soft);box-shadow:0 8px 22px -10px rgba(217,96,58,.85)}
+.btn-clay{background:var(--clay);color:var(--cream);border-color:var(--clay)}
+.btn-clay:hover{background:var(--clay-deep);border-color:var(--clay-deep);box-shadow:0 10px 24px -10px rgba(240,112,79,.7)}
 .btn-line{background:transparent;color:var(--ink);border-color:var(--edge-2)}
 .btn-line:hover{border-color:var(--ink);background:rgba(36,38,47,.04)}
 .btn-ghost{background:transparent;color:var(--ink)}
@@ -191,10 +193,28 @@ section{padding:84px 0;position:relative}
 .plan li::before{content:"→";position:absolute;left:0;color:var(--clay-deep);font-weight:600}
 .plan .btn{margin-top:auto;justify-content:center;padding:14px;border-radius:999px;font-size:15.5px}
 
+/* ============ TWO-PATH DIAGRAM ============ */
+.paths{margin:42px 0 10px}
+.flow{display:flex;align-items:stretch;gap:10px}
+.flow .node{flex:1;background:var(--card);border:1px solid var(--edge);border-radius:14px;padding:18px 16px;
+  display:flex;flex-direction:column;justify-content:center;box-shadow:var(--shadow)}
+.flow .node.engine{flex:1.85;border-color:var(--clay);background:linear-gradient(180deg,var(--wash-clay),var(--card) 62%)}
+.flow .arrow{align-self:center;color:var(--clay);flex:none;font-size:18px;font-weight:700}
+.node .t{font-family:var(--display);font-weight:640;font-size:1.02rem;letter-spacing:-.01em}
+.node .s{font-size:12.5px;color:var(--ink-soft);margin-top:4px;line-height:1.4}
+.node .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--clay-deep);margin-bottom:9px}
+.fork{display:grid;gap:8px;margin-top:13px}
+.opt{background:var(--paper);border:1px solid var(--edge);border-radius:10px;padding:11px 13px}
+.opt .oh{font-family:var(--display);font-weight:680;font-size:.95rem;display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.opt .oh .pr{font-family:var(--mono);font-size:11px;color:var(--clay-deep);font-weight:500}
+.opt .op{font-size:12.5px;color:var(--ink-soft);margin-top:3px;line-height:1.45}
+.paths-cap{text-align:center;font-size:15px;color:var(--ink-soft);margin:24px auto 0;max-width:58ch;line-height:1.5}
+@media(max-width:820px){.flow{flex-direction:column}.flow .arrow{transform:rotate(90deg);margin:2px 0}}
+
 /* ============ KILN (single dark color-block) ============ */
 .kilnblock{background:var(--kiln);color:var(--paper);overflow:hidden}
 .kilnblock::after{content:"";position:absolute;right:-160px;top:-120px;width:540px;height:540px;border-radius:50%;
-  background:radial-gradient(circle,rgba(217,96,58,.42),transparent 62%);pointer-events:none}
+  background:radial-gradient(circle,rgba(240,112,79,.42),transparent 62%);pointer-events:none}
 .kiln-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:56px;align-items:center}
 .kilnblock .kick{color:var(--clay-soft)}
 .kilnblock h2{font-family:var(--display);font-weight:760;font-size:clamp(2.2rem,4.6vw,3.5rem);line-height:1.0;letter-spacing:-.025em;margin-top:20px;max-width:15ch}
@@ -229,12 +249,12 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
 
 /* ============ FAB (dogfood) ============ */
 .fab{position:fixed;right:24px;bottom:24px;z-index:45;display:flex;align-items:center;gap:0;
-  background:var(--clay);color:var(--ink);border:none;border-radius:999px;cursor:pointer;
-  box-shadow:0 10px 30px -8px rgba(217,96,58,.7);transition:.2s;font-family:var(--display);font-weight:600}
+  background:var(--clay);color:var(--cream);border:none;border-radius:999px;cursor:pointer;
+  box-shadow:0 10px 30px -8px rgba(240,112,79,.6);transition:.2s;font-family:var(--display);font-weight:600}
 .fab svg{width:20px;height:20px;margin:14px}
 .fab .fab-txt{max-width:0;overflow:hidden;white-space:nowrap;font-size:14.5px;transition:max-width .28s ease,padding .28s ease}
 .fab:hover .fab-txt{max-width:230px;padding-right:20px}
-.fab:hover{background:var(--clay-soft)}
+.fab:hover{background:var(--clay-deep)}
 
 /* ============ RESPONSIVE ============ */
 @media(max-width:880px){
@@ -278,7 +298,7 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
       <a href="#features">Features</a>
       <a href="recipes.html">AI recipes</a>
       <a href="setup.html">Setup</a>
-      <a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">GitHub</a>
+      <a class="gh" href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener" aria-label="Kiln on GitHub" title="Kiln on GitHub"><svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.91 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222 0 1.606-.014 2.898-.014 3.293 0 .322.216.694.825.576C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a>
       <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the demo</a>
     </nav>
     <button class="menu-btn" id="menubtn" aria-label="Menu">
@@ -292,8 +312,8 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
   <div class="wrap hero-grid">
     <div class="hero-copy rise">
       <span class="kick">Open-source CMS</span>
-      <h1>Hand them the keys.<br>Keep the <span class="it">codebase.</span></h1>
-      <p class="sub">Kiln turns any static site, even the one your AI just built, into one your client edits by clicking it.</p>
+      <h1>Your client edits the site.<br>You keep the <span class="it">code.</span></h1>
+      <p class="sub">Kiln turns any static site, even the one your AI just built, into one your client edits by clicking it. The content lives in your Git repo. Hosting stays free.</p>
       <div class="hero-cta">
         <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the live demo</a>
         <a class="btn btn-line" href="setup.html">Set up in 10 minutes</a>
@@ -343,8 +363,8 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
 <section id="features">
   <div class="wrap">
     <div class="head rise">
-      <h2>A content editor. Not a 400-setting <span class="it">dashboard.</span></h2>
-      <p class="lead">Everything a small site needs, built so an owner can change words and pictures without ever wrecking the design.</p>
+      <h2>Simple enough to <span class="it">hand off.</span></h2>
+      <p class="lead">Owners change words and pictures by clicking the page. The layout and design stay exactly as you built them.</p>
     </div>
     <div class="feat-clusters">
       <div class="cluster rise">
@@ -408,8 +428,8 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
 <section class="band-blue">
   <div class="wrap">
     <div class="head rise">
-      <h2>Free, because the expensive parts <span class="it">aren't there.</span></h2>
-      <p class="lead">No database, no render server, no asset pipeline. Your repo stores content, your host serves files, and Kiln connects your clicks to commits.</p>
+      <h2>No server. No database. No <span class="it">bill.</span></h2>
+      <p class="lead">Your repo stores the content. Your host serves the files. Kiln just connects your clicks to commits. The parts other tools charge for aren't here.</p>
     </div>
     <div class="cmp-card rise">
       <table class="cmp">
@@ -431,7 +451,41 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
   <div class="wrap">
     <div class="head rise">
       <h2>Same editor. You pick who runs <span class="it">the engine.</span></h2>
-      <p class="lead">The software is identical on both. The only question is who babysits the tiny sign-in worker.</p>
+      <p class="lead">The editor is identical on both paths. The only difference is who runs the small sign-in engine.</p>
+    </div>
+    <div class="paths rise">
+      <div class="flow">
+        <div class="node">
+          <div class="t">You and your editors</div>
+          <div class="s">sign in with Google, or a one-time link</div>
+        </div>
+        <div class="arrow">&rarr;</div>
+        <div class="node engine">
+          <div class="lbl">the one thing you choose</div>
+          <div class="t">The sign-in engine</div>
+          <div class="fork">
+            <div class="opt">
+              <div class="oh">Self-host <span class="pr">free</span></div>
+              <div class="op">You run a tiny Cloudflare Worker. About 10 minutes, once.</div>
+            </div>
+            <div class="opt">
+              <div class="oh">Kiln Cloud <span class="pr">$5 to 9 / mo</span></div>
+              <div class="op">We run it for you. Nothing to deploy or maintain.</div>
+            </div>
+          </div>
+        </div>
+        <div class="arrow">&rarr;</div>
+        <div class="node">
+          <div class="t">Your GitHub repo</div>
+          <div class="s">every edit lands as a commit</div>
+        </div>
+        <div class="arrow">&rarr;</div>
+        <div class="node">
+          <div class="t">Your live site</div>
+          <div class="s">auto-deploys on free hosting</div>
+        </div>
+      </div>
+      <p class="paths-cap">Same editor, same repo, same hosting on both paths. The only question is who runs the sign-in engine.</p>
     </div>
     <div class="plans">
       <div class="plan rise">
