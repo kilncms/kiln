@@ -1,5 +1,7 @@
-/* Kiln shared design system, warm editorial. Used by get-started.html.
-   (index.html inlines the same tokens.) */
+/* Kiln shared design system, warm editorial.
+   SINGLE SOURCE OF TRUTH — loaded by index.html and get-started.html.
+   Page-specific rules (hero, diagrams, plans, doc body, ...) live in each
+   page's own inline <style>. Tokens, reset, nav, and footer live here only. */
 @font-face{font-family:'Bricolage';src:url('fonts/bricolage-grotesque.woff2') format('woff2');font-weight:200 800;font-display:swap}
 @font-face{font-family:'Newsreader';src:url('fonts/newsreader.woff2') format('woff2');font-weight:200 700;font-style:normal;font-display:swap}
 @font-face{font-family:'Newsreader';src:url('fonts/newsreader-italic.woff2') format('woff2');font-weight:200 700;font-style:italic;font-display:swap}
@@ -10,13 +12,16 @@
   --wash-blue:#e0e2ec; --wash-sage:#e2e7dd; --wash-clay:#f4e1d7;
   --ink:#262630; --ink-soft:#5e5f6a; --ink-faint:#90909a;
   --clay:#eb826b; --clay-deep:#c0543d; --clay-soft:#f6a890; --cream:#fdeee7;
-  --blue:#7c8bb4; --sage:#7e9472; --kiln:#23252f;
-  --edge:rgba(36,38,47,.12); --edge-2:rgba(36,38,47,.2);
+  --blue:#7c8bb4; --sage:#7e9472;
+  --kiln:#23252f; --kiln-2:#2c2f3b;
+  /* rgb triples, for rgba(var(--x),a) composition below */
+  --ink-rgb:36,38,47; --paper-rgb:233,234,239; --clay-rgb:235,130,107;
+  --edge:rgba(var(--ink-rgb),.12); --edge-2:rgba(var(--ink-rgb),.2);
   --display:'Bricolage',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   --serif:'Newsreader',Georgia,'Times New Roman',serif;
   --mono:'JBMono',ui-monospace,Menlo,monospace;
-  --r:16px; --r-sm:11px;
-  --shadow:0 1px 2px rgba(36,38,47,.07), 0 22px 48px -28px rgba(36,38,47,.4);
+  --r:16px;
+  --shadow:0 1px 2px rgba(var(--ink-rgb),.07), 0 22px 48px -28px rgba(var(--ink-rgb),.4);
   --wrap:1160px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -35,13 +40,13 @@ svg{display:block}
 
 /* nav */
 header.nav{position:sticky;top:0;z-index:40;backdrop-filter:saturate(150%) blur(12px);
-  background:rgba(233,234,239,.82);border-bottom:1px solid var(--edge)}
+  background:rgba(var(--paper-rgb),.82);border-bottom:1px solid var(--edge)}
 .nav-in{max-width:var(--wrap);margin:0 auto;padding:13px 28px;display:flex;align-items:center;justify-content:space-between;gap:20px}
 .brand{display:flex;align-items:center;gap:10px;font-family:var(--display);font-weight:760;font-size:21px;letter-spacing:-.01em}
 .brand img{width:30px;height:30px;object-fit:contain}
 .nav-links{display:flex;align-items:center;gap:4px}
 .nav-links a{padding:8px 13px;font-size:15px;font-weight:480;color:var(--ink-soft);border-radius:9px;transition:.16s}
-.nav-links a:hover{color:var(--ink);background:rgba(36,38,47,.05)}
+.nav-links a:hover{color:var(--ink);background:rgba(var(--ink-rgb),.05)}
 .nav-links a.gh{padding:12px 11px;display:inline-flex;align-items:center;color:var(--ink-soft)}
 .nav-links a.gh:hover{color:var(--ink)}
 .nav-links a.btn-clay,.nav-links a.btn-clay:hover{color:var(--cream)}
@@ -49,14 +54,15 @@ header.nav{position:sticky;top:0;z-index:40;backdrop-filter:saturate(150%) blur(
   display:inline-flex;align-items:center;gap:8px;transition:transform .14s,box-shadow .14s,background .16s,border-color .16s;white-space:nowrap}
 .btn:active{transform:translateY(1px)}
 .btn-clay{background:var(--clay);color:var(--cream);border-color:var(--clay)}
-.btn-clay:hover{background:var(--clay-deep);border-color:var(--clay-deep);box-shadow:0 10px 24px -10px rgba(235,130,107,.7)}
+.btn-clay:hover{background:var(--clay-deep);border-color:var(--clay-deep);box-shadow:0 10px 24px -10px rgba(var(--clay-rgb),.7)}
 .btn-line{background:transparent;color:var(--ink);border-color:var(--edge-2)}
-.btn-line:hover{border-color:var(--ink);background:rgba(36,38,47,.04)}
+.btn-line:hover{border-color:var(--ink);background:rgba(var(--ink-rgb),.04)}
+.btn-ghost{background:transparent;color:var(--ink)}
 .nav .btn{font-size:14.5px;padding:9px 17px;border-radius:999px}
 .menu-btn{display:none}
 
 /* footer */
-footer{border-top:1px solid var(--edge);padding:56px 0 80px;margin-top:30px}
+footer{border-top:1px solid var(--edge);padding:56px 0 80px}
 .foot-grid{display:flex;justify-content:space-between;align-items:flex-end;gap:30px;flex-wrap:wrap}
 .foot-l{max-width:34ch}
 .foot-l .brand{margin-bottom:14px}
