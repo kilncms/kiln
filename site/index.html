@@ -282,11 +282,11 @@ footer{border-top:1px solid var(--edge);padding:56px 0 80px}
   .role{grid-template-columns:1fr;gap:6px}.cmp th,.cmp td{padding:13px 12px;font-size:13.5px}
   .demo-stage{padding:30px 24px}
 }
+:focus-visible{outline:2px solid var(--clay-deep);outline-offset:2px;border-radius:3px}
 @media (prefers-reduced-motion: reduce){
   .rise,.js-reveal .rise{opacity:1;transform:none;transition:none}
   html{scroll-behavior:auto}
-  .fab .fab-txt{transition:none}
-  *{animation:none!important}
+  *{animation:none!important;transition-duration:.01ms!important}
 }
 </style>
 <script>document.documentElement.classList.add('js-reveal')</script>
