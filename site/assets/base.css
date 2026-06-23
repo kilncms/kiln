@@ -42,7 +42,7 @@ header.nav{position:sticky;top:0;z-index:40;backdrop-filter:saturate(150%) blur(
 .nav-links{display:flex;align-items:center;gap:4px}
 .nav-links a{padding:8px 13px;font-size:15px;font-weight:480;color:var(--ink-soft);border-radius:9px;transition:.16s}
 .nav-links a:hover{color:var(--ink);background:rgba(36,38,47,.05)}
-.nav-links a.gh{padding:8px 10px;display:inline-flex;align-items:center;color:var(--ink-soft)}
+.nav-links a.gh{padding:12px 11px;display:inline-flex;align-items:center;color:var(--ink-soft)}
 .nav-links a.gh:hover{color:var(--ink)}
 .nav-links a.btn-clay,.nav-links a.btn-clay:hover{color:var(--cream)}
 .btn{font-family:var(--display);font-weight:600;cursor:pointer;border:1px solid transparent;
