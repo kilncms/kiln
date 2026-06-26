@@ -37,7 +37,7 @@ src/github.js        transports (direct / proxied), 409-retry edits, atomic comm
 src/kiln.js          boot shim
 src/editor/main.js   editor UI bundle source
 worker/              kiln-auth Cloudflare Worker
-demo/                the demo site (deployed to kiln-demo.pages.dev)
+demo/                the demo site (deployed to demo.kilncms.com)
 test/                engine + transport tests
 scripts/             build + live e2e
 ```
