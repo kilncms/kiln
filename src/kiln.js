@@ -44,6 +44,13 @@
       editor = null;
     }
 
+    // Sandbox demo: auto-grant a private, local editor session so every visitor
+    // can try editing immediately. Their edits never leave their own browser.
+    if (cfg.sandbox && !admin && !editor) {
+      editor = { session: 'sandbox', name: 'You', repo: cfg.repo, role: 'editor', sandbox: true };
+      write(EDITOR_KEY, editor);
+    }
+
     var onEntry = isEntryPage();
 
     if (admin || editor) {

@@ -20,6 +20,10 @@ const mode = window.__KILN_MODE || 'admin';
 const ADMIN_KEY = 'kiln_admin';
 const EDITOR_KEY = 'kiln_editor';
 const PAUSE_KEY = 'kiln_pause';
+// Declared here (not beside the sandbox helpers below) so they are initialized
+// before init() runs at module load — initSandbox reads them synchronously.
+const SANDBOX_KEY = 'kiln_sandbox';
+const SANDBOX_TTL = 24 * 3600 * 1000;
 
 const SANITIZE = {
   ALLOWED_TAGS: ['a', 'abbr', 'b', 'blockquote', 'br', 'code', 'em', 'h1', 'h2', 'h3', 'h4',
@@ -63,6 +67,7 @@ init().catch(err => {
 });
 
 async function init() {
+  if (cfg.sandbox) return initSandbox();
   if (!cfg.repo || !cfg.worker) {
     console.error('[kiln] window.KILN.repo and .worker are required');
     return;
@@ -436,6 +441,18 @@ function pickImage(img, key) {
     try {
       setStatus('Uploading image…', 'saving');
       const { blob, base64, ext } = await downscale(file);
+      if (cfg.sandbox) {
+        const dataUrl = `data:image/${ext};base64,${base64}`;
+        img.src = dataUrl;
+        img.classList.add('kiln-modified');
+        const rpt = img.closest('[data-cms-repeat]');
+        // Stage the data URL itself so the swap persists across reloads in the
+        // visitor's own browser (repeats capture it inside the container HTML).
+        if (rpt) stageContainer(rpt, rpt.getAttribute('data-cms-repeat'));
+        else stagePending(key, { attrs: { src: dataUrl } });
+        setStatus('Image added — hit Publish to save it to your demo', 'saved');
+        return;
+      }
       const slug = (file.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'image');
       const name = `${slug}-${Date.now().toString(36)}.${ext}`;
       const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `assets/uploads/${name}`;
@@ -553,6 +570,7 @@ function flattenPending() {
 
 async function publish() {
   if (!state.pending.size) return;
+  if (cfg.sandbox) return publishSandbox();
   const edits = flattenPending();
   const keys = [...state.pending.keys()].join(', ');
   setStatus('Publishing — committing to GitHub…', 'saving');
@@ -579,6 +597,100 @@ async function publish() {
     setStatus('Publish failed — see console', 'error');
     disablePublish(false);
   }
+}
+
+// ─── Demo sandbox (cfg.sandbox) ───────────────────────────────────────────────
+// A private, local-only editing experience: every visitor is auto-signed-in,
+// edits live only in their own browser (never committed, never shared), and the
+// whole thing resets after 24h. Nothing one visitor types is ever shown to another.
+
+function sandboxStore() {
+  try { return JSON.parse(localStorage.getItem(SANDBOX_KEY)) || {}; } catch (e) { return {}; }
+}
+function sandboxSave(o) {
+  try { localStorage.setItem(SANDBOX_KEY, JSON.stringify(o)); return true; }
+  catch (e) { return false; }   // out of local space (e.g. many large images)
+}
+function sandboxPath() { return (location.pathname.replace(/\/index\.html$/, '/').replace(/\.html$/, '') || '/'); }
+
+function sandboxTTLCheck() {
+  const s = sandboxStore();
+  if (s._createdAt && Date.now() - s._createdAt > SANDBOX_TTL) localStorage.removeItem(SANDBOX_KEY);
+}
+
+/** Apply saved field-level edits (small diffs, not whole pages) to the live DOM. */
+function applySandboxEdits(edits) {
+  for (const key in edits) {
+    const v = edits[key];
+    let el = null;
+    try { el = document.querySelector('[data-cms="' + key + '"], [data-cms-repeat="' + key + '"], [data-cms-menu="' + key + '"]'); } catch { el = null; }
+    if (!el) continue;
+    if (v.html !== undefined) el.innerHTML = v.html;
+    if (v.attrs) for (const a in v.attrs) el.setAttribute(a, v.attrs[a]);
+  }
+}
+
+function restoreSandboxPage() {
+  const s = sandboxStore();
+  const edits = s.pages && s.pages[sandboxPath()];
+  if (edits) applySandboxEdits(edits);
+}
+
+function publishSandbox() {
+  const s = sandboxStore();
+  s._createdAt = s._createdAt || Date.now();
+  s.pages = s.pages || {};
+  const page = s.pages[sandboxPath()] || {};
+  for (const [key, v] of state.pending) {
+    const cur = page[key] || {};
+    if (v.html !== undefined) cur.html = v.html;
+    if (v.attrs) cur.attrs = Object.assign(cur.attrs || {}, v.attrs);
+    page[key] = cur;
+  }
+  s.pages[sandboxPath()] = page;
+  if (!sandboxSave(s)) {
+    setStatus('This demo ran low on local browser space — click "Start over" to reset, or try smaller images.', 'error');
+    return;   // keep pending edits so the visitor can retry
+  }
+  state.pending.clear();
+  state.originals.clear();
+  document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
+  refreshPublishButton();
+  setStatus('Saved to your private demo. Only you can see this — a real Kiln site commits to GitHub and your host publishes it in about a minute.', 'saved');
+}
+
+function renderSandboxBanner() {
+  const st = document.createElement('style');
+  st.textContent = `
+  #kiln-sandbox-banner{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:2147482000;
+    display:flex;align-items:center;gap:13px;background:#1c1c28;color:#fff;border-radius:999px;
+    padding:9px 9px 9px 18px;font:13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    box-shadow:0 10px 34px rgba(0,0,0,.34);max-width:94vw}
+  #kiln-sandbox-banner b{color:#fff}
+  #kiln-sandbox-banner button{background:#fff;color:#1c1c28;border:0;border-radius:999px;
+    padding:7px 15px;font:600 12px sans-serif;cursor:pointer;white-space:nowrap}
+  [data-kiln-sandbox] #kiln-newpost,[data-kiln-sandbox] #kiln-menu,[data-kiln-sandbox] #kiln-pagesettings,
+  [data-kiln-sandbox] #kiln-findreplace,[data-kiln-sandbox] #kiln-history,[data-kiln-sandbox] #kiln-signout{display:none!important}`;
+  document.head.appendChild(st);
+  const b = document.createElement('div');
+  b.id = 'kiln-sandbox-banner';
+  b.innerHTML = '<span><b>Your private demo.</b> Click any text or image to edit, then hit Publish. Saved only for you; resets in 24h.</span><button id="kiln-sandbox-reset">Start over</button>';
+  document.body.appendChild(b);
+  b.querySelector('#kiln-sandbox-reset').onclick = () => { localStorage.removeItem(SANDBOX_KEY); location.reload(); };
+}
+
+async function initSandbox() {
+  injectStyles();
+  document.documentElement.setAttribute('data-kiln-sandbox', '1');
+  sandboxTTLCheck();
+  state.user = 'You';
+  restoreSandboxPage();
+  // Use the live DOM as the "source" so fields index cleanly and there is no repo fetch.
+  state.page = { path: sandboxPath(), text: document.documentElement.outerHTML };
+  state.fields = indexHtml(state.page.text);
+  renderAdminBar();
+  decorateFields();
+  renderSandboxBanner();
 }
 
 /**
