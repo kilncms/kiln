@@ -1,0 +1,109 @@
+<svg viewBox="0 0 560 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Three Big Dill pickle jars with dill sprigs on a kraft-paper background">
+  <defs>
+    <clipPath id="jarBig"><path d="M196 224 q0-22 22-22 h124 q22 0 22 22 v224 q0 30-30 30 h-108 q-30 0-30-30 z"/></clipPath>
+    <clipPath id="jarL"><path d="M70 320 q0-18 18-18 h84 q18 0 18 18 v150 q0 24-24 24 h-72 q-24 0-24-24 z"/></clipPath>
+    <clipPath id="jarR"><path d="M388 320 q0-18 18-18 h84 q18 0 18 18 v150 q0 24-24 24 h-72 q-24 0-24-24 z"/></clipPath>
+    <linearGradient id="brineG" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a8c77f"/>
+      <stop offset="1" stop-color="#8bb064"/>
+    </linearGradient>
+  </defs>
+
+  <!-- backdrop circle -->
+  <circle cx="280" cy="280" r="262" fill="#fbf6ea"/>
+  <circle cx="280" cy="280" r="262" fill="none" stroke="#e4d9bf" stroke-width="2"/>
+
+  <!-- floating dill sprigs behind -->
+  <g stroke="#6b9b4a" stroke-width="3" stroke-linecap="round" fill="none" opacity="0.55">
+    <path d="M120 120 q26 -10 44 -30"/>
+    <path d="M132 118 q4 -14 0 -26"/><path d="M146 110 q14 -8 18 -22"/><path d="M158 100 q16 -4 28 -14"/>
+    <path d="M452 150 q-26 -6 -46 -22"/>
+    <path d="M438 150 q-2 -14 -10 -24"/><path d="M422 142 q-14 -6 -22 -18"/>
+  </g>
+
+  <!-- LEFT small jar (cornichon-ish, mustard lid) -->
+  <g>
+    <rect x="74" y="288" width="120" height="22" rx="8" fill="#e0a72e"/>
+    <rect x="80" y="276" width="108" height="16" rx="7" fill="#cf9620"/>
+    <g clip-path="url(#jarL)">
+      <rect x="60" y="300" width="160" height="200" fill="url(#brineG)"/>
+      <g fill="#5f8a3c">
+        <ellipse cx="100" cy="360" rx="13" ry="30" transform="rotate(-18 100 360)"/>
+        <ellipse cx="135" cy="400" rx="13" ry="30" transform="rotate(12 135 400)"/>
+        <ellipse cx="100" cy="445" rx="12" ry="26" transform="rotate(-8 100 445)"/>
+        <ellipse cx="150" cy="450" rx="12" ry="26" transform="rotate(20 150 450)"/>
+      </g>
+      <rect x="60" y="300" width="160" height="22" fill="#bcd99a" opacity=".5"/>
+    </g>
+    <path d="M70 320 q0-18 18-18 h84 q18 0 18 18 v150 q0 24-24 24 h-72 q-24 0-24-24 z" fill="none" stroke="#2f5d3a" stroke-width="4"/>
+    <rect x="84" y="362" width="92" height="44" rx="7" fill="#fbf6ea" stroke="#2f5d3a" stroke-width="3"/>
+    <text x="130" y="390" font-family="Georgia, serif" font-size="17" font-weight="700" fill="#2f5d3a" text-anchor="middle">DILL</text>
+  </g>
+
+  <!-- RIGHT small jar (spicy, dill lid + chili) -->
+  <g>
+    <rect x="392" y="288" width="120" height="22" rx="8" fill="#6b9b4a"/>
+    <rect x="398" y="276" width="108" height="16" rx="7" fill="#5f8a3c"/>
+    <g clip-path="url(#jarR)">
+      <rect x="378" y="300" width="160" height="200" fill="url(#brineG)"/>
+      <g fill="#5f8a3c">
+        <ellipse cx="418" cy="360" rx="13" ry="30" transform="rotate(14 418 360)"/>
+        <ellipse cx="455" cy="402" rx="13" ry="30" transform="rotate(-16 455 402)"/>
+        <ellipse cx="420" cy="448" rx="12" ry="26" transform="rotate(8 420 448)"/>
+        <ellipse cx="468" cy="450" rx="12" ry="26" transform="rotate(-20 468 450)"/>
+      </g>
+      <!-- a single bold chili to signal heat -->
+      <path d="M438 416 q22 6 30 30 q-18 -2 -30 -14 q-6 -8 0 -16Z" fill="#c14a2c"/>
+      <rect x="378" y="300" width="160" height="22" fill="#bcd99a" opacity=".5"/>
+    </g>
+    <path d="M388 320 q0-18 18-18 h84 q18 0 18 18 v150 q0 24-24 24 h-72 q-24 0-24-24 z" fill="none" stroke="#2f5d3a" stroke-width="4"/>
+    <rect x="402" y="362" width="92" height="44" rx="7" fill="#fbf6ea" stroke="#2f5d3a" stroke-width="3"/>
+    <text x="448" y="390" font-family="Georgia, serif" font-size="16" font-weight="700" fill="#c14a2c" text-anchor="middle">SPICY</text>
+  </g>
+
+  <!-- CENTER hero jar (the classic) -->
+  <g>
+    <!-- lid -->
+    <rect x="190" y="186" width="172" height="26" rx="10" fill="#2f5d3a"/>
+    <rect x="198" y="172" width="156" height="20" rx="9" fill="#21422a"/>
+    <ellipse cx="276" cy="174" rx="78" ry="9" fill="#2f5d3a"/>
+    <!-- glass + brine -->
+    <g clip-path="url(#jarBig)">
+      <rect x="190" y="200" width="180" height="290" fill="url(#brineG)"/>
+      <!-- pickles -->
+      <g fill="#5f8a3c">
+        <ellipse cx="236" cy="270" rx="18" ry="44" transform="rotate(-14 236 270)"/>
+        <ellipse cx="296" cy="290" rx="18" ry="46" transform="rotate(13 296 290)"/>
+        <ellipse cx="236" cy="362" rx="17" ry="40" transform="rotate(8 236 362)"/>
+        <ellipse cx="302" cy="372" rx="17" ry="42" transform="rotate(-12 302 372)"/>
+        <ellipse cx="268" cy="430" rx="17" ry="36" transform="rotate(4 268 430)"/>
+      </g>
+      <!-- pickle bumps highlight -->
+      <g fill="#7aa651" opacity=".7">
+        <circle cx="230" cy="255" r="3"/><circle cx="242" cy="280" r="3"/><circle cx="234" cy="300" r="3"/>
+        <circle cx="292" cy="276" r="3"/><circle cx="302" cy="300" r="3"/>
+      </g>
+      <!-- dill sprig floating in brine -->
+      <g stroke="#3f6f2a" stroke-width="2.4" stroke-linecap="round" fill="none" opacity=".8">
+        <path d="M300 240 q14 -8 22 -22"/><path d="M308 236 q2 -10 -2 -18"/><path d="M316 230 q12 -4 16 -14"/>
+      </g>
+      <!-- brine surface sheen -->
+      <rect x="190" y="200" width="180" height="26" fill="#bcd99a" opacity=".5"/>
+    </g>
+    <!-- glass outline + shine -->
+    <path d="M196 224 q0-22 22-22 h124 q22 0 22 22 v224 q0 30-30 30 h-108 q-30 0-30-30 z" fill="none" stroke="#2f5d3a" stroke-width="5"/>
+    <path d="M214 232 v210" stroke="#ffffff" stroke-width="6" stroke-linecap="round" opacity=".22"/>
+    <!-- center label -->
+    <rect x="216" y="316" width="120" height="86" rx="10" fill="#fbf6ea" stroke="#2f5d3a" stroke-width="4"/>
+    <text x="276" y="350" font-family="Georgia, serif" font-size="26" font-weight="700" fill="#2f5d3a" text-anchor="middle">BIG</text>
+    <text x="276" y="382" font-family="Georgia, serif" font-size="26" font-weight="700" fill="#e0a72e" text-anchor="middle">DILL</text>
+  </g>
+
+  <!-- foreground dill sprigs -->
+  <g stroke="#6b9b4a" stroke-width="3.4" stroke-linecap="round" fill="none">
+    <path d="M150 506 q40 -16 64 -52"/>
+    <path d="M168 498 q2 -16 -6 -28"/><path d="M186 484 q16 -8 20 -24"/><path d="M204 466 q18 -2 30 -16"/>
+    <path d="M410 506 q-40 -16 -64 -52"/>
+    <path d="M392 498 q-2 -16 6 -28"/><path d="M374 484 q-16 -8 -20 -24"/>
+  </g>
+</svg>

@@ -1,0 +1,30 @@
+<svg viewBox="0 0 320 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A stoneware fermentation crock with a dill sprig">
+  <circle cx="160" cy="160" r="150" fill="#3b6e47"/>
+  <circle cx="160" cy="160" r="150" fill="none" stroke="#6b9b4a" stroke-width="2" opacity=".5"/>
+
+  <!-- dill sprigs leaning out of the crock -->
+  <g stroke="#a8c77f" stroke-width="4" stroke-linecap="round" fill="none">
+    <path d="M150 118 q-6 -44 -34 -70"/>
+    <path d="M138 96 q-18 -6 -28 -22"/><path d="M128 74 q-18 -2 -30 -16"/><path d="M122 56 q-14 -6 -16 -22"/>
+    <path d="M172 116 q10 -40 40 -60"/>
+    <path d="M180 90 q18 -4 28 -18"/><path d="M190 70 q16 0 26 -12"/>
+    <path d="M160 112 q0 -40 0 -64"/><path d="M160 84 q-14 -6 -20 -20"/><path d="M160 84 q14 -6 20 -20"/>
+  </g>
+
+  <!-- crock body -->
+  <path d="M96 150 q-8 0 -8 12 v54 q0 36 36 36 h72 q36 0 36 -36 v-54 q0 -12 -8 -12 z" fill="#e7ddc4"/>
+  <path d="M96 150 q-8 0 -8 12 v54 q0 36 36 36 h72 q36 0 36 -36 v-54 q0 -12 -8 -12 z" fill="none" stroke="#c9bd9c" stroke-width="3"/>
+  <!-- rim -->
+  <ellipse cx="160" cy="150" rx="68" ry="14" fill="#d8cdaf"/>
+  <ellipse cx="160" cy="150" rx="68" ry="14" fill="none" stroke="#c9bd9c" stroke-width="3"/>
+  <ellipse cx="160" cy="150" rx="54" ry="9" fill="#2f5d3a"/>
+  <!-- glaze band -->
+  <rect x="92" y="190" width="136" height="14" rx="6" fill="#2f5d3a" opacity=".85"/>
+  <!-- highlight -->
+  <path d="M108 168 q-2 40 8 64" stroke="#ffffff" stroke-width="5" stroke-linecap="round" fill="none" opacity=".3"/>
+  <!-- little dill stamp -->
+  <circle cx="160" cy="222" r="16" fill="#fbf6ea" stroke="#2f5d3a" stroke-width="2.6"/>
+  <g stroke="#6b9b4a" stroke-width="2.2" stroke-linecap="round" fill="none">
+    <path d="M160 230 v-16"/><path d="M160 224 q-7 -2 -10 -8"/><path d="M160 218 q7 -2 10 -8"/><path d="M160 230 q-6 -1 -9 -6"/>
+  </g>
+</svg>

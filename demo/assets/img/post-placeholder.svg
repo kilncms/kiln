@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 360" width="800" height="360">
-  <rect width="800" height="360" fill="#efe9df"/>
-  <circle cx="640" cy="84" r="40" fill="#c4a96f" opacity=".8"/>
-  <path d="M0 300 L220 170 L390 280 L540 200 L800 320 L800 360 L0 360 Z" fill="#d8cdbb"/>
-  <text x="400" y="190" text-anchor="middle" font-family="Georgia,serif" font-size="17" fill="#9a8d76">Featured image — click while editing to replace</text>
-</svg>

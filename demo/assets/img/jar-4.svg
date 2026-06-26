@@ -1,0 +1,22 @@
+<svg viewBox="0 0 140 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Big Dill SPICY jar">
+  <defs>
+    <clipPath id="c4"><path d="M28 70 q0-14 14-14 h56 q14 0 14 14 v128 q0 18-18 18 h-48 q-18 0-18-18 z"/></clipPath>
+    <linearGradient id="g4" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a8c77f"/><stop offset="1" stop-color="#8bb064"/></linearGradient>
+  </defs>
+  <!-- lid -->
+  <rect x="30" y="34" width="80" height="16" rx="6" fill="#c14a2c"/>
+  <rect x="36" y="24" width="68" height="13" rx="6" fill="#a23a20"/>
+  <ellipse cx="70" cy="25" rx="34" ry="5" fill="#c14a2c"/>
+  <!-- glass + fill -->
+  <g clip-path="url(#c4)">
+    <rect x="28" y="56" width="84" height="170" fill="url(#g4)"/>
+    <g fill="#5f8a3c"><ellipse cx="56" cy="120" rx="11" ry="28" transform="rotate(-14 56 120)"/><ellipse cx="88" cy="142" rx="11" ry="28" transform="rotate(13 88 142)"/><ellipse cx="56" cy="178" rx="10" ry="24" transform="rotate(8 56 178)"/><ellipse cx="92" cy="186" rx="10" ry="24" transform="rotate(-12 92 186)"/></g><path d="M52 150 q26 8 34 36 q-22 -2 -36 -16 q-8 -10 2 -20Z" fill="#c14a2c"/><path d="M50 148 q-2 -8 4 -12" stroke="#3f6f2a" stroke-width="3" fill="none" stroke-linecap="round"/>
+    <rect x="28" y="56" width="84" height="14" fill="#ffffff" opacity=".28"/>
+  </g>
+  <path d="M28 70 q0-14 14-14 h56 q14 0 14 14 v128 q0 18-18 18 h-48 q-18 0-18-18 z" fill="none" stroke="#2f5d3a" stroke-width="3.4"/>
+  <path d="M42 78 v120" stroke="#ffffff" stroke-width="4" stroke-linecap="round" opacity=".2"/>
+  <!-- label -->
+  <rect x="40" y="116" width="60" height="56" rx="7" fill="#fbf6ea" stroke="#2f5d3a" stroke-width="3"/>
+  <text x="70" y="138" font-family="Georgia, serif" font-size="11" font-weight="700" fill="#2f5d3a" text-anchor="middle">BIG DILL</text>
+  <text x="70" y="158" font-family="Georgia, serif" font-size="13" font-weight="700" fill="#c14a2c" text-anchor="middle">SPICY</text>
+</svg>

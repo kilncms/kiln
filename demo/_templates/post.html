@@ -3,41 +3,94 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{{title}} — Maple &amp; Co.</title>
+  <title>{{title}} — Big Dill</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,560;9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/assets/site.css" />
 </head>
 <body>
 
-  <nav>
-    <span class="nav-logo">Maple &amp; Co.</span>
-    <div class="nav-links" data-cms-menu="main">
-      <a href="/#about">About</a>
-      <a href="/blog/">Journal</a>
-      <a href="/members/">Members</a>
-      <a href="/#contact">Contact</a>
+  <header class="site-header">
+    <div class="wrap nav">
+      <a class="brand" href="/index.html" aria-label="Big Dill home">
+        <img class="brand__mark" src="/assets/img/mark.svg" alt="" />
+        <span class="brand__word">Big Dill</span>
+      </a>
+      <button class="nav-toggle" aria-expanded="false" aria-controls="nav-links" aria-label="Toggle menu">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </button>
+      <nav class="nav-links" id="nav-links" data-cms-menu="main">
+        <a href="/index.html">Pickles</a>
+        <a href="/about.html">Our story</a>
+        <a href="/blog/index.html">Brine Time</a>
+        <a href="/members/index.html">The Brine Society</a>
+        <a class="is-cta" href="/members-login.html">Members</a>
+      </nav>
     </div>
-  </nav>
+  </header>
 
-  <main class="page-wrap">
-    <a class="back-link" href="/blog/">← Back to the journal</a>
-    <header class="post-header">
-      <h1 data-cms="post_title">Untitled</h1>
-      <p class="post-date" data-cms="post_date"></p>
-    </header>
-    <img class="post-hero" data-cms="post_image" data-cms-attr="src"
-         src="/assets/img/post-placeholder.svg" alt="" />
-    <div class="post-body" data-cms="post_body">
-      <p>Click here to write your post. Select this text and start typing —
-      then hit <strong>Save</strong> and <strong>Publish</strong> when you're done.</p>
-    </div>
+  <main>
+    <article class="section article">
+      <p style="margin-bottom:20px"><a href="/blog/index.html">← Brine Time</a></p>
+      <span class="article__date" data-cms="post_date">{{date}}</span>
+      <h1 data-cms="post_title">{{title}}</h1>
+      <div class="article__body" data-cms="post_body">
+        <p>Start writing here. This is a fresh dispatch from the crock — say something true about salt, patience, or the audible snap.</p>
+      </div>
+      <p style="margin-top:40px"><a class="btn btn--ghost" href="/blog/index.html">More from Brine Time</a></p>
+    </article>
   </main>
 
-  <footer>
-    <span data-cms="footer_text">© 2026 Maple &amp; Co. All rights reserved.</span>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-grid">
+        <div class="footer-col">
+          <a class="brand" href="/index.html" aria-label="Big Dill home">
+            <img class="brand__mark" src="/assets/img/mark.svg" alt="" />
+            <span class="brand__word">Big Dill</span>
+          </a>
+          <p class="footer__blurb" data-cms="footer_blurb">Small-batch pickles, taken slightly too seriously. Brined in Atlanta since 2019.</p>
+        </div>
+        <div class="footer-col">
+          <h4>Pickles</h4>
+          <a href="/index.html#shop">The Classic</a>
+          <a href="/index.html#shop">Bread &amp; Butter</a>
+          <a href="/index.html#shop">Garlic</a>
+          <a href="/index.html#shop">The Whole Dill</a>
+        </div>
+        <div class="footer-col">
+          <h4>Company</h4>
+          <a href="/about.html">Our story</a>
+          <a href="/blog/index.html">Brine Time</a>
+          <a href="/members/index.html">The Brine Society</a>
+          <a href="/members-login.html">Members sign-in</a>
+        </div>
+        <div class="footer-col">
+          <h4>Say hello</h4>
+          <p class="footer__blurb">We answer email between brines.</p>
+          <a data-cms="footer_email" data-cms-plain href="mailto:hello@bigdill.test">hello@bigdill.test</a>
+          <a data-cms="footer_phone" data-cms-plain href="tel:+14045550111">(404) 555-0111</a>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span data-cms="footer_copyright" data-cms-plain>© 2026 Big Dill Pickle Co. All rights brined.</span>
+        <span class="note">We brine on Mondays. We do not discuss Mondays.</span>
+      </div>
+    </div>
   </footer>
 
+  <script>
+    (function () {
+      var t = document.querySelector('.nav-toggle');
+      var l = document.getElementById('nav-links');
+      if (t && l) t.addEventListener('click', function () {
+        var open = l.classList.toggle('is-open');
+        t.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+    })();
+  </script>
   <script src="/assets/kiln-config.js"></script>
   <script src="/assets/kiln.js" defer></script>
-
 </body>
 </html>
