@@ -2,8 +2,8 @@
 /**
  * kiln — setup wizard + doctor.
  *
- *   npx github:erikkurtu/kiln            interactive setup in your site directory
- *   npx github:erikkurtu/kiln doctor     verify an existing Kiln installation
+ *   npx github:kilncms/kiln            interactive setup in your site directory
+ *   npx github:kilncms/kiln doctor     verify an existing Kiln installation
  *
  * The wizard automates everything that CAN be automated (repo, worker, KV,
  * origins, secrets, wiring) and for the three steps platforms require a human
@@ -242,6 +242,19 @@ id = "${kvId}"
 `);
     ok('wrote assets/kiln-config.js');
   } else ok('assets/kiln-config.js already present (left untouched)');
+  if (!existsSync('kiln.html')) {
+    writeFileSync('kiln.html', `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Sign in · Kiln</title>
+</head><body>
+<!-- Kiln entry point. Visiting /kiln shows the sign-in; there is no edit button on the site. -->
+<script src="/assets/kiln-config.js"></script>
+<script src="/assets/kiln.js" defer></script>
+</body></html>
+`);
+    ok('wrote kiln.html (your /kiln sign-in page)');
+  } else ok('kiln.html already present (left untouched)');
   const wired = readdirSync('.').filter(f => f.endsWith('.html'))
     .some(f => readFileSync(f, 'utf8').includes('kiln.js'));
   if (!wired) {
@@ -285,16 +298,16 @@ id = "${kvId}"
 
   // 9. Commit + summary
   if (await yes('\nCommit and push the Kiln wiring now?', 'y')) {
-    shTry('git add -A && git commit -m "Add Kiln (kilncms.pages.dev)" && git push');
+    shTry(`git add -A && git commit -m "Add Kiln (${siteUrl})" && git push`);
     ok('pushed — Cloudflare is deploying');
   }
   hr('Done 🔥');
   console.log(`
   Site      ${siteUrl}${custom ? ` (+ https://${custom})` : ''}
-  Edit it   ${siteUrl}/#edit   ← the secret knock (sign in with GitHub)
+  Edit it   ${siteUrl}/kiln   ← sign in here to start editing (no edit button on the site)
   Worker    ${workerUrl}
-  People    sign in → Kiln button → People & access (Google) or link invites
-  Check up  npx github:erikkurtu/kiln doctor
+  People    sign in → People & access → add editors/members by email (Google sign-in)
+  Check up  npx github:kilncms/kiln doctor
   Annotate  paste KILN_PROMPT.md into your AI to make pages editable
 `);
   process.exit(0);

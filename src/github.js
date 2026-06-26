@@ -3,7 +3,7 @@
  *
  * Two transports, one interface:
  *   direct — admin with a GitHub App user token; browser → api.github.com
- *   proxy  — magic-link editor; browser → kiln-auth worker /gh/* → GitHub
+ *   proxy  — invited editor (Google sign-in); browser → kiln-auth worker /gh/* → GitHub
  *            (the worker holds the App installation token and enforces a
  *             per-session repo + path allowlist)
  */

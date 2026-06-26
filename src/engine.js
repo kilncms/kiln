@@ -17,6 +17,32 @@ import { parse } from 'parse5';
 const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
   'link', 'meta', 'param', 'source', 'track', 'wbr']);
 
+// Attribute names the splice engine is allowed to write or overwrite. Anything
+// else (on* handlers, style, srcdoc, …) is rejected so an edit can't inject
+// script-bearing attributes. data-* is allowed except data-cms* (structural).
+const SAFE_ATTRS = new Set(['href', 'src', 'alt', 'title', 'class', 'target', 'rel', 'width', 'height']);
+function attrNameAllowed(name) {
+  if (SAFE_ATTRS.has(name)) return true;
+  if (/^data-/i.test(name) && !/^data-cms/i.test(name)) return true;
+  return false;
+}
+
+/**
+ * Defense-in-depth URL scheme sanitization for href/src attribute values.
+ * Editor-side staging also sanitizes, but attribute splices bypass DOMPurify,
+ * so the engine independently neutralizes dangerous schemes. Allows relative/
+ * anchor/query URLs and http:, https:, mailto:, tel: only; everything else
+ * (javascript:, data:, vbscript:, obfuscated "java\tscript:") becomes '#'.
+ */
+function safeUrl(value) {
+  const v = String(value);
+  const stripped = v.replace(/[\u0000-\u001f\u007f ]/g, '');
+  if (stripped === '' || /^[\/#.?]/.test(stripped)) return v;
+  const scheme = stripped.match(/^[a-z][a-z0-9+.-]*:/i);
+  if (!scheme) return v;
+  return /^(https?|mailto|tel):$/i.test(scheme[0]) ? v : '#';
+}
+
 /**
  * Scan raw HTML for data-cms fields.
  * Returns { fields: Map<key, field>, warnings: string[] }
@@ -103,6 +129,24 @@ function attrValueRange(raw, aloc) {
 }
 
 /**
+ * Produce the splice text for an attribute value, given the source quoting.
+ *  - double-quoted source: escape " (and & for correctness); value text only.
+ *  - single-quoted source: escape ' and & (so HTML entities like &colon; can't
+ *    reconstitute a javascript: scheme after the browser decodes them).
+ *  - UNQUOTED source: the range covers a bare value, so a raw splice could break
+ *    out of the attribute (e.g. `/y onmouseover=alert(1)`). Emit a fully-escaped,
+ *    DOUBLE-QUOTED value INCLUDING the quotes, turning `name=` + this into a
+ *    well-formed `name="…"`.
+ */
+function emitAttrValue(value, quote) {
+  const v = String(value);
+  if (quote === "'") return v.replaceAll('&', '&amp;').replaceAll("'", '&#39;');
+  if (quote === '"') return v.replaceAll('&', '&amp;').replaceAll('"', '&quot;');
+  // Unquoted: wrap in double quotes; escape & and " so the value can't break out.
+  return '"' + v.replaceAll('&', '&amp;').replaceAll('"', '&quot;') + '"';
+}
+
+/**
  * Apply a batch of edits to raw HTML.
  * edits: [{ key, html }]            → replace inner HTML of the keyed element
  *        [{ key, attr, value }]     → replace an attribute value on the keyed element
@@ -127,21 +171,26 @@ export function applyEdits(raw, edits) {
       if (!field.inner) { skipped.push({ key: edit.key, reason: 'element has no editable inner content (void or unclosed)' }); continue; }
       splices.push({ start: field.inner.start, end: field.inner.start, text: String(edit.prepend), key: edit.key });
     } else if (edit.attr !== undefined) {
+      // Gate the attribute NAME against a fixed safe set so on* handlers,
+      // style, srcdoc, etc. can never be written or overwritten.
+      if (!attrNameAllowed(edit.attr)) {
+        skipped.push({ key: edit.key, reason: `attribute "${edit.attr}" not allowed` });
+        continue;
+      }
+      // href/src values get scheme-sanitized as defense-in-depth (splices bypass DOMPurify).
+      const attrVal = (edit.attr === 'href' || edit.attr === 'src') ? safeUrl(edit.value) : String(edit.value);
       const range = field.attrs.get(edit.attr);
       if (!range) {
         // Attribute doesn't exist in the source yet — insert it into the start tag.
-        if (field.attrInsert === undefined || !/^[a-zA-Z][\w-]*$/.test(edit.attr)) {
+        if (field.attrInsert === undefined) {
           skipped.push({ key: edit.key, reason: `attribute "${edit.attr}" not found` });
           continue;
         }
-        const value = String(edit.value).replaceAll('"', '&quot;');
+        const value = attrVal.replaceAll('&', '&amp;').replaceAll('"', '&quot;');
         splices.push({ start: field.attrInsert, end: field.attrInsert, text: ` ${edit.attr}="${value}"`, key: edit.key });
         continue;
       }
-      const value = range.quote === "'"
-        ? String(edit.value).replaceAll("'", '&#39;')
-        : String(edit.value).replaceAll('"', '&quot;');
-      splices.push({ start: range.start, end: range.end, text: value, key: edit.key });
+      splices.push({ start: range.start, end: range.end, text: emitAttrValue(attrVal, range.quote), key: edit.key });
     } else {
       if (!field.inner) { skipped.push({ key: edit.key, reason: 'element has no editable inner content (void or unclosed)' }); continue; }
       splices.push({ start: field.inner.start, end: field.inner.end, text: String(edit.html), key: edit.key });
@@ -221,7 +270,9 @@ export function editHead(raw, { title, description }) {
       const loc = metaDesc.sourceCodeLocation.attrs?.content;
       if (loc) {
         const range = attrValueRange(raw, loc);
-        if (range) splices.push({ start: range.start, end: range.end, text: esc(description) });
+        // Use the safe quoting emitter so an unquoted source attribute (content=foo)
+        // gets a properly double-quoted value instead of a splice that can break out.
+        if (range) splices.push({ start: range.start, end: range.end, text: emitAttrValue(description, range.quote) });
       } else {
         const at = metaDesc.sourceCodeLocation.endOffset - (raw.slice(metaDesc.sourceCodeLocation.startOffset, metaDesc.sourceCodeLocation.endOffset).endsWith('/>') ? 2 : 1);
         splices.push({ start: at, end: at, text: ` content="${esc(description)}"` });

@@ -87,17 +87,20 @@ Add `_templates/page.html`: a full page using `{{title}}` in `<title>` plus
 
 ## 6. Members-only area (optional, Cloudflare Pages)
 
-Anything under `/members/` (pages AND files like PDFs) becomes invite-gated:
+Anything under `/members/` (pages AND files like PDFs) becomes members-gated (Google sign-in):
 
-1. Copy `demo/functions/` (three small files: `members/_middleware.js`,
-   `api/member-invite.js`, `api/member-redeem.js`, plus `_kiln.js`) into the site's
-   `functions/` directory, and `demo/members-login.html` to the site root.
-2. Set two secrets on the Cloudflare Pages project:
+1. Copy the ENTIRE `demo/functions/` directory (3 files: `_kiln.js`,
+   `members/_middleware.js`, `api/member-redeem-google.js`) into the site's
+   `functions/` directory, and
+   `demo/members-login.html` to the site root.
+2. Set secrets on the Cloudflare Pages project:
    ```bash
    openssl rand -hex 32 | npx wrangler pages secret put KILN_MEMBER_SECRET --project-name <project>
    printf 'owner/repo'  | npx wrangler pages secret put KILN_REPO --project-name <project>
+   printf 'https://YOUR-KILN-AUTH.workers.dev' | npx wrangler pages secret put KILN_WORKER --project-name <project>
    ```
-Admins mint member invite links (1–360 days) from the Kiln admin bar.
+   (`KILN_WORKER` is only needed if you enable Google member sign-in.)
+Admins add members by email in People &amp; access; they sign in with Google (1–360 days access).
 
 ## 7. Site config + scripts
 
@@ -124,16 +127,31 @@ At the end of `<body>` on EVERY page (and in templates):
 
 Copy `kiln.js` and `kiln-editor.js` (from the Kiln repo's `dist/`) into `/assets/`.
 
+Also add a `kiln.html` entry page at the **site root** (this is what `yoursite.com/kiln`
+serves — the sign-in screen; there is no edit button anywhere on the site):
+
+```html
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Sign in · Kiln</title>
+</head><body>
+<script src="/assets/kiln-config.js"></script>
+<script src="/assets/kiln.js" defer></script>
+</body></html>
+```
+
 ## 8. Hosting
 
 Use Cloudflare Pages (free tier allows commercial sites; connect the GitHub repo with NO
 build command, output directory `/`). Don't use Vercel's free Hobby tier for business
 sites — its ToS forbids commercial use. The site owner installs the Kiln GitHub App on
-this one repo and signs in with the ✎ button.
+this one repo and signs in at `yoursite.com/kiln`.
 
 ## Checklist before you're done
 
 - [ ] Every page has the two script tags and `/assets/kiln-config.js` exists
+- [ ] A `kiln.html` entry page exists at the site root (serves `yoursite.com/kiln`)
 - [ ] Editable text/images/links annotated; keys unique per page; nothing nested
 - [ ] Card grids / doc lists wrapped in `data-cms-repeat`
 - [ ] Nav marked `data-cms-menu="main"` identically on every page and template

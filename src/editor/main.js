@@ -2,7 +2,7 @@
  * kiln-editor — loaded only for authenticated admins and invited editors.
  *
  * Admin mode:  GitHub App user token, browser → api.github.com directly.
- * Editor mode: magic-link session, browser → kiln-auth worker /gh/* proxy
+ * Editor mode: invited-editor (Google) session, browser → kiln-auth worker /gh/* proxy
  *              (the worker holds the installation token; no GitHub account needed).
  *
  * The page's HTML file in the repo is the source of truth. Edits are spliced
@@ -36,6 +36,16 @@ const CONTAINER_SANITIZE = {
   ALLOWED_ATTR: ['href', 'target', 'rel', 'title', 'class', 'src', 'alt',
     'data-cms', 'data-cms-attr', 'data-cms-plain'],
 };
+
+// Any anchor opening a new tab gets rel="noopener" so the opened page can't
+// reach back through window.opener (reverse tabnabbing).
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'A' && node.getAttribute('target') === '_blank') {
+    const rel = (node.getAttribute('rel') || '').split(/\s+/).filter(Boolean);
+    if (!rel.includes('noopener')) rel.push('noopener');
+    node.setAttribute('rel', rel.join(' '));
+  }
+});
 
 const state = {
   gh: null,
@@ -349,10 +359,11 @@ function commitEdit(el, key) {
   el.classList.remove('kiln-editing');
   el.classList.add('kiln-modified');
 
-  // Link elements: apply the toolbar's href before staging.
+  // Link elements: apply the toolbar's href before staging (scheme-sanitized).
   const hrefInput = document.querySelector('#kiln-toolbar .kiln-href-input');
-  const hrefChanged = hrefInput && el.tagName === 'A' && hrefInput.value !== el.getAttribute('href');
-  if (hrefChanged) el.setAttribute('href', hrefInput.value);
+  const hrefValue = hrefInput ? safeUrl(hrefInput.value) : null;
+  const hrefChanged = hrefInput && el.tagName === 'A' && hrefValue !== el.getAttribute('href');
+  if (hrefChanged) el.setAttribute('href', hrefValue);
 
   const repeat = el.closest('[data-cms-repeat]');
   if (repeat) {
@@ -361,7 +372,7 @@ function commitEdit(el, key) {
     stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
   } else {
     stagePending(key, { html: committedHtml(el, plain, value) });
-    if (hrefChanged) stagePending(key, { attrs: { href: hrefInput.value } });
+    if (hrefChanged) stagePending(key, { attrs: { href: hrefValue } });
   }
   state.active = null;
   removeToolbar();
@@ -440,7 +451,7 @@ function pickImage(img, key) {
       img.classList.add('kiln-modified');
       const repeat = img.closest('[data-cms-repeat]');
       if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
-      else stagePending(key, { attrs: { src: urlPath } });
+      else stagePending(key, { attrs: { src: safeUrl(urlPath) } });
       setStatus('Image staged — hit Publish to put it live', 'saved');
     } catch (err) {
       console.error('[kiln] image upload', err);
@@ -879,49 +890,42 @@ function menuEditor() {
 async function invitePanel() {
   const m = modal(`
     <h3>People &amp; access</h3>
-    <div id="kiln-gpeople">
-      <p class="kiln-dim" id="kiln-gstatus">Checking Google sign-in…</p>
-      <div id="kiln-people-form" style="display:none">
-        <label>Google email <input type="email" id="kiln-p-email" placeholder="them@gmail.com"></label>
-        <div class="kiln-2col">
-          <label>Name <input type="text" id="kiln-p-name" placeholder="Claudia"></label>
-          <label>Access (days) <input type="number" id="kiln-p-days" value="90" min="1" max="360"></label>
-        </div>
-        <div class="kiln-roles">
-          <label class="kiln-role"><input type="radio" name="kiln-p-role" value="editor" checked>
-            <span><strong>Editor</strong><br><small>Edits pages, images, posts. Signs in with their Google account.</small></span></label>
-          <label class="kiln-role"><input type="radio" name="kiln-p-role" value="member">
-            <span><strong>Member</strong><br><small>Views the members-only area and documents. Cannot edit.</small></span></label>
-        </div>
-        <div class="kiln-modal-actions" style="justify-content:flex-start;margin-top:8px">
-          <button class="kiln-btn-publish" id="kiln-p-add">Add person</button>
-        </div>
-        <div id="kiln-people-list" class="kiln-inv-list" style="margin-top:10px">Loading…</div>
+    <p class="kiln-dim" id="kiln-gstatus">Checking Google sign-in…</p>
+    <div id="kiln-people-form" style="display:none">
+      <label>Google email <input type="email" id="kiln-p-email" placeholder="them@gmail.com"></label>
+      <div class="kiln-2col">
+        <label>Name <input type="text" id="kiln-p-name" placeholder="Claudia"></label>
+        <label>Access (days) <input type="number" id="kiln-p-days" value="90" min="1" max="360"></label>
       </div>
-    </div>
-    <hr class="kiln-hr">
-    <details>
-      <summary class="kiln-summary">Link invites (fallback, for people without Google)</summary>
-      <label>Their name <input type="text" id="kiln-inv-name" placeholder="e.g. Claudia"></label>
-      <label>Access lasts <input type="number" id="kiln-inv-days" value="30" min="1" max="360" style="width:80px"> days (1–360)</label>
       <div class="kiln-roles">
-        <label class="kiln-role"><input type="radio" name="kiln-role" value="editor" checked>
-          <span><strong>Editor link</strong><br><small>Works once, then signs them in.</small></span></label>
-        <label class="kiln-role"><input type="radio" name="kiln-role" value="member">
-          <span><strong>Member link</strong><br><small>Opens the members area.</small></span></label>
+        <label class="kiln-role"><input type="radio" name="kiln-p-role" value="editor" checked>
+          <span><strong>Editor</strong><br><small>Edits pages, images, posts. Signs in with their Google account.</small></span></label>
+        <label class="kiln-role"><input type="radio" name="kiln-p-role" value="member">
+          <span><strong>Member</strong><br><small>Views the members-only area and documents. Cannot edit.</small></span></label>
       </div>
-      <div class="kiln-modal-actions" style="justify-content:flex-start">
-        <button class="kiln-btn-publish" id="kiln-inv-go">Create link</button>
+      <label id="kiln-p-paths-wrap">Pages this editor can edit
+        <input type="text" id="kiln-p-paths" placeholder="whole site — or e.g. blog, about.html"></label>
+      <p class="kiln-dim" id="kiln-p-paths-hint" style="margin:-2px 0 6px;font-size:12px">Comma-separated folders or files they may edit. Leave blank for the whole site. Editors can never touch CNAME, _redirects, or .github.</p>
+      <div class="kiln-modal-actions" style="justify-content:flex-start;margin-top:8px">
+        <button class="kiln-btn-publish" id="kiln-p-add">Add person</button>
       </div>
-      <div id="kiln-inv-result"></div>
-      <h4>Active link invites &amp; sessions</h4>
-      <div id="kiln-inv-list" class="kiln-inv-list">Loading…</div>
-    </details>
+      <div id="kiln-people-list" class="kiln-inv-list" style="margin-top:10px">Loading…</div>
+    </div>
     <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
 
   const admin = () => JSON.parse(localStorage.getItem(ADMIN_KEY));
 
-  // — Google people list —
+  // Show the path-scope field only when adding an editor.
+  const pathsWrap = m.querySelector('#kiln-p-paths-wrap');
+  const pathsHint = m.querySelector('#kiln-p-paths-hint');
+  function syncRole() {
+    const isEditor = m.querySelector('input[name="kiln-p-role"]:checked').value === 'editor';
+    pathsWrap.style.display = isEditor ? '' : 'none';
+    pathsHint.style.display = isEditor ? '' : 'none';
+  }
+  m.querySelectorAll('input[name="kiln-p-role"]').forEach(r => r.addEventListener('change', syncRole));
+  syncRole();
+
   async function refreshPeople() {
     const status = m.querySelector('#kiln-gstatus');
     const form = m.querySelector('#kiln-people-form');
@@ -931,20 +935,23 @@ async function invitePanel() {
       });
       const data = await res.json();
       if (!data.googleConfigured) {
-        status.innerHTML = 'Google sign-in isn’t configured on the auth worker yet — add '
-          + '<code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code> (see README). '
-          + 'Until then, use link invites below.';
+        status.innerHTML = 'To invite editors and members, add Google sign-in to your auth worker: set '
+          + '<code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> (see the README). '
+          + 'People then sign in with their own Google account — no passwords, no links.';
+        form.style.display = 'none';
         return;
       }
-      status.textContent = 'People on this list sign in with Google — no links, no passwords. Removing someone here revokes new sign-ins immediately.';
+      status.textContent = 'People here sign in with their Google account. Removing someone revokes their access immediately, including any active session.';
       form.style.display = '';
       const list = m.querySelector('#kiln-people-list');
       list.innerHTML = (data.people || []).length ? '' : '<p class="kiln-dim">Nobody yet — add the first person above.</p>';
       for (const p of data.people || []) {
+        const realPaths = (p.paths || []).filter(x => x && x !== '' && x !== '**');
+        const scope = p.role === 'editor' ? (realPaths.length ? realPaths.join(', ') : 'whole site') : '';
         const row = document.createElement('div');
         row.className = 'kiln-inv-row';
         row.innerHTML = `<span><strong>${escapeHtml(p.name)}</strong>
-          <small>${escapeHtml(p.email)} · ${p.role} · ${p.days}d access</small></span>
+          <small>${escapeHtml(p.email)} · ${p.role}${scope ? ' · ' + escapeHtml(scope) : ''} · ${p.days}d</small></span>
           <button class="kiln-btn-ghost">Remove</button>`;
         row.querySelector('button').onclick = async () => {
           await fetch(`${cfg.worker}/admin/people/remove`, {
@@ -967,95 +974,19 @@ async function invitePanel() {
     const name = m.querySelector('#kiln-p-name').value.trim();
     const days = m.querySelector('#kiln-p-days').value;
     const role = m.querySelector('input[name="kiln-p-role"]:checked').value;
+    const paths = m.querySelector('#kiln-p-paths').value.trim();
     if (!email) return;
     const res = await fetch(`${cfg.worker}/admin/people`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
-      body: JSON.stringify({ repo: cfg.repo, email, name, role, days }),
+      body: JSON.stringify({ repo: cfg.repo, email, name, role, days, paths }),
     });
     const data = await res.json();
     if (data.ok) {
       m.querySelector('#kiln-p-email').value = '';
       m.querySelector('#kiln-p-name').value = '';
+      m.querySelector('#kiln-p-paths').value = '';
       refreshPeople();
-    }
-  };
-
-  async function refreshList() {
-    const list = m.querySelector('#kiln-inv-list');
-    try {
-      const res = await fetch(`${cfg.worker}/admin/invites?repo=${encodeURIComponent(cfg.repo)}`, {
-        headers: { Authorization: `Bearer ${admin().token}` },
-      });
-      const data = await res.json();
-      const rows = [
-        ...(data.invites || []).map(i => ({ ...i, kind: 'invite', label: 'unused link' })),
-        ...(data.sessions || []).map(s => ({ ...s, kind: 'session', label: 'active editor' })),
-      ];
-      list.innerHTML = rows.length ? '' : '<p class="kiln-dim">None yet.</p>';
-      for (const row of rows) {
-        const div = document.createElement('div');
-        div.className = 'kiln-inv-row';
-        const exp = row.exp ? new Date(row.exp).toLocaleDateString() : '—';
-        div.innerHTML = `<span><strong>${escapeHtml(row.name || '?')}</strong>
-          <small>${row.label} · expires ${exp}</small></span>
-          <button class="kiln-btn-ghost">Revoke</button>`;
-        div.querySelector('button').onclick = async () => {
-          await fetch(`${cfg.worker}/admin/revoke`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
-            body: JSON.stringify({ repo: cfg.repo, kind: row.kind, id: row.id }),
-          });
-          refreshList();
-        };
-        list.appendChild(div);
-      }
-    } catch (err) {
-      list.innerHTML = '<p class="kiln-dim">Could not load invites.</p>';
-    }
-  }
-  refreshList();
-
-  m.querySelector('#kiln-inv-go').onclick = async () => {
-    const name = m.querySelector('#kiln-inv-name').value.trim();
-    const role = m.querySelector('input[name="kiln-role"]:checked').value;
-    const days = Math.min(Math.max(Number(m.querySelector('#kiln-inv-days').value) || 30, 1), 360);
-    const out = m.querySelector('#kiln-inv-result');
-    if (!name) { out.innerHTML = '<p class="kiln-dim">Give them a name first.</p>'; return; }
-    out.innerHTML = '<p class="kiln-dim">Creating…</p>';
-    try {
-      let link;
-      if (role === 'editor') {
-        const res = await fetch(`${cfg.worker}/admin/invite`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
-          body: JSON.stringify({ repo: cfg.repo, name, role: 'editor', days }),
-        });
-        const data = await res.json();
-        if (!data.invite) throw new Error(data.error || 'failed');
-        link = `${location.origin}/#kiln-invite=${data.invite}`;
-      } else {
-        const res = await fetch('/api/member-invite', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
-          body: JSON.stringify({ name, days }),
-        });
-        const data = await res.json();
-        if (!data.invite) throw new Error(data.error || 'is the members area configured?');
-        link = `${location.origin}/members-login.html#kiln-member=${encodeURIComponent(data.invite)}`;
-      }
-      out.innerHTML = `
-        <p class="kiln-inv-ok">Link for <strong>${escapeHtml(name)}</strong> — send it by text or email.
-        ${role === 'editor' ? `It works ONCE and signs them in for ${days} days.` : `It signs them into the members area for ${days} days.`}</p>
-        <div class="kiln-linkrow"><input type="text" readonly value="${escapeHtml(link)}"><button class="kiln-btn-publish">Copy</button></div>`;
-      const row = out.querySelector('.kiln-linkrow');
-      row.querySelector('button').onclick = async () => {
-        await navigator.clipboard.writeText(link).catch(() => row.querySelector('input').select());
-        row.querySelector('button').textContent = 'Copied ✓';
-      };
-      refreshList();
-    } catch (err) {
-      out.innerHTML = `<p class="kiln-dim">Failed: ${escapeHtml(err.message)}</p>`;
     }
   };
 }
@@ -1378,11 +1309,7 @@ function settingsPanel() {
     </div>
     <h4>This site (applies to everyone, committed to the repo)</h4>
     <label class="kiln-role"><input type="checkbox" id="kiln-set-google" ${auth.google !== false ? 'checked' : ''}>
-      <span><strong>Google sign-in</strong><br><small>People on the allowlist sign in with their Google account.</small></span></label>
-    <label class="kiln-role"><input type="checkbox" id="kiln-set-links" ${auth.links !== false ? 'checked' : ''}>
-      <span><strong>Link invites</strong><br><small>Fallback one-time links for people without Google.</small></span></label>
-    <label class="kiln-role"><input type="checkbox" id="kiln-set-btn" ${cfg.loginButton ? 'checked' : ''}>
-      <span><strong>Visible sign-in pencil</strong><br><small>Off = sign in via yoursite.com/kiln only (recommended).</small></span></label>
+      <span><strong>Google sign-in</strong><br><small>Invited editors and members sign in with their Google account at yoursite.com/kiln.</small></span></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Close</button>
       <button class="kiln-btn-publish" id="kiln-set-save">Save</button>
@@ -1394,9 +1321,7 @@ function settingsPanel() {
     const uiChanged = newUi !== ui;
     localStorage.setItem('kiln_ui_mode', newUi);
     const google = m.querySelector('#kiln-set-google').checked;
-    const links = m.querySelector('#kiln-set-links').checked;
-    const btn = m.querySelector('#kiln-set-btn').checked;
-    const siteChanged = google !== (cfg.auth?.google !== false) || links !== (cfg.auth?.links !== false) || btn !== !!cfg.loginButton;
+    const siteChanged = google !== (cfg.auth?.google !== false);
     if (!siteChanged) {
       status.textContent = uiChanged ? 'Saved — reloading to apply your editor layout…' : 'Saved.';
       if (uiChanged) setTimeout(() => location.reload(), 600);
@@ -1407,8 +1332,8 @@ function settingsPanel() {
       const cfgPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + 'assets/kiln-config.js';
       const result = await editFile(state.gh, cfg.repo, cfgPath, cfg.branch || 'main', (text) => {
         let out = text;
-        const flags = `\n  // Managed by Kiln Settings\n  loginButton: ${btn},\n  auth: { google: ${google}, links: ${links} },\n`;
-        out = out.replace(/\n\s*\/\/ Managed by Kiln Settings\n\s*loginButton:[^\n]*\n\s*auth:[^\n]*\n/, '\n');
+        const flags = `\n  // Managed by Kiln Settings\n  auth: { google: ${google} },\n`;
+        out = out.replace(/\n\s*\/\/ Managed by Kiln Settings\n\s*(loginButton:[^\n]*\n\s*)?auth:[^\n]*\n/, '\n');
         out = out.replace(/\n\s*loginButton:[^\n]*\n/, '\n');
         const close = out.lastIndexOf('};');
         return out.slice(0, close) + flags + out.slice(close);
@@ -1473,7 +1398,7 @@ function renderAdminBar() {
       ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
       ${mode === 'admin' ? '<button id="kiln-settings" class="kiln-fab-item">Settings</button>' : ''}
       <div class="kiln-fab-foot">
-        <button id="kiln-done" title="Hide Kiln and browse normally (stays signed in — return via #edit)">Done editing</button>
+        <button id="kiln-done" title="Hide Kiln and browse normally (stays signed in — return via the Resume button or yoursite.com/kiln)">Done editing</button>
         <button id="kiln-signout">Sign out</button>
       </div>
     </div>
@@ -1859,6 +1784,23 @@ function offerPendingRestore() {
 
 function escapeHtml(s) {
   return String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}
+
+/**
+ * Neutralize dangerous URL schemes on href/src values. Attribute edits bypass
+ * DOMPurify, so this is the gate. Allows relative/anchor/query URLs and the
+ * http:, https:, mailto:, tel: schemes; everything else (javascript:, data:,
+ * vbscript:, obfuscated "java\tscript:", …) collapses to a harmless '#'.
+ */
+function safeUrl(value) {
+  const v = String(value);
+  // Strip control + whitespace chars so "java\tscript:" can't slip past the scheme test.
+  const stripped = v.replace(/[\u0000-\u001f\u007f ]/g, '');
+  // Relative paths, anchors, query strings, and bare fragments are always fine.
+  if (stripped === '' || /^[\/#.?]/.test(stripped)) return v;
+  const scheme = stripped.match(/^[a-z][a-z0-9+.-]*:/i);
+  if (!scheme) return v; // no scheme at all (e.g. "page.html") — relative, allow
+  return /^(https?|mailto|tel):$/i.test(scheme[0]) ? v : '#';
 }
 
 function injectStyles() {

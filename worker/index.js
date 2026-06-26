@@ -6,9 +6,10 @@
  *      (you click one button; credentials land in KV automatically).
  *   2. GitHub App OAuth for admins (single-repo scope, 8-hour expiring tokens,
  *      refresh tokens held server-side in KV — never shipped to the browser).
- *   3. Magic-link editor sessions: admins mint invite links; editors redeem
- *      them and commit through the /gh/* proxy using the App's installation
- *      token. Editors never need a GitHub account.
+ *   3. Invited editors & members: the owner adds people by email in People &
+ *      access; they sign in with Google and commit through the /gh/* proxy using
+ *      the App's installation token, scoped to the paths granted to them. No
+ *      GitHub account needed.
  *
  * Routes:
  *   GET  /setup            one-time GitHub App registration page
@@ -18,16 +19,17 @@
  *   GET  /auth/callback    code+state → tokens → redirect w/ #fragment
  *   POST /auth/refresh     {sid} → fresh access token
  *   POST /auth/logout      {sid}
- *   POST /admin/invite     Bearer <gh token> + {repo,name,role,days}
- *   POST /editor/redeem    {invite} → editor session
- *   ANY  /gh/*             session-scoped GitHub API proxy (editors)
+ *   GET/POST /admin/people People allowlist (push-verified): add/remove editors & members
+ *   GET  /google/login     ?origin=&return_to=&repo= → Google authorize (invited people)
+ *   POST /google/claim     {code} → member session exchange
+ *   ANY  /gh/*             session + path-scoped GitHub API proxy (editors)
  *
  * KV (binding: KILN):
  *   app:creds   {app_id, slug, client_id, client_secret, pk8}
  *   state:<n>   OAuth state nonce            (TTL 10 min)
  *   sid:<id>    {refresh_token}              (TTL 180 days, rotated)
- *   inv:<id>    {repo,name,role}             (TTL = invite expiry, single-use)
- *   esess:<id>  {repo,name,role}             (TTL 30 days)
+ *   people:<repo> [{email,name,role,days,paths?}]  editor/member allowlist
+ *   esess:<id>  {repo,name,role,email,paths}  (TTL = person.days)
  *   itok:<repo> cached installation token    (TTL 50 min)
  *
  * Env vars: ALLOWED_ORIGINS — comma-separated site origins allowed to use auth.
@@ -51,6 +53,8 @@ export default {
       if (path === '/setup/callback') return setupCallback(url, env);
       if (path === '/setup/status') return setupStatus(env);
       if (path === '/setup/install-check') {
+        const limited = await rateLimited(request, env);
+        if (limited) return limited;
         const repo = url.searchParams.get('repo') || '';
         if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'bad repo' }, 400);
         const tok = await installationToken(env, repo);
@@ -60,19 +64,15 @@ export default {
       if (path === '/auth/callback') return authCallback(url, env);
       if (path === '/auth/refresh' && request.method === 'POST') return cors(env, request, await authRefresh(request, env));
       if (path === '/auth/logout' && request.method === 'POST') return cors(env, request, await authLogout(request, env));
-      if (path === '/admin/invite' && request.method === 'POST') return cors(env, request, await adminInvite(request, env));
-      if (path === '/admin/invites' && request.method === 'GET') return cors(env, request, await adminListInvites(request, env, url));
-      if (path === '/admin/revoke' && request.method === 'POST') return cors(env, request, await adminRevoke(request, env));
       if (path === '/admin/people' && request.method === 'GET') return cors(env, request, await peopleList(request, env, url));
       if (path === '/admin/people' && request.method === 'POST') return cors(env, request, await peopleUpsert(request, env));
       if (path === '/admin/people/remove' && request.method === 'POST') return cors(env, request, await peopleRemove(request, env));
       if (path === '/schedule' && request.method === 'POST') return cors(env, request, await scheduleCreate(request, env));
       if (path === '/schedules' && request.method === 'GET') return cors(env, request, await scheduleList(request, env, url));
       if (path === '/schedule/cancel' && request.method === 'POST') return cors(env, request, await scheduleCancel(request, env));
-      if (path === '/google/login') return googleLogin(url, env);
+      if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
       if (path === '/google/callback') return googleCallback(url, env);
-      if (path === '/google/claim' && request.method === 'POST') return googleClaim(request, env);
-      if (path === '/editor/redeem' && request.method === 'POST') return cors(env, request, await editorRedeem(request, env));
+      if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
       if (path.startsWith('/gh/')) return cors(env, request, await ghProxy(request, env, path.slice(3) + url.search));
 
       return new Response('kiln-auth: not found', { status: 404 });
@@ -105,6 +105,18 @@ function cors(env, request, response) {
 
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+// ─── Rate limiting (graceful) ────────────────────────────────────────────────
+// No-op unless the optional [[unsafe.bindings]] ratelimit binding `RL` is
+// configured (see wrangler.toml). Keyed by client IP. Returns a CORS-wrapped
+// 429 when over the limit, or null to continue.
+async function rateLimited(request, env) {
+  if (!env.RL) return null;
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const { success } = await env.RL.limit({ key: ip });
+  if (success) return null;
+  return cors(env, request, json({ error: 'rate limited, slow down' }, 429));
 }
 
 // ─── One-time GitHub App setup (manifest flow) ──────────────────────────────
@@ -271,40 +283,9 @@ async function authLogout(request, env) {
   return json({ ok: true });
 }
 
-// ─── Magic-link editors ──────────────────────────────────────────────────────
+// ─── Access control ──────────────────────────────────────────────────────────
 
-async function adminInvite(request, env) {
-  const auth = request.headers.get('Authorization') || '';
-  const token = auth.replace(/^(token|Bearer)\s+/i, '');
-  if (!token) return json({ error: 'missing Authorization' }, 401);
-
-  const { repo, name, role = 'editor', days = 14 } = await request.json().catch(() => ({}));
-  if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'bad repo' }, 400);
-  if (!name || name.length > 64) return json({ error: 'bad name' }, 400);
-  if (!['editor', 'member'].includes(role)) return json({ error: 'bad role' }, 400);
-
-  // Only someone who can already push to the repo may mint invites for it.
-  const res = await fetch(`${GH}/repos/${repo}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': UA },
-  });
-  if (!res.ok) return json({ error: 'repo check failed', status: res.status }, 403);
-  const repoInfo = await res.json();
-  if (!repoInfo.permissions || !repoInfo.permissions.push) {
-    return json({ error: 'you need push access to invite' }, 403);
-  }
-
-  const id = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
-  // `days` = how long the ACCESS lasts once redeemed (1–360). The unredeemed
-  // link itself also expires after the same period.
-  const sessionDays = Math.min(Math.max(Number(days) || 30, 1), 360);
-  const ttl = sessionDays * 24 * 3600;
-  await env.KILN.put(`inv:${id}`,
-    JSON.stringify({ repo, name, role, sessionDays, created: Date.now(), exp: Date.now() + ttl * 1000 }),
-    { expirationTtl: ttl });
-  return json({ invite: id, role, days: sessionDays });
-}
-
-/** Anyone with push access can see + revoke the invites/sessions for that repo. */
+/** True if the bearer GitHub token has push access to the repo (the site owner). */
 async function requirePush(request, repo) {
   const auth = (request.headers.get('Authorization') || '').replace(/^(token|Bearer)\s+/i, '');
   if (!auth || !repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return false;
@@ -316,53 +297,29 @@ async function requirePush(request, repo) {
   return !!info.permissions?.push;
 }
 
-async function adminListInvites(request, env, url) {
-  const repo = url.searchParams.get('repo') || '';
-  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
-
-  async function collect(prefix) {
-    const out = [];
-    let cursor;
-    do {
-      const page = await env.KILN.list({ prefix, cursor });
-      for (const k of page.keys) {
-        const v = await env.KILN.get(k.name, 'json');
-        if (v && v.repo === repo) out.push({ id: k.name.slice(prefix.length), ...v });
-      }
-      cursor = page.list_complete ? null : page.cursor;
-    } while (cursor);
-    return out;
-  }
-
-  return json({ invites: await collect('inv:'), sessions: await collect('esess:') });
+/** Whether a file path is within an editor's granted paths. Empty / '**' = whole site. */
+function pathInScope(filePath, paths) {
+  const f = String(filePath).replace(/^\/+/, '');
+  if (f.split('/').some(s => s === '..' || s === '.')) return false; // traversal is never in scope
+  if (!Array.isArray(paths) || paths.length === 0) return true;
+  if (paths.some(p => p === '' || p === '**' || p === '*')) return true;
+  return paths.some(p => {
+    const pre = String(p).replace(/^\/+/, '').replace(/\/+$/, '');
+    return !pre || f === pre || f.startsWith(pre + '/');
+  });
 }
 
-async function adminRevoke(request, env) {
-  const { repo, kind, id } = await request.json().catch(() => ({}));
-  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
-  if (!['invite', 'session'].includes(kind) || !/^[a-f0-9]{64}$/.test(id || '')) return json({ error: 'bad request' }, 400);
-  const key = (kind === 'invite' ? 'inv:' : 'esess:') + id;
-  const existing = await env.KILN.get(key, 'json');
-  if (!existing || existing.repo !== repo) return json({ error: 'not found' }, 404);
-  await env.KILN.delete(key);
-  return json({ ok: true });
+/** Normalize the `paths` field from the People form into a clean prefix array. */
+function normalizePaths(paths) {
+  let arr = paths;
+  if (typeof arr === 'string') arr = arr.split(',');
+  if (!Array.isArray(arr)) return [''];
+  arr = arr.map(p => String(p).trim().replace(/^\/+/, '').replace(/\/+$/, '')).filter(Boolean).slice(0, 50);
+  return arr.length ? arr : [''];
 }
 
-async function editorRedeem(request, env) {
-  const { invite } = await request.json().catch(() => ({}));
-  if (!invite || !/^[a-f0-9]{64}$/.test(invite)) return json({ error: 'bad invite' }, 400);
-  const inv = await env.KILN.get(`inv:${invite}`, 'json');
-  if (!inv) return json({ error: 'invite expired or already used' }, 404);
-  await env.KILN.delete(`inv:${invite}`); // single use
-
-  const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
-  const days = Math.min(Math.max(Number(inv.sessionDays) || 30, 1), 360);
-  const exp = Date.now() + days * 24 * 3600 * 1000;
-  await env.KILN.put(`esess:${session}`,
-    JSON.stringify({ ...inv, created: Date.now(), exp }),
-    { expirationTtl: days * 24 * 3600 });
-  return json({ session, name: inv.name, repo: inv.repo, role: inv.role, exp });
-}
+// Exported for unit tests (test/worker.test.js); the Workers runtime uses only the default export.
+export { pathInScope, isSensitivePath, normalizePaths };
 
 // ─── Scheduled publishing ────────────────────────────────────────────────────
 // sched:<id> → { repo, path, branch, content(b64), message, at, desc, by }
@@ -373,9 +330,9 @@ async function authActor(request, env, repo) {
   const sess = request.headers.get('X-Kiln-Session');
   if (sess && /^[a-f0-9]{64}$/.test(sess)) {
     const e = await env.KILN.get(`esess:${sess}`, 'json');
-    if (e && e.repo === repo && e.role === 'editor') return { name: e.name };
+    if (e && (!e.exp || e.exp >= Date.now()) && e.repo === repo && e.role === 'editor') return { name: e.name, email: e.email, paths: e.paths || [''], admin: false };
   }
-  if (await requirePush(request, repo)) return { name: 'admin' };
+  if (await requirePush(request, repo)) return { name: 'admin', admin: true };
   return null;
 }
 
@@ -384,13 +341,16 @@ async function scheduleCreate(request, env) {
   if (!repo || !path || !content || !at) return json({ error: 'missing fields' }, 400);
   const actor = await authActor(request, env, repo);
   if (!actor) return json({ error: 'forbidden' }, 403);
+  if (!actor.admin && (isSensitivePath(path) || !pathInScope(path, actor.paths))) {
+    return json({ error: 'outside your editing scope' }, 403);
+  }
   const when = Date.parse(at);
   if (!when || when < Date.now() - 60000 || when > Date.now() + 366 * 24 * 3600 * 1000) {
     return json({ error: 'bad time' }, 400);
   }
   const id = crypto.randomUUID().replaceAll('-', '');
   await env.KILN.put(`sched:${id}`,
-    JSON.stringify({ repo, path, branch, content, message: message || 'Scheduled publish (via Kiln)', at: when, desc: desc || path, by: actor.name }),
+    JSON.stringify({ repo, path, branch, content, message: message || 'Scheduled publish (via Kiln)', at: when, desc: desc || path, by: actor.name, byEmail: actor.email }),
     { expirationTtl: Math.ceil((when - Date.now()) / 1000) + 14 * 24 * 3600 });
   return json({ ok: true, id, at: when });
 }
@@ -450,7 +410,8 @@ async function runDueSchedules(env) {
 }
 
 // ─── People (Google sign-in allowlist) ───────────────────────────────────────
-// people:{repo} → [{ email, name, role: 'editor'|'member', days }]
+// people:{repo} → [{ email, name, role: 'editor'|'member', days, paths? }]
+// `paths` (editors only) limits which file prefixes they may write; [''] = whole site.
 
 async function getPeople(env, repo) {
   return (await env.KILN.get(`people:${repo}`, 'json')) || [];
@@ -463,7 +424,7 @@ async function peopleList(request, env, url) {
 }
 
 async function peopleUpsert(request, env) {
-  const { repo, email, name, role, days } = await request.json().catch(() => ({}));
+  const { repo, email, name, role, days, paths } = await request.json().catch(() => ({}));
   if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
   const addr = String(email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) return json({ error: 'bad email' }, 400);
@@ -474,6 +435,7 @@ async function peopleUpsert(request, env) {
     role,
     days: Math.min(Math.max(Number(days) || 30, 1), 360),
   };
+  if (role === 'editor') person.paths = normalizePaths(paths);
   const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
   people.push(person);
   await env.KILN.put(`people:${repo}`, JSON.stringify(people));
@@ -486,6 +448,26 @@ async function peopleRemove(request, env) {
   const addr = String(email || '').trim().toLowerCase();
   const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
   await env.KILN.put(`people:${repo}`, JSON.stringify(people));
+  // Revoke any active editor sessions for this person immediately (not just future sign-ins).
+  let cursor;
+  do {
+    const page = await env.KILN.list({ prefix: 'esess:', cursor });
+    for (const k of page.keys) {
+      const v = await env.KILN.get(k.name, 'json');
+      if (v && v.repo === repo && v.email === addr) await env.KILN.delete(k.name);
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  // Also drop any pending scheduled posts this person created.
+  let scur;
+  do {
+    const page = await env.KILN.list({ prefix: 'sched:', cursor: scur });
+    for (const k of page.keys) {
+      const v = await env.KILN.get(k.name, 'json');
+      if (v && v.repo === repo && v.byEmail === addr) await env.KILN.delete(k.name);
+    }
+    scur = page.list_complete ? null : page.cursor;
+  } while (scur);
   return json({ ok: true });
 }
 
@@ -564,7 +546,7 @@ async function googleCallback(url, env) {
     const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
     const exp = Date.now() + person.days * 24 * 3600 * 1000;
     await env.KILN.put(`esess:${session}`,
-      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, created: Date.now(), exp }),
+      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, paths: person.paths || [''], created: Date.now(), exp }),
       { expirationTtl: person.days * 24 * 3600 });
     const frag = new URLSearchParams({
       'kiln-esession': session, 'kiln-name': displayName, 'kiln-repo': state.repo, 'kiln-exp': String(exp),
@@ -592,23 +574,53 @@ async function googleClaim(request, env) {
 
 // ─── GitHub proxy for editor sessions ────────────────────────────────────────
 
+// Paths an invited editor must never be allowed to write: domain/redirect
+// config and CI workflow files. Blocking these is defense-in-depth against a
+// redeemed (non-GitHub) editor overwriting CNAME, _redirects, _headers, or
+// .github/* to hijack the domain or inject Actions. Admins (direct GitHub
+// token) are unaffected — this only gates PROXIED editor writes.
+function isSensitivePath(p) {
+  const path = String(p || '').replace(/^\/+/, '');
+  if (path.split('/').some(s => s === '..' || s === '.')) return true; // never let traversal through
+  return /^\.github\//.test(path)
+    || /^CNAME$/i.test(path)
+    || /^_redirects$/i.test(path)
+    || /^_headers$/i.test(path);
+}
+
+// Allowlist of the exact GitHub endpoints the editor/admin frontend uses.
+// `exact` rules match the path verbatim (after stripping any querystring);
+// `prefix` rules match the path or anything beneath it. The repo-root rule is
+// EXACT-only so it can never act as a catch-all wildcard over /repos/<r>/*.
 const PROXY_RULES = [
-  { methods: ['GET'], path: r => `/repos/${r}` },
-  { methods: ['GET', 'PUT'], path: r => `/repos/${r}/contents/` },
-  { methods: ['GET'], path: r => `/repos/${r}/commits` },
-  { methods: ['GET'], path: r => `/repos/${r}/deployments` },
-  { methods: ['GET'], path: r => `/repos/${r}/git/` },
-  { methods: ['POST'], path: r => `/repos/${r}/git/blobs` },
-  { methods: ['POST'], path: r => `/repos/${r}/git/trees` },
-  { methods: ['POST'], path: r => `/repos/${r}/git/commits` },
-  { methods: ['POST', 'PATCH'], path: r => `/repos/${r}/git/refs` },
+  // Repo root (metadata) — exact match only.
+  { methods: ['GET'], exact: r => `/repos/${r}` },
+  // File contents (read + write a single path, and list a directory).
+  { methods: ['GET', 'PUT'], prefix: r => `/repos/${r}/contents/` },
+  { methods: ['GET'], exact: r => `/repos/${r}/contents` },
+  // Commit list + per-commit combined status.
+  { methods: ['GET'], exact: r => `/repos/${r}/commits` },
+  { methods: ['GET'], prefix: r => `/repos/${r}/commits/` },
+  // Deployments + their statuses.
+  { methods: ['GET'], exact: r => `/repos/${r}/deployments` },
+  { methods: ['GET'], prefix: r => `/repos/${r}/deployments/` },
+  // Low-level git data (refs, commits/<sha>, trees) — reads.
+  { methods: ['GET'], prefix: r => `/repos/${r}/git/` },
+  // Low-level git data — writes for the "+ New post" flow.
+  { methods: ['POST'], exact: r => `/repos/${r}/git/blobs` },
+  { methods: ['POST'], exact: r => `/repos/${r}/git/trees` },
+  { methods: ['POST'], exact: r => `/repos/${r}/git/commits` },
+  { methods: ['POST', 'PATCH'], exact: r => `/repos/${r}/git/refs` },
+  { methods: ['POST', 'PATCH'], prefix: r => `/repos/${r}/git/refs/` },
 ];
 
 function proxyAllowed(method, path, repo) {
+  const clean = path.split('?')[0]; // strip querystring before matching
   return PROXY_RULES.some(rule => {
-    const p = rule.path(repo);
-    const match = p.endsWith('/') ? path.startsWith(p) : (path === p || path.startsWith(p + '/') || path.startsWith(p + '?'));
-    return match && rule.methods.includes(method);
+    if (!rule.methods.includes(method)) return false;
+    if (rule.exact) return clean === rule.exact(repo);
+    if (rule.prefix) return clean.startsWith(rule.prefix(repo));
+    return false;
   });
 }
 
@@ -617,10 +629,35 @@ async function ghProxy(request, env, ghPath) {
   if (!/^[a-f0-9]{64}$/.test(sessId)) return json({ error: 'missing session' }, 401);
   const sess = await env.KILN.get(`esess:${sessId}`, 'json');
   if (!sess) return json({ error: 'session expired' }, 401);
+  // Trust the stored expiry, not only KV's TTL.
+  if (sess.exp && sess.exp < Date.now()) return json({ error: 'session expired' }, 401);
   if (sess.role !== 'editor') return json({ error: 'not an editor session' }, 403);
 
   if (!proxyAllowed(request.method, ghPath, sess.repo)) {
     return json({ error: 'path not allowed', path: ghPath }, 403);
+  }
+
+  // Defense-in-depth + per-editor scope: editors may not write domain/redirect/CI
+  // config, nor anything outside the paths granted to them in People & access.
+  const cleanPath = ghPath.split('?')[0];
+  if (request.method === 'PUT' && cleanPath.includes('/contents/')) {
+    const filePath = decodeURIComponent(cleanPath.split('/contents/')[1] || '');
+    if (isSensitivePath(filePath)) return json({ error: 'forbidden path for editor' }, 403);
+    if (!pathInScope(filePath, sess.paths)) return json({ error: 'outside your editing scope', path: filePath }, 403);
+  }
+  if (request.method === 'POST' && /\/git\/trees$/.test(cleanPath)) {
+    const peek = await request.clone().text();
+    try {
+      const parsed = JSON.parse(peek);
+      if (Array.isArray(parsed.tree)) {
+        if (parsed.tree.some(e => e && isSensitivePath(e.path))) {
+          return json({ error: 'forbidden path for editor' }, 403);
+        }
+        if (parsed.tree.some(e => e && (!e.path || !pathInScope(e.path, sess.paths)))) {
+          return json({ error: 'outside your editing scope' }, 403);
+        }
+      }
+    } catch { /* non-JSON body — allowlist already gated the route */ }
   }
 
   const itok = await installationToken(env, sess.repo);

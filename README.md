@@ -1,19 +1,23 @@
 # Kiln
 
+[![CI](https://github.com/kilncms/kiln/actions/workflows/ci.yml/badge.svg)](https://github.com/kilncms/kiln/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+![No build step](https://img.shields.io/badge/build-not%20required-success)
+
 > Click-to-edit CMS for static sites. GitHub is the backend. Free hosting is the host.
 > No database, no server, no monthly bill.
 >
-> **Live demo:** [kiln-demo.pages.dev](https://kiln-demo.pages.dev) · **kilncms.com**
+> **Live demo:** [kiln-demo.pages.dev](https://kiln-demo.pages.dev) · **[kilncms.pages.dev](https://kilncms.pages.dev)** (kilncms.com coming soon)
 
 Kiln turns any static HTML site into an editable one. Sign in, click the text on the
 page, change it, hit **Publish** — the edit becomes a Git commit and your host rebuilds.
 The site IS the database.
 
 ```
-visitor   →  plain static site (2.7 KB boot shim, nothing else)
-admin     →  clicks ✎ → GitHub sign-in → edits inline → commit → live in ~1 min
-editor    →  opens a magic link (no GitHub account!) → same editing → commits as the Kiln bot
-member    →  opens an invite link → gated /members/ pages and documents unlock
+visitor   →  plain static site (~2.7 KB gzip boot shim, nothing else)
+admin     →  visits yoursite.com/kiln → GitHub sign-in → edits inline → commit → live in ~1 min
+editor    →  added by email → signs in with Google at /kiln (no GitHub account!) → same editing
+member    →  added by email → signs in with Google → gated /members/ pages and documents unlock
 ```
 
 ## Why
@@ -36,19 +40,23 @@ client was missing.
 
    <div data-cms-repeat="services"> <!-- duplicatable/removable blocks --> </div>
    <div data-cms-menu="main"> <!-- nav managed across ALL pages at once --> </div>
+   <div data-cms-list="post_list"> <!-- blog cards are prepended here --> </div>
    ```
    Full conventions (incl. blog templates, new-page template, members area):
    **[KILN_PROMPT.md](KILN_PROMPT.md)** — written so you can paste it straight into
    Claude/v0/Lovable and have your AI wire up an existing site.
-2. Drop two scripts at the end of `<body>`:
+2. Create `/assets/kiln-config.js`:
+   ```js
+   window.KILN = {
+     repo:   'you/your-site-repo',
+     branch: 'main',
+     worker: 'https://kiln-auth.you.workers.dev',
+     styles: [],
+   };
+   ```
+   Then drop two scripts at the end of `<body>` on every page:
    ```html
-   <script>
-     window.KILN = {
-       repo:   'you/your-site-repo',
-       branch: 'main',
-       worker: 'https://kiln-auth.you.workers.dev',
-     };
-   </script>
+   <script src="/assets/kiln-config.js"></script>
    <script src="/assets/kiln.js" defer></script>
    ```
 3. There is no step 3. No build pipeline, no content files. When someone signs in and
@@ -60,9 +68,9 @@ client was missing.
 
 | Piece | What | Size / cost |
 |---|---|---|
-| `kiln.js` | boot shim every visitor loads | 2.7 KB |
-| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~205 KB, admins only |
-| `kiln-auth` worker | GitHub App OAuth + magic-link sessions + commit proxy | Cloudflare Workers free tier |
+| `kiln.js` | boot shim every visitor loads | ~6.7 KB raw / ~2.7 KB gzip |
+| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~266 KB raw / ~205 KB gzip, admins only |
+| `kiln-auth` worker | GitHub App OAuth + Google sign-in + commit proxy | Cloudflare Workers free tier |
 | your repo | the content database (with full version history) | free |
 | Cloudflare Pages | hosting + members-area functions | free, commercial use allowed |
 
@@ -71,12 +79,16 @@ client was missing.
 **1. Deploy the auth worker**
 
 ```bash
-git clone https://github.com/erikkurtu/kiln && cd kiln
+git clone https://github.com/kilncms/kiln && cd kiln   # (or your fork)
 npm install
 cd worker
 npx wrangler kv namespace create KILN     # put the id in wrangler.toml
 npx wrangler deploy
 ```
+
+The manual path requires editing `worker/wrangler.toml` — set `ALLOWED_ORIGINS` and the
+KV namespace `id` to YOUR values. The fastest path skips all of this: `npx github:kilncms/kiln`
+automates the worker deploy, KV namespace, and config wiring for you.
 
 **2. Register your GitHub App — one click**
 
@@ -90,7 +102,9 @@ Add your site URL to `ALLOWED_ORIGINS` in `worker/wrangler.toml`, redeploy.
 
 **4. Add the script tags + `data-cms` attributes to your site** (see above), build the
 assets (`npm run build`) and copy `dist/kiln.js` + `dist/kiln-editor.js` into your site's
-`/assets/`. Push. Done — visit your site and click ✎.
+`/assets/`, and add a `kiln.html` entry page at your site root (the wizard does this
+for you). Push. Done — visit `your-site.com/kiln` and sign in. There is no edit button
+on the site itself; `/kiln` is the only way in.
 
 > **Hosting note:** use Cloudflare Pages (or GitHub Pages) for business sites.
 > Vercel's free Hobby tier prohibits commercial use in its ToS.
@@ -106,20 +120,23 @@ duplicate/remove controls. Links get an href field plus a 📎 **attach file** u
 members page). **+ New…** creates blog posts or standalone pages from your `_templates/`.
 **Menu…** edits the navigation across every page of the site in one atomic commit.
 
-## Editors without GitHub accounts (magic links)
+## Editors & members without GitHub accounts (Google sign-in)
 
-Admins click **Invite…** in the admin bar → a one-time link is minted (e.g. for a client
-or teammate) with an access duration you choose (**1–360 days**). Opening it grants an
-editing session — no GitHub account, ever.
-Their commits land authored with their name, committed by your GitHub App's bot, and the
-worker enforces a strict allowlist: that one repo, content paths only, no deletes.
+Open **People & access** in the admin bar and add someone by their Google email as an
+**Editor** or **Member**, with an access duration you choose (**1–360 days**). For editors
+you can also limit which pages they may touch (e.g. just `blog`); leave it blank for the whole
+site. They sign in at `yoursite.com/kiln` with their Google account — no GitHub account, ever,
+and no links to leak. Removing someone revokes their access immediately, including any active
+session. Editor commits land authored with their name, committed by your GitHub App's bot, and
+the worker enforces a strict allowlist: that one repo, only the paths granted to them, never
+CNAME/_redirects/.github, no deletes.
 
 ## Blog posts with no build step
 
 Put two files in your repo — `_templates/post.html` (a full page using
 `data-cms="post_title|post_date|post_body"`) and `_templates/post-card.html` (the list
 card with `{{title}}/{{href}}/{{date}}` placeholders) — and give your blog index a
-`data-cms="post_list"` container. The **+ New post** button clones the template and
+`data-cms-list="post_list"` container. The **+ New post** button clones the template and
 splices a card into the index as ONE atomic commit (Git Data API), so the site never
 deploys half-written. The new post page is itself click-editable.
 
@@ -127,26 +144,31 @@ deploys half-written. The new post page is itself click-editable.
 
 Static sites can have private sections. Everything under `/members/` — pages **and**
 files like PDFs — is gated at the edge by a Cloudflare Pages Function
-(`functions/members/_middleware.js`) checking an HMAC-signed cookie. Invites are minted
-by admins (verified by GitHub push access), redeemed at `/members-login.html`. No
-database, no auth provider, no per-seat pricing. See `demo/functions/` for the three
-small files, then:
+(`functions/members/_middleware.js`) checking an HMAC-signed cookie. Members are added by
+email in **People & access** (verified by GitHub push access) and sign in with Google at
+`/members-login.html`. No database, no per-seat pricing. Copy the ENTIRE `demo/functions/`
+directory (3 files: `_kiln.js`, `members/_middleware.js`, `api/member-redeem-google.js`)
+into your site's `functions/`, then:
 
 ```bash
 openssl rand -hex 32 | npx wrangler pages secret put KILN_MEMBER_SECRET --project-name <project>
 printf 'you/your-repo'  | npx wrangler pages secret put KILN_REPO --project-name <project>
+printf 'https://kiln-auth.you.workers.dev' | npx wrangler pages secret put KILN_WORKER --project-name <project>
 ```
+
+> `KILN_WORKER` is only needed if you enable Google member sign-in.
 
 ## Security model
 
 - **GitHub App, not OAuth app** — installed per-repo; an admin sign-in grants access to
   the selected repos only, with 8-hour expiring tokens. Refresh tokens never reach the
   browser (held server-side in Workers KV; the browser holds an opaque session id).
-- **Magic-link editors** never hold GitHub credentials at all; the worker proxies their
-  commits through the App installation token behind a method+path allowlist
-  (contents read/write, git-data create, deploy status — nothing else, one repo only).
-- OAuth `state` nonces are single-use with a 10-minute TTL; editor invites are single-use;
-  member cookies are HMAC-signed, HttpOnly, Secure.
+- **Invited editors** (Google sign-in) never hold GitHub credentials at all; the worker
+  proxies their commits through the App installation token behind a method+path allowlist
+  (contents read/write, git-data create, deploy status — one repo only, scoped to the paths
+  granted to that editor, never CNAME/_redirects/.github, no deletes).
+- OAuth `state` nonces are single-use with a 10-minute TTL; abuse-prone sign-in routes are
+  rate-limited per IP; member cookies are HMAC-signed, HttpOnly, Secure.
 - Rich-text edits are sanitized with DOMPurify before they touch the repo;
   `data-cms-plain` fields are entity-escaped plain text.
 
@@ -167,7 +189,7 @@ src/github.js        transports (direct / proxied), 409-retry edits, atomic comm
 src/kiln.js          boot shim
 src/editor/main.js   editor UI bundle source
 worker/              kiln-auth Cloudflare Worker
-demo/                the Maple & Co. demo site (deployed to kiln-demo.pages.dev)
+demo/                the demo site (deployed to kiln-demo.pages.dev)
 test/                engine + transport tests
 scripts/             build + live e2e
 ```
@@ -177,22 +199,26 @@ scripts/             build + live e2e
 - One CMS instance edits one repo per site config; monorepos work via `root`.
 - Editing happens per-page; site-wide find-replace is not a thing (yet).
 - `<title>`/`<head>` content isn't click-editable (no DOM affordance) — planned via a page-settings panel.
-- Member invite links are bearer tokens until redeemed — send them over a private channel.
+- Editors and members are added by email (Google sign-in); inviting someone requires that they have a Google account.
 - Concurrent edits to the *same* field: last write wins (different fields merge cleanly).
 
 ## License
 
-MIT
+Kiln is open source under the [GNU AGPL-3.0](LICENSE) — free to use, self-host, modify, and
+build on, including for commercial and client work. If you run a *modified* version of Kiln as
+a public network service, the AGPL asks you to make your source changes available to its users.
 
 ## Free vs. Cloud — the same editor, two ways to run the engine
 
-**Kiln Open Source (free forever):** self-host the small auth engine — your own Cloudflare
+**Kiln Open Source (self-host):** self-host the small auth engine — your own Cloudflare
 worker + your own GitHub App. One `wrangler deploy`, one click, and the setup wizard
-(`npx github:erikkurtu/kiln`) walks you through all of it. The price of free is ~10 minutes
-of configuration. You trust only yourself.
+(`npx github:kilncms/kiln`) walks you through all of it. The price of free is ~10 minutes
+of configuration. You trust only yourself. The entire engine, editor, worker, and CLI in this
+repo are open source (AGPL-3.0) and never gated or crippled; Kiln Cloud is optional paid
+hosting of that exact same engine.
 
 **Kiln Cloud (hosted, paid — currently invite-only beta):** we run the engine; you deploy
 nothing. Your content still lives in YOUR repo on YOUR hosting, so you can move to
 self-hosting any time. Plainly stated: Cloud holds the app token that writes to your repo —
 that's what any hosted CMS backend is. A fully-managed tier (we run the repo and hosting
-too, with a guaranteed transfer-out path) is planned. See docs/INTEGRATIONS.md.
+too, with a guaranteed transfer-out path) is planned.

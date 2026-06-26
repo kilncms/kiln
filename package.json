@@ -1,15 +1,15 @@
 {
-  "name": "kiln-cms",
+  "name": "kiln",
   "version": "0.2.0",
   "description": "Click-to-edit CMS for static sites. GitHub as the backend. Free hosting as the host.",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "bin": {
     "kiln": "cli/index.mjs"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --test test/",
+    "test": "node --test test/*.test.js",
     "deploy:worker": "cd worker && npx wrangler deploy"
   },
   "devDependencies": {

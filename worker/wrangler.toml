@@ -4,14 +4,28 @@ compatibility_date = "2026-06-01"
 
 # Site origins allowed to authenticate through this worker (comma-separated).
 # localhost entries are for `wrangler pages dev` testing.
+# SELF-HOSTERS: replace the value below with your OWN site origin(s), or just
+# run `npx github:kilncms/kiln` and the wizard will set this for you.
 [vars]
 ALLOWED_ORIGINS = "https://kiln-demo.pages.dev,http://localhost:8788,http://127.0.0.1:8788"
 
-# KV: app credentials, OAuth state nonces, sessions, invites, installation-token cache.
+# KV: app credentials, OAuth state nonces, sessions, the People allowlist, installation-token cache.
+# SELF-HOSTERS: replace this `id` with the id of a KV namespace YOU created
+# (`npx wrangler kv namespace create KILN`), or let `npx github:kilncms/kiln` do it.
 [[kv_namespaces]]
 binding = "KILN"
 id = "376ca9e637724d9fabebbc24ba149814"
 
 # Scheduled publishing: commit due posts every 5 minutes.
+# Only needed if you use Kiln's "schedule this post" feature; safe to remove otherwise.
 [triggers]
 crons = ["*/5 * * * *"]
+
+# Rate limiting (on by default): per-IP throttle on the abuse-prone sign-in routes
+# /google/login, /google/claim, and /setup/install-check. The guard in index.js is
+# a no-op if this binding is ever removed, so it degrades safely.
+[[unsafe.bindings]]
+name = "RL"
+type = "ratelimit"
+namespace_id = "1001"          # any unique number across your worker's limiters
+simple = { limit = 20, period = 60 }   # 20 requests per 60s per IP

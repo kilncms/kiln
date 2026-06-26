@@ -7,3 +7,10 @@ node_modules/
 
 # generated screenshots / candidates (kept locally, not versioned)
 _gen/candidates/
+
+# editor / IDE / agent local state
+.claude/
+.vscode/
+.idea/
+.dev.vars*
+*.local

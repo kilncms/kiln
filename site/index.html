@@ -95,13 +95,13 @@ section{padding:84px 0;position:relative}
 .cmp-card{margin-top:40px;background:var(--card);border:1px solid var(--edge);border-radius:var(--r);overflow-x:auto;box-shadow:var(--shadow)}
 .cmp{width:100%;min-width:560px;border-collapse:collapse;font-size:15px}
 .cmp th,.cmp td{padding:17px 20px;text-align:left}
-.cmp thead th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:500;background:var(--paper-2)}
+.cmp thead th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);font-weight:500;background:var(--paper-2)}
 .cmp tbody tr{border-top:1px solid var(--edge)}
 .cmp td:first-child{font-weight:560}
 .cmp tr.kiln{background:var(--wash-clay)}
 .cmp tr.kiln td:first-child{font-family:var(--display);font-weight:740;font-size:1.1rem;color:var(--clay-deep)}
 .cmp .y{color:var(--clay-deep);font-weight:560}
-.cmp .n{color:var(--ink-faint)}
+.cmp .n{color:var(--ink-soft)}
 
 /* ============ PLANS ============ */
 .plans{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:46px}
@@ -188,8 +188,8 @@ section{padding:84px 0;position:relative}
     <nav class="nav-links" id="navlinks">
       <a href="#features">Features</a>
       <a href="get-started.html">Get started</a>
-      <a class="gh" href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener" aria-label="Kiln on GitHub" title="Kiln on GitHub"><svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.91 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222 0 1.606-.014 2.898-.014 3.293 0 .322.216.694.825.576C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a>
-      <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the demo</a>
+      <a class="gh" href="https://github.com/kilncms/kiln" target="_blank" rel="noopener" aria-label="Kiln on GitHub" title="Kiln on GitHub"><svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.91 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222 0 1.606-.014 2.898-.014 3.293 0 .322.216.694.825.576C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a>
+      <a class="btn btn-clay" href="https://kiln-demo.pages.dev/kiln" target="_blank" rel="noopener">Try the demo</a>
     </nav>
     <button class="menu-btn" id="menubtn" aria-label="Menu" aria-expanded="false" aria-controls="navlinks">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
@@ -205,7 +205,7 @@ section{padding:84px 0;position:relative}
       <h1>Your client edits the site.<br>The code stays in <span class="it">GitHub.</span></h1>
       <p class="sub">Kiln turns any static site, even one your AI just built, into one your client can edit by clicking it. The code lives in a GitHub repo you keep, or hand to your client to own. Never locked inside Kiln.</p>
       <div class="hero-cta">
-        <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the live demo</a>
+        <a class="btn btn-clay" href="https://kiln-demo.pages.dev/kiln" target="_blank" rel="noopener">Try the live demo</a>
         <a class="btn btn-line" href="get-started.html">Set up in 10 minutes</a>
       </div>
     </div>
@@ -289,7 +289,7 @@ section{padding:84px 0;position:relative}
         <div class="cl-name">People &amp; access</div>
         <div class="feat"><h3>Google sign-in</h3><p>Add an email and a role. Editors sign in with Google and never touch GitHub.</p></div>
         <div class="feat"><h3>Members &amp; gated docs</h3><p>Lock <code>/members/</code> pages and PDFs at the edge. Invite people for 1 to 360 days.</p></div>
-        <div class="feat"><h3>Invisible to visitors</h3><p>Visitors load about 3&nbsp;KB. The full editor loads only for signed-in editors, at <code>/#kiln</code>.</p></div>
+        <div class="feat"><h3>Invisible to visitors</h3><p>Visitors load about 3&nbsp;KB. The full editor loads only for signed-in editors, at <code>/kiln</code>.</p></div>
       </div>
     </div>
   </div>
@@ -305,7 +305,7 @@ section{padding:84px 0;position:relative}
     <div class="roles-grid">
       <div class="art-frame rise"><img src="assets/img/handoff.webp" width="1100" height="1100" alt="One person handing a key across a laptop to another, warmly" /></div>
       <div class="rise">
-        <div class="role"><div class="who">You</div><div><h3>Set it up once</h3><p>You connect a GitHub repo and the worker, about ten minutes with the wizard. The repo can stay yours, or belong to your client. After that, editing happens at <code>yoursite.com/#kiln</code>.</p></div></div>
+        <div class="role"><div class="who">You</div><div><h3>Set it up once</h3><p>You connect a GitHub repo and the worker, about ten minutes with the wizard. The repo can stay yours, or belong to your client. After that, editing happens at <code>yoursite.com/kiln</code>.</p></div></div>
         <div class="role"><div class="who">Editors</div><div><h3>Zero setup</h3><p>Anyone you invite to change content: your client, their team, or you. Add a Gmail or send a one-time link, they sign in and edit. No GitHub account, nothing to install.</p></div></div>
         <div class="role"><div class="who">Members</div><div><h3>Zero setup</h3><p>People who only need the gated pages. Invited the same way, they sign in and the members-only pages and files unlock for as long as you set.</p></div></div>
         <p class="req">The full list: a static site, a free GitHub account, and a free Cloudflare account for the worker. <b>There is no fourth thing.</b></p>
@@ -326,7 +326,7 @@ section{padding:84px 0;position:relative}
       <div class="step rise"><div class="n">2</div><h3>Deploy the Kiln worker</h3><p>One deploy, then open <code>/setup</code> and press a button. It registers your GitHub App and captures the credentials itself. You never copy a secret.</p></div>
       <div class="step rise"><div class="n">3</div><h3>Annotate your HTML</h3><p>Add <code>data-cms</code> to anything editable and two script tags. Or paste <code>KILN_PROMPT.md</code> into your AI and let it wire the site for you.</p></div>
     </div>
-    <div class="cmd rise"><code>npx github:erikkurtu/kiln</code><span class="say">runs every scriptable step with you, and waits while you click the three platform buttons.</span><button class="copybtn" id="copycmd">Copy</button></div>
+    <div class="cmd rise"><code>npx github:kilncms/kiln</code><span class="say">runs every scriptable step with you, and waits while you click the three platform buttons.</span><button class="copybtn" id="copycmd">Copy</button></div>
   </div>
 </section>
 
@@ -363,7 +363,7 @@ section{padding:84px 0;position:relative}
       <div class="plan rise">
         <span class="pt">Open source</span>
         <h3>Self-hosted</h3>
-        <p class="price">Free forever, MIT</p>
+        <p class="price">Free forever — open source (AGPL-3.0)</p>
         <ul>
           <li>You run the sign-in worker. The wizard sets it up.</li>
           <li>You host the site: Cloudflare Pages, Vercel, or Netlify</li>
@@ -382,7 +382,7 @@ section{padding:84px 0;position:relative}
           <li>Nothing to deploy or maintain</li>
           <li>Switch to self-hosting any time</li>
         </ul>
-        <a class="btn btn-line" href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">Request an invite</a>
+        <a class="btn btn-line" href="https://github.com/kilncms/kiln/issues" target="_blank" rel="noopener">Request an invite</a>
       </div>
       <div class="plan rise">
         <span class="pt">Fully managed, early access</span>
@@ -394,7 +394,7 @@ section{padding:84px 0;position:relative}
           <li>Your content still lives in your repo, yours to take</li>
           <li>The hands-off option, when you'd rather not run any of it</li>
         </ul>
-        <a class="btn btn-line" href="https://github.com/erikkurtu/kiln/issues" target="_blank" rel="noopener">Request access</a>
+        <a class="btn btn-line" href="https://github.com/kilncms/kiln/issues" target="_blank" rel="noopener">Request access</a>
       </div>
     </div>
   </div>
@@ -408,7 +408,7 @@ section{padding:84px 0;position:relative}
       <h2>Your words, fired into <span class="in-it">permanent pages.</span></h2>
       <p>A kiln turns soft clay into something that lasts. Kiln turns a click into a Git commit: plain HTML in a repo you control, with every version kept. Nothing to export later, because nothing was ever locked in.</p>
       <div class="kiln-cta">
-        <a class="btn btn-clay" href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">Try the live demo</a>
+        <a class="btn btn-clay" href="https://kiln-demo.pages.dev/kiln" target="_blank" rel="noopener">Try the live demo</a>
         <a class="btn btn-line" href="get-started.html">Read the setup guide</a>
       </div>
     </div>
@@ -421,7 +421,7 @@ section{padding:84px 0;position:relative}
   <div class="wrap">
     <div class="head rise"><h2>The fine print, <span class="it">plainly.</span></h2></div>
     <div class="faq rise">
-      <details><summary>Is it really free? What is the catch?</summary><div class="ans">The software is MIT open source. GitHub repos are free. Cloudflare Pages hosts the site on a free tier that allows commercial use, and a free Cloudflare Worker handles sign-in. The catch is that you self-host those two free things, which the wizard sets up in about ten minutes.</div></details>
+      <details><summary>Is it really free? What is the catch?</summary><div class="ans">Kiln is open source (GNU AGPL-3.0) — free for any use, including commercial and client work, for your own sites. GitHub repos are free. Cloudflare Pages hosts the site on a free tier that allows commercial use, and a free Cloudflare Worker handles sign-in. The catch is that you self-host those two free things, which the wizard sets up in about ten minutes.</div></details>
       <details><summary>Do my editors need GitHub accounts?</summary><div class="ans">No. Whoever owns the repo signs in with GitHub. Everyone else, your client, their team, or members, signs in with Google or a one-time link. Their changes are committed on their behalf and attributed by name.</div></details>
       <details><summary>Can editors break my design?</summary><div class="ans">That is the whole point. Editors change content, not layout. Text, images, links, list items, menu entries: yes. Dragging boxes around or changing fonts: deliberately not. Styles come from a palette you define in CSS.</div></details>
       <details><summary>Where does my content live? Can I leave?</summary><div class="ans">In a GitHub repo you control, whether that is yours or your client's, as plain HTML with full version history. Leaving Kiln means deleting two script tags. There is no export, because nothing was ever imported.</div></details>
@@ -439,9 +439,9 @@ section{padding:84px 0;position:relative}
       <p>Made for people who would rather build than babysit a CMS.</p>
     </div>
     <div class="foot-links">
-      <a href="https://kiln-demo.pages.dev/#kiln" target="_blank" rel="noopener">demo</a>
+      <a href="https://kiln-demo.pages.dev/kiln" target="_blank" rel="noopener">demo</a>
       <a href="get-started.html">get started</a>
-      <a href="https://github.com/erikkurtu/kiln" target="_blank" rel="noopener">github</a>
+      <a href="https://github.com/kilncms/kiln" target="_blank" rel="noopener">github</a>
     </div>
   </div>
 </footer>
@@ -456,7 +456,7 @@ section{padding:84px 0;position:relative}
   if(mb){mb.addEventListener('click',function(){mb.setAttribute('aria-expanded',nl.classList.toggle('show'));});}
   // copy command
   var cb=document.getElementById('copycmd');
-  if(cb){cb.addEventListener('click',function(){navigator.clipboard&&navigator.clipboard.writeText('npx github:erikkurtu/kiln');var t=cb.textContent;cb.textContent='Copied';setTimeout(function(){cb.textContent=t;},1600);});}
+  if(cb){cb.addEventListener('click',function(){navigator.clipboard&&navigator.clipboard.writeText('npx github:kilncms/kiln');var t=cb.textContent;cb.textContent='Copied';setTimeout(function(){cb.textContent=t;},1600);});}
 })();
 </script>
 </body>
