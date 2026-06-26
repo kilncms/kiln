@@ -8,7 +8,7 @@ workers_dev = true   # keep kiln-auth.erikkwilder.workers.dev live alongside the
 # SELF-HOSTERS: replace the value below with your OWN site origin(s), or just
 # run `npx github:kilncms/kiln` and the wizard will set this for you.
 [vars]
-ALLOWED_ORIGINS = "https://demo.kilncms.com,https://kiln-demo.pages.dev,http://localhost:8788,http://127.0.0.1:8788"
+ALLOWED_ORIGINS = "https://demo.kilncms.com,https://kiln-demo.pages.dev,https://npu-i.pages.dev,http://localhost:8788,http://127.0.0.1:8788"
 
 # KV: app credentials, OAuth state nonces, sessions, the People allowlist, installation-token cache.
 # SELF-HOSTERS: replace this `id` with the id of a KV namespace YOU created
