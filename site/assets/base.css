@@ -49,7 +49,8 @@ header.nav{position:sticky;top:0;z-index:40;backdrop-filter:saturate(150%) blur(
 .nav-links a:hover{color:var(--ink);background:rgba(var(--ink-rgb),.05)}
 .nav-links a.gh{padding:12px 11px;display:inline-flex;align-items:center;color:var(--ink-soft)}
 .nav-links a.gh:hover{color:var(--ink)}
-.nav-links a.btn-clay,.nav-links a.btn-clay:hover{color:var(--cream)}
+.nav-links a.btn-clay{color:var(--cream)}
+.nav-links a.btn-clay:hover{color:#000}
 .btn{font-family:var(--display);font-weight:600;cursor:pointer;border:1px solid transparent;
   display:inline-flex;align-items:center;gap:8px;transition:transform .14s,box-shadow .14s,background .16s,border-color .16s;white-space:nowrap}
 .btn:active{transform:translateY(1px)}
