@@ -1,6 +1,7 @@
 name = "kiln-auth"
 main = "index.js"
 compatibility_date = "2026-06-01"
+workers_dev = true   # keep kiln-auth.erikkwilder.workers.dev live alongside the custom domain
 
 # Site origins allowed to authenticate through this worker (comma-separated).
 # localhost entries are for `wrangler pages dev` testing.
@@ -29,3 +30,10 @@ name = "RL"
 type = "ratelimit"
 namespace_id = "1001"          # any unique number across your worker's limiters
 simple = { limit = 20, period = 60 }   # 20 requests per 60s per IP
+
+# Canonical instance only: branded custom domain for the worker (so the Google
+# redirect is auth.kilncms.com). SELF-HOSTERS: delete this [[routes]] block — you
+# don't own kilncms.com. The setup wizard never includes it.
+[[routes]]
+pattern = "auth.kilncms.com"
+custom_domain = true

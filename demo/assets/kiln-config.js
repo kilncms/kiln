@@ -1,7 +1,7 @@
 window.KILN = {
   repo:   'erikkurtu/kiln-demo',
   branch: 'main',
-  worker: 'https://kiln-auth.erikkwilder.workers.dev',
+  worker: 'https://auth.kilncms.com',
   siteName: 'Big Dill',
   styles: [],
 };
