@@ -146,7 +146,7 @@ Static sites can have private sections. Everything under `/members/`, pages **an
 files like PDFs, is gated at the edge by a Cloudflare Pages Function
 (`functions/members/_middleware.js`) checking an HMAC-signed cookie. Members are added by
 email in **People & access** (verified by GitHub push access) and sign in with Google at
-`/members-login.html`. No database, no per-seat pricing. Copy the ENTIRE `demo/functions/`
+`/members-login.html`. No database, no per-seat pricing. Copy the ENTIRE `templates/functions/`
 directory (3 files: `_kiln.js`, `members/_middleware.js`, `api/member-redeem-google.js`)
 into your site's `functions/`, then:
 
@@ -177,7 +177,7 @@ printf 'https://kiln-auth.you.workers.dev' | npx wrangler pages secret put KILN_
 ```bash
 npm install
 npm test               # splice engine + transport suite (node --test)
-npm run build          # dist/kiln.js + dist/kiln-editor.js (+ demo/assets sync)
+npm run build          # dist/kiln.js + dist/kiln-editor.js
 GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   # full live-loop verification
 ```
 
@@ -189,7 +189,7 @@ src/github.js        transports (direct / proxied), 409-retry edits, atomic comm
 src/kiln.js          boot shim
 src/editor/main.js   editor UI bundle source
 worker/              kiln-auth Cloudflare Worker
-demo/                the demo site (deployed to demo.kilncms.com)
+templates/           members-area scaffolding the wizard copies into a new site
 test/                engine + transport tests
 scripts/             build + live e2e
 ```

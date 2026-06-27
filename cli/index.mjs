@@ -265,8 +265,8 @@ id = "${kvId}"
 
   // 7. Members (optional)
   if (await yes('\nSet up a members-only area (gated pages + documents)?', 'n')) {
-    cpSync(path.join(PKG_ROOT, 'demo', 'functions'), 'functions', { recursive: true });
-    if (!existsSync('members-login.html')) cpSync(path.join(PKG_ROOT, 'demo', 'members-login.html'), 'members-login.html');
+    cpSync(path.join(PKG_ROOT, 'templates', 'functions'), 'functions', { recursive: true });
+    if (!existsSync('members-login.html')) cpSync(path.join(PKG_ROOT, 'templates', 'members-login.html'), 'members-login.html');
     mkdirSync('members', { recursive: true });
     const secret = [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, '0')).join('');
     for (const [k, v] of [['KILN_MEMBER_SECRET', secret], ['KILN_REPO', repo], ['KILN_WORKER', workerUrl]]) {
