@@ -70,6 +70,22 @@ The container can hold either a flat set of `<a href>` elements, or a list —
 `<ul><li><a>…</a></li></ul>` with `data-cms-menu` on the `<ul>`. Kiln preserves whichever
 structure it finds when it rewrites the menu, so your existing nav markup and CSS keep working.
 
+## Shared partials (footer, header — optional)
+
+Wrap any block that repeats across pages (a footer, a header) in `data-cms-partial`,
+then annotate the editable bits inside it with `data-cms` as usual:
+
+```html
+<footer data-cms-partial="footer">
+  <p data-cms="footer_motto">Where love of community…</p>
+  <p data-cms="footer_contact">hello@example.com</p>
+</footer>
+```
+
+Editing any field inside a partial fans the change out to **every page** that carries
+the same partial, in one commit — exactly like the menu. Use the same `data-cms` keys
+for the partial on every page (and in templates).
+
 ## 4. Blog (optional)
 
 Three pieces, all plain HTML:
