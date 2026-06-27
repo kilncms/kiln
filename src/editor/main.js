@@ -571,31 +571,67 @@ function flattenPending() {
 async function publish() {
   if (!state.pending.size) return;
   if (cfg.sandbox) return publishSandbox();
-  const edits = flattenPending();
-  const keys = [...state.pending.keys()].join(', ');
+
+  // Edits inside a data-cms-partial (e.g. a shared footer or header) fan out to
+  // every page; everything else commits to the current page only.
+  const partialKeys = new Set();
+  for (const key of state.pending.keys()) {
+    let el = null;
+    try { el = document.querySelector('[data-cms="' + key + '"]'); } catch { el = null; }
+    if (el && el.closest('[data-cms-partial]')) partialKeys.add(key);
+  }
+  const localEdits = [], partialEdits = [];
+  for (const [key, v] of state.pending) {
+    const bucket = partialKeys.has(key) ? partialEdits : localEdits;
+    if (v.html !== undefined) bucket.push({ key, html: v.html });
+    for (const [attr, value] of Object.entries(v.attrs || {})) bucket.push({ key, attr, value });
+  }
+
   setStatus('Publishing — committing to GitHub…', 'saving');
   disablePublish(true);
   try {
-    const result = await editFile(
-      state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
-      (text) => {
-        const { html, skipped } = applyEdits(text, edits);
-        for (const s of skipped) console.warn('[kiln] skipped:', s);
-        return html;
-      },
-      `Edit ${state.page.path}: ${keys} (via Kiln)`
-    );
+    let result = null;
+    if (localEdits.length) {
+      result = await editFile(
+        state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
+        (text) => {
+          const { html, skipped } = applyEdits(text, localEdits);
+          for (const s of skipped) console.warn('[kiln] skipped:', s);
+          return html;
+        },
+        `Edit ${state.page.path}: ${localEdits.map(e => e.key).join(', ')} (via Kiln)`
+      );
+    }
+    if (partialEdits.length) await publishPartials(partialEdits);
     state.pending.clear();
     document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
     state.originals.clear();
     await loadPageSource();
     refreshPublishButton();
-    if (result.unchanged) { setStatus('Nothing changed', 'idle'); return; }
-    watchDeploy(result.commit?.sha, result.text);
+    if (result && result.unchanged && !partialEdits.length) { setStatus('Nothing changed', 'idle'); return; }
+    watchDeploy(result?.commit?.sha, result?.text);
   } catch (err) {
     console.error('[kiln] publish', err);
     setStatus('Publish failed — see console', 'error');
     disablePublish(false);
+  }
+}
+
+/** Apply shared-partial edits to every page that carries those keys, in one commit. */
+async function publishPartials(edits) {
+  const branch = cfg.branch || 'main';
+  const tree = await state.gh.request('GET',
+    `/repos/${cfg.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+  const htmlFiles = tree.tree.filter(t => t.type === 'blob' && t.path.endsWith('.html')).map(t => t.path).slice(0, 100);
+  const changed = [];
+  for (const p of htmlFiles) {
+    const file = await getFile(state.gh, cfg.repo, p, branch);
+    const { html, applied } = applyEdits(file.text, edits);
+    if (applied.length) changed.push({ path: p, text: html });
+  }
+  if (changed.length) {
+    await commitFiles(state.gh, cfg.repo, branch, changed,
+      `Update shared content on ${changed.length} page${changed.length > 1 ? 's' : ''} (via Kiln)`);
   }
 }
 

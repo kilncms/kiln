@@ -4,6 +4,7 @@
  *
  *   npx github:kilncms/kiln            interactive setup in your site directory
  *   npx github:kilncms/kiln doctor     verify an existing Kiln installation
+ *   npx github:kilncms/kiln update     refresh the on-page editor to the latest
  *
  * The wizard automates everything that CAN be automated (repo, worker, KV,
  * origins, secrets, wiring) and for the three steps platforms require a human
@@ -344,9 +345,33 @@ id = "${kvId}"
   process.exit(0);
 }
 
+// ─── update ──────────────────────────────────────────────────────────────────
+
+async function update() {
+  hr('kiln update — refresh the on-page editor to this version');
+  // Find where the site references kiln.js and drop the latest engine next to it.
+  const htmls = readdirSync('.').filter(f => f.endsWith('.html'));
+  let prefix = null;
+  for (const f of htmls) {
+    const m = readFileSync(f, 'utf8').match(/src="([^"]*?)kiln\.js"/);
+    if (m) { prefix = m[1]; break; }
+  }
+  if (prefix === null) { fail('No page here loads kiln.js — run the wizard first (npx github:kilncms/kiln).'); process.exit(1); }
+  const dir = prefix.replace(/^\//, '').replace(/\/$/, '') || '.';
+  mkdirSync(dir, { recursive: true });
+  for (const f of ['kiln.js', 'kiln-editor.js']) cpSync(path.join(PKG_ROOT, 'dist', f), path.join(dir, f));
+  ok(`copied the latest kiln.js + kiln-editor.js into ${dir}/`);
+  if (await yes('Commit and push now?', 'y')) {
+    shTry(`git add ${dir}/kiln.js ${dir}/kiln-editor.js && git commit -m "Update Kiln editor to latest" && git push`);
+    ok('pushed — your host will redeploy');
+  } else info('Commit + push when ready and your host will redeploy.');
+  process.exit(0);
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 const [, , cmd, ...rest] = process.argv;
 const args = Object.fromEntries(rest.map(a => a.split('=')).map(([k, v]) => [k.replace(/^--/, ''), v ?? true]));
 if (cmd === 'doctor') doctor(args);
+else if (cmd === 'update') update();
 else wizard();
