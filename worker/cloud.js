@@ -55,15 +55,15 @@ async function repoInstalled(env, repo) {
 
 // ─── Dashboard sessions (KV) ──────────────────────────────────────────────────
 
-function cookie(name, val, maxAge) {
-  return `${name}=${val}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
-}
-function getCookie(request, name) {
-  const m = (request.headers.get('Cookie') || '').match(new RegExp('(?:^|; )' + name + '=([^;]+)'));
-  return m ? m[1] : null;
+// Bearer-token sessions (the dashboard lives on a different origin than this API,
+// so cookies aren't usable — the token rides in the OAuth-return fragment, the
+// dashboard stores it, and sends it as Authorization: Bearer on every call).
+function bearer(request) {
+  const a = request.headers.get('Authorization') || '';
+  return a.startsWith('Bearer ') ? a.slice(7).trim() : null;
 }
 async function session(request, env) {
-  const sid = getCookie(request, 'kiln_cloud_session');
+  const sid = bearer(request);
   if (!sid) return null;
   const raw = await env.KILN.get(`csess:${sid}`);
   return raw ? JSON.parse(raw) : null;
@@ -163,11 +163,17 @@ export async function handleCloud(request, env, url, path) {
     const account = await upsertAccount(env, user.login, user.email);
     const sid = uuid();
     await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: account.id, login: user.login }), { expirationTtl: 30 * 24 * 3600 });
-    return new Response(null, { status: 302, headers: { Location: dash, 'Set-Cookie': cookie('kiln_cloud_session', sid, 30 * 24 * 3600) } });
+    return Response.redirect(`${dash}#kc_token=${sid}`, 302);   // dashboard reads + stores this
   }
 
-  // Everything below needs a dashboard session.
+  // Everything below needs a dashboard session (Authorization: Bearer <token>).
   const sess = await session(request, env);
+
+  if (path === '/cloud/logout' && request.method === 'POST') {
+    const sid = bearer(request);
+    if (sid) await env.KILN.delete(`csess:${sid}`);
+    return json({ ok: true });
+  }
 
   if (path === '/cloud/me') {
     if (!sess) return json({ error: 'not signed in' }, 401);
@@ -182,7 +188,7 @@ export async function handleCloud(request, env, url, path) {
     if (!repo || !origin) return json({ error: 'repo and origin required' }, 400);
     let o; try { o = new URL(origin).origin; } catch { return json({ error: 'origin must be a URL' }, 400); }
     if (!(await repoInstalled(env, repo))) {
-      return json({ error: 'install the Kiln app on this repo first', install: 'https://github.com/apps/kiln-cms/installations/new' }, 409);
+      return json({ error: 'install the Kiln app on this repo first', install_url: 'https://github.com/apps/kiln-cms/installations/new' }, 409);
     }
     const dupe = await env.kiln_cloud.prepare('SELECT id FROM sites WHERE origin = ?').bind(o).first();
     if (dupe) return json({ error: 'that site is already registered' }, 409);
