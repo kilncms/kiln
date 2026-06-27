@@ -1015,6 +1015,7 @@ async function invitePanel() {
         <label>Name <input type="text" id="kiln-p-name" placeholder="Claudia"></label>
         <label>Access (days) <input type="number" id="kiln-p-days" value="90" min="1" max="360"></label>
       </div>
+      <label style="font-weight:normal;display:inline-flex;gap:6px;align-items:center;margin:2px 0 4px"><input type="checkbox" id="kiln-p-never"> Never expires (indefinite access)</label>
       <div class="kiln-roles">
         <label class="kiln-role"><input type="radio" name="kiln-p-role" value="editor" checked>
           <span><strong>Editor</strong><br><small>Edits pages, images, posts. Signs in with their Google account.</small></span></label>
@@ -1044,6 +1045,11 @@ async function invitePanel() {
   m.querySelectorAll('input[name="kiln-p-role"]').forEach(r => r.addEventListener('change', syncRole));
   syncRole();
 
+  // "Never expires" disables the days field; the add handler then sends days:0 (indefinite).
+  const neverCb = m.querySelector('#kiln-p-never');
+  const daysInput = m.querySelector('#kiln-p-days');
+  neverCb.addEventListener('change', () => { daysInput.disabled = neverCb.checked; });
+
   async function refreshPeople() {
     const status = m.querySelector('#kiln-gstatus');
     const form = m.querySelector('#kiln-people-form');
@@ -1069,7 +1075,7 @@ async function invitePanel() {
         const row = document.createElement('div');
         row.className = 'kiln-inv-row';
         row.innerHTML = `<span><strong>${escapeHtml(p.name)}</strong>
-          <small>${escapeHtml(p.email)} · ${p.role}${scope ? ' · ' + escapeHtml(scope) : ''} · ${p.days}d</small></span>
+          <small>${escapeHtml(p.email)} · ${p.role}${scope ? ' · ' + escapeHtml(scope) : ''} · ${p.days ? p.days + 'd' : 'never expires'}</small></span>
           <button class="kiln-btn-ghost">Remove</button>`;
         row.querySelector('button').onclick = async () => {
           await fetch(`${cfg.worker}/admin/people/remove`, {
@@ -1090,7 +1096,7 @@ async function invitePanel() {
   m.querySelector('#kiln-p-add').onclick = async () => {
     const email = m.querySelector('#kiln-p-email').value.trim();
     const name = m.querySelector('#kiln-p-name').value.trim();
-    const days = m.querySelector('#kiln-p-days').value;
+    const days = m.querySelector('#kiln-p-never').checked ? 0 : m.querySelector('#kiln-p-days').value;
     const role = m.querySelector('input[name="kiln-p-role"]:checked').value;
     const paths = m.querySelector('#kiln-p-paths').value.trim();
     if (!email) return;

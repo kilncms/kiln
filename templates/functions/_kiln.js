@@ -19,7 +19,7 @@ export async function verifyToken(token, secret) {
   if (!timingSafeEqual(sig, expected)) return null;
   try {
     const payload = JSON.parse(new TextDecoder().decode(unb64url(body)));
-    if (!payload.exp || payload.exp < Date.now()) return null;
+    if (payload.exp && payload.exp < Date.now()) return null;  // no exp = never expires (indefinite access)
     return payload;
   } catch {
     return null;
