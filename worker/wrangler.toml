@@ -8,7 +8,9 @@ workers_dev = true   # keep kiln-auth.erikkwilder.workers.dev live alongside the
 # SELF-HOSTERS: replace the value below with your OWN site origin(s), or just
 # run `npx github:kilncms/kiln` and the wizard will set this for you.
 [vars]
-ALLOWED_ORIGINS = "https://demo.kilncms.com,https://kiln-demo.pages.dev,https://npu-i.pages.dev,http://localhost:8788,http://127.0.0.1:8788"
+ALLOWED_ORIGINS = "https://demo.kilncms.com,https://kiln-demo.pages.dev,https://npu-i.pages.dev,https://app.kilncms.com,http://localhost:8788,http://127.0.0.1:8788"
+CLOUD_DASHBOARD = "https://app.kilncms.com"   # where /cloud/callback returns the customer
+CLOUD_ADMIN = "erikkurtu"                      # GitHub login allowed to hit /admin/cloud/*
 
 # KV: app credentials, OAuth state nonces, sessions, the People allowlist, installation-token cache.
 # SELF-HOSTERS: replace this `id` with the id of a KV namespace YOU created
@@ -16,6 +18,13 @@ ALLOWED_ORIGINS = "https://demo.kilncms.com,https://kiln-demo.pages.dev,https://
 [[kv_namespaces]]
 binding = "KILN"
 id = "376ca9e637724d9fabebbc24ba149814"
+
+# D1: Kiln Cloud accounts, sites, and subscription status (the hosted tier).
+# Only the canonical Kiln Cloud instance needs this; self-host/demo never touch it.
+[[d1_databases]]
+binding = "kiln_cloud"
+database_name = "kiln-cloud"
+database_id = "a00713f4-3838-49fd-9e53-58961b1feb2e"
 
 # Scheduled publishing: commit due posts every 5 minutes.
 # Only needed if you use Kiln's "schedule this post" feature; safe to remove otherwise.

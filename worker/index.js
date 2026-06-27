@@ -38,6 +38,8 @@
 const GH = 'https://api.github.com';
 const UA = 'kiln-auth-worker';
 
+import { handleCloud } from './cloud.js';
+
 export default {
   async scheduled(_event, env) {
     await runDueSchedules(env);
@@ -46,7 +48,11 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     try {
-      if (request.method === 'OPTIONS') return cors(env, request, new Response(null, { status: 204 }));
+      if (request.method === 'OPTIONS') return await cors(env, request, new Response(null, { status: 204 }));
+      if (path.startsWith('/cloud/') || path.startsWith('/admin/cloud/')) {
+        const r = await handleCloud(request, env, url, path);
+        if (r) return await cors(env, request, r);
+      }
 
       if (path === '/healthz') return new Response('ok');
       if (path === '/setup') return setupPage(url, env);
@@ -62,36 +68,47 @@ export default {
       }
       if (path === '/auth/login') return authLogin(url, env);
       if (path === '/auth/callback') return authCallback(url, env);
-      if (path === '/auth/refresh' && request.method === 'POST') return cors(env, request, await authRefresh(request, env));
-      if (path === '/auth/logout' && request.method === 'POST') return cors(env, request, await authLogout(request, env));
-      if (path === '/admin/people' && request.method === 'GET') return cors(env, request, await peopleList(request, env, url));
-      if (path === '/admin/people' && request.method === 'POST') return cors(env, request, await peopleUpsert(request, env));
-      if (path === '/admin/people/remove' && request.method === 'POST') return cors(env, request, await peopleRemove(request, env));
-      if (path === '/schedule' && request.method === 'POST') return cors(env, request, await scheduleCreate(request, env));
-      if (path === '/schedules' && request.method === 'GET') return cors(env, request, await scheduleList(request, env, url));
-      if (path === '/schedule/cancel' && request.method === 'POST') return cors(env, request, await scheduleCancel(request, env));
+      if (path === '/auth/refresh' && request.method === 'POST') return await cors(env, request, await authRefresh(request, env));
+      if (path === '/auth/logout' && request.method === 'POST') return await cors(env, request, await authLogout(request, env));
+      if (path === '/admin/people' && request.method === 'GET') return await cors(env, request, await peopleList(request, env, url));
+      if (path === '/admin/people' && request.method === 'POST') return await cors(env, request, await peopleUpsert(request, env));
+      if (path === '/admin/people/remove' && request.method === 'POST') return await cors(env, request, await peopleRemove(request, env));
+      if (path === '/schedule' && request.method === 'POST') return await cors(env, request, await scheduleCreate(request, env));
+      if (path === '/schedules' && request.method === 'GET') return await cors(env, request, await scheduleList(request, env, url));
+      if (path === '/schedule/cancel' && request.method === 'POST') return await cors(env, request, await scheduleCancel(request, env));
       if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
       if (path === '/google/callback') return googleCallback(url, env);
       if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
-      if (path.startsWith('/gh/')) return cors(env, request, await ghProxy(request, env, path.slice(3) + url.search));
+      if (path.startsWith('/gh/')) return await cors(env, request, await ghProxy(request, env, path.slice(3) + url.search));
 
       return new Response('kiln-auth: not found', { status: 404 });
     } catch (err) {
       console.error('[kiln-auth]', err.stack || err);
-      return cors(env, request, json({ error: 'internal', message: String(err.message || err) }, 500));
+      return await cors(env, request, json({ error: 'internal', message: String(err.message || err) }, 500));
     }
   },
 };
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
-function allowedOrigins(env) {
-  return (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+async function originAllowed(env, origin) {
+  if (!origin) return false;
+  const envList = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (envList.includes(origin)) return true;          // static: demo, self-host, localhost
+  if (env.kiln_cloud) {                               // Kiln Cloud: a paid (or trialing) site
+    try {
+      const row = await env.kiln_cloud.prepare(
+        "SELECT 1 FROM sites WHERE origin = ? AND status IN ('active','trialing') LIMIT 1"
+      ).bind(origin).first();
+      if (row) return true;
+    } catch (e) { /* fail-safe: if D1 is unreachable, fall back to the static list */ }
+  }
+  return false;
 }
 
-function cors(env, request, response) {
+async function cors(env, request, response) {
   const origin = request.headers.get('Origin');
-  const ok = origin && allowedOrigins(env).includes(origin);
+  const ok = await originAllowed(env, origin);
   const h = new Headers(response.headers);
   if (ok) {
     h.set('Access-Control-Allow-Origin', origin);
@@ -116,7 +133,7 @@ async function rateLimited(request, env) {
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
   const { success } = await env.RL.limit({ key: ip });
   if (success) return null;
-  return cors(env, request, json({ error: 'rate limited, slow down' }, 429));
+  return await cors(env, request, json({ error: 'rate limited, slow down' }, 429));
 }
 
 // ─── One-time GitHub App setup (manifest flow) ──────────────────────────────
@@ -200,7 +217,7 @@ async function authLogin(url, env) {
 
   const origin = url.searchParams.get('origin') || '';
   const returnTo = url.searchParams.get('return_to') || '/';
-  if (!allowedOrigins(env).includes(origin)) {
+  if (!(await originAllowed(env, origin))) {
     return html(`<h1>Origin not allowed</h1><p><code>${esc(origin)}</code> is not in this worker's ALLOWED_ORIGINS.</p>`, 403);
   }
   if (!returnTo.startsWith('/')) return html('<h1>Bad return_to</h1>', 400);
@@ -486,7 +503,7 @@ async function googleLogin(url, env) {
   const origin = url.searchParams.get('origin') || '';
   const returnTo = url.searchParams.get('return_to') || '/';
   const repo = url.searchParams.get('repo') || '';
-  if (!allowedOrigins(env).includes(origin)) return html('<h1>Origin not allowed</h1>', 403);
+  if (!(await originAllowed(env, origin))) return html('<h1>Origin not allowed</h1>', 403);
   if (!returnTo.startsWith('/') || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return html('<h1>Bad request</h1>', 400);
 
   const nonce = crypto.randomUUID();
