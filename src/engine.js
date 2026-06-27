@@ -102,6 +102,22 @@ export function indexHtml(raw) {
       }
     }
 
+    // Responsive images: if this swappable <img> sits inside a <picture>, record the
+    // sibling <source> ranges so a src-swap can strip them. A <source srcset> would
+    // otherwise keep serving the old image and shadow the swap on modern browsers.
+    if (node.tagName === 'img' && node.attrs.some(a => a.name === 'data-cms-attr')
+        && node.parentNode && node.parentNode.tagName === 'picture') {
+      field.pictureSources = [];
+      for (const sib of node.parentNode.childNodes || []) {
+        if (sib.tagName === 'source' && sib.sourceCodeLocation) {
+          field.pictureSources.push({
+            start: sib.sourceCodeLocation.startOffset,
+            end: sib.sourceCodeLocation.endOffset,
+          });
+        }
+      }
+    }
+
     fields.set(key, field);
   });
 
@@ -191,6 +207,13 @@ export function applyEdits(raw, edits) {
         continue;
       }
       splices.push({ start: range.start, end: range.end, text: emitAttrValue(attrVal, range.quote), key: edit.key });
+      // When swapping a <picture>'s <img src>, also delete the sibling <source>
+      // elements so they don't keep showing the old image.
+      if (edit.attr === 'src' && field.pictureSources) {
+        for (const ps of field.pictureSources) {
+          splices.push({ start: ps.start, end: ps.end, text: '', key: edit.key });
+        }
+      }
     } else {
       if (!field.inner) { skipped.push({ key: edit.key, reason: 'element has no editable inner content (void or unclosed)' }); continue; }
       splices.push({ start: field.inner.start, end: field.inner.end, text: String(edit.html), key: edit.key });

@@ -901,6 +901,11 @@ function menuEditor() {
   let rows = [...docFrag.querySelectorAll('a')].map(a => ({
     label: a.textContent.trim(), href: a.getAttribute('href') || '/',
   }));
+  // Preserve the item wrapper (e.g. <ul><li><a>) so list-based navs keep their
+  // markup instead of being flattened to bare <a> on the next menu edit.
+  const anchors = [...docFrag.querySelectorAll('a')];
+  const itemTag = anchors.length && anchors.every(a => a.parentElement && a.parentElement.tagName === 'LI')
+    ? 'li' : null;
 
   const m = modal(`
     <h3>Site menu</h3>
@@ -939,9 +944,10 @@ function menuEditor() {
   m.querySelector('#kiln-menu-save').onclick = async () => {
     const status = m.querySelector('#kiln-menu-status');
     const menuKey = menuField.key;
+    const wrap = (a) => itemTag ? `<${itemTag}>${a}</${itemTag}>` : a;
     const newInner = '\n      ' + rows
       .filter(r => r.label.trim())
-      .map(r => `<a href="${escapeHtml(r.href.trim() || '/')}">${escapeHtml(r.label.trim())}</a>`)
+      .map(r => wrap(`<a href="${escapeHtml(r.href.trim() || '/')}">${escapeHtml(r.label.trim())}</a>`))
       .join('\n      ') + '\n    ';
     try {
       status.textContent = 'Step 1 of 3 · Finding the site’s pages…';

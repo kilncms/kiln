@@ -193,3 +193,14 @@ test('pageFileCandidates mapping', () => {
   assert.deepEqual(pageFileCandidates('/blog/my-post.html', 'demo'), ['demo/blog/my-post.html']);
   assert.deepEqual(pageFileCandidates('/', 'demo'), ['demo/index.html']);
 });
+
+test('swapping an <img> inside a <picture> strips the shadowing <source> siblings', () => {
+  const html = `<picture><source type="image/webp" srcset="old.webp"><img data-cms="hero" data-cms-attr="src" src="old.jpg" alt="x"></picture>`;
+  const r = applyEdits(html, [{ key: 'hero', attr: 'src', value: 'new.webp' }]);
+  assert.deepEqual(r.skipped, []);
+  assert.ok(r.html.includes('src="new.webp"'), 'img src updated');
+  assert.ok(!r.html.includes('<source'), 'shadowing <source> removed');
+  // A plain <img> (no <picture>) still works and is untouched structurally.
+  const plain = applyEdits(`<img data-cms="h" data-cms-attr="src" src="a.jpg">`, [{ key: 'h', attr: 'src', value: 'b.webp' }]);
+  assert.ok(plain.html.includes('src="b.webp"'));
+});

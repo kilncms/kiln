@@ -34,6 +34,11 @@ Rules: every `data-cms` key must be unique within its page (except inside repeat
 Don't nest one `data-cms` element inside another. Don't put `data-cms` on `<title>` or
 elements inside `<head>`.
 
+For a swappable image, point `data-cms` at a plain `<img>` — Kiln replaces its `src`. If the
+image uses `<picture>` with `<source srcset>`, the `<source>` keeps showing the old file after a
+swap, so serve any editable image as a single `<img>` (a modern `.webp` src works in every current
+browser). Don't tag content that JavaScript rewrites at runtime — the edit will be overwritten.
+
 ## 2. Repeatable blocks (cards, galleries, document lists)
 
 Wrap any "list of similar things" in `data-cms-repeat`. Editors get duplicate (＋) and
@@ -61,7 +66,9 @@ editor then adds/removes/reorders items across all pages in one commit:
 </div>
 ```
 
-The container must hold plain `<a href>` elements (styling via the container's CSS).
+The container can hold either a flat set of `<a href>` elements, or a list —
+`<ul><li><a>…</a></li></ul>` with `data-cms-menu` on the `<ul>`. Kiln preserves whichever
+structure it finds when it rewrites the menu, so your existing nav markup and CSS keep working.
 
 ## 4. Blog (optional)
 
