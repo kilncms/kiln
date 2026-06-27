@@ -5,6 +5,7 @@
  *   npx github:kilncms/kiln            interactive setup in your site directory
  *   npx github:kilncms/kiln doctor     verify an existing Kiln installation
  *   npx github:kilncms/kiln update     refresh the on-page editor to the latest
+ *   npx github:kilncms/kiln add-site   add this site to Kiln Cloud (hosted tier)
  *
  * The wizard automates everything that CAN be automated (repo, worker, KV,
  * origins, secrets, wiring) and for the three steps platforms require a human
@@ -368,10 +369,25 @@ async function update() {
   process.exit(0);
 }
 
+// ─── add-site (Kiln Cloud) ───────────────────────────────────────────────────
+
+async function addSiteCloud() {
+  hr('Add this site to Kiln Cloud');
+  const dash = 'https://app.kilncms.com';
+  const remote = shTry('git remote get-url origin');
+  const repo = remote.ok ? (remote.out.trim().match(/github\.com[:/]([^/]+\/[^/.]+)/)?.[1] || '') : '';
+  if (repo) info(`detected repo: ${repo}`);
+  info('Kiln Cloud onboarding lives in your dashboard — sign in with GitHub, pick the repo,');
+  info('your site URL, and a plan. We run the worker + the app; you keep the repo + host.');
+  openUrl(dash + (repo ? `?repo=${encodeURIComponent(repo)}` : ''));
+  process.exit(0);
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 const [, , cmd, ...rest] = process.argv;
 const args = Object.fromEntries(rest.map(a => a.split('=')).map(([k, v]) => [k.replace(/^--/, ''), v ?? true]));
 if (cmd === 'doctor') doctor(args);
 else if (cmd === 'update') update();
+else if (cmd === 'add-site') addSiteCloud();
 else wizard();
