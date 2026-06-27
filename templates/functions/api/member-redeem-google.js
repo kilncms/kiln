@@ -20,12 +20,13 @@ export async function onRequestPost({ request, env }) {
   const data = await res.json();
   if (!res.ok || !data.ok) return json({ error: 'invalid or expired sign-in, try again' }, 403);
 
-  const days = Math.min(Math.max(Number(data.days) || 30, 1), 360);
+  const days = Number(data.days) === 0 ? 0 : Math.min(Math.max(Number(data.days) || 30, 1), 360);
+  const maxAge = days ? days * 24 * 3600 : 10 * 365 * 24 * 3600;  // days:0 = never expires; keep the cookie ~10y
   const session = await signToken(
-    { n: data.name, exp: Date.now() + days * 24 * 3600 * 1000, t: 'ms' },
+    { n: data.name, exp: days ? Date.now() + days * 24 * 3600 * 1000 : null, t: 'ms' },
     env.KILN_MEMBER_SECRET
   );
   return json({ ok: true, name: data.name, days }, 200, {
-    'Set-Cookie': `kiln_member=${encodeURIComponent(session)}; Path=/; Max-Age=${days * 24 * 3600}; HttpOnly; Secure; SameSite=Lax`,
+    'Set-Cookie': `kiln_member=${encodeURIComponent(session)}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`,
   });
 }

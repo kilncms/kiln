@@ -48,6 +48,14 @@ function safeUrl(value) {
  * Returns { fields: Map<key, field>, warnings: string[] }
  * field = { key, tag, inner: {start,end}|null, attrs: Map<name,{start,end}>, range: {start,end} }
  */
+/** True if any ancestor of `node` carries the given attribute (e.g. data-cms-repeat). */
+function ancestorHasAttr(node, attr) {
+  for (let p = node.parentNode; p; p = p.parentNode) {
+    if (p.attrs && p.attrs.some(a => a.name === attr)) return true;
+  }
+  return false;
+}
+
 export function indexHtml(raw) {
   const doc = parse(raw, { sourceCodeLocationInfo: true });
   const fields = new Map();
@@ -66,7 +74,11 @@ export function indexHtml(raw) {
     const key = keyAttr.value;
     if (!key) { warnings.push('empty data-cms attribute ignored'); return; }
     if (fields.has(key)) {
-      warnings.push(`duplicate data-cms key "${key}" — using first occurrence`);
+      // Repeated keys inside a data-cms-repeat are expected (every card reuses them);
+      // only the splice index dedupes them. Only warn for duplicates OUTSIDE a repeat.
+      if (!ancestorHasAttr(node, 'data-cms-repeat')) {
+        warnings.push(`duplicate data-cms key "${key}" — using first occurrence`);
+      }
       return;
     }
 

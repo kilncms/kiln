@@ -433,7 +433,7 @@ async function peopleUpsert(request, env) {
     email: addr,
     name: String(name || addr.split('@')[0]).slice(0, 64),
     role,
-    days: Math.min(Math.max(Number(days) || 30, 1), 360),
+    days: Number(days) === 0 ? 0 : Math.min(Math.max(Number(days) || 30, 1), 360),  // 0 = never expires
   };
   if (role === 'editor') person.paths = normalizePaths(paths);
   const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
@@ -544,13 +544,13 @@ async function googleCallback(url, env) {
   const displayName = person.name || info.name || email.split('@')[0];
   if (person.role === 'editor') {
     const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
-    const exp = Date.now() + person.days * 24 * 3600 * 1000;
+    const exp = person.days ? Date.now() + person.days * 24 * 3600 * 1000 : null;  // days:0 = never
     await env.KILN.put(`esess:${session}`,
       JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, paths: person.paths || [''], created: Date.now(), exp }),
-      { expirationTtl: person.days * 24 * 3600 });
-    const frag = new URLSearchParams({
-      'kiln-esession': session, 'kiln-name': displayName, 'kiln-repo': state.repo, 'kiln-exp': String(exp),
-    });
+      person.days ? { expirationTtl: person.days * 24 * 3600 } : undefined);
+    const fp = { 'kiln-esession': session, 'kiln-name': displayName, 'kiln-repo': state.repo };
+    if (exp) fp['kiln-exp'] = String(exp);
+    const frag = new URLSearchParams(fp);
     return Response.redirect(`${state.origin}${state.returnTo}#${frag}`, 302);
   }
 

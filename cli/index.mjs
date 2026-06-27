@@ -85,6 +85,12 @@ async function doctor(args) {
 
   const status = await fetchJson(`${worker}/setup/status`).catch(() => ({ json: {} }));
   check('GitHub App registered', !!status.json.configured, status.json.slug || 'visit /setup');
+  if (status.json.slug) {
+    // A private app can only install on its owner account, so it can never serve a customer's repo.
+    const pub = await fetch(`https://github.com/apps/${status.json.slug}`).then(r => r.ok).catch(() => false);
+    check('app installable on any account (required for Kiln Cloud / inviting editors)', pub,
+      pub ? '' : 'app is private — Settings → "Make this GitHub App public"', true);
+  }
 
   if (repo) {
     const inst = await fetchJson(`${worker}/setup/install-check?repo=${repo}`).catch(() => ({ json: {} }));
@@ -92,10 +98,29 @@ async function doctor(args) {
   }
 
   if (site) {
-    const home = await fetch(site).then(r => r.ok).catch(() => false);
+    const homeRes = await fetch(site).catch(() => null);
+    const home = !!(homeRes && homeRes.ok);
+    const homeHtml = home ? await homeRes.text().catch(() => '') : '';
     check('site is live', home);
-    const boot = await fetch(`${site.replace(/\/$/, '')}/assets/kiln.js`).then(r => r.ok).catch(() => false);
-    check('kiln.js served at /assets/kiln.js', boot);
+
+    // kiln.js — read the real path off the page (sites vary: /assets/ vs /assets/js/).
+    const kjMatch = homeHtml.match(/src="([^"]*kiln\.js)"/);
+    const kjUrl = kjMatch ? new URL(kjMatch[1], site).href : `${site.replace(/\/$/, '')}/assets/kiln.js`;
+    const boot = await fetch(kjUrl).then(r => r.ok).catch(() => false);
+    check('kiln.js loads', boot, kjMatch ? kjMatch[1] : 'no kiln.js <script> found on the homepage');
+
+    // Is the host actually deploying FROM the repo? A direct-upload / stale project commits
+    // Kiln edits to GitHub that never appear on the live site — and it fails silently.
+    if (repo && homeHtml) {
+      const gh = shTry(`gh api /repos/${repo}/contents/index.html --jq .content`);
+      if (gh.ok && gh.out.trim()) {
+        const repoHtml = Buffer.from(gh.out.replace(/\s/g, ''), 'base64').toString('utf8').replace(/\s+/g, ' ').trim();
+        const liveHtml = homeHtml.replace(/\s+/g, ' ').trim();
+        check('host deploys from the repo (live homepage matches repo HEAD)', repoHtml === liveHtml,
+          repoHtml === liveHtml ? '' : 'live site differs from the repo — not Git-connected / not auto-deploying? Kiln edits will not appear', true);
+      }
+    }
+
     const cors = await fetch(`${worker}/auth/refresh`, {
       method: 'OPTIONS', headers: { Origin: new URL(site).origin, 'Access-Control-Request-Method': 'POST' },
     }).then(r => r.headers.get('Access-Control-Allow-Origin')).catch(() => null);
@@ -109,6 +134,12 @@ async function doctor(args) {
 
   const google = await fetch(`${worker}/google/login`, { redirect: 'manual' }).then(r => r.status).catch(() => 0);
   check('Google sign-in', google !== 503, google === 503 ? 'not configured — set GOOGLE_CLIENT_ID/SECRET' : 'configured', true);
+
+  // OAuth callbacks can't be read back via any API, and they break silently when the worker
+  // domain changes (custom domain added, app/repo transferred). Remind the user to verify them.
+  info('verify these OAuth callbacks are registered (they drop silently on a domain/worker change):');
+  console.log(`      GitHub App          → ${worker}/auth/callback`);
+  console.log(`      Google OAuth client → ${worker}/google/callback`);
 
   console.log(`\n  ${pass}/${total} checks passed${pass === total ? ' — Kiln is healthy 🔥' : ''}\n`);
   process.exit(pass === total ? 0 : 1);

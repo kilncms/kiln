@@ -204,3 +204,8 @@ test('swapping an <img> inside a <picture> strips the shadowing <source> sibling
   const plain = applyEdits(`<img data-cms="h" data-cms-attr="src" src="a.jpg">`, [{ key: 'h', attr: 'src', value: 'b.webp' }]);
   assert.ok(plain.html.includes('src="b.webp"'));
 });
+
+test('duplicate data-cms keys warn outside a repeat but not inside one', () => {
+  assert.equal(indexHtml('<div data-cms-repeat="x"><h3 data-cms="t">a</h3><h3 data-cms="t">b</h3></div>').warnings.length, 0);
+  assert.equal(indexHtml('<h3 data-cms="t">a</h3><h3 data-cms="t">b</h3>').warnings.length, 1);
+});
