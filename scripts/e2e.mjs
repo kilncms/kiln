@@ -19,9 +19,9 @@
 import { applyEdits } from '../src/engine.js';
 import { makeGh, getFile, editFile, commitFiles } from '../src/github.js';
 
-const WORKER = 'https://kiln-auth.erikkwilder.workers.dev';
+const WORKER = 'https://auth.kilncms.com';
 const SITE = 'https://kiln-demo.pages.dev';
-const REPO = 'erikkurtu/kiln-demo';
+const REPO = 'kilncms/kiln-demo';
 const TOKEN = process.env.GH_TOKEN;
 if (!TOKEN) { console.error('GH_TOKEN required'); process.exit(1); }
 
