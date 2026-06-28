@@ -86,6 +86,20 @@ function lsConfigured(env) { return !!(env.LS_API_KEY && env.LS_STORE_ID); }
 
 function lsVariant(env, plan) { return plan === 'managed' ? env.LS_VARIANT_MANAGED : env.LS_VARIANT_CLOUD; }
 
+// Live/test mode of the LS store, inferred from whether the Cloud variant is published
+// (variants sit `pending` until the store is activated for live payments, then `published`).
+async function lsStoreMode(env) {
+  if (!lsConfigured(env) || !env.LS_VARIANT_CLOUD) return { mode: 'unconfigured' };
+  try {
+    const r = await fetch(`${LS}/variants/${env.LS_VARIANT_CLOUD}`, {
+      headers: { Authorization: `Bearer ${env.LS_API_KEY}`, Accept: 'application/vnd.api+json' },
+    });
+    if (!r.ok) return { mode: 'unknown' };
+    const status = (await r.json())?.data?.attributes?.status || 'unknown';
+    return { mode: status === 'published' ? 'live' : 'test', variant_status: status };
+  } catch { return { mode: 'unknown' }; }
+}
+
 async function lsCheckout(env, site) {
   const variant = lsVariant(env, site.plan);
   if (!lsConfigured(env) || !variant) return null;
@@ -238,7 +252,8 @@ export async function handleCloud(request, env, url, path) {
       const sites = await env.kiln_cloud.prepare('SELECT s.*, a.github_login FROM sites s JOIN accounts a ON a.id = s.account_id ORDER BY s.created_at DESC').all();
       const active = (sites.results || []).filter(s => s.status === 'active');
       const mrr = active.reduce((m, s) => m + (s.plan === 'managed' ? 19.99 : 4.99), 0);
-      return json({ accounts: accounts.n, sites: sites.results || [], active: active.length, mrr: Number(mrr.toFixed(2)) });
+      const store = await lsStoreMode(env);
+      return json({ accounts: accounts.n, sites: sites.results || [], active: active.length, mrr: Number(mrr.toFixed(2)), store });
     }
     if (path === '/admin/cloud/grant' && request.method === 'POST') {
       const { site_id, status } = await request.json().catch(() => ({}));
