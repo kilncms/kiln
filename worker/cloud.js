@@ -148,6 +148,21 @@ async function verifyLsSignature(request, bodyText, env) {
 
 const LS_STATUS = { active: 'active', on_trial: 'trialing', past_due: 'past_due', unpaid: 'past_due', cancelled: 'canceled', expired: 'canceled', paused: 'past_due' };
 
+// Cron housekeeping: a site registers as `trialing` immediately so the owner can set up
+// and preview before paying — but that grace can't be open-ended, or a site could edit
+// forever without ever subscribing. Expire `trialing` sites that never started a Lemon
+// Squeezy subscription once they pass the grace window; that drops them from the editable
+// allowlist (originAllowed only permits active/trialing). Real LS trials carry an
+// ls_subscription_id and are untouched — their lifecycle is driven entirely by webhooks.
+const TRIAL_GRACE_DAYS = 7;
+export async function expireStaleTrials(env) {
+  if (!env.kiln_cloud) return;
+  const cutoff = Date.now() - TRIAL_GRACE_DAYS * 86400 * 1000;
+  await env.kiln_cloud.prepare(
+    "UPDATE sites SET status = 'canceled' WHERE status = 'trialing' AND ls_subscription_id IS NULL AND created_at < ?"
+  ).bind(cutoff).run();
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 export async function handleCloud(request, env, url, path) {
@@ -251,7 +266,7 @@ export async function handleCloud(request, env, url, path) {
       const accounts = await env.kiln_cloud.prepare('SELECT COUNT(*) n FROM accounts').first();
       const sites = await env.kiln_cloud.prepare('SELECT s.*, a.github_login FROM sites s JOIN accounts a ON a.id = s.account_id ORDER BY s.created_at DESC').all();
       const active = (sites.results || []).filter(s => s.status === 'active');
-      const mrr = active.reduce((m, s) => m + (s.plan === 'managed' ? 19.99 : 4.99), 0);
+      const mrr = active.reduce((m, s) => m + (s.plan === 'managed' ? 14.99 : 4.99), 0);
       const store = await lsStoreMode(env);
       return json({ accounts: accounts.n, sites: sites.results || [], active: active.length, mrr: Number(mrr.toFixed(2)), store });
     }

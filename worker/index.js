@@ -38,11 +38,12 @@
 const GH = 'https://api.github.com';
 const UA = 'kiln-auth-worker';
 
-import { handleCloud } from './cloud.js';
+import { handleCloud, expireStaleTrials } from './cloud.js';
 
 export default {
   async scheduled(_event, env) {
     await runDueSchedules(env);
+    await expireStaleTrials(env);
   },
   async fetch(request, env) {
     const url = new URL(request.url);
