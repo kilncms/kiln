@@ -2794,17 +2794,26 @@ function renderAdminBar() {
         <span class="kiln-user">${escapeHtml(state.user)}${mode === 'editor' ? ' · editor' : ''}</span>
       </div>
       <button id="kiln-publish" class="kiln-fab-item kiln-fab-primary" disabled>Publish</button>
-      <button id="kiln-discard" class="kiln-fab-item" hidden>Discard edits</button>
-      <button id="kiln-schedule" class="kiln-fab-item" hidden>Schedule for later…</button>
-      <button id="kiln-draft" class="kiln-fab-item" hidden>Save as draft</button>
-      <button id="kiln-newpost" class="kiln-fab-item">＋ New post or page</button>
-      <button id="kiln-menu" class="kiln-fab-item">Site menu</button>
-      <button id="kiln-pagesettings" class="kiln-fab-item">Page settings</button>
-      <button id="kiln-findreplace" class="kiln-fab-item">Find &amp; replace</button>
-      <button id="kiln-history" class="kiln-fab-item">History</button>
-      ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-makeblock" class="kiln-fab-item">✨ Make things editable</button>' : ''}
-      ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
-      <button id="kiln-settings" class="kiln-fab-item">Settings</button>
+      <div id="kiln-grp-edits" class="kiln-fab-group" hidden>
+        <div class="kiln-fab-label">Your unpublished edits</div>
+        <button id="kiln-draft" class="kiln-fab-item">Save as draft</button>
+        <button id="kiln-schedule" class="kiln-fab-item">Schedule for later…</button>
+        <button id="kiln-discard" class="kiln-fab-item kiln-fab-danger">Discard edits</button>
+      </div>
+      <div class="kiln-fab-group">
+        <div class="kiln-fab-label">This page</div>
+        <button id="kiln-newpost" class="kiln-fab-item">＋ New post or page</button>
+        <button id="kiln-pagesettings" class="kiln-fab-item">Page settings</button>
+        <button id="kiln-history" class="kiln-fab-item">History &amp; restore</button>
+        ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-makeblock" class="kiln-fab-item">✨ Make things editable</button>' : ''}
+      </div>
+      <div class="kiln-fab-group">
+        <div class="kiln-fab-label">Whole site</div>
+        <button id="kiln-menu" class="kiln-fab-item">Site menu</button>
+        <button id="kiln-findreplace" class="kiln-fab-item">Find &amp; replace</button>
+        ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
+        <button id="kiln-settings" class="kiln-fab-item">Settings</button>
+      </div>
       <div class="kiln-fab-foot">
         <button id="kiln-done" title="Hide Kiln and browse normally (stays signed in — return via the Resume button or yoursite.com/kiln)">Done editing</button>
         <button id="kiln-signout">Sign out</button>
@@ -3179,13 +3188,17 @@ function refreshPublishButton() {
     btn.textContent = n ? `Publish ${n} edit${n > 1 ? 's' : ''}` : (anything ? 'Publish' : 'Publish');
   }
   const badge = document.getElementById('kiln-fab-badge');
-  if (badge) { badge.hidden = !anything; badge.textContent = n || (state.pendingBinaries.size ? '•' : ''); }
+  if (badge) { badge.hidden = !anything; badge.textContent = n || (state.pendingBinaries.size || state.pendingStructural.length ? '•' : ''); }
+  // The whole "unpublished edits" group appears only when there's something to act on.
+  const grp = document.getElementById('kiln-grp-edits');
+  if (grp) grp.hidden = !anything;
   const discard = document.getElementById('kiln-discard');
-  if (discard) { discard.hidden = !anything; discard.textContent = n ? `Discard ${n} edit${n > 1 ? 's' : ''}` : 'Discard'; }
+  if (discard) discard.textContent = n ? `Discard ${n} edit${n > 1 ? 's' : ''}` : 'Discard edits';
+  // Draft + Schedule need actual field edits (not just an uploaded binary).
   const sched = document.getElementById('kiln-schedule');
-  if (sched) sched.hidden = !n;
+  if (sched) sched.style.display = n ? '' : 'none';
   const draftBtn = document.getElementById('kiln-draft');
-  if (draftBtn) draftBtn.hidden = !n;
+  if (draftBtn) draftBtn.style.display = n ? '' : 'none';
   savePendingToStorage();
 }
 
@@ -3310,6 +3323,11 @@ function injectStyles() {
 .kiln-fab-item{display:block;width:100%;text-align:left;background:none;border:none;color:#d6d8e1;
   padding:9px 10px;border-radius:9px;cursor:pointer;font-size:13px;font-family:var(--kiln-font);transition:background .12s}
 .kiln-fab-item:hover{background:rgba(255,255,255,.08);color:#fff}
+.kiln-fab-group{display:flex;flex-direction:column;gap:2px;border-top:1px solid rgba(255,255,255,.07);margin-top:4px;padding-top:5px}
+.kiln-fab-group[hidden]{display:none}
+.kiln-fab-label{font:600 9.5px var(--kiln-font);letter-spacing:.09em;text-transform:uppercase;color:#6b7280;padding:2px 10px 4px}
+.kiln-fab-danger{color:#f9a8a8}
+.kiln-fab-danger:hover{background:rgba(248,113,113,.16);color:#fff}
 .kiln-fab-primary{background:var(--kiln-accent);color:#fff;font-weight:600;text-align:center}
 .kiln-fab-primary:hover{background:var(--kiln-accent-h);color:#fff}
 .kiln-fab-primary:disabled{opacity:.4;cursor:default;background:rgba(255,255,255,.08);color:#9ca3af;font-weight:500}
