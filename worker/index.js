@@ -495,7 +495,7 @@ async function presencePing(request, env) {
     const e = await env.KILN.get(`esess:${sess}`, 'json');
     if (e && (!e.exp || e.exp >= Date.now()) && e.repo === repo && e.role === 'editor') {
       who = e.name; role = 'editor';
-      scope = { paths: e.paths || [''], keys: e.keys || [] };  // the editor UI greys out out-of-scope content
+      scope = { paths: e.paths || [''], keys: e.keys || [], features: e.features || null };  // editor UI uses this to gate handles + menu
     }
   }
   if (!who && (await requirePushCached(request, env, repo))) {
@@ -544,8 +544,11 @@ async function peopleList(request, env, url) {
   return json({ people: await getPeople(env, repo), googleConfigured: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) });
 }
 
+// Menu features an admin can grant an editor. People/settings stay owner-only.
+const GRANTABLE_FEATURES = ['menu', 'findreplace', 'newpost', 'pagesettings', 'history', 'schedule', 'draft', 'makeeditable'];
+
 async function peopleUpsert(request, env) {
-  const { repo, email, name, role, days, paths, keys } = await request.json().catch(() => ({}));
+  const { repo, email, name, role, days, paths, keys, features } = await request.json().catch(() => ({}));
   if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
   const addr = String(email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) return json({ error: 'bad email' }, 400);
@@ -562,6 +565,9 @@ async function peopleUpsert(request, env) {
     // editor UI greys out everything else; file writes are still gated by paths).
     const k = normalizePaths(keys).filter(x => x !== '');
     if (k.length) person.keys = k.slice(0, 50);
+    // Per-editor feature grants (which menu tools they can use). Sanitized to the
+    // known-grantable set; empty/undefined → a sensible default applied client-side.
+    if (Array.isArray(features)) person.features = features.filter(f => GRANTABLE_FEATURES.includes(f));
   }
   const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
   people.push(person);
@@ -673,7 +679,7 @@ async function googleCallback(url, env) {
     const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
     const exp = person.days ? Date.now() + person.days * 24 * 3600 * 1000 : null;  // days:0 = never
     await env.KILN.put(`esess:${session}`,
-      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], created: Date.now(), exp }),
+      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], features: person.features || null, created: Date.now(), exp }),
       person.days ? { expirationTtl: person.days * 24 * 3600 } : undefined);
     const fp = { 'kiln-esession': session, 'kiln-name': displayName, 'kiln-repo': state.repo };
     if (exp) fp['kiln-exp'] = String(exp);

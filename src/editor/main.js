@@ -24,6 +24,10 @@ const PAUSE_KEY = 'kiln_pause';
 // before init() runs at module load — initSandbox reads them synchronously.
 const SANDBOX_KEY = 'kiln_sandbox';
 const SANDBOX_TTL = 24 * 3600 * 1000;
+// Default menu tools an invited editor gets when the admin hasn't customized them.
+// (Declared up here — used by hasFeature() which runs during the init() call below;
+// esbuild hoists const→var, so a later declaration would read undefined at boot.)
+const EDITOR_DEFAULT_FEATURES = ['pagesettings', 'history', 'draft'];
 
 import { SANITIZE, CONTAINER_SANITIZE } from './sanitize.js';
 
@@ -257,6 +261,28 @@ function keyInScope(key) {
   const ks = state.scope?.keys;
   if (!ks || !ks.length) return true;
   return ks.some(p => key === p || key.startsWith(p));
+}
+
+/** Whether the current editor may use a given menu feature. Admins get everything. */
+function hasFeature(feature) {
+  if (mode === 'admin') return true;
+  const granted = state.scope?.features;
+  const list = Array.isArray(granted) ? granted : EDITOR_DEFAULT_FEATURES;
+  return list.includes(feature);
+}
+
+/** Hide menu items an invited editor hasn't been granted (applied after the bar renders). */
+function applyFeatureGating() {
+  if (mode === 'admin') return;
+  const map = { 'kiln-menu': 'menu', 'kiln-findreplace': 'findreplace', 'kiln-newpost': 'newpost',
+    'kiln-pagesettings': 'pagesettings', 'kiln-history': 'history', 'kiln-makeblock': 'makeeditable' };
+  for (const [id, feat] of Object.entries(map)) {
+    const el = document.getElementById(id);
+    if (el && !hasFeature(feat)) el.style.display = 'none';
+  }
+  // Draft/Schedule live in the pending-edits group; gate them too.
+  if (!hasFeature('draft')) { const d = document.getElementById('kiln-draft'); if (d) d.dataset.gated = '1'; }
+  if (!hasFeature('schedule')) { const s = document.getElementById('kiln-schedule'); if (s) s.dataset.gated = '1'; }
 }
 
 function renderScopeNote() {
@@ -1837,6 +1863,11 @@ async function invitePanel() {
       <p class="kiln-dim" id="kiln-p-keys-hint" style="margin:-2px 0 6px;font-size:12px">Leave blank for every section of the pages above.
         <button type="button" class="kiln-btn-ghost" id="kiln-p-keypick" style="margin-left:6px;padding:3px 9px;font-size:11.5px">Choose sections…</button></p>
       <div id="kiln-p-keylist" class="kiln-inv-list" style="display:none;max-height:150px;overflow:auto;margin:0 0 8px"></div>
+      <div id="kiln-p-feat-wrap">
+        <label style="margin-bottom:2px">Tools this editor can use</label>
+        <div id="kiln-p-features" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin:2px 0 8px"></div>
+        <p class="kiln-dim" style="margin:-2px 0 6px;font-size:12px">Editing text and images is always allowed. People &amp; access and site Settings stay owner-only.</p>
+      </div>
       <div class="kiln-modal-actions" style="justify-content:flex-start;margin-top:8px">
         <button class="kiln-btn-publish" id="kiln-p-add">Add person</button>
       </div>
@@ -1846,8 +1877,24 @@ async function invitePanel() {
 
   const admin = () => JSON.parse(localStorage.getItem(ADMIN_KEY));
 
+  // Feature checkboxes (which menu tools an editor may use). Defaults on: the
+  // low-risk content tools; off: site-wide/structural tools.
+  const FEATURES = [
+    { v: 'pagesettings', label: 'Page settings', def: true },
+    { v: 'history', label: 'History & restore', def: true },
+    { v: 'draft', label: 'Save drafts', def: true },
+    { v: 'newpost', label: 'New posts & pages', def: false },
+    { v: 'schedule', label: 'Schedule publishing', def: false },
+    { v: 'menu', label: 'Edit site menu', def: false },
+    { v: 'findreplace', label: 'Find & replace', def: false },
+    { v: 'makeeditable', label: 'Make things editable', def: false },
+  ];
+  m.querySelector('#kiln-p-features').innerHTML = FEATURES.map(f =>
+    `<label style="font-weight:normal;display:inline-flex;gap:6px;align-items:center;font-size:12.5px;margin:0">
+      <input type="checkbox" class="kiln-p-feat" value="${f.v}" ${f.def ? 'checked' : ''}> ${escapeHtml(f.label)}</label>`).join('');
+
   // Show the scope fields only when adding an editor.
-  const scopeEls = ['#kiln-p-paths-wrap', '#kiln-p-paths-hint', '#kiln-p-keys-wrap', '#kiln-p-keys-hint']
+  const scopeEls = ['#kiln-p-paths-wrap', '#kiln-p-paths-hint', '#kiln-p-keys-wrap', '#kiln-p-keys-hint', '#kiln-p-feat-wrap']
     .map(s => m.querySelector(s));
   function syncRole() {
     const isEditor = m.querySelector('input[name="kiln-p-role"]:checked').value === 'editor';
@@ -1975,11 +2022,12 @@ async function invitePanel() {
     const role = m.querySelector('input[name="kiln-p-role"]:checked').value;
     const paths = m.querySelector('#kiln-p-paths').value.trim();
     const keys = m.querySelector('#kiln-p-keys').value.trim();
+    const features = [...m.querySelectorAll('.kiln-p-feat:checked')].map(c => c.value);
     if (!email) return;
     const res = await fetch(`${cfg.worker}/admin/people`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
-      body: JSON.stringify({ repo: cfg.repo, email, name, role, days, paths, keys }),
+      body: JSON.stringify({ repo: cfg.repo, email, name, role, days, paths, keys, features }),
     });
     const data = await res.json();
     if (data.ok) {
@@ -2936,6 +2984,8 @@ function renderAdminBar() {
   const makeBtn = fab.querySelector('#kiln-makeblock');
   if (makeBtn) makeBtn.onclick = close(makeEditableMode);
 
+  applyFeatureGating();
+  updateOnlineChip();
   setStatus(`Signed in as ${state.user} — click any outlined text to edit`, 'idle');
 }
 
@@ -2982,6 +3032,8 @@ function renderTopBar() {
   if (makeBtn) makeBtn.onclick = makeEditableMode;
   const settingsBtn = bar.querySelector('#kiln-settings');
   if (settingsBtn) settingsBtn.onclick = settingsPanel;
+  applyFeatureGating();
+  updateOnlineChip();
   setStatus(`Signed in as ${state.user}`, 'idle');
 }
 
@@ -3194,11 +3246,12 @@ function refreshPublishButton() {
   if (grp) grp.hidden = !anything;
   const discard = document.getElementById('kiln-discard');
   if (discard) discard.textContent = n ? `Discard ${n} edit${n > 1 ? 's' : ''}` : 'Discard edits';
-  // Draft + Schedule need actual field edits (not just an uploaded binary).
+  // Draft + Schedule need actual field edits (not just an uploaded binary), and
+  // an editor must be granted them (dataset.gated set by applyFeatureGating).
   const sched = document.getElementById('kiln-schedule');
-  if (sched) sched.style.display = n ? '' : 'none';
+  if (sched) sched.style.display = (n && !sched.dataset.gated) ? '' : 'none';
   const draftBtn = document.getElementById('kiln-draft');
-  if (draftBtn) draftBtn.style.display = n ? '' : 'none';
+  if (draftBtn) draftBtn.style.display = (n && !draftBtn.dataset.gated) ? '' : 'none';
   savePendingToStorage();
 }
 
