@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { indexHtml, applyEdits, readValues, pageFileCandidates, editHead, readHead, findNthTag, annotateNthTag, removeAnnotations } from '../src/engine.js';
+import { indexHtml, applyEdits, readValues, pageFileCandidates, editHead, readHead, findNthTag, annotateNthTag, appendIntoNthTag, removeAnnotations } from '../src/engine.js';
 
 test('editHead updates title and inserts/updates meta description', () => {
   const html = '<html><head>\n  <title>Old</title>\n</head><body>x</body></html>';
@@ -255,4 +255,14 @@ test('editHead: og:image insert + update, scheme-sanitized', () => {
   assert.equal(readHead(v2).ogImage, '/assets/new.jpg');
   const bad = editHead(html, { ogImage: 'javascript:alert(1)' });
   assert.ok(!bad.includes('javascript:'));
+});
+
+test('appendIntoNthTag: inserts before the element closing tag', () => {
+  const html = '<body><main><h1>Hi</h1></main></body>';
+  const out = appendIntoNthTag(html, 'main', 0, '<section id="new">X</section>');
+  assert.ok(out.includes('<h1>Hi</h1><section id="new">X</section></main>'));
+  assert.equal(appendIntoNthTag(html, 'main', 5, '<x>'), null);
+  // falls back to body when no main
+  const nobody = '<body><p>Y</p></body>';
+  assert.ok(appendIntoNthTag(nobody, 'body', 0, '<z>Z</z>').includes('<p>Y</p><z>Z</z></body>'));
 });

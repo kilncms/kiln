@@ -10,7 +10,7 @@
  */
 
 import DOMPurify from 'dompurify';
-import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValues, findNthTag, annotateNthTag, removeAnnotations } from '../engine.js';
+import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValues, findNthTag, annotateNthTag, appendIntoNthTag, removeAnnotations } from '../engine.js';
 import {
   makeGh, getFile, resolvePageFile, editFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
@@ -275,7 +275,7 @@ function hasFeature(feature) {
 function applyFeatureGating() {
   if (mode === 'admin') return;
   const map = { 'kiln-menu': 'menu', 'kiln-findreplace': 'findreplace', 'kiln-newpost': 'newpost',
-    'kiln-pagesettings': 'pagesettings', 'kiln-history': 'history', 'kiln-makeblock': 'makeeditable' };
+    'kiln-pagesettings': 'pagesettings', 'kiln-history': 'history', 'kiln-makeblock': 'makeeditable', 'kiln-addsection': 'makeeditable' };
   for (const [id, feat] of Object.entries(map)) {
     const el = document.getElementById(id);
     if (el && !hasFeature(feat)) el.style.display = 'none';
@@ -1300,6 +1300,13 @@ async function insertDocument(el, savedRange) {
       <label class="kiln-role"><input type="radio" name="kiln-doc-kind" value="card">
         <span><strong>Card</strong><br><small>A block with the name and file details (${escapeHtml(ext)} · ${escapeHtml(pretty)}).</small></span></label>
     </div>
+    <h4>When clicked</h4>
+    <div class="kiln-roles">
+      <label class="kiln-role"><input type="radio" name="kiln-doc-open" value="view" checked>
+        <span><strong>Open in a new tab</strong><br><small>Views the file in the browser (PDFs, images).</small></span></label>
+      <label class="kiln-role"><input type="radio" name="kiln-doc-open" value="download">
+        <span><strong>Download</strong><br><small>Saves the file to their device.</small></span></label>
+    </div>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
       <button class="kiln-btn-publish" id="kiln-doc-go">Insert</button>
@@ -1307,10 +1314,12 @@ async function insertDocument(el, savedRange) {
   m.querySelector('#kiln-doc-go').onclick = () => {
     const label = escapeHtml(m.querySelector('#kiln-doc-label').value.trim() || up.name);
     const kind = m.querySelector('input[name="kiln-doc-kind"]:checked').value;
+    const openMode = m.querySelector('input[name="kiln-doc-open"]:checked').value;
     const href = escapeHtml(safeUrl(up.path));
-    const html = kind === 'link' ? `<a href="${href}" download>${label}</a>`
-      : kind === 'chip' ? `<a href="${href}" class="kiln-doc kiln-doc-chip" download>📄 ${label}</a>`
-      : `<a href="${href}" class="kiln-doc kiln-doc-card" download><strong>${label}</strong><br><small>${escapeHtml(ext)} · ${escapeHtml(pretty)}</small></a>`;
+    const behave = openMode === 'download' ? ' download' : ' target="_blank" rel="noopener"';
+    const html = kind === 'link' ? `<a href="${href}"${behave}>${label}</a>`
+      : kind === 'chip' ? `<a href="${href}" class="kiln-doc kiln-doc-chip"${behave}>📄 ${label}</a>`
+      : `<a href="${href}" class="kiln-doc kiln-doc-card"${behave}><strong>${label}</strong><br><small>${escapeHtml(ext)} · ${escapeHtml(pretty)}</small></a>`;
     m.remove();
     // Insert directly via the DOM (not execCommand) — by the time this runs the
     // field may have left edit mode (interacting with this modal committed it),
@@ -1362,6 +1371,14 @@ async function publish() {
     for (const [attr, value] of Object.entries(v.attrs || {})) bucket.push({ key, attr, value });
   }
 
+  // Snapshot EXACTLY what we're committing. Publishing is async (GitHub round-trip),
+  // and the editor stays live the whole time — the user can keep editing. So instead
+  // of a blanket state.pending.clear() at the end (which would silently drop any edit
+  // made mid-publish), we only retire the keys we actually sent, and only if they
+  // haven't changed since. A re-edit of the same key, or a brand-new key, survives.
+  const publishedSnapshot = new Map();
+  for (const [key, v] of state.pending) publishedSnapshot.set(key, JSON.stringify(v));
+
   // Same-field conflict gate: if someone ELSE published a change to a field
   // we're about to write since we loaded the page, ask before overwriting.
   // (Different-field edits merge automatically — editFile re-applies our edits
@@ -1378,29 +1395,45 @@ async function publish() {
       const files = [...state.pendingBinaries].map(([path, base64]) => ({ path, base64 }));
       await commitFiles(state.gh, cfg.repo, cfg.branch || 'main', files,
         `Upload ${files.length} file${files.length > 1 ? 's' : ''} (via Kiln)`);
-      state.pendingBinaries.clear();
+      // Retire only the paths we sent; a file queued during the commit survives.
+      for (const { path } of files) state.pendingBinaries.delete(path);
     }
     let result = null;
-    if (localEdits.length || state.pendingStructural.length) {
-      const structDesc = state.pendingStructural.map(s => s.op === 'annotate' ? `+${s.key}` : `-${s.key}`);
+    // Freeze the structural ops we're sending so a mid-publish addition can't get
+    // applied to this commit (it would then be double-applied on the next Publish).
+    const structuralOps = state.pendingStructural.slice();
+    if (localEdits.length || structuralOps.length) {
+      const structDesc = structuralOps.map(s => s.op === 'annotate' ? `+${s.key}` : `-${s.key}`);
       result = await editFile(
         state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
         (text) => {
           // Structural changes (make/unmake editable) first, so field edits can
           // reference newly-annotated keys; then splice the field edits.
-          const t = applyStructural(text);
+          const t = applyStructural(text, structuralOps);
           const { html, skipped } = applyEdits(t, localEdits);
           for (const s of skipped) console.warn('[kiln] skipped:', s);
           return html;
         },
         `Edit ${state.page.path}: ${[...localEdits.map(e => e.key), ...structDesc].join(', ')} (via Kiln)`
       );
-      state.pendingStructural = [];
+      // Drop only the structural ops we sent (they're appended, so the sent ones are
+      // at the front); anything added mid-publish stays queued for the next Publish.
+      state.pendingStructural.splice(0, structuralOps.length);
     }
     if (partialEdits.length) await publishPartials(partialEdits);
-    state.pending.clear();
-    document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
-    state.originals.clear();
+    // Retire only the keys we published and that are unchanged since the snapshot.
+    // Anything the user edited (or added) during the commit stays pending and keeps
+    // its "modified" marker, so the next Publish picks it up.
+    for (const [key, snap] of publishedSnapshot) {
+      if (state.pending.has(key) && JSON.stringify(state.pending.get(key)) === snap) {
+        state.pending.delete(key);
+        state.originals.delete(key);
+        try {
+          document.querySelectorAll('[data-cms="' + CSS.escape(key) + '"].kiln-modified')
+            .forEach(el => el.classList.remove('kiln-modified'));
+        } catch {}
+      }
+    }
     await loadPageSource();
     refreshPublishButton();
     if (result && result.unchanged && !partialEdits.length) { setStatus('Nothing changed', 'idle'); return; }
@@ -1873,7 +1906,30 @@ function menuEditor() {
 
 // ─── People & access (admin only) ────────────────────────────────────────────
 
+// Pull the editable section keys out of a page's raw HTML (data-cms / -repeat / -menu).
+// Used to build the per-page "Choose sections" list without loading every page's editor.
+function extractSectionKeys(html) {
+  const keys = [], seen = new Set();
+  const re = /data-cms(?:-repeat|-menu)?=["']([^"']+)["']/g;
+  let mm;
+  while ((mm = re.exec(html))) { if (!seen.has(mm[1])) { seen.add(mm[1]); keys.push(mm[1]); } }
+  return keys;
+}
+
+// The site's .html pages, cached per panel-open. Folders in the scope expand to the
+// pages they contain so "Choose sections" can group by real page.
+let _sitePagesCache = null;
+async function listSitePages() {
+  if (_sitePagesCache) return _sitePagesCache;
+  const tree = await state.gh.request('GET',
+    `/repos/${cfg.repo}/git/trees/${encodeURIComponent(cfg.branch || 'main')}?recursive=1`);
+  _sitePagesCache = tree.tree.filter(t => t.type === 'blob' && t.path.endsWith('.html')
+    && !t.path.startsWith('_templates/')).map(t => t.path);
+  return _sitePagesCache;
+}
+
 async function invitePanel() {
+  _sitePagesCache = null;   // fresh each time the panel opens
   const m = modal(`
     <h3>People &amp; access</h3>
     <p class="kiln-dim" id="kiln-gstatus">Checking Google sign-in…</p>
@@ -1893,14 +1949,14 @@ async function invitePanel() {
       <label id="kiln-p-paths-wrap">Pages this editor can edit
         <input type="text" id="kiln-p-paths" placeholder="whole site — or e.g. blog, about.html"></label>
       <p class="kiln-dim" id="kiln-p-paths-hint" style="margin:-2px 0 6px;font-size:12px">Comma-separated folders or files they may edit. Leave blank for the whole site.
-        <button type="button" class="kiln-btn-ghost" id="kiln-p-pick" style="margin-left:6px;padding:3px 9px;font-size:11.5px">Choose pages…</button><br>
+        <button type="button" class="kiln-btn-pick" id="kiln-p-pick" aria-expanded="false">▾ Choose pages</button><br>
         Editors can never touch CNAME, _redirects, or .github.</p>
-      <div id="kiln-p-pages" class="kiln-inv-list" style="display:none;max-height:180px;overflow:auto;margin:0 0 8px"></div>
+      <div id="kiln-p-pages" class="kiln-pick-box" style="display:none"></div>
       <label id="kiln-p-keys-wrap">Sections they can edit (optional)
         <input type="text" id="kiln-p-keys" placeholder="everything — or pick sections below"></label>
-      <p class="kiln-dim" id="kiln-p-keys-hint" style="margin:-2px 0 6px;font-size:12px">Leave blank for every section of the pages above.
-        <button type="button" class="kiln-btn-ghost" id="kiln-p-keypick" style="margin-left:6px;padding:3px 9px;font-size:11.5px">Choose sections…</button></p>
-      <div id="kiln-p-keylist" class="kiln-inv-list" style="display:none;max-height:150px;overflow:auto;margin:0 0 8px"></div>
+      <p class="kiln-dim" id="kiln-p-keys-hint" style="margin:-2px 0 6px;font-size:12px">Leave blank for every section of the pages above. Sections are grouped by page.
+        <button type="button" class="kiln-btn-pick" id="kiln-p-keypick" aria-expanded="false">▾ Choose sections</button></p>
+      <div id="kiln-p-keylist" class="kiln-pick-box" style="display:none"></div>
       <div id="kiln-p-feat-wrap">
         <label style="margin-bottom:2px">Tools this editor can use</label>
         <div id="kiln-p-features" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin:2px 0 8px"></div>
@@ -1941,46 +1997,80 @@ async function invitePanel() {
     else if (m.querySelector('#kiln-p-pages').style.display === 'none') m.querySelector('#kiln-p-pick').click();  // auto-open the page checklist
   }
 
-  // "Choose sections…" — checkbox list of THIS page's editable fields (grouped by
-  // prefix), written into the keys field. Beats hand-typing prefixes.
-  m.querySelector('#kiln-p-keypick').onclick = (e) => {
+  // "Choose sections" — checklist of editable fields, GROUPED BY PAGE. Pulls the
+  // pages the editor is scoped to (or the whole site if unscoped) and lists each
+  // page's sections under its own heading, plus a "whole page" catch-all per page.
+  const keyPickBtn = m.querySelector('#kiln-p-keypick');
+  keyPickBtn.onclick = async (e) => {
     e.preventDefault();
     const box = m.querySelector('#kiln-p-keylist');
-    if (box.style.display !== 'none') { box.style.display = 'none'; return; }
-    box.style.display = '';
+    if (box.style.display !== 'none') { box.style.display = 'none'; keyPickBtn.setAttribute('aria-expanded', 'false'); return; }
+    box.style.display = ''; keyPickBtn.setAttribute('aria-expanded', 'true');
     const input = m.querySelector('#kiln-p-keys');
     const selected = () => new Set(input.value.split(',').map(s => s.trim()).filter(Boolean));
-    // Offer the actual field keys on this page plus their common prefixes (e.g. events_).
-    const keys = [...state.fields.fields.keys()];
-    const prefixes = [...new Set(keys.map(k => (k.match(/^[a-z0-9]+_/i) || [])[0]).filter(Boolean))];
-    const opts = [...prefixes.map(p => ({ v: p, label: `${p}* — everything starting “${p}”` })), ...keys.map(k => ({ v: k, label: k }))];
-    box.innerHTML = opts.length ? '' : '<p class="kiln-dim">This page has no named sections.</p>';
-    for (const o of opts) {
-      const row = document.createElement('label');
-      row.style.cssText = 'display:flex;gap:8px;align-items:center;font-size:12.5px;margin:0;padding:4px 2px';
-      row.innerHTML = `<input type="checkbox" value="${escapeHtml(o.v)}" ${selected().has(o.v) ? 'checked' : ''}> ${escapeHtml(o.label)}`;
-      row.querySelector('input').onchange = (ev) => {
-        const cur = selected();
-        if (ev.target.checked) cur.add(o.v); else cur.delete(o.v);
-        input.value = [...cur].join(', ');
-      };
-      box.appendChild(row);
+    const writeBack = (v, on) => { const cur = selected(); if (on) cur.add(v); else cur.delete(v); input.value = [...cur].join(', '); };
+
+    box.innerHTML = '<p class="kiln-dim" style="margin:6px 2px">Loading sections…</p>';
+    // Resolve which pages to show sections for, honoring the page scope (folders expand).
+    let pages;
+    try {
+      const scope = m.querySelector('#kiln-p-paths').value.split(',').map(s => s.trim()).filter(Boolean);
+      if (!scope.length) {
+        pages = await listSitePages();
+      } else {
+        const all = await listSitePages();
+        pages = [];
+        for (const s of scope) {
+          if (s.endsWith('.html')) { if (!pages.includes(s)) pages.push(s); }
+          else all.filter(p => p === s || p.startsWith(s.replace(/\/$/, '') + '/')).forEach(p => { if (!pages.includes(p)) pages.push(p); });
+        }
+        if (!pages.includes(state.page.path)) pages.unshift(state.page.path);
+      }
+    } catch { pages = [state.page.path]; }
+    pages = pages.slice(0, 25);
+
+    // Fetch each page's section keys (current page comes from the live DOM — no round-trip).
+    const groups = [];
+    for (const path of pages) {
+      if (path === state.page.path) { groups.push({ path, keys: [...state.fields.fields.keys()] }); continue; }
+      try { const f = await getFile(state.gh, cfg.repo, path, cfg.branch || 'main'); groups.push({ path, keys: extractSectionKeys(f.text) }); }
+      catch { groups.push({ path, keys: [], err: true }); }
     }
+
+    box.innerHTML = '';
+    let any = false;
+    for (const g of groups) {
+      const head = document.createElement('div');
+      head.className = 'kiln-pick-group';
+      head.textContent = g.path + (g.path === state.page.path ? '  · this page' : '');
+      box.appendChild(head);
+      if (g.err) { const p = document.createElement('p'); p.className = 'kiln-dim'; p.style.margin = '2px'; p.textContent = "Couldn't load this page."; box.appendChild(p); continue; }
+      if (!g.keys.length) { const p = document.createElement('p'); p.className = 'kiln-dim'; p.style.margin = '2px'; p.textContent = 'No named sections.'; box.appendChild(p); continue; }
+      any = true;
+      const prefixes = [...new Set(g.keys.map(k => (k.match(/^[a-z0-9]+_/i) || [])[0]).filter(Boolean))];
+      const opts = [...prefixes.map(p => ({ v: p, label: `${p}∗ — everything starting “${p}”` })), ...g.keys.map(k => ({ v: k, label: k }))];
+      for (const o of opts) {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex;gap:8px;align-items:center;font-size:12.5px;margin:0;padding:4px 2px';
+        row.innerHTML = `<input type="checkbox" value="${escapeHtml(o.v)}" ${selected().has(o.v) ? 'checked' : ''}> ${escapeHtml(o.label)}`;
+        row.querySelector('input').onchange = (ev) => writeBack(o.v, ev.target.checked);
+        box.appendChild(row);
+      }
+    }
+    if (!any && !groups.some(g => g.keys.length)) box.innerHTML = '<p class="kiln-dim" style="margin:6px 2px">These pages have no named sections yet.</p>';
   };
 
-  // "Choose pages…" — checkbox list of the site's pages/folders, written back
+  // "Choose pages" — checkbox list of the site's pages/folders, written back
   // into the comma-separated paths field (which stays hand-editable).
-  m.querySelector('#kiln-p-pick').onclick = async (e) => {
+  const pagePickBtn = m.querySelector('#kiln-p-pick');
+  pagePickBtn.onclick = async (e) => {
     e.preventDefault();
     const box = m.querySelector('#kiln-p-pages');
-    if (box.style.display !== 'none') { box.style.display = 'none'; return; }
-    box.style.display = '';
-    box.innerHTML = '<p class="kiln-dim">Loading pages…</p>';
+    if (box.style.display !== 'none') { box.style.display = 'none'; pagePickBtn.setAttribute('aria-expanded', 'false'); return; }
+    box.style.display = ''; pagePickBtn.setAttribute('aria-expanded', 'true');
+    box.innerHTML = '<p class="kiln-dim" style="margin:6px 2px">Loading pages…</p>';
     try {
-      const tree = await state.gh.request('GET',
-        `/repos/${cfg.repo}/git/trees/${encodeURIComponent(cfg.branch || 'main')}?recursive=1`);
-      const pages = tree.tree.filter(t => t.type === 'blob' && t.path.endsWith('.html')
-        && !t.path.startsWith('_templates/')).map(t => t.path).slice(0, 100);
+      const pages = (await listSitePages()).slice(0, 100);
       const dirs = [...new Set(pages.filter(p => p.includes('/')).map(p => p.split('/')[0]))];
       const options = [...dirs.map(d => ({ v: d, label: `${d}/ (folder)` })), ...pages.map(p => ({ v: p, label: p }))];
       const input = m.querySelector('#kiln-p-paths');
@@ -1998,7 +2088,7 @@ async function invitePanel() {
         box.appendChild(row);
       }
     } catch (err) {
-      box.innerHTML = `<p class="kiln-dim">Couldn't load the page list: ${escapeHtml(err.message)}</p>`;
+      box.innerHTML = `<p class="kiln-dim" style="margin:6px 2px">Couldn't load the page list: ${escapeHtml(err.message)}</p>`;
     }
   };
   m.querySelectorAll('input[name="kiln-p-role"]').forEach(r => r.addEventListener('change', syncRole));
@@ -2088,31 +2178,13 @@ async function histFile(sha) {
 
 async function historyPanel() {
   const m = modal(`
-    <h3>History — ${escapeHtml(state.page.path)}</h3>
-    <div class="kiln-tabs">
-      <button class="kiln-tab kiln-tab-on" data-tab="section">By section</button>
-      <button class="kiln-tab" data-tab="page">Whole page</button>
-    </div>
-    <div id="kiln-hist-section">
-      <label>Section
-        <select id="kiln-hist-key"><option value="">Pick a section to see its timeline…</option></select></label>
-      <div id="kiln-hist-field" class="kiln-inv-list" style="margin-top:8px"></div>
-    </div>
-    <div id="kiln-hist-page" hidden>
-      <p class="kiln-dim">Each publish is a full-page snapshot. Restoring the whole page reverts
-      <strong>everything</strong> — including layout and Kiln setup — so prefer <em>By section</em>
-      for content. Restores land as a new change; nothing is ever lost.</p>
-      <div id="kiln-hist" class="kiln-inv-list">Loading…</div>
-    </div>
+    <h3>Page history — ${escapeHtml(state.page.path)}</h3>
+    <p class="kiln-dim">Every publish is a saved version of the whole page. Undoing here rolls back
+    <strong>everything on this page at once</strong>. To undo just one section, close this, click into
+    that section, and press the ${'↻'} clock button on its toolbar.</p>
+    <div id="kiln-hist" class="kiln-inv-list">Loading…</div>
     <p class="kiln-np-step" id="kiln-hist-status"></p>`);
   const status = m.querySelector('#kiln-hist-status');
-
-  // Tabs
-  m.querySelectorAll('.kiln-tab').forEach(t => t.onclick = () => {
-    m.querySelectorAll('.kiln-tab').forEach(x => x.classList.toggle('kiln-tab-on', x === t));
-    m.querySelector('#kiln-hist-section').hidden = t.dataset.tab !== 'section';
-    m.querySelector('#kiln-hist-page').hidden = t.dataset.tab !== 'page';
-  });
 
   let commits = [];
   try {
@@ -2120,108 +2192,48 @@ async function historyPanel() {
       `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=20`);
   } catch (err) { status.textContent = `Could not load history: ${err.message}`; return; }
 
-  // ── By-section: a per-field timeline you can revert one version at a time ──
-  const sel = m.querySelector('#kiln-hist-key');
-  const editableKeys = [...state.fields.fields].filter(([, f]) => f.kind === 'field' && f.inner).map(([k]) => k);
-  for (const k of editableKeys) sel.appendChild(Object.assign(document.createElement('option'), { value: k, textContent: k }));
-  const fieldBox = m.querySelector('#kiln-hist-field');
-  sel.onchange = async () => {
-    const key = sel.value;
-    if (!key) { fieldBox.innerHTML = ''; return; }
-    fieldBox.innerHTML = '<p class="kiln-dim">Loading this section’s timeline…</p>';
-    try {
-      // Reconstruct the field's value at each commit; collapse unchanged runs.
-      const timeline = [];
-      let lastVal = null;
-      for (const c of commits.slice(0, 12)) {
-        const text = await histFile(c.sha);
-        const vals = readValues(text);
-        const v = vals[key];
-        if (v === undefined) continue;
-        if (v !== lastVal) { timeline.push({ c, v }); lastVal = v; }
-      }
-      fieldBox.innerHTML = '';
-      // Show any UNPUBLISHED edit to this section first, with a per-section undo —
-      // so pending changes are visible in history and can be undone before publish.
-      const pend = state.pending.get(key);
-      if (pend && pend.html !== undefined) {
-        const prev = escapeHtml((new DOMParser().parseFromString(pend.html, 'text/html').body.textContent || '').trim().slice(0, 80)) || '<em>(empty)</em>';
-        const row = document.createElement('div');
-        row.className = 'kiln-inv-row';
-        row.style.borderColor = 'rgba(251,191,36,.5)';
-        row.innerHTML = `<span><span class="kiln-hist-prev">${prev}</span><small>unpublished · you</small></span>
-          <button class="kiln-btn-ghost">Undo this edit</button>`;
-        row.querySelector('button').onclick = () => {
-          const el = document.querySelector(`[data-cms="${CSS.escape(key)}"]`);
-          state.pending.delete(key);
-          if (el) { el.innerHTML = timeline[0]?.v ?? el.innerHTML; el.classList.remove('kiln-modified'); }
-          refreshPublishButton();
-          sel.onchange();  // refresh the timeline
-          setStatus(`Undid the unpublished edit to “${key}”`, 'saved');
-        };
-        fieldBox.appendChild(row);
-      }
-      if (!timeline.length) {
-        if (!fieldBox.children.length) fieldBox.innerHTML = '<p class="kiln-dim">No recorded changes for this section yet.</p>';
-        return;
-      }
-      timeline.forEach(({ c, v }, i) => {
-        const when = new Date(c.commit.author.date).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-        const preview = escapeHtml((new DOMParser().parseFromString(v, 'text/html').body.textContent || '').trim().slice(0, 80)) || '<em>(empty)</em>';
-        const row = document.createElement('div');
-        row.className = 'kiln-inv-row';
-        row.innerHTML = `<span><span class="kiln-hist-prev">${preview}</span>
-          <small>${when} · ${escapeHtml(c.commit.author.name)}</small></span>
-          ${i === 0 ? '<small class="kiln-dim">current</small>' : '<button class="kiln-btn-ghost">Preview &amp; revert</button>'}`;
-        const btn = row.querySelector('button');
-        if (btn) btn.onclick = () => previewFieldRevert(key, v, m);
-        fieldBox.appendChild(row);
-      });
-    } catch (err) { fieldBox.innerHTML = `<p class="kiln-dim">Couldn’t load: ${escapeHtml(err.message)}</p>`; }
-  };
-
-  // ── Whole-page snapshots (with structural-loss guard) ──
   const list = m.querySelector('#kiln-hist');
-  list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No history yet.</p>';
+  list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No saved versions yet — they appear after your first publish.</p>';
   commits.forEach((c, i) => {
     const div = document.createElement('div');
     div.className = 'kiln-inv-row';
     const when = new Date(c.commit.author.date).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     div.innerHTML = `<span><strong>${escapeHtml(c.commit.message.split('\n')[0].slice(0, 56))}</strong>
-      <small>${when} · ${escapeHtml(c.commit.author.name)}</small></span>
-      ${i === 0 ? '<small class="kiln-dim">current</small>' : '<button class="kiln-btn-ghost">Restore</button>'}`;
+      <small>${i === 0 ? 'live now · ' : ''}${when} · ${escapeHtml(c.commit.author.name)}</small></span>
+      ${i === 0 ? '' : `<button class="kiln-btn-ghost">${UNDO_ICON} Undo to this</button>`}`;
     const btn = div.querySelector('button');
     if (btn) btn.onclick = async () => {
       btn.disabled = true;
       status.innerHTML = '<span class="kiln-spin"></span> Checking that version…';
       try {
         const oldText = await histFile(c.sha);
-        // Guard: warn if this snapshot predates the current Kiln setup (missing
-        // boot scripts or fewer editable regions) — that's how a restore once
-        // wiped a page's nav + Kiln scripts.
+        // Guard: warn if this version predates the current Kiln setup (missing
+        // boot scripts or far fewer editable regions) — that's how a whole-page
+        // undo once wiped a page's nav + Kiln scripts.
         const curHasKiln = /kiln(\.min)?\.js/.test(state.page.text);
         const oldHasKiln = /kiln(\.min)?\.js/.test(oldText);
         const curFields = state.fields.fields.size;
         const oldFields = indexHtml(oldText).fields.size;
         if ((curHasKiln && !oldHasKiln) || oldFields < curFields - 2) {
-          if (!confirm(`This older version looks structurally different from the page today`
-            + (curHasKiln && !oldHasKiln ? ' — it’s missing the Kiln scripts, so restoring it would make the page uneditable' : '')
+          if (!confirm(`Heads up: this older version is structurally different from the page today`
+            + (curHasKiln && !oldHasKiln ? ' — it’s missing the Kiln scripts, so undoing to it would make the whole page uneditable' : '')
             + (oldFields < curFields ? ` and has fewer editable sections (${oldFields} vs ${curFields})` : '')
-            + `.\n\nRestoring reverts the WHOLE page. For content, "By section" is safer.\n\nRestore the whole page anyway?`)) {
+            + `.\n\nThis undoes the WHOLE page. To roll back just content, undo per section instead (click into a section → clock button).\n\nUndo the whole page anyway?`)) {
             btn.disabled = false; status.textContent = ''; return;
           }
         }
-        status.innerHTML = '<span class="kiln-spin"></span> Restoring…';
+        status.innerHTML = '<span class="kiln-spin"></span> Rolling the page back…';
         const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
-          () => oldText, `Restore ${state.page.path} to ${c.sha.slice(0, 7)} (via Kiln)`);
-        if (result.unchanged) { status.textContent = 'That version is identical to the current one.'; btn.disabled = false; return; }
+          () => oldText, `Undo ${state.page.path} to ${c.sha.slice(0, 7)} (via Kiln)`);
+        if (result.unchanged) { status.textContent = 'That version is identical to the live one.'; btn.disabled = false; return; }
         watchDeploy(result.commit?.sha, result.text);
-        const actions = document.createElement('div');
-        actions.className = 'kiln-modal-actions';
-        actions.innerHTML = '<button class="kiln-btn-publish" id="kiln-hist-reload">Restored ✓ — reload to see it</button>';
-        list.replaceChildren(actions);
-        actions.querySelector('#kiln-hist-reload').onclick = () => location.reload();
-      } catch (err) { status.textContent = `Restore failed: ${err.message}`; btn.disabled = false; }
+        // The rollback is committed; the page updates when the host rebuilds.
+        // Reloading NOW would just show the current (not-yet-rebuilt) page, so we
+        // don't offer a reload — Kiln watches and confirms when it's actually live.
+        list.replaceChildren();
+        status.innerHTML = 'Rolled back ✓ — the page updates once your site rebuilds (usually under a minute). '
+          + 'You can close this; Kiln will confirm when it’s live.';
+      } catch (err) { status.textContent = `Undo failed: ${err.message}`; btn.disabled = false; }
     };
     list.appendChild(div);
   });
@@ -2260,6 +2272,75 @@ function previewFieldRevert(key, value, histModal) {
     el.classList.remove('kiln-modified');
     m.remove();
   };
+}
+
+const UNDO_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-8.4L3 7"/></svg>';
+
+/**
+ * Per-section history: reached by clicking into a section and pressing the clock
+ * button. Shows this one field's past versions (newest first) with an Undo that
+ * PREVIEWS the change in the page before you keep it.
+ */
+async function fieldHistoryPanel(key) {
+  if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+  const m = modal(`
+    <h3>History for this section</h3>
+    <p class="kiln-dim"><code>${escapeHtml(key)}</code> — pick an earlier version to preview it in the
+    page, then keep or undo. Only this section changes.</p>
+    <div id="kiln-fh" class="kiln-inv-list">Loading…</div>`);
+  const box = m.querySelector('#kiln-fh');
+
+  const rows = [];
+  // Unpublished edit first (undo-before-publish).
+  const pend = state.pending.get(key);
+  const liveEl = document.querySelector(`[data-cms="${CSS.escape(key)}"]`);
+
+  if (cfg.sandbox) {
+    box.innerHTML = '<p class="kiln-dim">The demo doesn’t keep saved history — that comes with a real Kiln site. You can still undo an unpublished edit on the page.</p>';
+    return;
+  }
+  try {
+    const commits = await state.gh.request('GET',
+      `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=15`);
+    let lastVal = null;
+    for (const c of commits.slice(0, 12)) {
+      const text = await histFile(c.sha);
+      const v = readValues(text)[key];
+      if (v === undefined) continue;
+      if (v !== lastVal) { rows.push({ c, v }); lastVal = v; }
+    }
+    box.innerHTML = '';
+    if (pend && pend.html !== undefined && pend.html !== (rows[0] && rows[0].v)) {
+      const r = document.createElement('div');
+      r.className = 'kiln-inv-row';
+      r.style.borderColor = 'rgba(251,191,36,.55)';
+      r.innerHTML = `<span><span class="kiln-hist-prev">${histPreview(pend.html)}</span><small>your unpublished edit</small></span>
+        <button class="kiln-btn-ghost">${UNDO_ICON} Undo this</button>`;
+      r.querySelector('button').onclick = () => {
+        state.pending.delete(key);
+        if (liveEl) { liveEl.innerHTML = (rows[0] && rows[0].v) ?? liveEl.innerHTML; liveEl.classList.remove('kiln-modified'); }
+        refreshPublishButton(); m.remove();
+        setStatus(`Undid the unpublished edit to “${key}”`, 'saved');
+      };
+      box.appendChild(r);
+    }
+    if (!rows.length && !box.children.length) { box.innerHTML = '<p class="kiln-dim">No saved history for this section yet — it appears here after your first publish.</p>'; return; }
+    rows.forEach(({ c, v }, i) => {
+      const when = new Date(c.commit.author.date).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      const r = document.createElement('div');
+      r.className = 'kiln-inv-row';
+      r.innerHTML = `<span><span class="kiln-hist-prev">${histPreview(v)}</span>
+        <small>${i === 0 ? 'live now · ' : ''}${when} · ${escapeHtml(c.commit.author.name)}</small></span>
+        ${i === 0 ? '' : `<button class="kiln-btn-ghost">${UNDO_ICON} Undo to this</button>`}`;
+      const btn = r.querySelector('button');
+      if (btn) btn.onclick = () => previewFieldRevert(key, v, m);
+      box.appendChild(r);
+    });
+  } catch (err) { box.innerHTML = `<p class="kiln-dim">Couldn’t load history: ${escapeHtml(err.message)}</p>`; }
+}
+
+function histPreview(html) {
+  return escapeHtml((new DOMParser().parseFromString(html, 'text/html').body.textContent || '').trim().slice(0, 80)) || '<em>(empty)</em>';
 }
 
 // ─── Page settings (title + meta description) ────────────────────────────────
@@ -2456,7 +2537,7 @@ async function checkForDraft() {
         () => draft.text, `Publish draft: ${state.page.path} (via Kiln)`);
       journalAdd({ type: 'compare', target: location.pathname, expect: djb2(draft.text), desc: 'Draft publish' });
       await loadPageSource();
-      status.textContent = 'Committed ✓ — Kiln will confirm when live. Reload to see it.';
+      status.textContent = 'Published ✓ — your site rebuilds now; the change goes live in about a minute.';
     } catch (err) { status.textContent = `Failed: ${err.message}`; }
   };
   const del = m.querySelector('#kiln-dr-del');
@@ -2645,6 +2726,46 @@ function pickCandidate(target) {
   return null;
 }
 
+/** Add a NEW gallery or events section to the page (distinct from make-editable,
+ *  which annotates EXISTING content). Inserts a starter block, staged for Publish. */
+function addSectionFlow() {
+  const m = modal(`
+    <h3>Add a section</h3>
+    <p class="kiln-dim">Adds a new block to the bottom of this page. Move or restyle it later; for
+    now, fill it and Publish.</p>
+    <div class="kiln-roles">
+      <label class="kiln-role"><input type="radio" name="kiln-add-kind" value="gallery" checked>
+        <span><strong>Photo gallery</strong><br><small>Upload photos; visitors get a grid and a full-screen lightbox.</small></span></label>
+      <label class="kiln-role"><input type="radio" name="kiln-add-kind" value="events">
+        <span><strong>Events list</strong><br><small>Add events with a form; visitors get list + month/week/day calendar.</small></span></label>
+    </div>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Cancel</button>
+      <button class="kiln-btn-publish" id="kiln-add-go">Add it</button>
+    </div>`);
+  m.querySelector('#kiln-add-go').onclick = () => {
+    const kind = m.querySelector('input[name="kiln-add-kind"]:checked').value;
+    const stamp = Date.now().toString(36);
+    const key = `${kind}_${stamp}`;
+    const attr = kind === 'gallery' ? 'data-kiln-gallery' : 'data-kiln-events';
+    const heading = kind === 'gallery' ? 'Gallery' : 'Events';
+    const html = `\n<section class="kiln-added" style="padding:2.5rem 0"><div style="max-width:1080px;margin:0 auto;padding:0 1.25rem">`
+      + `<h2 data-cms="${key}_title">${heading}</h2><div data-cms-repeat="${key}" ${attr}></div></div></section>\n`;
+    // Live preview: insert into <main> (or body) and wire it up.
+    const host = document.querySelector('main') || document.body;
+    const wrap = document.createElement('div'); wrap.innerHTML = html.trim();
+    const node = wrap.firstElementChild;
+    host.appendChild(node);
+    node.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
+    setupRepeat(node.querySelector('[data-cms-repeat]'), key);
+    // Stage it (sandbox: preview-only; real site: applied to <main> at Publish).
+    if (!cfg.sandbox) { state.pendingStructural.push({ op: 'appendMain', html }); refreshPublishButton(); }
+    m.remove();
+    node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setStatus(`Added a ${kind} — click “+ Add ${kind === 'gallery' ? 'photos' : 'event'}”, then Publish`, 'saved');
+  };
+}
+
 function makeEditableMode() {
   if (pickMode) return exitPickMode();
   // Hide the Kiln button/menu and top bar so they can't intercept picks and
@@ -2717,10 +2838,6 @@ function makeDialog(el) {
       { v: 'plain', t: 'Plain text only', d: 'No formatting allowed — safest for headings and labels.' },
       ...(repeatable && !inRepeat ? [
         { v: 'repeat', t: 'Repeating blocks', d: 'Editors can add, remove, reorder, and tag the blocks inside.' },
-      ] : []),
-      ...(isContainer && !inRepeat ? [
-        { v: 'gallery', t: 'Photo gallery', d: 'Multi-photo upload + a lightbox for visitors. Add photos with “+ Add photos”.' },
-        { v: 'events', t: 'Events list', d: 'An event form + calendar views for visitors. Add events with “+ Add event”.' },
       ] : []),
     ];
   const m = modal(`
@@ -2807,11 +2924,12 @@ async function annotateElement(el, kind, key) {
 }
 
 /** Apply all staged structural changes (annotate/unannotate) to raw page HTML. */
-function applyStructural(text) {
+function applyStructural(text, ops) {
   let t = text;
-  for (const s of state.pendingStructural) {
+  for (const s of (ops || state.pendingStructural)) {
     if (s.op === 'annotate') t = annotateNthTag(t, s.tag, s.nth, s.attrs) || t;
     else if (s.op === 'remove') { const out = removeAnnotations(t, s.key); if (out !== null) t = out; }
+    else if (s.op === 'appendMain') { const out = appendIntoNthTag(t, 'main', 0, s.html) || appendIntoNthTag(t, 'body', 0, s.html); if (out) t = out; }
   }
   return t;
 }
@@ -2914,7 +3032,8 @@ function renderAdminBar() {
         <button id="kiln-newpost" class="kiln-fab-item">＋ New post or page</button>
         <button id="kiln-pagesettings" class="kiln-fab-item">Page settings</button>
         <button id="kiln-history" class="kiln-fab-item">History &amp; restore</button>
-        ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-makeblock" class="kiln-fab-item">✨ Make things editable</button>' : ''}
+        ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-addsection" class="kiln-fab-item">＋ Add a gallery or events</button>' : ''}
+      ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-makeblock" class="kiln-fab-item">✨ Make text/images editable</button>' : ''}
       </div>
       <div class="kiln-fab-group">
         <div class="kiln-fab-label">Whole site</div>
@@ -3044,6 +3163,8 @@ function renderAdminBar() {
   if (inviteBtn) inviteBtn.onclick = close(invitePanel);
   const makeBtn = fab.querySelector('#kiln-makeblock');
   if (makeBtn) makeBtn.onclick = close(makeEditableMode);
+  const addSecBtn = fab.querySelector('#kiln-addsection');
+  if (addSecBtn) addSecBtn.onclick = close(addSectionFlow);
 
   applyFeatureGating();
   updateOnlineChip();
@@ -3063,7 +3184,7 @@ function renderTopBar() {
     <button id="kiln-pagesettings" class="kiln-btn-ghost">Page</button>
     <button id="kiln-findreplace" class="kiln-btn-ghost">Replace</button>
     <button id="kiln-history" class="kiln-btn-ghost">History</button>
-    ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-makeblock" class="kiln-btn-ghost" title="Make things editable">✨ Editable</button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
+    ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
     <button id="kiln-settings" class="kiln-btn-ghost">Settings</button>
     <button id="kiln-draft" class="kiln-btn-ghost" hidden>Draft</button>
     <button id="kiln-schedule" class="kiln-btn-ghost" hidden>Schedule</button>
@@ -3091,6 +3212,8 @@ function renderTopBar() {
   if (inviteBtn) inviteBtn.onclick = invitePanel;
   const makeBtn = bar.querySelector('#kiln-makeblock');
   if (makeBtn) makeBtn.onclick = makeEditableMode;
+  const addSecBtn = bar.querySelector('#kiln-addsection');
+  if (addSecBtn) addSecBtn.onclick = addSectionFlow;
   const settingsBtn = bar.querySelector('#kiln-settings');
   if (settingsBtn) settingsBtn.onclick = settingsPanel;
   applyFeatureGating();
@@ -3165,6 +3288,7 @@ function renderToolbar(el, key) {
   const styles = Array.isArray(cfg.styles) ? cfg.styles : [];
   const LINK_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>';
   const IMG_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>';
+  const HIST_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>';
   tb.innerHTML = `
     ${TB_GRIP}
     <span class="kiln-tb-label">${escapeHtml(key)}</span>
@@ -3193,6 +3317,7 @@ function renderToolbar(el, key) {
     ${isLink ? `<input class="kiln-href-input" type="text" value="${escapeHtml(el.getAttribute('href') || '')}" title="Where this links to" placeholder="/page.html or https://…">
       <button class="kiln-tb-fmt kiln-tb-attach" data-cmd="attach" title="Upload a file (PDF, doc…) and point this link at it">Attach file…</button>` : ''}
     <span class="kiln-tb-gap"></span>
+    <button class="kiln-tb-fmt" data-cmd="hist" title="This section's history — undo to a previous version">${HIST_ICON}</button>
     <button class="kiln-tb-save" title="Keep this edit (you can still Esc-revert until you click away)">Done</button>
     <button class="kiln-tb-cancel" title="Throw away this edit (Esc)">Revert</button>`;
   document.body.appendChild(tb);
@@ -3217,6 +3342,9 @@ function renderToolbar(el, key) {
         const input = tb.querySelector('.kiln-href-input');
         const up = await uploadAnyFile();
         if (up && input) input.value = up.path;
+      } else if (cmd === 'hist') {
+        fieldHistoryPanel(key);
+        return;
       } else {
         document.execCommand(cmd, false, null);
       }
@@ -3528,12 +3656,14 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   backdrop-filter:blur(6px);z-index:9999999;display:flex;align-items:flex-start;justify-content:center;
   padding-top:9vh;font-family:var(--kiln-font)}
 .kiln-modal-card{position:relative;background:#fff;color:#1c1c28;border-radius:18px;max-width:500px;width:92%;
-  box-shadow:0 24px 80px rgba(0,0,0,.3);max-height:78vh;overflow:auto}
-.kiln-modal-x{position:absolute;top:12px;right:12px;z-index:2;width:30px;height:30px;border-radius:50%;
-  border:none;background:#f3f4f6;color:#6b7280;font-size:14px;cursor:pointer;display:flex;align-items:center;
-  justify-content:center;transition:all .13s}
-.kiln-modal-x:hover{background:#e5e7eb;color:#111}
-.kiln-modal-body{padding:24px}
+  box-shadow:0 24px 80px rgba(0,0,0,.3);max-height:86vh;overflow:hidden;display:flex;flex-direction:column}
+/* The X lives on the (non-scrolling) card, so it stays pinned in the corner while
+   the body scrolls underneath — previously it sat in the scroll area and vanished. */
+.kiln-modal-x{position:absolute;top:12px;right:12px;z-index:3;width:30px;height:30px;border-radius:50%;
+  border:none;background:#eceef1;color:#4b5563;font-size:14px;cursor:pointer;display:flex;align-items:center;
+  justify-content:center;transition:all .13s;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.kiln-modal-x:hover{background:#dfe2e6;color:#111}
+.kiln-modal-body{padding:24px;overflow-y:auto;overflow-x:hidden;flex:1 1 auto;min-height:0}
 .kiln-modal-body h3{margin:0 0 14px;font-size:17px;font-weight:700;letter-spacing:-.01em;padding-right:34px}
 .kiln-tabs{display:flex;gap:6px;margin:0 0 14px;border-bottom:1.5px solid #eef0f3}
 .kiln-tab{background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-1.5px;color:#6b7280;
@@ -3565,6 +3695,18 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-linkrow input{flex:1;font-size:12px;color:#374151}
 .kiln-inv-ok{font-size:13px;color:#059669;margin-top:12px}
 .kiln-hr{border:none;border-top:1px solid #f3f4f6;margin:18px 0 10px}
+/* A clearly-clickable "pick from a list" button — the ghost style was too muted to read as an action. */
+.kiln-btn-pick{display:inline-flex;align-items:center;gap:5px;margin-left:6px;padding:4px 11px;font:600 12px var(--kiln-font);
+  color:var(--kiln-accent);background:#eef2ff;border:1.5px solid var(--kiln-accent);border-radius:8px;cursor:pointer;
+  vertical-align:middle;transition:all .13s}
+.kiln-btn-pick:hover{background:var(--kiln-accent);color:#fff}
+.kiln-btn-pick[aria-expanded=true]{background:var(--kiln-accent);color:#fff}
+/* Picker checklists sit INSIDE the scrolling modal body — no inner scroll (that made
+   the dreaded scroll-within-a-scroll); the whole modal scrolls as one surface. */
+.kiln-pick-box{margin:0 0 10px;border:1.5px solid #eef0f3;border-radius:10px;padding:4px 10px}
+.kiln-pick-box .kiln-pick-group{font:700 11px var(--kiln-font);text-transform:uppercase;letter-spacing:.05em;
+  color:#6b7280;margin:9px 0 3px;padding-top:8px;border-top:1px solid #f3f4f6}
+.kiln-pick-box .kiln-pick-group:first-child{border-top:none;padding-top:2px;margin-top:4px}
 .kiln-inv-list{display:flex;flex-direction:column;gap:6px}
 .kiln-inv-row{display:flex;justify-content:space-between;align-items:center;border:1.5px solid #f3f4f6;
   border-radius:10px;padding:9px 12px;font-size:13px;gap:8px}

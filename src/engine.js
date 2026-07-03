@@ -304,6 +304,25 @@ function textOf(node) {
 }
 
 /**
+ * Append HTML just before the Nth <tag>'s closing tag (i.e. at the end of its
+ * inner content). Used to add a new section into a container (e.g. <main>).
+ * Returns new HTML, or null if the element/end tag can't be located.
+ */
+export function appendIntoNthTag(raw, tag, nth, html) {
+  const doc = parse(raw, { sourceCodeLocationInfo: true });
+  const t = String(tag).toLowerCase();
+  let i = -1, found = null;
+  walk(doc, (node) => {
+    if (found || node.tagName !== t || !node.sourceCodeLocation?.startTag) return;
+    i++;
+    if (i === nth) found = node;
+  });
+  if (!found || !found.sourceCodeLocation.endTag) return null;
+  const at = found.sourceCodeLocation.endTag.startOffset;
+  return raw.slice(0, at) + html + raw.slice(at);
+}
+
+/**
  * Insert Kiln annotation attributes into the Nth <tag>'s start tag.
  * attrs must be a pre-built string like ` data-cms="hero_note"`.
  * Returns the new HTML, or null if the element can't be located.
