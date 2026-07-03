@@ -164,10 +164,10 @@ Add `_templates/page.html`: a full page using `{{title}}` in `<title>` plus
 
 Anything under `/members/` (pages AND files like PDFs) becomes members-gated (Google sign-in):
 
-1. Copy the ENTIRE `demo/functions/` directory (3 files: `_kiln.js`,
+1. Copy the ENTIRE `templates/functions/` directory (3 files: `_kiln.js`,
    `members/_middleware.js`, `api/member-redeem-google.js`) into the site's
    `functions/` directory, and
-   `demo/members-login.html` to the site root.
+   `templates/members-login.html` to the site root.
 2. Set secrets on the Cloudflare Pages project:
    ```bash
    openssl rand -hex 32 | npx wrangler pages secret put KILN_MEMBER_SECRET --project-name <project>

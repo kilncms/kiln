@@ -217,8 +217,13 @@ of configuration. You trust only yourself. The entire engine, editor, worker, an
 repo are open source (AGPL-3.0) and never gated or crippled; Kiln Cloud is optional paid
 hosting of that exact same engine.
 
-**Kiln Cloud (hosted, paid, currently invite-only beta):** we run the engine; you deploy
+**Kiln Cloud (hosted, paid, $4.99/mo per site):** we run the engine; you deploy
 nothing. Your content still lives in YOUR repo on YOUR hosting, so you can move to
 self-hosting any time. Plainly stated: Cloud holds the app token that writes to your repo,
-which is what any hosted CMS backend is. A fully-managed tier (we run the repo and hosting
-too, with a guaranteed transfer-out path) is planned.
+which is what any hosted CMS backend is.
+
+**Fully managed ($19.99/mo per site):** we set your existing site up on Kiln for you —
+hosting, the worker, the GitHub App, and the annotation — so you touch no code. Your content
+still lives in your own repo, with a guaranteed transfer-out path.
+
+Both are self-serve with a 7-day free trial at [kilncms.com](https://kilncms.com).

@@ -53,12 +53,12 @@ async function waitForLive(predicate, label, timeoutMs = 240000) {
 const gh = makeGh({ mode: 'direct', token: () => TOKEN });
 
 const before = await getFile(gh, REPO, 'index.html', 'main');
-check('source fetch works', before.text.includes('data-cms="hero_subhead"'), `${before.text.length} bytes`);
+check('source fetch works', before.text.includes('data-cms="hero_tagline"'), `${before.text.length} bytes`);
 
 const MARKER = `Proof of the loop: edited at ${new Date().toISOString()}`;
 const edited = await editFile(gh, REPO, 'index.html', 'main',
-  (text) => applyEdits(text, [{ key: 'hero_subhead', html: MARKER }]).html,
-  'E2E: edit hero_subhead (via Kiln)');
+  (text) => applyEdits(text, [{ key: 'hero_tagline', html: MARKER }]).html,
+  'E2E: edit hero_tagline (via Kiln)');
 check('splice commit accepted', !edited.unchanged && !!edited.commit, `commit ${edited.commit?.sha?.slice(0, 7)}`);
 
 const liveEdit = await waitForLive(html => html.includes(MARKER), 'marker');
@@ -68,8 +68,8 @@ check('edit is LIVE on kiln-demo.pages.dev', liveEdit);
 const ORIGINAL = `We design and build small-batch goods for people who appreciate
       the craft behind the object.`;
 const reverted = await editFile(gh, REPO, 'index.html', 'main',
-  (text) => applyEdits(text, [{ key: 'hero_subhead', html: ORIGINAL }]).html,
-  'E2E: revert hero_subhead (via Kiln)');
+  (text) => applyEdits(text, [{ key: 'hero_tagline', html: ORIGINAL }]).html,
+  'E2E: revert hero_tagline (via Kiln)');
 check('revert commit accepted', !reverted.unchanged, `commit ${reverted.commit?.sha?.slice(0, 7)}`);
 const liveRevert = await waitForLive(html => !html.includes(MARKER) && html.includes('craft behind the object'), 'revert');
 check('revert is LIVE', liveRevert);
