@@ -215,6 +215,7 @@ export async function handleCloud(request, env, url, path) {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const { repo, origin, plan } = await request.json().catch(() => ({}));
     if (!repo || !origin) return json({ error: 'repo and origin required' }, 400);
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'repo must be owner/name' }, 400);
     let o; try { o = new URL(origin).origin; } catch { return json({ error: 'origin must be a URL' }, 400); }
     if (!(await repoInstalled(env, repo))) {
       return json({ error: 'install the Kiln app on this repo first', install_url: 'https://github.com/apps/kiln-cms/installations/new' }, 409);

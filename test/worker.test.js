@@ -30,6 +30,19 @@ test('isSensitivePath: blocks config files and traversal', () => {
   assert.equal(isSensitivePath('assets/img/x.png'), false);
 });
 
+test('isSensitivePath: blocks host-executed code and build/deploy config', () => {
+  // Editors must never write files a host EXECUTES at the edge or at build time.
+  for (const p of ['functions/members/_middleware.js', 'functions/api/x.js', '_worker.js',
+    'netlify.toml', 'vercel.json', 'wrangler.toml', 'Dockerfile', 'package.json',
+    'package-lock.json', '.gitlab-ci.yml', '.github/workflows/deploy.yaml', 'render.yaml',
+    'nested/.circleci.yml', '.npmrc'])
+    assert.equal(isSensitivePath(p), true, `should block: ${p}`);
+  // Ordinary content must still pass.
+  for (const p of ['index.html', 'about/index.html', 'assets/uploads/a.webp',
+    'assets/files/report.pdf', 'blog/post.html', 'data.json'])
+    assert.equal(isSensitivePath(p), false, `should allow: ${p}`);
+});
+
 test('normalizePaths: trims, drops blanks, clamps, blank means whole-site', () => {
   assert.deepEqual(normalizePaths('blog, /about.html/'), ['blog', 'about.html']);
   assert.deepEqual(normalizePaths(''), ['']);

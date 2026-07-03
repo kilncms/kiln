@@ -362,13 +362,14 @@ export function pageFileCandidates(pathname, root = '') {
  * Edit <head> bits: page <title> and meta[name=description].
  * Splices in place; inserts the meta tag (after <title>) if missing.
  */
-export function editHead(raw, { title, description }) {
+export function editHead(raw, { title, description, ogImage }) {
   const doc = parse(raw, { sourceCodeLocationInfo: true });
-  let titleNode = null, metaDesc = null, headNode = null;
+  let titleNode = null, metaDesc = null, headNode = null, ogImgNode = null;
   walk(doc, (n) => {
     if (n.tagName === 'title' && !titleNode) titleNode = n;
     if (n.tagName === 'head' && !headNode) headNode = n;
     if (n.tagName === 'meta' && n.attrs?.some(a => a.name === 'name' && a.value === 'description')) metaDesc = n;
+    if (n.tagName === 'meta' && n.attrs?.some(a => a.name === 'property' && a.value === 'og:image')) ogImgNode = n;
   });
   const splices = [];
   const esc = (s) => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
@@ -396,6 +397,20 @@ export function editHead(raw, { title, description }) {
       splices.push({ start: at, end: at, text: `\n  <meta name="description" content="${esc(description)}" />` });
     }
   }
+  if (ogImage !== undefined && ogImage !== '') {
+    const url = safeUrl(ogImage);
+    if (ogImgNode?.sourceCodeLocation) {
+      const loc = ogImgNode.sourceCodeLocation.attrs?.content;
+      const range = loc && attrValueRange(raw, loc);
+      if (range) splices.push({ start: range.start, end: range.end, text: emitAttrValue(url, range.quote) });
+    } else if (titleNode?.sourceCodeLocation) {
+      const at = titleNode.sourceCodeLocation.endOffset;
+      splices.push({ start: at, end: at, text: `\n  <meta property="og:image" content="${esc(url)}" />` });
+    } else if (headNode?.sourceCodeLocation?.startTag) {
+      const at = headNode.sourceCodeLocation.startTag.endOffset;
+      splices.push({ start: at, end: at, text: `\n  <meta property="og:image" content="${esc(url)}" />` });
+    }
+  }
   let out = raw;
   for (const s of splices.sort((a, b) => b.start - a.start)) {
     out = out.slice(0, s.start) + s.text + out.slice(s.end);
@@ -406,14 +421,17 @@ export function editHead(raw, { title, description }) {
 /** Read current head bits for prefilling the page-settings panel. */
 export function readHead(raw) {
   const doc = parse(raw, { sourceCodeLocationInfo: true });
-  let title = '', description = '';
+  let title = '', description = '', ogImage = '';
   walk(doc, (n) => {
     if (n.tagName === 'title' && n.childNodes?.[0]?.value) title = n.childNodes[0].value;
     if (n.tagName === 'meta' && n.attrs?.some(a => a.name === 'name' && a.value === 'description')) {
       description = n.attrs.find(a => a.name === 'content')?.value || '';
     }
+    if (n.tagName === 'meta' && n.attrs?.some(a => a.name === 'property' && a.value === 'og:image')) {
+      ogImage = n.attrs.find(a => a.name === 'content')?.value || '';
+    }
   });
-  return { title, description };
+  return { title, description, ogImage };
 }
 
 function walk(node, fn) {

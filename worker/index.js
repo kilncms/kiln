@@ -39,6 +39,21 @@ const GH = 'https://api.github.com';
 const UA = 'kiln-auth-worker';
 
 import { handleCloud, expireStaleTrials } from './cloud.js';
+import { applyEdits } from '../src/engine.js';
+
+// UTF-8-safe base64 (GitHub content is base64; edits re-applied at cron time).
+function utf8FromB64(b64) {
+  const bin = atob(String(b64).replace(/\s/g, ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+function b64FromUtf8(text) {
+  const bytes = new TextEncoder().encode(text);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
 
 export default {
   async scheduled(_event, env) {
@@ -356,8 +371,12 @@ async function authActor(request, env, repo) {
 }
 
 async function scheduleCreate(request, env) {
-  const { repo, path, branch = 'main', content, message, at, desc } = await request.json().catch(() => ({}));
-  if (!repo || !path || !content || !at) return json({ error: 'missing fields' }, 400);
+  const { repo, path, branch = 'main', edits, content, message, at, desc } = await request.json().catch(() => ({}));
+  // Prefer field-level `edits` (re-applied against fresh source at fire time so
+  // interim edits aren't clobbered). `content` (a full-page snapshot) is still
+  // accepted for backward compatibility but is the lossy path.
+  if (!repo || !path || (!edits && !content) || !at) return json({ error: 'missing fields' }, 400);
+  if (edits && (!Array.isArray(edits) || edits.length > 500)) return json({ error: 'bad edits' }, 400);
   const actor = await authActor(request, env, repo);
   if (!actor) return json({ error: 'forbidden' }, 403);
   if (!actor.admin && (isSensitivePath(path) || !pathInScope(path, actor.paths))) {
@@ -369,7 +388,7 @@ async function scheduleCreate(request, env) {
   }
   const id = crypto.randomUUID().replaceAll('-', '');
   await env.KILN.put(`sched:${id}`,
-    JSON.stringify({ repo, path, branch, content, message: message || 'Scheduled publish (via Kiln)', at: when, desc: desc || path, by: actor.name, byEmail: actor.email }),
+    JSON.stringify({ repo, path, branch, edits: edits || null, content: edits ? null : content, message: message || 'Scheduled publish (via Kiln)', at: when, desc: desc || path, by: actor.name, byEmail: actor.email }),
     { expirationTtl: Math.ceil((when - Date.now()) / 1000) + 14 * 24 * 3600 });
   return json({ ok: true, id, at: when });
 }
@@ -412,11 +431,22 @@ async function runDueSchedules(env) {
         const itok = await installationToken(env, v.repo);
         if (!itok) continue;
         const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
-        const cur = await fetch(`${GH}/repos/${v.repo}/contents/${v.path}?ref=${v.branch}`, { headers: h });
-        const sha = cur.ok ? (await cur.json()).sha : undefined;
-        const res = await fetch(`${GH}/repos/${v.repo}/contents/${v.path}`, {
+        const cur = await fetch(`${GH}/repos/${v.repo}/contents/${encodeURIComponent(v.path)}?ref=${v.branch}`, { headers: h });
+        const curJson = cur.ok ? await cur.json() : null;
+        const sha = curJson ? curJson.sha : undefined;
+        // Field-level edits: re-apply against the CURRENT source so anything
+        // published in the meantime survives (same merge model as live editing).
+        // A raw `content` snapshot is the legacy, lossy path.
+        let content = v.content;
+        if (v.edits) {
+          if (!curJson) continue;   // page vanished — leave the schedule for the next tick
+          const source = utf8FromB64(curJson.content);
+          const { html } = applyEdits(source, v.edits);
+          content = b64FromUtf8(html);
+        }
+        const res = await fetch(`${GH}/repos/${v.repo}/contents/${encodeURIComponent(v.path)}`, {
           method: 'PUT', headers: h,
-          body: JSON.stringify({ message: v.message, content: v.content, branch: v.branch, sha,
+          body: JSON.stringify({ message: v.message, content, branch: v.branch, sha,
             author: { name: `${v.by} (via Kiln, scheduled)`, email: 'kiln-editor@users.noreply.github.com' } }),
         });
         if (res.ok || res.status === 409) await env.KILN.delete(k.name);
@@ -471,14 +501,20 @@ async function presencePing(request, env) {
   }
   if (!who) return json({ error: 'forbidden' }, 403);
 
-  const page = pagePath.slice(0, 200);
-  await env.KILN.put(`pres:${repo}:${page}:${who}`,
-    JSON.stringify({ name: who, role, ts: Date.now() }), { expirationTtl: 90 });
+  // Colons delimit the KV key, so strip them from the (partly client-supplied)
+  // name and page before composing pres:<repo>:<page>:<name> — otherwise a
+  // crafted value could shadow another user's presence key. The trusted `role`
+  // is server-derived above, so display-name spoofing is the whole ceiling here.
+  const safe = (s, n) => String(s).replace(/[: -]/g, ' ').slice(0, n);
+  const page = safe(pagePath, 200);
+  const nameKey = safe(who, 64);
+  await env.KILN.put(`pres:${repo}:${page}:${nameKey}`,
+    JSON.stringify({ name: nameKey, role, ts: Date.now() }), { expirationTtl: 90 });
 
   const others = [];
   const list = await env.KILN.list({ prefix: `pres:${repo}:${page}:` });
   for (const k of list.keys) {
-    if (k.name === `pres:${repo}:${page}:${who}`) continue;
+    if (k.name === `pres:${repo}:${page}:${nameKey}`) continue;
     const v = await env.KILN.get(k.name, 'json');
     if (v) others.push({ name: v.name, role: v.role });
   }
@@ -664,10 +700,18 @@ async function googleClaim(request, env) {
 function isSensitivePath(p) {
   const path = String(p || '').replace(/^\/+/, '');
   if (path.split('/').some(s => s === '..' || s === '.')) return true; // never let traversal through
-  return /^\.github\//.test(path)
-    || /^CNAME$/i.test(path)
-    || /^_redirects$/i.test(path)
-    || /^_headers$/i.test(path);
+  const lower = path.toLowerCase();
+  // Domain/redirect/header config.
+  if (/^\.github\//.test(path) || /^cname$/i.test(path) || /^_redirects$/i.test(path) || /^_headers$/i.test(path)) return true;
+  // Code that a host EXECUTES at the edge or at build time — an editor writing
+  // any of these escalates from content into running code / deploy hijack.
+  //   Cloudflare Pages Functions + advanced-mode worker
+  if (/^functions\//.test(lower) || /^_worker\.js$/i.test(lower)) return true;
+  //   Host build/deploy config (Netlify, Vercel, Cloudflare, GitLab, Docker, npm scripts…)
+  if (/^(netlify\.toml|vercel\.json|wrangler\.toml|dockerfile|procfile|package\.json|package-lock\.json|_config\.yml|\.gitlab-ci\.yml|now\.json|render\.yaml|_worker\.js)$/i.test(lower)) return true;
+  //   Any CI/workflow YAML anywhere, and dotfiles that change tooling.
+  if (/(^|\/)\.[^/]+\.ya?ml$/i.test(lower) || /(^|\/)\.npmrc$/i.test(lower)) return true;
+  return false;
 }
 
 // Allowlist of the exact GitHub endpoints the editor/admin frontend uses.

@@ -244,3 +244,15 @@ test('removeAnnotations: strips every kiln attribute, preserves the rest', () =>
   assert.ok(out2.includes('<li>x</li>'));
   assert.equal(removeAnnotations(html, 'nope'), null);
 });
+
+test('editHead: og:image insert + update, scheme-sanitized', () => {
+  const html = '<html><head>\n  <title>T</title>\n</head><body>x</body></html>';
+  const v1 = editHead(html, { ogImage: '/assets/social.jpg' });
+  assert.ok(v1.includes('<meta property="og:image" content="/assets/social.jpg" />'));
+  const v2 = editHead(v1, { ogImage: '/assets/new.jpg' });
+  assert.ok(v2.includes('content="/assets/new.jpg"'));
+  assert.ok(!v2.includes('social.jpg'));
+  assert.equal(readHead(v2).ogImage, '/assets/new.jpg');
+  const bad = editHead(html, { ogImage: 'javascript:alert(1)' });
+  assert.ok(!bad.includes('javascript:'));
+});

@@ -1457,7 +1457,11 @@ function menuEditor() {
     const wrap = (a) => itemTag ? `<${itemTag}>${a}</${itemTag}>` : a;
     const newInner = '\n      ' + rows
       .filter(r => r.label.trim())
-      .map(r => wrap(`<a href="${escapeHtml(r.href.trim() || '/')}">${escapeHtml(r.label.trim())}</a>`))
+      // safeUrl() the href before it's spliced: menu inner-HTML bypasses DOMPurify,
+      // and escapeHtml alone doesn't neutralize javascript:/data: schemes, so an
+      // editor could otherwise plant script on every page's nav. (safeUrl mirrors
+      // the engine's own href gate.)
+      .map(r => wrap(`<a href="${escapeHtml(safeUrl(r.href.trim() || '/'))}">${escapeHtml(r.label.trim())}</a>`))
       .join('\n      ') + '\n    ';
     try {
       status.textContent = 'Step 1 of 3 · Finding the site’s pages…';
@@ -1725,25 +1729,49 @@ function pageSettingsPanel() {
       <input type="text" id="kiln-ps-title" value="${escapeHtml(cur.title)}"></label>
     <label>Description (search results &amp; link previews)
       <input type="text" id="kiln-ps-desc" value="${escapeHtml(cur.description)}" maxlength="200"></label>
+    <label>Social image URL (link previews — optional)
+      <input type="text" id="kiln-ps-ogimg" value="${escapeHtml(cur.ogImage || '')}" placeholder="/assets/img/social.jpg"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
       <button class="kiln-btn-publish" id="kiln-ps-go">Publish</button>
     </div>
-    <p class="kiln-np-step" id="kiln-ps-status"></p>`);
+    <p class="kiln-np-step" id="kiln-ps-status"></p>
+    ${mode === 'admin' ? `<hr class="kiln-hr"><h4>Danger zone</h4>
+      <div class="kiln-inv-row" style="border-color:#fecaca">
+        <span><strong>Delete this page</strong><small>Removes ${escapeHtml(state.page.path)} from the site. History keeps it recoverable.</small></span>
+        <button class="kiln-btn-ghost" id="kiln-ps-del">Delete page…</button>
+      </div>` : ''}`);
   m.querySelector('#kiln-ps-go').onclick = async () => {
     const title = m.querySelector('#kiln-ps-title').value;
     const description = m.querySelector('#kiln-ps-desc').value;
+    const ogImage = m.querySelector('#kiln-ps-ogimg').value;
     const status = m.querySelector('#kiln-ps-status');
     status.textContent = 'Publishing…';
     try {
       const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
-        (text) => editHead(text, { title, description }),
+        (text) => editHead(text, { title, description, ogImage }),
         `Page settings: ${state.page.path} (via Kiln)`);
       if (result.unchanged) { status.textContent = 'Nothing changed.'; return; }
       await loadPageSource();
       journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: 'Page settings' });
       status.textContent = 'Committed ✓ — safe to close; Kiln will confirm when live.';
     } catch (err) { status.textContent = `Failed: ${err.message}`; }
+  };
+  const delBtn = m.querySelector('#kiln-ps-del');
+  if (delBtn) delBtn.onclick = () => {
+    const status = m.querySelector('#kiln-ps-status');
+    const name = state.page.path.split('/').pop();
+    if (!confirm(`Delete ${state.page.path}?\n\nThe page comes off the live site on the next deploy. It stays in the site's Git history, so it can be recovered. Remember to remove it from your Site menu too.`)) return;
+    if (prompt(`Type the file name to confirm: ${name}`) !== name) { status.textContent = 'Name didn’t match — not deleted.'; return; }
+    status.textContent = 'Deleting…';
+    (async () => {
+      try {
+        const file = await getFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main');
+        await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
+          { message: `Delete ${state.page.path} (via Kiln)`, sha: file.sha, branch: cfg.branch || 'main' });
+        status.innerHTML = 'Deleted ✓ — the page comes off the site on the next deploy. <strong>Open Site menu to remove its link.</strong>';
+      } catch (err) { status.textContent = `Delete failed: ${err.message}`; }
+    })();
   };
 }
 
@@ -1949,13 +1977,14 @@ function schedulePanel() {
     if (!at) return;
     status.textContent = 'Scheduling…';
     try {
+      // Send field-level edits (not a full-page snapshot): the worker re-applies
+      // them against the live source at fire time, so edits published in the
+      // meantime aren't wiped.
       const edits = flattenPending();
-      const futureText = applyEdits(state.page.text, edits).html;
-      const b64 = (await import('../github.js')).encodeContent(futureText);
       const res = await fetch(`${cfg.worker}/schedule`, { method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ repo: cfg.repo, path: state.page.path, branch: cfg.branch || 'main',
-          content: b64, at: new Date(at).toISOString(),
+          edits, at: new Date(at).toISOString(),
           message: `Scheduled edit: ${state.page.path} (via Kiln)`,
           desc: `${state.page.path} (${[...state.pending.keys()].slice(0, 3).join(', ')})` }) });
       const data = await res.json();
@@ -2648,12 +2677,26 @@ function modal(bodyHtml) {
   document.getElementById('kiln-modal')?.remove();
   const wrap = document.createElement('div');
   wrap.id = 'kiln-modal';
-  wrap.innerHTML = `<div class="kiln-modal-card"><div class="kiln-modal-body">${bodyHtml}</div></div>`;
+  wrap.innerHTML = `<div class="kiln-modal-card" role="dialog" aria-modal="true" tabindex="-1"><div class="kiln-modal-body">${bodyHtml}</div></div>`;
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey, true); };
   wrap.addEventListener('click', (e) => {
-    if (e.target === wrap || e.target.closest('[data-close]')) wrap.remove();
+    if (e.target === wrap || e.target.closest('[data-close]')) close();
   });
+  // Esc closes; Tab is trapped inside the dialog so keyboard focus can't wander
+  // onto the page behind it.
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+    if (e.key !== 'Tab') return;
+    const f = [...wrap.querySelectorAll('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])')]
+      .filter(el => !el.disabled && el.offsetParent !== null);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener('keydown', onKey, true);
   document.body.appendChild(wrap);
-  wrap.querySelector('input')?.focus();
+  (wrap.querySelector('input') || wrap.querySelector('.kiln-modal-card')).focus();
   return wrap;
 }
 
@@ -2878,6 +2921,10 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   font-family:var(--kiln-font);transition:border-color .15s;outline:none}
 .kiln-modal-body input:focus{border-color:var(--kiln-accent)}
 .kiln-2col{display:grid;grid-template-columns:1.4fr 1fr;gap:10px}
+@media(max-width:480px){.kiln-2col{grid-template-columns:1fr}
+  .kiln-tb-fmt{min-width:34px;height:34px}
+  #kiln-toolbar .kiln-href-input{width:100%}
+  .kiln-item-ctl button{width:34px;height:34px}}
 .kiln-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 .kiln-modal-actions .kiln-btn-ghost{color:#4b5563;border-color:#e5e7eb;background:#f9fafb}
 .kiln-modal-actions .kiln-btn-ghost:hover{color:#111;background:#f3f4f6}
@@ -2900,6 +2947,9 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-repeat-item{position:relative}
 .kiln-item-ctl{position:absolute;top:8px;right:8px;display:flex;gap:5px;z-index:9999;opacity:0;transition:opacity .15s}
 .kiln-repeat-item:hover>.kiln-item-ctl{opacity:1}
+/* Touch devices have no hover: keep block controls permanently visible so
+   move/duplicate/tag/remove (and the only reorder path on a phone) are reachable. */
+@media(hover:none){.kiln-item-ctl{opacity:1}}
 .kiln-item-ctl button{background:var(--kiln-bg);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
   color:#fff;border:1px solid rgba(255,255,255,.1);width:27px;height:27px;border-radius:8px;
   cursor:pointer;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.25);transition:background .12s}
