@@ -885,46 +885,13 @@ function imageToolbar(img, key) {
     ${TB_GRIP}
     <span class="kiln-tb-label">${escapeHtml(key)}</span>
     <button class="kiln-tb-fmt kiln-tb-attach" data-act="replace">Replace image…</button>
-    <select class="kiln-style-select" data-act="size" title="How wide the image displays">
-      <option value="">Display size</option>
-      <option value="orig">Original</option>
-      <option value="25%">25% width</option>
-      <option value="33%">33% width</option>
-      <option value="50%">50% width</option>
-      <option value="66%">66% width</option>
-      <option value="75%">75% width</option>
-      <option value="100%">Full width</option>
-    </select>
-    <select class="kiln-style-select" data-act="resample" title="Re-encode the file smaller (shrinks the download)">
-      <option value="">Shrink file</option>
-      <option value="800">to max 800px</option>
-      <option value="1200">to max 1200px</option>
-      <option value="1600">to max 1600px</option>
-      <option value="2400">to max 2400px</option>
-    </select>
+    <span class="kiln-tb-hint">drag the ● corner to resize</span>
     <input class="kiln-href-input" data-act="alt" type="text" value="${escapeHtml(img.getAttribute('alt') || '')}"
       placeholder="Describe this image (alt text)" title="Alt text — read by screen readers and search engines">
     <button class="kiln-tb-save" data-act="done">Done</button>`;
   document.body.appendChild(tb);
   positionToolbar(tb, img);
   makeToolbarDraggable(tb);
-
-  const sizeSel = tb.querySelector('[data-act="size"]');
-  sizeSel.addEventListener('click', (e) => e.stopPropagation());
-  sizeSel.addEventListener('change', (e) => {
-    e.stopPropagation();
-    const v = sizeSel.value;
-    sizeSel.value = '';
-    if (v) applyImageSize(img, key, v);
-  });
-  const resampleSel = tb.querySelector('[data-act="resample"]');
-  resampleSel.addEventListener('click', (e) => e.stopPropagation());
-  resampleSel.addEventListener('change', async (e) => {
-    e.stopPropagation();
-    const v = resampleSel.value;
-    resampleSel.value = '';
-    if (v) await resampleImage(img, key, Number(v));
-  });
 
   const altInput = tb.querySelector('[data-act="alt"]');
   const finish = () => {
@@ -1029,18 +996,13 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     }
     img.setAttribute('data-kiln-master', master);
     setStatus('Re-sampling to fit…', 'saving');
-    const bmp = await urlToBitmap(master);
+    // Prefer the in-memory master bitmap (set when the image was added) so a
+    // resize BEFORE publish resamples from the original, not a URL that isn't live.
+    const bmp = masterBitmaps.get(master) || await urlToBitmap(master);
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const targetW = Math.max(1, Math.min(Math.round(cssWidth * dpr), bmp.width, 2400));
-    const canvas = document.createElement('canvas');
-    canvas.width = targetW;
-    canvas.height = Math.round(bmp.height * (targetW / bmp.width));
-    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise(r => canvas.toBlob(r, 'image/webp', 0.85))
-      || await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
-    const buf = new Uint8Array(await blob.arrayBuffer());
-    let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-    const base64 = btoa(bin);
+    const scaled = await bitmapToScaled(bmp, targetW);
+    const blob = scaled.blob, base64 = scaled.base64;
 
     img.style.width = `${cssWidth}px`;
     img.style.height = 'auto';
@@ -1086,15 +1048,81 @@ function pickImage(img, key) {
     const file = input.files[0];
     if (!file) return;
     try {
-      setStatus('Uploading image…', 'saving');
-      const scaled = await downscale(file);
-      await stageImageSwap(img, key, scaled, file.name);
+      setStatus('Adding image…', 'saving');
+      await addImageWithMaster(img, key, file);
     } catch (err) {
       console.error('[kiln] image upload', err);
       setStatus('Image upload failed', 'error');
     }
   };
   input.click();
+}
+
+// In-memory master bitmaps (url → ImageBitmap) so drag-resize can resample from
+// the ORIGINAL even before it's been published (its repo URL isn't live yet).
+const masterBitmaps = new Map();
+
+/** Re-encode a bitmap to web-optimized webp at a target width. Returns {blob, base64}. */
+async function bitmapToScaled(bmp, targetW) {
+  const w = Math.max(1, Math.min(Math.round(targetW), bmp.width));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = Math.round(bmp.height * (w / bmp.width));
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise(r => canvas.toBlob(r, 'image/webp', 0.85))
+    || await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+  return { blob, base64: btoa(bin) };
+}
+
+/**
+ * Add/replace an image the way the workflow wants: keep a high-res MASTER
+ * (≤2400px, web-optimized) as the original, and display a web-optimized COPY
+ * sized to how the image shows on the page. Dragging the corner later makes a
+ * fresh copy from the master (so up-sizing stays sharp; the master is never
+ * thrown away).
+ */
+async function addImageWithMaster(img, key, file) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cssW = Math.round(img.getBoundingClientRect().width) || 600;
+  const bmp = await createImageBitmap(file);
+  const masterW = Math.min(bmp.width, 2400);
+  const displayW = Math.min(Math.round(cssW * dpr), masterW);
+
+  if (cfg.sandbox) {
+    // Demo: no repo. Keep the master as a data URL (in the attr) + show a copy.
+    const master = await bitmapToScaled(bmp, masterW);
+    const display = await bitmapToScaled(bmp, displayW);
+    img.setAttribute('data-kiln-master', `data:image/webp;base64,${master.base64}`);
+    img.src = `data:image/webp;base64,${display.base64}`;
+    img.classList.add('kiln-modified');
+    const rpt = img.closest('[data-cms-repeat]');
+    if (rpt) stageContainer(rpt, rpt.getAttribute('data-cms-repeat'));
+    else stagePending(key, { attrs: { src: img.src, 'data-kiln-master': img.getAttribute('data-kiln-master') } });
+    setStatus('Image added — drag its ● corner to resize, then Publish', 'saved');
+    return;
+  }
+
+  const stamp = Date.now().toString(36);
+  const root = cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '';
+  // Master (kept forever, referenced by data-kiln-master).
+  const master = await bitmapToScaled(bmp, masterW);
+  const masterUrl = `/assets/uploads/master-${stamp}.webp`;
+  stageBinary(root + `assets/uploads/master-${stamp}.webp`, master.base64);
+  img.setAttribute('data-kiln-master', masterUrl);
+  masterBitmaps.set(masterUrl, bmp);   // so a resize before publish resamples from it
+  // Display copy at the on-page size.
+  const display = await bitmapToScaled(bmp, displayW);
+  const dispUrl = `/assets/uploads/img-${stamp}.webp`;
+  stageBinary(root + `assets/uploads/img-${stamp}.webp`, display.base64);
+  img.src = URL.createObjectURL(display.blob);
+  img.setAttribute('data-kiln-src', dispUrl);
+  img.classList.add('kiln-modified');
+  const repeat = img.closest('[data-cms-repeat]');
+  if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
+  else stageImageEl(img, key);
+  setStatus('Image added — drag its ● corner to resize, then Publish', 'saved');
 }
 
 /**
@@ -1256,6 +1284,7 @@ function uploadAnyFile() {
  * card (the .kiln-doc styles ship in kiln-features.js for visitors).
  */
 async function insertDocument(el, savedRange) {
+  const key = el.getAttribute('data-cms');
   const up = await uploadAnyFile();
   if (!up) return;
   const pretty = up.size > 1024 * 1024 ? `${(up.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(up.size / 1024))} KB`;
@@ -1278,19 +1307,28 @@ async function insertDocument(el, savedRange) {
   m.querySelector('#kiln-doc-go').onclick = () => {
     const label = escapeHtml(m.querySelector('#kiln-doc-label').value.trim() || up.name);
     const kind = m.querySelector('input[name="kiln-doc-kind"]:checked').value;
-    const href = escapeHtml(up.path);
+    const href = escapeHtml(safeUrl(up.path));
     const html = kind === 'link' ? `<a href="${href}" download>${label}</a>`
       : kind === 'chip' ? `<a href="${href}" class="kiln-doc kiln-doc-chip" download>📄 ${label}</a>`
       : `<a href="${href}" class="kiln-doc kiln-doc-card" download><strong>${label}</strong><br><small>${escapeHtml(ext)} · ${escapeHtml(pretty)}</small></a>`;
     m.remove();
-    el.focus();
-    if (savedRange) {
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(savedRange);
+    // Insert directly via the DOM (not execCommand) — by the time this runs the
+    // field may have left edit mode (interacting with this modal committed it),
+    // so we can't rely on a live selection. Insert at the saved range if it's
+    // still valid, else append to the field, then re-stage the field ourselves.
+    const frag = document.createRange().createContextualFragment(html + '&nbsp;');
+    let inserted = false;
+    if (savedRange && el.contains(savedRange.startContainer)) {
+      try { savedRange.collapse(false); savedRange.insertNode(frag); inserted = true; } catch { /* fall through */ }
     }
-    document.execCommand('insertHTML', false, html + '&nbsp;');
-    setStatus('Document inserted — click Done, then Publish', 'saved');
+    if (!inserted) el.appendChild(frag);
+    // Persist it: stage the field's new committed HTML (works whether or not it's
+    // still the active edit).
+    const repeat = el.closest('[data-cms-repeat]');
+    if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
+    else stagePending(key, { html: committedHtml(el, false) });
+    el.classList.add('kiln-modified');
+    setStatus('Document inserted — Publish when ready', 'saved');
   };
 }
 
@@ -3443,6 +3481,7 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   font-family:var(--kiln-font);font-size:12px;z-index:999999;border:1px solid rgba(255,255,255,.08);
   box-shadow:0 10px 32px rgba(0,0,0,.35);flex-wrap:wrap;max-width:92vw}
 .kiln-tb-label{color:#8b8e9c;margin-right:2px;font-size:11px}
+.kiln-tb-hint{color:#8b8e9c;font-size:11px;font-style:italic}
 #kiln-toolbar{cursor:grab;touch-action:none}
 #kiln-pickbar{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999998;display:flex;
   align-items:center;gap:14px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
