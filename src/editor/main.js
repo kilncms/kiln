@@ -2102,8 +2102,31 @@ async function historyPanel() {
         if (v === undefined) continue;
         if (v !== lastVal) { timeline.push({ c, v }); lastVal = v; }
       }
-      if (!timeline.length) { fieldBox.innerHTML = '<p class="kiln-dim">No recorded changes for this section.</p>'; return; }
       fieldBox.innerHTML = '';
+      // Show any UNPUBLISHED edit to this section first, with a per-section undo —
+      // so pending changes are visible in history and can be undone before publish.
+      const pend = state.pending.get(key);
+      if (pend && pend.html !== undefined) {
+        const prev = escapeHtml((new DOMParser().parseFromString(pend.html, 'text/html').body.textContent || '').trim().slice(0, 80)) || '<em>(empty)</em>';
+        const row = document.createElement('div');
+        row.className = 'kiln-inv-row';
+        row.style.borderColor = 'rgba(251,191,36,.5)';
+        row.innerHTML = `<span><span class="kiln-hist-prev">${prev}</span><small>unpublished · you</small></span>
+          <button class="kiln-btn-ghost">Undo this edit</button>`;
+        row.querySelector('button').onclick = () => {
+          const el = document.querySelector(`[data-cms="${CSS.escape(key)}"]`);
+          state.pending.delete(key);
+          if (el) { el.innerHTML = timeline[0]?.v ?? el.innerHTML; el.classList.remove('kiln-modified'); }
+          refreshPublishButton();
+          sel.onchange();  // refresh the timeline
+          setStatus(`Undid the unpublished edit to “${key}”`, 'saved');
+        };
+        fieldBox.appendChild(row);
+      }
+      if (!timeline.length) {
+        if (!fieldBox.children.length) fieldBox.innerHTML = '<p class="kiln-dim">No recorded changes for this section yet.</p>';
+        return;
+      }
       timeline.forEach(({ c, v }, i) => {
         const when = new Date(c.commit.author.date).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
         const preview = escapeHtml((new DOMParser().parseFromString(v, 'text/html').body.textContent || '').trim().slice(0, 80)) || '<em>(empty)</em>';
