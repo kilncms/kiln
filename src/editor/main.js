@@ -1726,8 +1726,10 @@ async function invitePanel() {
         Editors can never touch CNAME, _redirects, or .github.</p>
       <div id="kiln-p-pages" class="kiln-inv-list" style="display:none;max-height:180px;overflow:auto;margin:0 0 8px"></div>
       <label id="kiln-p-keys-wrap">Sections they can edit (optional)
-        <input type="text" id="kiln-p-keys" placeholder="everything — or field prefixes, e.g. events_, hero_"></label>
-      <p class="kiln-dim" id="kiln-p-keys-hint" style="margin:-2px 0 6px;font-size:12px">Comma-separated field-name prefixes. The editor only gets edit handles on matching sections; page access above is still what's enforced on every write.</p>
+        <input type="text" id="kiln-p-keys" placeholder="everything — or pick sections below"></label>
+      <p class="kiln-dim" id="kiln-p-keys-hint" style="margin:-2px 0 6px;font-size:12px">Leave blank for every section of the pages above.
+        <button type="button" class="kiln-btn-ghost" id="kiln-p-keypick" style="margin-left:6px;padding:3px 9px;font-size:11.5px">Choose sections…</button></p>
+      <div id="kiln-p-keylist" class="kiln-inv-list" style="display:none;max-height:150px;overflow:auto;margin:0 0 8px"></div>
       <div class="kiln-modal-actions" style="justify-content:flex-start;margin-top:8px">
         <button class="kiln-btn-publish" id="kiln-p-add">Add person</button>
       </div>
@@ -1743,8 +1745,36 @@ async function invitePanel() {
   function syncRole() {
     const isEditor = m.querySelector('input[name="kiln-p-role"]:checked').value === 'editor';
     scopeEls.forEach(el => { el.style.display = isEditor ? '' : 'none'; });
-    if (!isEditor) m.querySelector('#kiln-p-pages').style.display = 'none';
+    if (!isEditor) { m.querySelector('#kiln-p-pages').style.display = 'none'; m.querySelector('#kiln-p-keylist').style.display = 'none'; }
+    else if (m.querySelector('#kiln-p-pages').style.display === 'none') m.querySelector('#kiln-p-pick').click();  // auto-open the page checklist
   }
+
+  // "Choose sections…" — checkbox list of THIS page's editable fields (grouped by
+  // prefix), written into the keys field. Beats hand-typing prefixes.
+  m.querySelector('#kiln-p-keypick').onclick = (e) => {
+    e.preventDefault();
+    const box = m.querySelector('#kiln-p-keylist');
+    if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+    box.style.display = '';
+    const input = m.querySelector('#kiln-p-keys');
+    const selected = () => new Set(input.value.split(',').map(s => s.trim()).filter(Boolean));
+    // Offer the actual field keys on this page plus their common prefixes (e.g. events_).
+    const keys = [...state.fields.fields.keys()];
+    const prefixes = [...new Set(keys.map(k => (k.match(/^[a-z0-9]+_/i) || [])[0]).filter(Boolean))];
+    const opts = [...prefixes.map(p => ({ v: p, label: `${p}* — everything starting “${p}”` })), ...keys.map(k => ({ v: k, label: k }))];
+    box.innerHTML = opts.length ? '' : '<p class="kiln-dim">This page has no named sections.</p>';
+    for (const o of opts) {
+      const row = document.createElement('label');
+      row.style.cssText = 'display:flex;gap:8px;align-items:center;font-size:12.5px;margin:0;padding:4px 2px';
+      row.innerHTML = `<input type="checkbox" value="${escapeHtml(o.v)}" ${selected().has(o.v) ? 'checked' : ''}> ${escapeHtml(o.label)}`;
+      row.querySelector('input').onchange = (ev) => {
+        const cur = selected();
+        if (ev.target.checked) cur.add(o.v); else cur.delete(o.v);
+        input.value = [...cur].join(', ');
+      };
+      box.appendChild(row);
+    }
+  };
 
   // "Choose pages…" — checkbox list of the site's pages/folders, written back
   // into the comma-separated paths field (which stays hand-editable).
@@ -2339,6 +2369,11 @@ function makeDialog(el) {
   const tag = el.tagName.toLowerCase();
   const isImg = tag === 'img';
   const repeatable = !isImg && looksRepeatable(el);
+  // A container can host a gallery/events list even when empty — the "+ Add"
+  // button seeds the first item — so offer those on any block-level box, not
+  // only ones that already contain a list.
+  const isContainer = !isImg && (el.children.length >= 1
+    || ['div', 'section', 'ul', 'ol', 'aside', 'article', 'figure', 'main'].includes(tag));
   const snippet = (el.textContent || el.getAttribute('alt') || '').trim().slice(0, 70);
   const inRepeat = !!el.closest('[data-cms-repeat]');
   const key = suggestKey(el);
@@ -2349,8 +2384,10 @@ function makeDialog(el) {
       { v: 'plain', t: 'Plain text only', d: 'No formatting allowed — safest for headings and labels.' },
       ...(repeatable && !inRepeat ? [
         { v: 'repeat', t: 'Repeating blocks', d: 'Editors can add, remove, reorder, and tag the blocks inside.' },
-        { v: 'gallery', t: 'Photo gallery', d: 'Repeating blocks + multi-photo upload + a lightbox for visitors.' },
-        { v: 'events', t: 'Events list', d: 'Repeating blocks + event form + calendar views for visitors.' },
+      ] : []),
+      ...(isContainer && !inRepeat ? [
+        { v: 'gallery', t: 'Photo gallery', d: 'Multi-photo upload + a lightbox for visitors. Add photos with “+ Add photos”.' },
+        { v: 'events', t: 'Events list', d: 'An event form + calendar views for visitors. Add events with “+ Add event”.' },
       ] : []),
     ];
   const m = modal(`
