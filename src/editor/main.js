@@ -45,11 +45,34 @@ const state = {
   pending: new Map(),    // key → { html?, attrs?: {name: value} }
   active: null,
   originals: new Map(),
+  // Binary uploads (images/docs) queued for the NEXT Publish, so nothing is
+  // committed to the repo until you actually publish (Discard leaves no orphans).
+  // repoPath → base64
+  pendingBinaries: new Map(),
 };
+
+/** Queue a binary to be committed with the next Publish (not immediately). Returns nothing. */
+function stageBinary(repoPath, base64) {
+  state.pendingBinaries.set(repoPath, base64);
+  refreshPublishButton();
+}
 
 init().catch(err => {
   console.error('[kiln]', err);
-  setStatus('Kiln failed to start — see console', 'error');
+  if (err.kilnFriendly) {
+    // A known, explainable failure (e.g. generated site): show it in-page.
+    const box = document.createElement('div');
+    box.style.cssText = 'position:fixed;left:50%;top:20px;transform:translateX(-50%);z-index:2147483647;'
+      + 'max-width:460px;background:#1c1c28;color:#e7e7ee;font:14px/1.55 -apple-system,sans-serif;'
+      + 'padding:18px 20px;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.4)';
+    box.innerHTML = `<strong style="color:#fff">Kiln couldn’t open this page</strong><br>`
+      + err.kilnFriendly.replace(/</g, '&lt;')
+      + `<br><button style="margin-top:12px;background:#6366f1;color:#fff;border:0;border-radius:8px;padding:7px 14px;cursor:pointer;font:inherit">Dismiss</button>`;
+    box.querySelector('button').onclick = () => box.remove();
+    document.body.appendChild(box);
+  } else {
+    setStatus('Kiln failed to start — see console', 'error');
+  }
 });
 
 async function init() {
@@ -95,7 +118,7 @@ async function init() {
   startPresence();
 
   window.addEventListener('beforeunload', (e) => {
-    if (state.pending.size) { e.preventDefault(); e.returnValue = ''; }
+    if (state.pending.size || state.pendingBinaries.size) { e.preventDefault(); e.returnValue = ''; }
   });
 }
 
@@ -129,7 +152,20 @@ function withAutoRefresh(gh, stored) {
 
 async function loadPageSource() {
   const candidates = pageFileCandidates(location.pathname, cfg.root || '');
-  state.page = await resolvePageFile(state.gh, cfg.repo, candidates, cfg.branch || 'main');
+  try {
+    state.page = await resolvePageFile(state.gh, cfg.repo, candidates, cfg.branch || 'main');
+  } catch (err) {
+    if (err.status === 404) {
+      // The URL doesn't map to an HTML file in the repo — almost always a site
+      // built by a generator (Hugo/Jekyll/11ty/Next export) where the served
+      // page has no matching source file. Explain it instead of a dead console error.
+      err.kilnFriendly = `Kiln edits the HTML file for this page in your repo, but couldn't find one`
+        + ` (looked for: ${candidates.join(', ')}). This usually means the site is produced by a`
+        + ` build tool, so the page you see isn't committed as-is. Kiln works on sites whose pages`
+        + ` are committed as HTML. See the docs.`;
+    }
+    throw err;
+  }
   state.fields = indexHtml(state.page.text);
   // Snapshot every field's source value: publish uses this to detect when
   // ANOTHER editor changed the same field while we were editing (see publish()).
@@ -547,9 +583,7 @@ function addGalleryPhotos(container, key, add) {
           const slug = files[i].name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'photo';
           const name = `${slug}-${Date.now().toString(36)}-${i}.${scaled.ext}`;
           const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `assets/uploads/${name}`;
-          await putBinaryFile(state.gh, cfg.repo, repoPath, {
-            base64: scaled.base64, branch: cfg.branch || 'main', message: `Upload ${name} (via Kiln)`,
-          });
+          stageBinary(repoPath, scaled.base64);   // committed with Publish, not now
           img.src = URL.createObjectURL(scaled.blob);
           img.setAttribute('data-kiln-src', `/assets/uploads/${name}`);
         }
@@ -938,9 +972,13 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
       setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB) — Publish to keep it`, 'saved');
       return;
     }
+    // Repeated drag-resizes supersede each other: drop the previous (uncommitted)
+    // intermediate so we don't commit a pile of throwaway sizes on Publish.
+    const prev = img.getAttribute('data-kiln-src');
+    if (prev) state.pendingBinaries.delete((cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + prev.replace(/^\//, ''));
     const name = `img-${Date.now().toString(36)}.webp`;
     const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `assets/uploads/${name}`;
-    await putBinaryFile(state.gh, cfg.repo, repoPath, { base64, branch: cfg.branch || 'main', message: `Resize ${name} (via Kiln)` });
+    stageBinary(repoPath, base64);   // committed with Publish, not now
     img.src = URL.createObjectURL(blob);
     img.setAttribute('data-kiln-src', `/assets/uploads/${name}`);
     if (stage) stageImageEl(img, key);
@@ -1022,10 +1060,7 @@ async function stageImageSwap(img, key, { blob, base64, ext }, originalName) {
   const name = `${slug}-${Date.now().toString(36)}.${ext}`;
   const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `assets/uploads/${name}`;
   const urlPath = `/assets/uploads/${name}`;
-  await putBinaryFile(state.gh, cfg.repo, repoPath, {
-    base64, branch: cfg.branch || 'main',
-    message: `Upload ${name} (via Kiln)`,
-  });
+  stageBinary(repoPath, base64);   // committed with Publish, not now
   // Show the LOCAL image immediately — the real URL only exists after the
   // next deploy, so pointing at it now would render a broken image.
   img.src = URL.createObjectURL(blob);
@@ -1087,9 +1122,7 @@ function insertInlineImage(el) {
       const name = `${slug}-${Date.now().toString(36)}.${ext}`;
       const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `assets/uploads/${name}`;
       const urlPath = `/assets/uploads/${name}`;
-      await putBinaryFile(state.gh, cfg.repo, repoPath, {
-        base64, branch: cfg.branch || 'main', message: `Upload ${name} (via Kiln)`,
-      });
+      stageBinary(repoPath, base64);   // committed with Publish, not now
       const blobUrl = URL.createObjectURL(blob);
       el.focus();
       document.execCommand('insertHTML', false,
@@ -1127,10 +1160,8 @@ function uploadAnyFile() {
         const gated = location.pathname.startsWith('/members');
         const dir = gated ? 'members/files' : 'assets/files';
         const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `${dir}/${safe}`;
-        await putBinaryFile(state.gh, cfg.repo, repoPath, {
-          base64: btoa(bin), branch: cfg.branch || 'main', message: `Upload ${safe} (via Kiln)`,
-        });
-        setStatus(`${file.name} uploaded ✓ ${gated ? '(members-only)' : ''} — goes live with your next Publish`, 'saved');
+        stageBinary(repoPath, btoa(bin));   // committed with Publish, not now
+        setStatus(`${file.name} added ✓ ${gated ? '(members-only)' : ''} — goes live with your next Publish`, 'saved');
         resolve({ path: `/${dir}/${safe}`, name: file.name, size: file.size });
       } catch (err) {
         console.error('[kiln] file upload', err);
@@ -1197,7 +1228,7 @@ function flattenPending() {
 }
 
 async function publish() {
-  if (!state.pending.size) return;
+  if (!state.pending.size && !state.pendingBinaries.size) return;
   if (cfg.sandbox) return publishSandbox();
 
   // Edits inside a data-cms-partial (e.g. a shared footer or header) fan out to
@@ -1224,6 +1255,15 @@ async function publish() {
   setStatus('Publishing — committing to GitHub…', 'saving');
   disablePublish(true);
   try {
+    // Commit any queued binaries (images/docs) FIRST, in one commit, so the files
+    // exist before the page that references them goes live. Deferring them to here
+    // is what makes "nothing is live until Publish" true (Discard = no orphans).
+    if (state.pendingBinaries.size) {
+      const files = [...state.pendingBinaries].map(([path, base64]) => ({ path, base64 }));
+      await commitFiles(state.gh, cfg.repo, cfg.branch || 'main', files,
+        `Upload ${files.length} file${files.length > 1 ? 's' : ''} (via Kiln)`);
+      state.pendingBinaries.clear();
+    }
     let result = null;
     if (localEdits.length) {
       result = await editFile(
@@ -2545,16 +2585,16 @@ function unmakeDialog(el) {
 // ─── Done / exit ─────────────────────────────────────────────────────────────
 
 function doneEditing() {
-  if (state.pending.size) {
+  if (state.pending.size || state.pendingBinaries.size) {
     const m = modal(`
-      <h3>You have ${state.pending.size} unpublished edit${state.pending.size > 1 ? 's' : ''}</h3>
+      <h3>You have ${state.pending.size || state.pendingBinaries.size} unpublished edit${(state.pending.size || state.pendingBinaries.size) > 1 ? 's' : ''}</h3>
       <p class="kiln-dim">Publish them first, or discard and exit?</p>
       <div class="kiln-modal-actions">
         <button class="kiln-btn-ghost" data-close>Keep editing</button>
         <button class="kiln-btn-ghost" id="kiln-discard">Discard &amp; exit</button>
         <button class="kiln-btn-publish" id="kiln-pub-exit">Publish first</button>
       </div>`);
-    m.querySelector('#kiln-discard').onclick = () => { state.pending.clear(); exitEditMode(); };
+    m.querySelector('#kiln-discard').onclick = () => { state.pending.clear(); state.pendingBinaries.clear(); exitEditMode(); };
     m.querySelector('#kiln-pub-exit').onclick = async () => { m.remove(); await publish(); };
     return;
   }
@@ -2777,6 +2817,7 @@ function discardEdits() {
     </div>`);
   m.querySelector('#kiln-disc-go').onclick = () => {
     state.pending.clear();
+    state.pendingBinaries.clear();   // queued uploads were never committed — just drop them
     clearSavedPending();
     location.reload();
   };
@@ -2957,15 +2998,17 @@ function modal(bodyHtml) {
 
 function refreshPublishButton() {
   const n = state.pending.size;
+  // A queued upload with no field edit still needs a Publish to commit it.
+  const anything = n || state.pendingBinaries.size;
   const btn = document.getElementById('kiln-publish');
   if (btn) {
-    btn.disabled = !n;
-    btn.textContent = n ? `Publish ${n} edit${n > 1 ? 's' : ''}` : 'Publish';
+    btn.disabled = !anything;
+    btn.textContent = n ? `Publish ${n} edit${n > 1 ? 's' : ''}` : (anything ? 'Publish' : 'Publish');
   }
   const badge = document.getElementById('kiln-fab-badge');
-  if (badge) { badge.hidden = !n; badge.textContent = n; }
+  if (badge) { badge.hidden = !anything; badge.textContent = n || (state.pendingBinaries.size ? '•' : ''); }
   const discard = document.getElementById('kiln-discard');
-  if (discard) { discard.hidden = !n; discard.textContent = `Discard ${n} edit${n > 1 ? 's' : ''}`; }
+  if (discard) { discard.hidden = !anything; discard.textContent = n ? `Discard ${n} edit${n > 1 ? 's' : ''}` : 'Discard'; }
   const sched = document.getElementById('kiln-schedule');
   if (sched) sched.hidden = !n;
   const draftBtn = document.getElementById('kiln-draft');
