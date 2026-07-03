@@ -93,6 +93,9 @@
   function initGalleries() {
     document.querySelectorAll('[data-kiln-gallery]').forEach(gal => {
       gal.classList.add('kiln-gallery-grid');
+      // Per-gallery thumbnail size (set in the editor's Gallery options).
+      const thumb = parseInt(gal.getAttribute('data-kiln-thumb'), 10);
+      if (thumb) gal.style.setProperty('--kiln-thumb', thumb + 'px');
       const imgs = () => [...gal.querySelectorAll('img')];
       gal.addEventListener('click', (e) => {
         const img = e.target.closest('img');
@@ -412,7 +415,7 @@
   padding:14px 16px;margin:10px 0;line-height:1.45}
 .kiln-doc-card:hover{border-color:currentColor}
 .kiln-doc-card small{opacity:.65}
-.kiln-gallery-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+.kiln-gallery-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--kiln-thumb,180px),1fr));gap:10px}
 .kiln-gallery-grid figure{margin:0}
 .kiln-gallery-grid img{width:100%;height:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;cursor:zoom-in;display:block}
 .kiln-gallery-grid figcaption{font-size:.8em;opacity:.75;padding:4px 2px}

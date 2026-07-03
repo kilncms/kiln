@@ -505,28 +505,33 @@ async function presencePing(request, env) {
   if (!who) return json({ error: 'forbidden' }, 403);
 
   // Colons delimit the KV key, so strip them from the (partly client-supplied)
-  // name and page before composing pres:<repo>:<page>:<name> — otherwise a
-  // crafted value could shadow another user's presence key. The trusted `role`
-  // is server-derived above, so display-name spoofing is the whole ceiling here.
+  // name before composing pres:<repo>:<name> — otherwise a crafted value could
+  // shadow another user's presence key. The trusted `role` is server-derived
+  // above, so display-name spoofing is the whole ceiling here.
   const safe = (s, n) => String(s).replaceAll(':', ' ').slice(0, n);
-  const page = safe(pagePath, 200);
   const nameKey = safe(who, 64);
-  const myKey = `pres:${repo}:${page}:${nameKey}`;
-  // Store the real (unsafened) path so the "who's online" list can show it.
+  // ONE presence entry per person (keyed by name, not name+page): each ping
+  // overwrites the last, so the entry follows them as they navigate instead of
+  // leaving a stale "editing /about" row behind for every page they visited.
+  const myKey = `pres:${repo}:${nameKey}`;
   await env.KILN.put(myKey,
     JSON.stringify({ name: nameKey, role, page: String(pagePath).slice(0, 200), ts: Date.now() }),
     { expirationTtl: 90 });
 
-  // `others` = people on THIS page; `online` = everyone editing the site right now.
-  const others = [], online = [];
+  // `others` = people on THIS page; `online` = everyone editing the site right
+  // now. Dedupe by name (keep the freshest) so entries written under the old
+  // per-page key format can't produce duplicate rows while they age out.
+  const byName = new Map();
   const list = await env.KILN.list({ prefix: `pres:${repo}:` });
   for (const k of list.keys) {
     if (k.name === myKey) continue;
     const v = await env.KILN.get(k.name, 'json');
-    if (!v) continue;
-    online.push({ name: v.name, role: v.role, page: v.page || '' });
-    if (v.page === String(pagePath)) others.push({ name: v.name, role: v.role });
+    if (!v || v.name === nameKey) continue;
+    const prev = byName.get(v.name);
+    if (!prev || (v.ts || 0) > (prev.ts || 0)) byName.set(v.name, v);
   }
+  const online = [...byName.values()].map(v => ({ name: v.name, role: v.role, page: v.page || '' }));
+  const others = online.filter(v => v.page === String(pagePath)).map(({ name, role }) => ({ name, role }));
   return json({ ok: true, others, online, scope });
 }
 
