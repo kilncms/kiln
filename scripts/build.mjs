@@ -21,6 +21,13 @@ const shim = await readFile('src/kiln.js', 'utf8');
 const min = await transform(shim, { minify: true, target: 'es2017' });
 await writeFile('dist/kiln.js', min.code);
 
+// Features runtime (dependency-free; lazy-loaded by the shim when a page uses
+// tags/galleries/events/doc chips)
+const feats = await readFile('src/features.js', 'utf8');
+const featsMin = await transform(feats, { minify: true, target: 'es2018' });
+await writeFile('dist/kiln-features.js', featsMin.code);
+
 const editorKB = (Object.values(result.metafile.outputs)[0].bytes / 1024).toFixed(1);
 const shimKB = (min.code.length / 1024).toFixed(1);
-console.log(`built: kiln.js ${shimKB} KB (every visitor) · kiln-editor.js ${editorKB} KB (admins/editors only)`);
+const featsKB = (featsMin.code.length / 1024).toFixed(1);
+console.log(`built: kiln.js ${shimKB} KB (every visitor) · kiln-features.js ${featsKB} KB (feature pages only) · kiln-editor.js ${editorKB} KB (admins/editors only)`);

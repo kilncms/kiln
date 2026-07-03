@@ -30,6 +30,7 @@
   }
 
   function boot() {
+    loadFeaturesIfUsed();
     captureAdminToken();
     captureGoogleSession();
 
@@ -74,6 +75,19 @@
     }
     // Normal page, no session: do nothing. No button, no clutter. To edit,
     // a visitor would have to know to go to /kiln and sign in.
+  }
+
+  /**
+   * Content features (tag filters, galleries, event calendars, document chips)
+   * live in a separate runtime so this shim stays tiny. Load it only when the
+   * page actually uses one of them.
+   */
+  function loadFeaturesIfUsed() {
+    if (!document.querySelector('[data-kiln-tags],[data-kiln-filters],[data-kiln-gallery],[data-kiln-events],.kiln-doc')) return;
+    var s = document.createElement('script');
+    s.src = scriptSrc.replace(/kiln(\.min)?\.js([?#].*)?$/, 'kiln-features.js');
+    s.defer = true;
+    document.head.appendChild(s);
   }
 
   /** The dedicated Kiln entry page, served at /kiln (kiln.html at the site root). */

@@ -20,7 +20,7 @@ const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'i
 // Attribute names the splice engine is allowed to write or overwrite. Anything
 // else (on* handlers, style, srcdoc, …) is rejected so an edit can't inject
 // script-bearing attributes. data-* is allowed except data-cms* (structural).
-const SAFE_ATTRS = new Set(['href', 'src', 'alt', 'title', 'class', 'target', 'rel', 'width', 'height']);
+const SAFE_ATTRS = new Set(['href', 'src', 'alt', 'title', 'class', 'target', 'rel', 'width', 'height', 'style']);
 function attrNameAllowed(name) {
   if (SAFE_ATTRS.has(name)) return true;
   if (/^data-/i.test(name) && !/^data-cms/i.test(name)) return true;
@@ -41,6 +41,17 @@ function safeUrl(value) {
   const scheme = stripped.match(/^[a-z][a-z0-9+.-]*:/i);
   if (!scheme) return v;
   return /^(https?|mailto|tel):$/i.test(scheme[0]) ? v : '#';
+}
+
+/**
+ * Inline-style values may size and space things (the editor's image resize
+ * writes width/height styles) but never smuggle in fetches or behaviors:
+ * url(), expression(), @import and friends are rejected wholesale.
+ */
+export function safeStyle(value) {
+  const v = String(value);
+  if (/url\s*\(|expression\s*\(|javascript:|@import|behavior\s*:|binding\s*:|-moz-binding/i.test(v)) return '';
+  return v;
 }
 
 /**
@@ -205,8 +216,11 @@ export function applyEdits(raw, edits) {
         skipped.push({ key: edit.key, reason: `attribute "${edit.attr}" not allowed` });
         continue;
       }
-      // href/src values get scheme-sanitized as defense-in-depth (splices bypass DOMPurify).
-      const attrVal = (edit.attr === 'href' || edit.attr === 'src') ? safeUrl(edit.value) : String(edit.value);
+      // href/src values get scheme-sanitized, style values CSS-sanitized, as
+      // defense-in-depth (attribute splices bypass DOMPurify).
+      const attrVal = (edit.attr === 'href' || edit.attr === 'src') ? safeUrl(edit.value)
+        : edit.attr === 'style' ? safeStyle(edit.value)
+        : String(edit.value);
       const range = field.attrs.get(edit.attr);
       if (!range) {
         // Attribute doesn't exist in the source yet — insert it into the start tag.
@@ -252,6 +266,68 @@ export function applyEdits(raw, edits) {
   }
 
   return { html: out, applied: applied.reverse(), skipped };
+}
+
+/**
+ * Make-editable support: locate the Nth occurrence (0-based, tree order) of a
+ * tag in the raw source. Returns { start, end, attrInsert, text } for its start
+ * tag, or null. The editor computes the same N against the live DOM (with
+ * Kiln-injected elements filtered out), so N lines the two worlds up.
+ */
+export function findNthTag(raw, tag, nth) {
+  const doc = parse(raw, { sourceCodeLocationInfo: true });
+  const t = String(tag).toLowerCase();
+  let i = -1, found = null;
+  walk(doc, (node) => {
+    if (found || node.tagName !== t || !node.sourceCodeLocation?.startTag) return;
+    i++;
+    if (i === nth) found = node;
+  });
+  if (!found) return null;
+  const loc = found.sourceCodeLocation.startTag;
+  const text = raw.slice(loc.startOffset, loc.endOffset);
+  return {
+    start: loc.startOffset,
+    end: loc.endOffset,
+    attrInsert: loc.endOffset - (text.endsWith('/>') ? 2 : 1),
+    text,
+    innerText: textOf(found),
+  };
+}
+
+/** Concatenated text content of a parse5 node (for sanity-matching DOM ↔ source). */
+function textOf(node) {
+  let out = '';
+  walk(node, (n) => { if (n.nodeName === '#text') out += n.value; });
+  return out;
+}
+
+/**
+ * Insert Kiln annotation attributes into the Nth <tag>'s start tag.
+ * attrs must be a pre-built string like ` data-cms="hero_note"`.
+ * Returns the new HTML, or null if the element can't be located.
+ */
+export function annotateNthTag(raw, tag, nth, attrs) {
+  const node = findNthTag(raw, tag, nth);
+  if (!node) return null;
+  return raw.slice(0, node.attrInsert) + attrs + raw.slice(node.attrInsert);
+}
+
+/**
+ * Remove every Kiln annotation (data-cms*, data-kiln-gallery/events/filters)
+ * from the element indexed under `key`. Returns new HTML or null.
+ */
+export function removeAnnotations(raw, key) {
+  const { fields } = indexHtml(raw);
+  const f = fields.get(key);
+  if (!f || f.attrInsert === undefined) return null;
+  const selfClosing = raw.slice(f.attrInsert, f.attrInsert + 2) === '/>';
+  const tagEnd = f.attrInsert + (selfClosing ? 2 : 1);
+  const startTag = raw.slice(f.range.start, tagEnd);
+  const cleaned = startTag.replace(
+    /\s+data-(?:cms(?:-attr|-plain|-repeat|-menu|-list)?|kiln-(?:gallery|events|filters|tags))(?:="[^"]*"|='[^']*'|=[^\s>]+)?/gi, '');
+  if (cleaned === startTag) return raw;
+  return raw.slice(0, f.range.start) + cleaned + raw.slice(tagEnd);
 }
 
 /** Read the current source values for every field (for change detection / cancel). */

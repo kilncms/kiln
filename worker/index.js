@@ -77,6 +77,7 @@ export default {
       if (path === '/schedule' && request.method === 'POST') return await cors(env, request, await scheduleCreate(request, env));
       if (path === '/schedules' && request.method === 'GET') return await cors(env, request, await scheduleList(request, env, url));
       if (path === '/schedule/cancel' && request.method === 'POST') return await cors(env, request, await scheduleCancel(request, env));
+      if (path === '/presence' && request.method === 'POST') return await cors(env, request, await presencePing(request, env));
       if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
       if (path === '/google/callback') return googleCallback(url, env);
       if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
@@ -427,6 +428,63 @@ async function runDueSchedules(env) {
   } while (cursor);
 }
 
+// ─── Presence (who else is editing this page right now) ─────────────────────
+// pres:<repo>:<path>:<name> → { name, role, ts }   (TTL 90s; client pings every 30s)
+//
+// Advisory only: Kiln merges concurrent edits per-field at publish time (see
+// editFile's sha-conflict retry), so presence exists to make humans AWARE of
+// each other — the editor shows "Susan is also editing this page" and gates
+// same-field overwrites behind a confirm at publish.
+
+/** requirePush with a short KV cache — presence pings every 30s, and burning a
+ *  GitHub API call per ping per admin adds up. Cache hits only apply here, never
+ *  to the people/schedule admin routes. */
+async function requirePushCached(request, env, repo) {
+  const auth = (request.headers.get('Authorization') || '').replace(/^(token|Bearer)\s+/i, '');
+  if (!auth || !repo) return false;
+  const digest = bufToB64(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${auth}:${repo}`)));
+  const cacheKey = `pauth:${digest}`;
+  if (await env.KILN.get(cacheKey)) return true;
+  if (!(await requirePush(request, repo))) return false;
+  await env.KILN.put(cacheKey, '1', { expirationTtl: 300 });
+  return true;
+}
+
+async function presencePing(request, env) {
+  const { repo, path: pagePath, name } = await request.json().catch(() => ({}));
+  if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo) || typeof pagePath !== 'string' || !pagePath.startsWith('/')) {
+    return json({ error: 'bad request' }, 400);
+  }
+  // Editor session, or admin token (cached push check).
+  let who = null, role = null, scope = null;
+  const sess = request.headers.get('X-Kiln-Session');
+  if (sess && /^[a-f0-9]{64}$/.test(sess)) {
+    const e = await env.KILN.get(`esess:${sess}`, 'json');
+    if (e && (!e.exp || e.exp >= Date.now()) && e.repo === repo && e.role === 'editor') {
+      who = e.name; role = 'editor';
+      scope = { paths: e.paths || [''], keys: e.keys || [] };  // the editor UI greys out out-of-scope content
+    }
+  }
+  if (!who && (await requirePushCached(request, env, repo))) {
+    who = String(name || 'Owner').slice(0, 64);
+    role = 'owner';
+  }
+  if (!who) return json({ error: 'forbidden' }, 403);
+
+  const page = pagePath.slice(0, 200);
+  await env.KILN.put(`pres:${repo}:${page}:${who}`,
+    JSON.stringify({ name: who, role, ts: Date.now() }), { expirationTtl: 90 });
+
+  const others = [];
+  const list = await env.KILN.list({ prefix: `pres:${repo}:${page}:` });
+  for (const k of list.keys) {
+    if (k.name === `pres:${repo}:${page}:${who}`) continue;
+    const v = await env.KILN.get(k.name, 'json');
+    if (v) others.push({ name: v.name, role: v.role });
+  }
+  return json({ ok: true, others, scope });
+}
+
 // ─── People (Google sign-in allowlist) ───────────────────────────────────────
 // people:{repo} → [{ email, name, role: 'editor'|'member', days, paths? }]
 // `paths` (editors only) limits which file prefixes they may write; [''] = whole site.
@@ -442,7 +500,7 @@ async function peopleList(request, env, url) {
 }
 
 async function peopleUpsert(request, env) {
-  const { repo, email, name, role, days, paths } = await request.json().catch(() => ({}));
+  const { repo, email, name, role, days, paths, keys } = await request.json().catch(() => ({}));
   if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
   const addr = String(email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) return json({ error: 'bad email' }, 400);
@@ -453,7 +511,13 @@ async function peopleUpsert(request, env) {
     role,
     days: Number(days) === 0 ? 0 : Math.min(Math.max(Number(days) || 30, 1), 360),  // 0 = never expires
   };
-  if (role === 'editor') person.paths = normalizePaths(paths);
+  if (role === 'editor') {
+    person.paths = normalizePaths(paths);
+    // Section scope: data-cms key prefixes this editor may edit (advisory — the
+    // editor UI greys out everything else; file writes are still gated by paths).
+    const k = normalizePaths(keys).filter(x => x !== '');
+    if (k.length) person.keys = k.slice(0, 50);
+  }
   const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
   people.push(person);
   await env.KILN.put(`people:${repo}`, JSON.stringify(people));
@@ -564,7 +628,7 @@ async function googleCallback(url, env) {
     const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
     const exp = person.days ? Date.now() + person.days * 24 * 3600 * 1000 : null;  // days:0 = never
     await env.KILN.put(`esess:${session}`,
-      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, paths: person.paths || [''], created: Date.now(), exp }),
+      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], created: Date.now(), exp }),
       person.days ? { expirationTtl: person.days * 24 * 3600 } : undefined);
     const fp = { 'kiln-esession': session, 'kiln-name': displayName, 'kiln-repo': state.repo };
     if (exp) fp['kiln-exp'] = String(exp);

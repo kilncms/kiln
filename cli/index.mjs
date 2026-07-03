@@ -262,7 +262,7 @@ id = "${kvId}"
   // 6. Site wiring
   hr('Step 7 · Wire the site');
   mkdirSync('assets', { recursive: true });
-  for (const f of ['kiln.js', 'kiln-editor.js']) {
+  for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) {
     cpSync(path.join(PKG_ROOT, 'dist', f), path.join('assets', f));
   }
   if (!existsSync('assets/kiln-config.js')) {

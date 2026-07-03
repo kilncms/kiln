@@ -54,6 +54,58 @@ remove (✕) controls on each direct child. Keys inside repeated items don't nee
 </div>
 ```
 
+Repeats work inside tables too — put `data-cms-repeat` on the `<tbody>` and annotate
+the cells:
+
+```html
+<tbody data-cms-repeat="schedule">
+  <tr><td data-cms="row_date">Jan 21</td><td data-cms="row_note"></td></tr>
+</tbody>
+```
+
+### Tags & filters (any repeat)
+
+Editors can tag any block (🏷 on its hover controls) with comma-separated tags, e.g.
+`new, used, upcoming`. As soon as one block has tags, visitors automatically get filter
+pills above the list — “All” plus one per tag. You can also pre-tag blocks in HTML with
+`data-kiln-tags="new, upcoming"` on the repeat's direct children. No extra markup needed.
+
+### Photo gallery
+
+Add `data-kiln-gallery` next to `data-cms-repeat` to turn a repeat into a gallery:
+editors get a multi-photo uploader (“+ Add photos”), visitors get a responsive grid and
+a lightbox with paging, keyboard arrows, captions, and swipe:
+
+```html
+<div data-cms-repeat="photos" data-kiln-gallery>
+  <figure>
+    <img src="/assets/img/one.jpg" alt="" loading="lazy">
+    <figcaption data-cms="gallery_caption">First photo</figcaption>
+  </figure>
+</div>
+```
+
+### Events with calendar views
+
+Add `data-kiln-events` next to `data-cms-repeat` for an event list. Editors add/edit
+events through a structured form (title, date, start/end time, location, link); visitors
+get List / Month / Week / Day view buttons rendered from the same markup. Each event is
+a block whose first `<time datetime>` is the start (a second one is the end):
+
+```html
+<div data-cms-repeat="events" data-kiln-events>
+  <article class="kiln-event">
+    <h3 class="kiln-ev-title" data-cms="ev_title">Board meeting</h3>
+    <p class="kiln-ev-when"><time datetime="2026-07-15T18:00">Jul 15 · 6:00 PM</time></p>
+    <p class="kiln-ev-loc" data-cms="ev_loc">Rec Center</p>
+  </article>
+</div>
+```
+
+Tags, galleries, and events are powered by `kiln-features.js` (copied alongside
+`kiln.js`); the boot shim loads it only on pages that use one of these, and everything
+degrades to the plain markup without JavaScript.
+
 ## 3. Managed menu (optional but recommended)
 
 Mark the nav links container on EVERY page (and in templates) identically. Kiln's menu
@@ -148,7 +200,9 @@ At the end of `<body>` on EVERY page (and in templates):
 <script src="/assets/kiln.js" defer></script>
 ```
 
-Copy `kiln.js` and `kiln-editor.js` (from the Kiln repo's `dist/`) into `/assets/`.
+Copy `kiln.js`, `kiln-editor.js`, and `kiln-features.js` (from the Kiln repo's `dist/`)
+into `/assets/`. (`kiln-features.js` powers tag filters, galleries, and event calendars;
+the shim only loads it on pages that use them.)
 
 Also add a `kiln.html` entry page at the **site root** (this is what `yoursite.com/kiln`
 serves — the sign-in screen; there is no edit button anywhere on the site):
@@ -176,7 +230,9 @@ this one repo and signs in at `yoursite.com/kiln`.
 - [ ] Every page has the two script tags and `/assets/kiln-config.js` exists
 - [ ] A `kiln.html` entry page exists at the site root (serves `yoursite.com/kiln`)
 - [ ] Editable text/images/links annotated; keys unique per page; nothing nested
-- [ ] Card grids / doc lists wrapped in `data-cms-repeat`
+- [ ] Card grids / doc lists wrapped in `data-cms-repeat` (tables: on the `<tbody>`)
+- [ ] Galleries marked `data-kiln-gallery`, event lists `data-kiln-events` (both alongside `data-cms-repeat`)
+- [ ] `/assets/kiln-features.js` copied alongside `kiln.js`
 - [ ] Nav marked `data-cms-menu="main"` identically on every page and template
 - [ ] (Blog) `blog/index.html` + `_templates/post.html` + `_templates/post-card.html`
 - [ ] (Pages) `_templates/page.html`

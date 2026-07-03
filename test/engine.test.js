@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { indexHtml, applyEdits, readValues, pageFileCandidates, editHead, readHead } from '../src/engine.js';
+import { indexHtml, applyEdits, readValues, pageFileCandidates, editHead, readHead, findNthTag, annotateNthTag, removeAnnotations } from '../src/engine.js';
 
 test('editHead updates title and inserts/updates meta description', () => {
   const html = '<html><head>\n  <title>Old</title>\n</head><body>x</body></html>';
@@ -208,4 +208,39 @@ test('swapping an <img> inside a <picture> strips the shadowing <source> sibling
 test('duplicate data-cms keys warn outside a repeat but not inside one', () => {
   assert.equal(indexHtml('<div data-cms-repeat="x"><h3 data-cms="t">a</h3><h3 data-cms="t">b</h3></div>').warnings.length, 0);
   assert.equal(indexHtml('<h3 data-cms="t">a</h3><h3 data-cms="t">b</h3>').warnings.length, 1);
+});
+
+test('style attribute: splices size styles, rejects css smuggling', () => {
+  const html = '<img data-cms="pic" data-cms-attr="src" src="a.jpg" alt="x">';
+  const ok = applyEdits(html, [{ key: 'pic', attr: 'style', value: 'width:50%;height:auto' }]);
+  assert.ok(ok.html.includes('style="width:50%;height:auto"'));
+  const bad = applyEdits(html, [{ key: 'pic', attr: 'style', value: 'background:url(https://evil.example/x)' }]);
+  assert.ok(!bad.html.includes('url('));
+  const bad2 = applyEdits(html, [{ key: 'pic', attr: 'style', value: 'behavior:url(#default#time2)' }]);
+  assert.ok(!bad2.html.includes('behavior'));
+});
+
+test('findNthTag / annotateNthTag: locates and annotates by tree-order index', () => {
+  const html = '<body><p>alpha</p><div><p>beta</p></div><p>gamma</p></body>';
+  const n1 = findNthTag(html, 'p', 1);
+  assert.ok(n1 && html.slice(n1.start, n1.end) === '<p>');
+  assert.equal(n1.innerText, 'beta');
+  const out = annotateNthTag(html, 'p', 1, ' data-cms="beta_text"');
+  assert.ok(out.includes('<div><p data-cms="beta_text">beta</p></div>'));
+  assert.equal(annotateNthTag(html, 'p', 9, ' data-cms="x"'), null);
+  // self-closing tag: insert lands INSIDE the tag and indexes as a real field
+  const img = annotateNthTag('<img src="a.jpg" />', 'img', 0, ' data-cms="pic" data-cms-attr="src"');
+  const { fields } = indexHtml(img);
+  assert.ok(fields.has('pic'));
+  assert.equal(fields.get('pic').tag, 'img');
+});
+
+test('removeAnnotations: strips every kiln attribute, preserves the rest', () => {
+  const html = '<ul class="books" data-cms-repeat="books" data-kiln-gallery data-kiln-filters><li data-cms="b">x</li></ul>';
+  const out = removeAnnotations(html, 'books');
+  assert.ok(out.includes('<ul class="books">'));
+  assert.ok(out.includes('<li data-cms="b">x</li>'));   // inner field untouched
+  const out2 = removeAnnotations(out, 'b');
+  assert.ok(out2.includes('<li>x</li>'));
+  assert.equal(removeAnnotations(html, 'nope'), null);
 });
