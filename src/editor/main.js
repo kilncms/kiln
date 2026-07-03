@@ -289,13 +289,19 @@ function inlineImgPopover(img) {
     b.addEventListener('mousedown', (e) => e.preventDefault()); // keep the field's selection
     b.onclick = (e) => {
       e.stopPropagation(); e.preventDefault();
-      if (b.dataset.x) { img.remove(); pop.remove(); return; }
+      if (b.dataset.x) { img.remove(); handle.remove(); pop.remove(); return; }
       if (b.dataset.w === 'orig') { img.style.removeProperty('width'); img.style.removeProperty('height'); }
       else { img.style.width = b.dataset.w; img.style.height = 'auto'; }
+      window.dispatchEvent(new Event('resize')); // nudge the handle back into place
     };
   });
+  // Inline images get the same corner drag handle as swappable ones (stage=false:
+  // the surrounding field's commit persists the change).
+  const handle = enableImageDragResize(img, null, false);
   const away = (e) => {
-    if (!pop.contains(e.target) && e.target !== img) { pop.remove(); document.removeEventListener('click', away, true); }
+    if (!pop.contains(e.target) && e.target !== img && e.target !== handle) {
+      pop.remove(); handle.remove(); document.removeEventListener('click', away, true);
+    }
   };
   setTimeout(() => document.addEventListener('click', away, true), 0);
 }
@@ -837,7 +843,7 @@ function imageToolbar(img, key) {
  * while the largest version we have is retained (data-kiln-master) so you can
  * drag back up later without quality loss.
  */
-function enableImageDragResize(img, key) {
+function enableImageDragResize(img, key, stage = true) {
   const handle = document.createElement('div');
   handle.className = 'kiln-img-handle';
   handle.title = 'Drag to resize — the file is re-sampled to fit';
@@ -876,7 +882,7 @@ function enableImageDragResize(img, key) {
     const finalW = img.getBoundingClientRect().width;
     drag = null;
     handle.classList.remove('kiln-img-handle-on');
-    await resampleToDisplay(img, key, Math.round(finalW));
+    await resampleToDisplay(img, key, Math.round(finalW), stage);
     place();
   });
   return handle;
@@ -888,8 +894,12 @@ async function urlToBitmap(url) {
   return createImageBitmap(await res.blob());
 }
 
-/** Resample the retained master image to ~DPR×cssWidth and stage it as the src. */
-async function resampleToDisplay(img, key, cssWidth) {
+/**
+ * Resample the retained master image to ~DPR×cssWidth and set it as the src.
+ * `stage` false = the image lives inside a rich-text field being edited, so the
+ * field's own commit persists it (no separate keyed staging).
+ */
+async function resampleToDisplay(img, key, cssWidth, stage = true) {
   try {
     // The master is the largest version we hold. First resize captures it.
     let master = img.getAttribute('data-kiln-master')
@@ -901,7 +911,7 @@ async function resampleToDisplay(img, key, cssWidth) {
       img.style.width = `${cssWidth}px`;
       img.style.height = 'auto';
       img.removeAttribute('data-kiln-master');
-      stageImageEl(img, key);
+      if (stage) stageImageEl(img, key);
       setStatus(`Sized to ${cssWidth}px — Publish to keep it`, 'saved');
       return;
     }
@@ -924,7 +934,7 @@ async function resampleToDisplay(img, key, cssWidth) {
     img.style.height = 'auto';
     if (cfg.sandbox) {
       img.src = `data:image/webp;base64,${base64}`;
-      stageImageEl(img, key);
+      if (stage) stageImageEl(img, key);
       setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB) — Publish to keep it`, 'saved');
       return;
     }
@@ -933,7 +943,7 @@ async function resampleToDisplay(img, key, cssWidth) {
     await putBinaryFile(state.gh, cfg.repo, repoPath, { base64, branch: cfg.branch || 'main', message: `Resize ${name} (via Kiln)` });
     img.src = URL.createObjectURL(blob);
     img.setAttribute('data-kiln-src', `/assets/uploads/${name}`);
-    stageImageEl(img, key);
+    if (stage) stageImageEl(img, key);
     setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB) — Publish to put it live`, 'saved');
   } catch (err) {
     console.error('[kiln] resize', err);
@@ -2421,11 +2431,37 @@ function makeDialog(el) {
   };
 }
 
+function applyAnnotationToDom(el, kind, key) {
+  // Reflect the new annotation in the live DOM so it's usable without a reload.
+  if (kind === 'img') {
+    el.setAttribute('data-cms', key);
+    el.setAttribute('data-cms-attr', 'src');
+    decorateField(el, key);
+  } else if (kind === 'repeat' || kind === 'gallery' || kind === 'events') {
+    el.setAttribute('data-cms-repeat', key);
+    if (kind === 'gallery') el.setAttribute('data-kiln-gallery', '');
+    if (kind === 'events') el.setAttribute('data-kiln-events', '');
+    setupRepeat(el, key);
+    el.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
+  } else {
+    el.setAttribute('data-cms', key);
+    if (kind === 'plain') el.setAttribute('data-cms-plain', '');
+    decorateField(el, key);
+  }
+}
+
 async function annotateElement(el, kind, key) {
   const tag = el.tagName.toLowerCase();
   const nth = domNth(el);
   if (nth < 0) throw new Error('lost track of the element — reload and try again');
   const domText = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  // Demo sandbox: no repo to commit to — just wire it up live for the session.
+  if (cfg.sandbox) {
+    applyAnnotationToDom(el, kind, key);
+    state.fields = indexHtml(document.documentElement.outerHTML);
+    setStatus(`“${key}” is now editable ✓ (demo: for this session)`, 'saved');
+    return;
+  }
   const attrs = kind === 'img' ? ` data-cms="${key}" data-cms-attr="src"`
     : kind === 'repeat' ? ` data-cms-repeat="${key}"`
     : kind === 'gallery' ? ` data-cms-repeat="${key}" data-kiln-gallery`
@@ -2445,22 +2481,7 @@ async function annotateElement(el, kind, key) {
   }, `Make "${key}" editable in ${state.page.path} (via Kiln)`);
   if (result.text) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: `“${key}” now editable` });
   await loadPageSource();
-  // Reflect immediately in the live DOM so it's usable without a reload.
-  if (kind === 'img') {
-    el.setAttribute('data-cms', key);
-    el.setAttribute('data-cms-attr', 'src');
-    decorateField(el, key);
-  } else if (kind === 'repeat' || kind === 'gallery' || kind === 'events') {
-    el.setAttribute('data-cms-repeat', key);
-    if (kind === 'gallery') el.setAttribute('data-kiln-gallery', '');
-    if (kind === 'events') el.setAttribute('data-kiln-events', '');
-    setupRepeat(el, key);
-    el.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
-  } else {
-    el.setAttribute('data-cms', key);
-    if (kind === 'plain') el.setAttribute('data-cms-plain', '');
-    decorateField(el, key);
-  }
+  applyAnnotationToDom(el, kind, key);
   setStatus(`“${key}” is now editable ✓ — committed to the site`, 'saved');
 }
 
@@ -2483,9 +2504,23 @@ function unmakeDialog(el) {
       <button class="kiln-btn-publish" id="kiln-um-go">Remove editing</button>
     </div>
     <p class="kiln-np-step" id="kiln-um-status"></p>`);
+  const stripDom = () => {
+    ['data-cms', 'data-cms-attr', 'data-cms-plain', 'data-cms-repeat', 'data-cms-menu', 'data-kiln-gallery', 'data-kiln-events']
+      .forEach(a => el.removeAttribute(a));
+    el.classList.remove('kiln-field', 'kiln-repeat');
+    el.removeAttribute('title');
+  };
   m.querySelector('#kiln-um-go').onclick = async () => {
     const status = m.querySelector('#kiln-um-status');
     status.textContent = 'Committing…';
+    // Demo sandbox: no repo — just strip it from the live DOM for the session.
+    if (cfg.sandbox) {
+      stripDom();
+      state.fields = indexHtml(document.documentElement.outerHTML);
+      m.remove();
+      setStatus(`“${key}” is no longer editable (demo)`, 'saved');
+      return;
+    }
     try {
       const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main', (text) => {
         const out = removeAnnotations(text, key);
@@ -2557,7 +2592,7 @@ function renderAdminBar() {
       <button id="kiln-pagesettings" class="kiln-fab-item">Page settings</button>
       <button id="kiln-findreplace" class="kiln-fab-item">Find &amp; replace</button>
       <button id="kiln-history" class="kiln-fab-item">History</button>
-      ${mode === 'admin' ? '<button id="kiln-makeblock" class="kiln-fab-item">Make things editable</button>' : ''}
+      ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-makeblock" class="kiln-fab-item">✨ Make things editable</button>' : ''}
       ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
       <button id="kiln-settings" class="kiln-fab-item">Settings</button>
       <div class="kiln-fab-foot">
@@ -2698,7 +2733,7 @@ function renderTopBar() {
     <button id="kiln-pagesettings" class="kiln-btn-ghost">Page</button>
     <button id="kiln-findreplace" class="kiln-btn-ghost">Replace</button>
     <button id="kiln-history" class="kiln-btn-ghost">History</button>
-    ${mode === 'admin' ? '<button id="kiln-makeblock" class="kiln-btn-ghost" title="Make things editable">Editable</button><button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
+    ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-makeblock" class="kiln-btn-ghost" title="Make things editable">✨ Editable</button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
     <button id="kiln-settings" class="kiln-btn-ghost">Settings</button>
     <button id="kiln-draft" class="kiln-btn-ghost" hidden>Draft</button>
     <button id="kiln-schedule" class="kiln-btn-ghost" hidden>Schedule</button>
@@ -2947,7 +2982,10 @@ let statusHideTimer = null;
 function setStatus(text, kind) {
   const el = document.getElementById('kiln-status');
   if (!el) return;
-  el.textContent = text;
+  // A spinner rides alongside busy ('saving') states so publishing/uploading
+  // reads as active work, not a frozen label.
+  el.innerHTML = (kind === 'saving' ? '<span class="kiln-spin" aria-hidden="true"></span>' : '')
+    + `<span>${escapeHtml(text)}</span>`;
   el.className = `kiln-status kiln-status--${kind}`;
   el.hidden = false;
   clearTimeout(statusHideTimer);
@@ -3068,7 +3106,11 @@ function injectStyles() {
   background:var(--kiln-bg);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
   color:#d6d8e1;font-size:12px;padding:8px 13px;border-radius:11px;border:1px solid rgba(255,255,255,.09);
   box-shadow:0 6px 22px rgba(0,0,0,.3);max-width:70vw;overflow:hidden;text-overflow:ellipsis}
+.kiln-status{display:flex;align-items:center;gap:8px}
 .kiln-status--saving{color:var(--kiln-warn)}
+.kiln-spin{flex:none;width:13px;height:13px;border-radius:50%;border:2px solid rgba(251,191,36,.3);
+  border-top-color:var(--kiln-warn);animation:kilnspin .7s linear infinite}
+@keyframes kilnspin{to{transform:rotate(360deg)}}
 .kiln-status--saved{color:var(--kiln-ok)}
 .kiln-status--error{color:var(--kiln-err)}
 .kiln-btn-publish{background:var(--kiln-accent);color:#fff;border:none;padding:7px 16px;border-radius:9px;
