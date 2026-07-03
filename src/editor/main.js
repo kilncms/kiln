@@ -28,6 +28,7 @@ const SANDBOX_TTL = 24 * 3600 * 1000;
 // (Declared up here — used by hasFeature() which runs during the init() call below;
 // esbuild hoists const→var, so a later declaration would read undefined at boot.)
 const EDITOR_DEFAULT_FEATURES = ['pagesettings', 'history', 'draft'];
+const UNDO_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-8.4L3 7"/></svg>';
 
 import { SANITIZE, CONTAINER_SANITIZE } from './sanitize.js';
 
@@ -2586,7 +2587,6 @@ function previewFieldRevert(key, value, histModal) {
   if (!n) setStatus('That section isn’t on this page anymore', 'error');
 }
 
-const UNDO_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-8.4L3 7"/></svg>';
 
 /**
  * Per-section history: reached by clicking into a section and pressing the clock
