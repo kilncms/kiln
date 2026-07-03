@@ -405,6 +405,7 @@ The page comes off the live site on the next deploy. It stays in the site's Git 
 #kiln-fab-badge{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;border-radius:9px;
   background:var(--kiln-warn);color:#1c1300;font-size:11px;font-weight:700;display:flex;
   align-items:center;justify-content:center;padding:0 5px;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+#kiln-fab-badge[hidden]{display:none!important}
 #kiln-fab-menu[hidden]{display:none!important}
 #kiln-fab-menu{position:absolute;width:230px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(16px);
   backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.09);border-radius:16px;padding:8px;
