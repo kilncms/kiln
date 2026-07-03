@@ -265,18 +265,107 @@ export async function handleCloud(request, env, url, path) {
     if (!sess || sess.login !== (env.CLOUD_ADMIN || '')) return json({ error: 'forbidden' }, 403);
     if (path === '/admin/cloud/overview') {
       const accounts = await env.kiln_cloud.prepare('SELECT COUNT(*) n FROM accounts').first();
-      const sites = await env.kiln_cloud.prepare('SELECT s.*, a.github_login FROM sites s JOIN accounts a ON a.id = s.account_id ORDER BY s.created_at DESC').all();
-      const active = (sites.results || []).filter(s => s.status === 'active');
-      const mrr = active.reduce((m, s) => m + (s.plan === 'managed' ? 14.99 : 4.99), 0);
+      const sites = await env.kiln_cloud.prepare('SELECT s.*, a.github_login, a.email FROM sites s JOIN accounts a ON a.id = s.account_id ORDER BY s.created_at DESC').all();
+      const rows = sites.results || [];
+      const active = rows.filter(s => s.status === 'active');
+      const price = (p) => p === 'managed' ? 14.99 : 4.99;
+      const mrr = active.reduce((m, s) => m + price(s.plan), 0);
       const store = await lsStoreMode(env);
-      return json({ accounts: accounts.n, sites: sites.results || [], active: active.length, mrr: Number(mrr.toFixed(2)), store });
+      const insights = buildInsights(rows, accounts.n, price);
+      return json({ accounts: accounts.n, sites: rows, active: active.length, mrr: Number(mrr.toFixed(2)), store, insights });
     }
     if (path === '/admin/cloud/grant' && request.method === 'POST') {
       const { site_id, status } = await request.json().catch(() => ({}));
-      await env.kiln_cloud.prepare('UPDATE sites SET status = ? WHERE id = ?').bind(status || 'active', site_id).run();
+      if (!['active', 'trialing', 'past_due', 'canceled'].includes(status)) return json({ error: 'bad status' }, 400);
+      await env.kiln_cloud.prepare('UPDATE sites SET status = ? WHERE id = ?').bind(status, site_id).run();
       return json({ ok: true });
+    }
+    if (path === '/admin/cloud/remove' && request.method === 'POST') {
+      const { site_id } = await request.json().catch(() => ({}));
+      await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ?').bind(site_id).run();
+      return json({ ok: true });
+    }
+    // Per-site troubleshooting: app-install check, live-site reachability, /kiln
+    // entry check, editability (is the origin actually in the active/trialing
+    // allowlist), and live Lemon Squeezy subscription status.
+    if (path === '/admin/cloud/diagnose') {
+      const id = url.searchParams.get('site');
+      const site = await env.kiln_cloud.prepare('SELECT s.*, a.github_login, a.email FROM sites s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?').bind(id).first();
+      if (!site) return json({ error: 'not found' }, 404);
+      const checks = [];
+      const add = (name, ok, detail) => checks.push({ name, ok, detail });
+
+      const installed = await repoInstalled(env, site.repo);
+      add('GitHub App installed on repo', installed,
+        installed ? `kiln-cms is installed on ${site.repo}` : `Not installed — customer must add it at github.com/apps/kiln-cms`);
+
+      add('Site editable (allowlisted)', ['active', 'trialing'].includes(site.status),
+        `Status is "${site.status}" — editing is allowed only for active/trialing`);
+
+      let reachable = false, reachDetail = 'no response';
+      try {
+        const r = await fetch(site.origin, { method: 'HEAD', redirect: 'manual' });
+        reachable = r.status < 500;
+        reachDetail = `HTTP ${r.status}`;
+      } catch (e) { reachDetail = String(e.message || e); }
+      add('Live site reachable', reachable, `${site.origin} → ${reachDetail}`);
+
+      let kilnEntry = false, entryDetail = 'not found';
+      try {
+        const r = await fetch(site.origin.replace(/\/$/, '') + '/kiln', { method: 'HEAD' });
+        kilnEntry = r.ok;
+        entryDetail = `HTTP ${r.status}`;
+      } catch (e) { entryDetail = String(e.message || e); }
+      add('/kiln sign-in page present', kilnEntry, `${site.origin}/kiln → ${entryDetail}`);
+
+      if (site.ls_subscription_id) {
+        try {
+          const r = await fetch(`${LS}/subscriptions/${site.ls_subscription_id}`,
+            { headers: { Authorization: `Bearer ${env.LS_API_KEY}`, Accept: 'application/vnd.api+json' } });
+          const d = r.ok ? await r.json() : null;
+          const st = d?.data?.attributes?.status;
+          add('Lemon Squeezy subscription', st === 'active' || st === 'on_trial', `LS status: ${st || 'unknown'}`);
+        } catch (e) { add('Lemon Squeezy subscription', false, String(e.message || e)); }
+      } else {
+        add('Lemon Squeezy subscription', false, 'No subscription yet (trial or comped)');
+      }
+      return json({ site, checks });
     }
   }
 
   return null;  // not a cloud route
+}
+
+/** Revenue + lifecycle breakdowns computed from the sites table (no history table needed). */
+function buildInsights(rows, accountCount, price) {
+  const byStatus = { active: 0, trialing: 0, past_due: 0, canceled: 0 };
+  const byPlan = { cloud: 0, managed: 0 };
+  let mrrCloud = 0, mrrManaged = 0;
+  const now = Date.now();
+  const day = 86400 * 1000;
+  let signups30 = 0, signups7 = 0;
+  const trialsExpiring = [];
+  for (const s of rows) {
+    if (byStatus[s.status] !== undefined) byStatus[s.status]++;
+    if (byPlan[s.plan] !== undefined) byPlan[s.plan]++;
+    if (s.status === 'active') { if (s.plan === 'managed') mrrManaged += price('managed'); else mrrCloud += price('cloud'); }
+    if (now - s.created_at < 30 * day) signups30++;
+    if (now - s.created_at < 7 * day) signups7++;
+    // Self-serve trials (no LS subscription) auto-expire 7 days after creation.
+    if (s.status === 'trialing' && !s.ls_subscription_id) {
+      const daysLeft = Math.ceil((s.created_at + 7 * day - now) / day);
+      trialsExpiring.push({ id: s.id, repo: s.repo, github_login: s.github_login, daysLeft });
+    }
+  }
+  const paying = byStatus.active;
+  const everConverted = paying + byStatus.past_due + byStatus.canceled; // rough denominator
+  const conversion = everConverted ? Math.round((paying / everConverted) * 100) : null;
+  return {
+    byStatus, byPlan,
+    mrrCloud: Number(mrrCloud.toFixed(2)), mrrManaged: Number(mrrManaged.toFixed(2)),
+    arr: Number(((mrrCloud + mrrManaged) * 12).toFixed(2)),
+    signups30, signups7,
+    trialsExpiring: trialsExpiring.sort((a, b) => a.daysLeft - b.daysLeft),
+    conversion,
+  };
 }
