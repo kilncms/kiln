@@ -49,6 +49,10 @@ const state = {
   // committed to the repo until you actually publish (Discard leaves no orphans).
   // repoPath → base64
   pendingBinaries: new Map(),
+  // Structural changes from "Make things editable" (annotate/unannotate the HTML),
+  // applied to the source at Publish time — so they're pending like everything else.
+  // [{ op:'annotate', tag, nth, attrs } | { op:'remove', key }]
+  pendingStructural: [],
 };
 
 /** Queue a binary to be committed with the next Publish (not immediately). Returns nothing. */
@@ -118,7 +122,7 @@ async function init() {
   startPresence();
 
   window.addEventListener('beforeunload', (e) => {
-    if (state.pending.size || state.pendingBinaries.size) { e.preventDefault(); e.returnValue = ''; }
+    if (state.pending.size || state.pendingBinaries.size || state.pendingStructural.length) { e.preventDefault(); e.returnValue = ''; }
   });
 }
 
@@ -756,20 +760,36 @@ function stagePending(key, patch) {
   refreshPublishButton();
 }
 
+/** The committed value of a field's HTML (sanitized rich text, or escaped plain text). */
+function fieldValue(html, plain) {
+  if (plain) { const d = document.createElement('div'); d.innerHTML = html; return escapeHtml(d.textContent); }
+  return DOMPurify.sanitize(html, SANITIZE);
+}
+
 function commitEdit(el, key) {
   const plain = el.hasAttribute('data-cms-plain');
-  const value = plain
-    ? escapeHtml(el.textContent)
-    : DOMPurify.sanitize(el.innerHTML, SANITIZE);
+  const value = fieldValue(el.innerHTML, plain);
   el.innerHTML = value;
   el.contentEditable = 'false';
   el.classList.remove('kiln-editing');
-  el.classList.add('kiln-modified');
 
   // Link elements: apply the toolbar's href before staging (scheme-sanitized).
   const hrefInput = document.querySelector('#kiln-toolbar .kiln-href-input');
   const hrefValue = hrefInput ? safeUrl(hrefInput.value) : null;
   const hrefChanged = hrefInput && el.tagName === 'A' && hrefValue !== el.getAttribute('href');
+
+  // Clicking into a field and back out WITHOUT changing anything must not create
+  // a phantom edit (which would light up the badge and enable Publish/Discard).
+  const original = state.originals.get(key);
+  const unchanged = original !== undefined && fieldValue(original, plain) === value && !hrefChanged;
+  if (unchanged) {
+    state.originals.delete(key);
+    state.active = null;
+    removeToolbar();
+    return;
+  }
+
+  el.classList.add('kiln-modified');
   if (hrefChanged) el.setAttribute('href', hrefValue);
 
   const repeat = el.closest('[data-cms-repeat]');
@@ -1228,7 +1248,7 @@ function flattenPending() {
 }
 
 async function publish() {
-  if (!state.pending.size && !state.pendingBinaries.size) return;
+  if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length) return;
   if (cfg.sandbox) return publishSandbox();
 
   // Edits inside a data-cms-partial (e.g. a shared footer or header) fan out to
@@ -1265,16 +1285,21 @@ async function publish() {
       state.pendingBinaries.clear();
     }
     let result = null;
-    if (localEdits.length) {
+    if (localEdits.length || state.pendingStructural.length) {
+      const structDesc = state.pendingStructural.map(s => s.op === 'annotate' ? `+${s.key}` : `-${s.key}`);
       result = await editFile(
         state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
         (text) => {
-          const { html, skipped } = applyEdits(text, localEdits);
+          // Structural changes (make/unmake editable) first, so field edits can
+          // reference newly-annotated keys; then splice the field edits.
+          const t = applyStructural(text);
+          const { html, skipped } = applyEdits(t, localEdits);
           for (const s of skipped) console.warn('[kiln] skipped:', s);
           return html;
         },
-        `Edit ${state.page.path}: ${localEdits.map(e => e.key).join(', ')} (via Kiln)`
+        `Edit ${state.page.path}: ${[...localEdits.map(e => e.key), ...structDesc].join(', ')} (via Kiln)`
       );
+      state.pendingStructural = [];
     }
     if (partialEdits.length) await publishPartials(partialEdits);
     state.pending.clear();
@@ -1937,49 +1962,163 @@ async function invitePanel() {
 
 // ─── History (per-page restore points) ───────────────────────────────────────
 
+const histCache = new Map();   // sha → file text (avoid re-fetching per field/commit)
+async function histFile(sha) {
+  if (!histCache.has(sha)) histCache.set(sha, (await getFile(state.gh, cfg.repo, state.page.path, sha)).text);
+  return histCache.get(sha);
+}
+
 async function historyPanel() {
   const m = modal(`
     <h3>History — ${escapeHtml(state.page.path)}</h3>
-    <p class="kiln-dim">Every publish is a snapshot. Restoring puts that version of THIS page
-    back as a new change (nothing is ever lost).</p>
-    <div id="kiln-hist" class="kiln-inv-list">Loading…</div>
-    <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>
+    <div class="kiln-tabs">
+      <button class="kiln-tab kiln-tab-on" data-tab="section">By section</button>
+      <button class="kiln-tab" data-tab="page">Whole page</button>
+    </div>
+    <div id="kiln-hist-section">
+      <label>Section
+        <select id="kiln-hist-key"><option value="">Pick a section to see its timeline…</option></select></label>
+      <div id="kiln-hist-field" class="kiln-inv-list" style="margin-top:8px"></div>
+    </div>
+    <div id="kiln-hist-page" hidden>
+      <p class="kiln-dim">Each publish is a full-page snapshot. Restoring the whole page reverts
+      <strong>everything</strong> — including layout and Kiln setup — so prefer <em>By section</em>
+      for content. Restores land as a new change; nothing is ever lost.</p>
+      <div id="kiln-hist" class="kiln-inv-list">Loading…</div>
+    </div>
     <p class="kiln-np-step" id="kiln-hist-status"></p>`);
-  const list = m.querySelector('#kiln-hist');
   const status = m.querySelector('#kiln-hist-status');
+
+  // Tabs
+  m.querySelectorAll('.kiln-tab').forEach(t => t.onclick = () => {
+    m.querySelectorAll('.kiln-tab').forEach(x => x.classList.toggle('kiln-tab-on', x === t));
+    m.querySelector('#kiln-hist-section').hidden = t.dataset.tab !== 'section';
+    m.querySelector('#kiln-hist-page').hidden = t.dataset.tab !== 'page';
+  });
+
+  let commits = [];
   try {
-    const commits = await state.gh.request('GET',
-      `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=15`);
-    list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No history yet.</p>';
-    commits.forEach((c, i) => {
-      const div = document.createElement('div');
-      div.className = 'kiln-inv-row';
-      const when = new Date(c.commit.author.date).toLocaleString(undefined,
-        { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-      div.innerHTML = `<span><strong>${escapeHtml(c.commit.message.split('\n')[0].slice(0, 60))}</strong>
-        <small>${when} · ${escapeHtml(c.commit.author.name)}</small></span>
-        ${i === 0 ? '<small class="kiln-dim">current</small>' : '<button class="kiln-btn-ghost">Restore</button>'}`;
-      const btn = div.querySelector('button');
-      if (btn) btn.onclick = async () => {
-        btn.disabled = true;
-        status.textContent = 'Restoring…';
-        try {
-          const old = await getFile(state.gh, cfg.repo, state.page.path, c.sha);
-          const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
-            () => old.text, `Restore ${state.page.path} to ${c.sha.slice(0, 7)} (via Kiln)`);
-          if (result.unchanged) { status.textContent = 'That version is identical to the current one.'; btn.disabled = false; return; }
-          status.textContent = 'Restored ✓ — Kiln is watching for it to go live (safe to close this).';
-          watchDeploy(result.commit?.sha, result.text);
-        } catch (err) {
-          status.textContent = `Restore failed: ${err.message}`;
-          btn.disabled = false;
+    commits = await state.gh.request('GET',
+      `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=20`);
+  } catch (err) { status.textContent = `Could not load history: ${err.message}`; return; }
+
+  // ── By-section: a per-field timeline you can revert one version at a time ──
+  const sel = m.querySelector('#kiln-hist-key');
+  const editableKeys = [...state.fields.fields].filter(([, f]) => f.kind === 'field' && f.inner).map(([k]) => k);
+  for (const k of editableKeys) sel.appendChild(Object.assign(document.createElement('option'), { value: k, textContent: k }));
+  const fieldBox = m.querySelector('#kiln-hist-field');
+  sel.onchange = async () => {
+    const key = sel.value;
+    if (!key) { fieldBox.innerHTML = ''; return; }
+    fieldBox.innerHTML = '<p class="kiln-dim">Loading this section’s timeline…</p>';
+    try {
+      // Reconstruct the field's value at each commit; collapse unchanged runs.
+      const timeline = [];
+      let lastVal = null;
+      for (const c of commits.slice(0, 12)) {
+        const text = await histFile(c.sha);
+        const vals = readValues(text);
+        const v = vals[key];
+        if (v === undefined) continue;
+        if (v !== lastVal) { timeline.push({ c, v }); lastVal = v; }
+      }
+      if (!timeline.length) { fieldBox.innerHTML = '<p class="kiln-dim">No recorded changes for this section.</p>'; return; }
+      fieldBox.innerHTML = '';
+      timeline.forEach(({ c, v }, i) => {
+        const when = new Date(c.commit.author.date).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        const preview = escapeHtml((new DOMParser().parseFromString(v, 'text/html').body.textContent || '').trim().slice(0, 80)) || '<em>(empty)</em>';
+        const row = document.createElement('div');
+        row.className = 'kiln-inv-row';
+        row.innerHTML = `<span><span class="kiln-hist-prev">${preview}</span>
+          <small>${when} · ${escapeHtml(c.commit.author.name)}</small></span>
+          ${i === 0 ? '<small class="kiln-dim">current</small>' : '<button class="kiln-btn-ghost">Preview &amp; revert</button>'}`;
+        const btn = row.querySelector('button');
+        if (btn) btn.onclick = () => previewFieldRevert(key, v, m);
+        fieldBox.appendChild(row);
+      });
+    } catch (err) { fieldBox.innerHTML = `<p class="kiln-dim">Couldn’t load: ${escapeHtml(err.message)}</p>`; }
+  };
+
+  // ── Whole-page snapshots (with structural-loss guard) ──
+  const list = m.querySelector('#kiln-hist');
+  list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No history yet.</p>';
+  commits.forEach((c, i) => {
+    const div = document.createElement('div');
+    div.className = 'kiln-inv-row';
+    const when = new Date(c.commit.author.date).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    div.innerHTML = `<span><strong>${escapeHtml(c.commit.message.split('\n')[0].slice(0, 56))}</strong>
+      <small>${when} · ${escapeHtml(c.commit.author.name)}</small></span>
+      ${i === 0 ? '<small class="kiln-dim">current</small>' : '<button class="kiln-btn-ghost">Restore</button>'}`;
+    const btn = div.querySelector('button');
+    if (btn) btn.onclick = async () => {
+      btn.disabled = true;
+      status.innerHTML = '<span class="kiln-spin"></span> Checking that version…';
+      try {
+        const oldText = await histFile(c.sha);
+        // Guard: warn if this snapshot predates the current Kiln setup (missing
+        // boot scripts or fewer editable regions) — that's how a restore once
+        // wiped a page's nav + Kiln scripts.
+        const curHasKiln = /kiln(\.min)?\.js/.test(state.page.text);
+        const oldHasKiln = /kiln(\.min)?\.js/.test(oldText);
+        const curFields = state.fields.fields.size;
+        const oldFields = indexHtml(oldText).fields.size;
+        if ((curHasKiln && !oldHasKiln) || oldFields < curFields - 2) {
+          if (!confirm(`This older version looks structurally different from the page today`
+            + (curHasKiln && !oldHasKiln ? ' — it’s missing the Kiln scripts, so restoring it would make the page uneditable' : '')
+            + (oldFields < curFields ? ` and has fewer editable sections (${oldFields} vs ${curFields})` : '')
+            + `.\n\nRestoring reverts the WHOLE page. For content, "By section" is safer.\n\nRestore the whole page anyway?`)) {
+            btn.disabled = false; status.textContent = ''; return;
+          }
         }
-      };
-      list.appendChild(div);
-    });
-  } catch (err) {
-    list.innerHTML = `<p class="kiln-dim">Could not load history: ${escapeHtml(err.message)}</p>`;
-  }
+        status.innerHTML = '<span class="kiln-spin"></span> Restoring…';
+        const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
+          () => oldText, `Restore ${state.page.path} to ${c.sha.slice(0, 7)} (via Kiln)`);
+        if (result.unchanged) { status.textContent = 'That version is identical to the current one.'; btn.disabled = false; return; }
+        watchDeploy(result.commit?.sha, result.text);
+        const actions = document.createElement('div');
+        actions.className = 'kiln-modal-actions';
+        actions.innerHTML = '<button class="kiln-btn-publish" id="kiln-hist-reload">Restored ✓ — reload to see it</button>';
+        list.replaceChildren(actions);
+        actions.querySelector('#kiln-hist-reload').onclick = () => location.reload();
+      } catch (err) { status.textContent = `Restore failed: ${err.message}`; btn.disabled = false; }
+    };
+    list.appendChild(div);
+  });
+}
+
+/**
+ * Preview reverting one field to a past value: apply it to the live DOM (visible
+ * preview), stage it as a pending edit, and let the user Publish or Undo. Both
+ * before AND after a prior publish — it's just a staged field edit either way.
+ */
+function previewFieldRevert(key, value, histModal) {
+  const el = document.querySelector(`[data-cms="${CSS.escape(key)}"]`);
+  if (!el) { setStatus('That section isn’t on this page anymore', 'error'); return; }
+  const before = el.innerHTML;
+  el.innerHTML = value;
+  el.classList.add('kiln-modified');
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.add('kiln-flash');
+  setTimeout(() => el.classList.remove('kiln-flash'), 1600);
+  histModal?.remove();
+  const m = modal(`
+    <h3>Preview: “${escapeHtml(key)}” reverted</h3>
+    <p class="kiln-dim">The section on the page now shows the older version (highlighted). Keep it
+    as a pending edit and Publish when ready, or undo.</p>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" id="kiln-rev-undo">Undo</button>
+      <button class="kiln-btn-publish" id="kiln-rev-keep">Keep it (stage the edit)</button>
+    </div>`);
+  m.querySelector('#kiln-rev-keep').onclick = () => {
+    stagePending(key, { html: value });
+    m.remove();
+    setStatus('Reverted section staged — Publish when ready', 'saved');
+  };
+  m.querySelector('#kiln-rev-undo').onclick = () => {
+    el.innerHTML = before;
+    el.classList.remove('kiln-modified');
+    m.remove();
+  };
 }
 
 // ─── Page settings (title + meta description) ────────────────────────────────
@@ -2347,6 +2486,9 @@ function exitPickMode() {
   document.removeEventListener('keydown', pickMode.esc, true);
   document.querySelectorAll('.kiln-pick-hover').forEach(n => n.classList.remove('kiln-pick-hover'));
   pickMode.bar.remove();
+  // Restore the Kiln button/bar that we hid on entry.
+  document.getElementById('kiln-fab-wrap')?.style.removeProperty('display');
+  document.getElementById('kiln-topbar')?.style.removeProperty('display');
   pickMode = null;
 }
 
@@ -2364,10 +2506,10 @@ function pickCandidate(target) {
 
 function makeEditableMode() {
   if (pickMode) return exitPickMode();
-  if (state.pending.size) {
-    setStatus('Publish or discard your pending edits first — making things editable commits structural changes', 'error');
-    return;
-  }
+  // Hide the Kiln button/menu and top bar so they can't intercept picks and
+  // aren't left visible-but-dead behind the pick bar.
+  const fab = document.getElementById('kiln-fab-wrap'); if (fab) fab.style.display = 'none';
+  const top = document.getElementById('kiln-topbar'); if (top) top.style.display = 'none';
   const bar = document.createElement('div');
   bar.id = 'kiln-pickbar';
   bar.innerHTML = `<span><strong>Make-editable mode.</strong> Click anything to make it editable.
@@ -2508,21 +2650,29 @@ async function annotateElement(el, kind, key) {
     : kind === 'events' ? ` data-cms-repeat="${key}" data-kiln-events`
     : kind === 'plain' ? ` data-cms="${key}" data-cms-plain`
     : ` data-cms="${key}"`;
-  const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main', (text) => {
-    const node = findNthTag(text, tag, nth);
-    if (!node) throw new Error('could not locate this element in the page source. If the site builds this page with JavaScript, annotate the source file by hand.');
-    const srcText = node.innerText.replace(/\s+/g, ' ').trim().slice(0, 60);
-    if (domText && srcText && domText !== srcText) {
-      throw new Error('the page source doesn’t match what’s on screen (it may have just been edited) — reload and try again.');
-    }
-    const out = annotateNthTag(text, tag, nth, attrs);
-    if (!out) throw new Error('could not annotate the element');
-    return out;
-  }, `Make "${key}" editable in ${state.page.path} (via Kiln)`);
-  if (result.text) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: `“${key}” now editable` });
-  await loadPageSource();
+  // Verify we can locate it in the CURRENT source (fail early), then STAGE the
+  // annotation — it's applied to the file at Publish, so it's pending like any
+  // other edit (nothing auto-commits).
+  const node = findNthTag(state.page.text, tag, nth);
+  if (!node) throw new Error('could not locate this element in the page source. If the site builds this page with JavaScript, annotate the source file by hand.');
+  const srcText = node.innerText.replace(/\s+/g, ' ').trim().slice(0, 60);
+  if (domText && srcText && domText !== srcText) {
+    throw new Error('the page source doesn’t match what’s on screen (it may have just been edited) — reload and try again.');
+  }
+  state.pendingStructural.push({ op: 'annotate', tag, nth, attrs, key });
   applyAnnotationToDom(el, kind, key);
-  setStatus(`“${key}” is now editable ✓ — committed to the site`, 'saved');
+  refreshPublishButton();
+  setStatus(`“${key}” is now editable — Publish to save it to the site`, 'saved');
+}
+
+/** Apply all staged structural changes (annotate/unannotate) to raw page HTML. */
+function applyStructural(text) {
+  let t = text;
+  for (const s of state.pendingStructural) {
+    if (s.op === 'annotate') t = annotateNthTag(t, s.tag, s.nth, s.attrs) || t;
+    else if (s.op === 'remove') { const out = removeAnnotations(t, s.key); if (out !== null) t = out; }
+  }
+  return t;
 }
 
 function unmakeDialog(el) {
@@ -2550,9 +2700,7 @@ function unmakeDialog(el) {
     el.classList.remove('kiln-field', 'kiln-repeat');
     el.removeAttribute('title');
   };
-  m.querySelector('#kiln-um-go').onclick = async () => {
-    const status = m.querySelector('#kiln-um-status');
-    status.textContent = 'Committing…';
+  m.querySelector('#kiln-um-go').onclick = () => {
     // Demo sandbox: no repo — just strip it from the live DOM for the session.
     if (cfg.sandbox) {
       stripDom();
@@ -2561,31 +2709,21 @@ function unmakeDialog(el) {
       setStatus(`“${key}” is no longer editable (demo)`, 'saved');
       return;
     }
-    try {
-      const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main', (text) => {
-        const out = removeAnnotations(text, key);
-        if (out === null) throw new Error(`"${key}" not found in the page source`);
-        return out;
-      }, `Remove editing from "${key}" in ${state.page.path} (via Kiln)`);
-      if (result.text) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: `“${key}” no longer editable` });
-      await loadPageSource();
-      ['data-cms', 'data-cms-attr', 'data-cms-plain', 'data-cms-repeat', 'data-cms-menu', 'data-kiln-gallery', 'data-kiln-events']
-        .forEach(a => el.removeAttribute(a));
-      el.classList.remove('kiln-field', 'kiln-repeat');
-      el.removeAttribute('title');
-      m.remove();
-      setStatus(`“${key}” is no longer editable — reload to fully tidy the page`, 'saved');
-    } catch (err) {
-      console.error('[kiln] unmake', err);
-      status.textContent = `Failed: ${err.message}`;
-    }
+    // Stage the removal — applied at Publish, pending like any other edit.
+    state.pendingStructural.push({ op: 'remove', key });
+    stripDom();
+    // Drop any pending field edit for this now-unmanaged key.
+    state.pending.delete(key);
+    refreshPublishButton();
+    m.remove();
+    setStatus(`“${key}” will stop being editable — Publish to save`, 'saved');
   };
 }
 
 // ─── Done / exit ─────────────────────────────────────────────────────────────
 
 function doneEditing() {
-  if (state.pending.size || state.pendingBinaries.size) {
+  if (state.pending.size || state.pendingBinaries.size || state.pendingStructural.length) {
     const m = modal(`
       <h3>You have ${state.pending.size || state.pendingBinaries.size} unpublished edit${(state.pending.size || state.pendingBinaries.size) > 1 ? 's' : ''}</h3>
       <p class="kiln-dim">Publish them first, or discard and exit?</p>
@@ -2594,7 +2732,7 @@ function doneEditing() {
         <button class="kiln-btn-ghost" id="kiln-discard">Discard &amp; exit</button>
         <button class="kiln-btn-publish" id="kiln-pub-exit">Publish first</button>
       </div>`);
-    m.querySelector('#kiln-discard').onclick = () => { state.pending.clear(); state.pendingBinaries.clear(); exitEditMode(); };
+    m.querySelector('#kiln-discard').onclick = () => { state.pending.clear(); state.pendingBinaries.clear(); state.pendingStructural = []; exitEditMode(); };
     m.querySelector('#kiln-pub-exit').onclick = async () => { m.remove(); await publish(); };
     return;
   }
@@ -2818,6 +2956,7 @@ function discardEdits() {
   m.querySelector('#kiln-disc-go').onclick = () => {
     state.pending.clear();
     state.pendingBinaries.clear();   // queued uploads were never committed — just drop them
+    state.pendingStructural = [];
     clearSavedPending();
     location.reload();
   };
@@ -2973,7 +3112,9 @@ function modal(bodyHtml) {
   document.getElementById('kiln-modal')?.remove();
   const wrap = document.createElement('div');
   wrap.id = 'kiln-modal';
-  wrap.innerHTML = `<div class="kiln-modal-card" role="dialog" aria-modal="true" tabindex="-1"><div class="kiln-modal-body">${bodyHtml}</div></div>`;
+  wrap.innerHTML = `<div class="kiln-modal-card" role="dialog" aria-modal="true" tabindex="-1">`
+    + `<button class="kiln-modal-x" data-close aria-label="Close">✕</button>`
+    + `<div class="kiln-modal-body">${bodyHtml}</div></div>`;
   const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey, true); };
   wrap.addEventListener('click', (e) => {
     if (e.target === wrap || e.target.closest('[data-close]')) close();
@@ -2999,7 +3140,7 @@ function modal(bodyHtml) {
 function refreshPublishButton() {
   const n = state.pending.size;
   // A queued upload with no field edit still needs a Publish to commit it.
-  const anything = n || state.pendingBinaries.size;
+  const anything = n || state.pendingBinaries.size || state.pendingStructural.length;
   const btn = document.getElementById('kiln-publish');
   if (btn) {
     btn.disabled = !anything;
@@ -3220,10 +3361,20 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 #kiln-modal{position:fixed;inset:0;background:rgba(10,10,18,.45);-webkit-backdrop-filter:blur(6px);
   backdrop-filter:blur(6px);z-index:9999999;display:flex;align-items:flex-start;justify-content:center;
   padding-top:9vh;font-family:var(--kiln-font)}
-.kiln-modal-card{background:#fff;color:#1c1c28;border-radius:18px;max-width:500px;width:92%;
+.kiln-modal-card{position:relative;background:#fff;color:#1c1c28;border-radius:18px;max-width:500px;width:92%;
   box-shadow:0 24px 80px rgba(0,0,0,.3);max-height:78vh;overflow:auto}
+.kiln-modal-x{position:absolute;top:12px;right:12px;z-index:2;width:30px;height:30px;border-radius:50%;
+  border:none;background:#f3f4f6;color:#6b7280;font-size:14px;cursor:pointer;display:flex;align-items:center;
+  justify-content:center;transition:all .13s}
+.kiln-modal-x:hover{background:#e5e7eb;color:#111}
 .kiln-modal-body{padding:24px}
-.kiln-modal-body h3{margin:0 0 14px;font-size:17px;font-weight:700;letter-spacing:-.01em}
+.kiln-modal-body h3{margin:0 0 14px;font-size:17px;font-weight:700;letter-spacing:-.01em;padding-right:34px}
+.kiln-tabs{display:flex;gap:6px;margin:0 0 14px;border-bottom:1.5px solid #eef0f3}
+.kiln-tab{background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-1.5px;color:#6b7280;
+  font:600 13px var(--kiln-font);padding:7px 10px;cursor:pointer}
+.kiln-tab:hover{color:#111}
+.kiln-tab-on{color:var(--kiln-accent);border-bottom-color:var(--kiln-accent)}
+.kiln-hist-prev{color:#374151;font-size:13px}
 .kiln-modal-body h4{margin:16px 0 8px;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af}
 .kiln-modal-body label{display:block;font-size:13px;color:#4b5563;margin-bottom:10px}
 .kiln-modal-body input[type=text],.kiln-modal-body input[type=email],.kiln-modal-body input[type=number]{
