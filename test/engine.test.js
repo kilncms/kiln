@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { indexHtml, applyEdits, readValues, pageFileCandidates, editHead, readHead, findNthTag, annotateNthTag, appendIntoNthTag, removeAnnotations } from '../src/engine.js';
+import { indexHtml, applyEdits, readValues, pageFileCandidates, editHead, readHead, findNthTag, annotateNthTag, appendIntoNthTag, insertAfterNthTag, removeAnnotations } from '../src/engine.js';
 
 test('editHead updates title and inserts/updates meta description', () => {
   const html = '<html><head>\n  <title>Old</title>\n</head><body>x</body></html>';
@@ -265,4 +265,11 @@ test('appendIntoNthTag: inserts before the element closing tag', () => {
   // falls back to body when no main
   const nobody = '<body><p>Y</p></body>';
   assert.ok(appendIntoNthTag(nobody, 'body', 0, '<z>Z</z>').includes('<p>Y</p><z>Z</z></body>'));
+});
+
+test('insertAfterNthTag: places html after the Nth element, or null when missing', () => {
+  const raw = '<main><section id="a">A</section><section id="b">B</section></main>';
+  const out = insertAfterNthTag(raw, 'section', 0, '<section id="new">N</section>');
+  assert.ok(out.includes('</section><section id="new">N</section><section id="b">'));
+  assert.equal(insertAfterNthTag(raw, 'section', 9, '<x>'), null);
 });

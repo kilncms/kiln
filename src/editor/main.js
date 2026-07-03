@@ -10,7 +10,7 @@
  */
 
 import DOMPurify from 'dompurify';
-import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValues, findNthTag, annotateNthTag, appendIntoNthTag, removeAnnotations } from '../engine.js';
+import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValues, findNthTag, annotateNthTag, appendIntoNthTag, insertAfterNthTag, removeAnnotations } from '../engine.js';
 import {
   makeGh, getFile, resolvePageFile, editFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
@@ -468,7 +468,10 @@ function decorateField(el, key) {
 
 function setupRepeat(container, key) {
   container.classList.add('kiln-repeat');
-  // Re-runnable: drop any add/options buttons from a previous setup first.
+  // Re-runnable: drop this list's add/options buttons from a previous setup.
+  // They're matched by key, NOT by scope — for tables the add button is parked
+  // AFTER the table, so a scope-only cleanup let them pile up on every undo.
+  document.querySelectorAll(`.kiln-repeat-add[data-kiln-add="${CSS.escape(key)}"]`).forEach(n => n.remove());
   container.querySelectorAll(':scope > .kiln-repeat-add').forEach(n => n.remove());
   if (!state.undoBase.has(key)) state.undoBase.set(key, containerCleanHtml(container).innerHTML);
   [...container.children].forEach((item) => attachItemControls(container, key, item));
@@ -478,6 +481,7 @@ function setupRepeat(container, key) {
   // the hover controls. It clones the last block, ready to edit.
   const add = document.createElement('button');
   add.className = 'kiln-repeat-add';
+  add.dataset.kilnAdd = key;
   add.textContent = '+ Add block';
   add.onclick = (e) => {
     e.stopPropagation();
@@ -513,6 +517,7 @@ function setupRepeat(container, key) {
     const opts = document.createElement('button');
     opts.type = 'button';
     opts.className = 'kiln-repeat-add kiln-gallery-opts';
+    opts.dataset.kilnAdd = key;
     opts.textContent = '⚙ Gallery options';
     opts.onclick = (e) => { e.stopPropagation(); galleryOptionsPanel(container, key); };
     container.appendChild(opts);
@@ -976,11 +981,13 @@ function applyUndoStep(s, dir) {
   if (s.structural) {   // an added section (gallery/events)
     if (dir === 'before') {
       s.structural.node.remove();
-      const i = state.pendingStructural.findIndex(op => op.op === 'appendMain' && op.html === s.structural.html);
+      const i = s.structural.op ? state.pendingStructural.indexOf(s.structural.op)
+        : state.pendingStructural.findIndex(op => op.html === s.structural.html);
       if (i !== -1) state.pendingStructural.splice(i, 1);
     } else {
-      (document.querySelector('main') || document.body).appendChild(s.structural.node);
-      if (!cfg.sandbox) state.pendingStructural.push({ op: 'appendMain', html: s.structural.html });
+      if (s.structural.place) s.structural.place();
+      else (document.querySelector('main') || document.body).appendChild(s.structural.node);
+      if (!cfg.sandbox && s.structural.op) state.pendingStructural.push(s.structural.op);
     }
     return s.structural.node;
   }
@@ -1164,6 +1171,7 @@ function imageToolbar(img, key) {
  * drag back up later without quality loss.
  */
 function enableImageDragResize(img, key, stage = true) {
+  document.querySelectorAll('.kiln-img-handle').forEach(h => h.remove());   // one at a time
   const handle = document.createElement('div');
   handle.className = 'kiln-img-handle';
   handle.title = 'Drag to resize — the file is re-sampled to fit';
@@ -1341,6 +1349,7 @@ async function addImageWithMaster(img, key, file) {
     const rpt = img.closest('[data-cms-repeat]');
     if (rpt) stageContainer(rpt, rpt.getAttribute('data-cms-repeat'));
     else stagePending(key, { attrs: { src: img.src, 'data-kiln-master': img.getAttribute('data-kiln-master') } });
+    showResizeNow(img, key);
     setStatus('Image added — drag its ● corner to resize, then Publish', 'saved');
     return;
   }
@@ -1363,7 +1372,21 @@ async function addImageWithMaster(img, key, file) {
   const repeat = img.closest('[data-cms-repeat]');
   if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
   else stageImageEl(img, key);
+  showResizeNow(img, key);
   setStatus('Image added — drag its ● corner to resize, then Publish', 'saved');
+}
+
+/** Right after an image is added/replaced: put the resize handle on it NOW
+ *  (before publish), and keep it until the user clicks elsewhere. */
+function showResizeNow(img, key) {
+  const handle = enableImageDragResize(img, key);
+  img.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const away = (e) => {
+    if (e.target === img || e.target === handle || e.target.closest('#kiln-toolbar, #kiln-imgpop, #kiln-modal')) return;
+    handle.remove();
+    document.removeEventListener('click', away, true);
+  };
+  setTimeout(() => document.addEventListener('click', away, true), 0);
 }
 
 /**
@@ -1462,7 +1485,9 @@ function insertInlineImage(el) {
         el.focus();
         document.execCommand('insertHTML', false,
           `<img src="data:image/${ext};base64,${base64}" alt="" style="max-width:100%">`);
-        setStatus('Image added — Save, then Publish (demo: stays in your browser)', 'saved');
+        const ins = [...el.querySelectorAll('img')].find(i => i.getAttribute('src')?.startsWith(`data:image/${ext};base64,`));
+        if (ins) inlineImgPopover(ins);
+        setStatus('Image added — resize it now if you like, then Save and Publish', 'saved');
         return;
       }
       const slug = (file.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'image');
@@ -1474,7 +1499,9 @@ function insertInlineImage(el) {
       el.focus();
       document.execCommand('insertHTML', false,
         `<img src="${blobUrl}" data-kiln-src="${urlPath}" alt="" style="max-width:100%">`);
-      setStatus('Image inserted — Save, then Publish', 'saved');
+      const ins = el.querySelector(`img[src="${blobUrl}"]`);
+      if (ins) inlineImgPopover(ins);
+      setStatus('Image inserted — resize it now if you like, then Save and Publish', 'saved');
     } catch (err) {
       console.error('[kiln] inline image', err);
       setStatus('Image upload failed', 'error');
@@ -3077,8 +3104,7 @@ function pickCandidate(target) {
 function addSectionFlow() {
   const m = modal(`
     <h3>Add a section</h3>
-    <p class="kiln-dim">Adds a new block to the bottom of this page. Move or restyle it later; for
-    now, fill it and Publish.</p>
+    <p class="kiln-dim">Pick what to add, then click where on the page it should go.</p>
     <div class="kiln-roles">
       <label class="kiln-role"><input type="radio" name="kiln-add-kind" value="gallery" checked>
         <span><strong>Photo gallery</strong><br><small>Upload photos; visitors get a grid and a full-screen lightbox.</small></span></label>
@@ -3087,30 +3113,87 @@ function addSectionFlow() {
     </div>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
-      <button class="kiln-btn-publish" id="kiln-add-go">Add it</button>
+      <button class="kiln-btn-publish" id="kiln-add-go">Choose where →</button>
     </div>`);
   m.querySelector('#kiln-add-go').onclick = () => {
     const kind = m.querySelector('input[name="kiln-add-kind"]:checked').value;
-    const stamp = Date.now().toString(36);
-    const key = `${kind}_${stamp}`;
-    const attr = kind === 'gallery' ? 'data-kiln-gallery' : 'data-kiln-events';
-    const heading = kind === 'gallery' ? 'Gallery' : 'Events';
-    const html = `\n<section class="kiln-added" style="padding:2.5rem 0"><div style="max-width:1080px;margin:0 auto;padding:0 1.25rem">`
-      + `<h2 data-cms="${key}_title">${heading}</h2><div data-cms-repeat="${key}" ${attr}></div></div></section>\n`;
-    // Live preview: insert into <main> (or body) and wire it up.
-    const host = document.querySelector('main') || document.body;
-    const wrap = document.createElement('div'); wrap.innerHTML = html.trim();
-    const node = wrap.firstElementChild;
-    host.appendChild(node);
-    node.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
-    setupRepeat(node.querySelector('[data-cms-repeat]'), key);
-    // Stage it (sandbox: preview-only; real site: applied to <main> at Publish).
-    if (!cfg.sandbox) { state.pendingStructural.push({ op: 'appendMain', html }); refreshPublishButton(); }
-    pushUndoEntry({ steps: [{ structural: { node, html } }] });
     m.remove();
-    node.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    setStatus(`Added a ${kind} — click “+ Add ${kind === 'gallery' ? 'photos' : 'event'}”, then Publish`, 'saved');
+    pickSectionSpot(kind);
   };
+}
+
+/** Click-to-place: hover top-level page sections, click to insert after one. */
+function pickSectionSpot(kind) {
+  const host = document.querySelector('main') || document.body;
+  // Candidate anchors: the page's top-level blocks (skip Kiln chrome).
+  const anchors = [...host.children].filter(c => !isKilnChrome(c) && c.getBoundingClientRect().height > 20);
+  const bar = document.createElement('div');
+  bar.id = 'kiln-pickbar';
+  bar.innerHTML = `<span><strong>Where should it go?</strong> Click a section to add the new one right
+    below it. <kbd>Esc</kbd> cancels.</span> <button id="kiln-spot-end">Put it at the end</button>`;
+  document.body.appendChild(bar);
+  let hovered = null;
+  const mark = (el) => {
+    hovered?.classList.remove('kiln-spot-hover');
+    hovered = el;
+    el?.classList.add('kiln-spot-hover');
+  };
+  const over = (e) => {
+    if (e.target.closest('#kiln-pickbar')) { mark(null); return; }
+    mark(anchors.find(a => a.contains(e.target)) || null);
+  };
+  const done = (anchor) => {
+    cleanup();
+    insertNewSection(kind, anchor);   // null anchor = end of page
+  };
+  const click = (e) => {
+    if (e.target.closest('#kiln-pickbar')) return;
+    e.preventDefault(); e.stopPropagation();
+    const a = anchors.find(x => x.contains(e.target));
+    if (a) done(a);
+  };
+  const key = (e) => { if (e.key === 'Escape') { cleanup(); setStatus('Add cancelled', 'idle'); } };
+  function cleanup() {
+    mark(null);
+    bar.remove();
+    document.removeEventListener('mouseover', over, true);
+    document.removeEventListener('click', click, true);
+    document.removeEventListener('keydown', key, true);
+  }
+  bar.querySelector('#kiln-spot-end').onclick = (e) => { e.stopPropagation(); done(null); };
+  document.addEventListener('mouseover', over, true);
+  document.addEventListener('click', click, true);
+  document.addEventListener('keydown', key, true);
+}
+
+function insertNewSection(kind, anchor) {
+  const stamp = Date.now().toString(36);
+  const key = `${kind}_${stamp}`;
+  const attr = kind === 'gallery' ? 'data-kiln-gallery' : 'data-kiln-events';
+  const heading = kind === 'gallery' ? 'Gallery' : 'Events';
+  const html = `\n<section class="kiln-added" style="padding:2.5rem 0"><div style="max-width:1080px;margin:0 auto;padding:0 1.25rem">`
+    + `<h2 data-cms="${key}_title">${heading}</h2><div data-cms-repeat="${key}" ${attr}></div></div></section>\n`;
+  const host = document.querySelector('main') || document.body;
+  const wrap = document.createElement('div'); wrap.innerHTML = html.trim();
+  const node = wrap.firstElementChild;
+  // Live preview at the chosen spot; the same position is staged for the source.
+  let op = null;
+  if (anchor) {
+    const tag = anchor.tagName.toLowerCase();
+    const nth = domNth(anchor);
+    anchor.after(node);
+    op = { op: 'insertAfter', tag, nth, html };
+  } else {
+    host.appendChild(node);
+    op = { op: 'appendMain', html };
+  }
+  node.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
+  setupRepeat(node.querySelector('[data-cms-repeat]'), key);
+  // Stage it (sandbox: preview-only; real site: applied to the source at Publish).
+  if (!cfg.sandbox) { state.pendingStructural.push(op); refreshPublishButton(); }
+  pushUndoEntry({ steps: [{ structural: { node, op: cfg.sandbox ? null : op, html, place: () => anchor ? anchor.after(node) : host.appendChild(node) } }] });
+  node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setStatus(`Added a ${kind} — click “+ Add ${kind === 'gallery' ? 'photos' : 'event'}”, then Publish`, 'saved');
 }
 
 function makeEditableMode() {
@@ -3277,6 +3360,13 @@ function applyStructural(text, ops) {
     if (s.op === 'annotate') t = annotateNthTag(t, s.tag, s.nth, s.attrs) || t;
     else if (s.op === 'remove') { const out = removeAnnotations(t, s.key); if (out !== null) t = out; }
     else if (s.op === 'appendMain') { const out = appendIntoNthTag(t, 'main', 0, s.html) || appendIntoNthTag(t, 'body', 0, s.html); if (out) t = out; }
+    else if (s.op === 'insertAfter') {
+      // Place after the chosen element; if it can't be found in source anymore
+      // (page changed underneath us), fall back to the end of <main>.
+      const out = insertAfterNthTag(t, s.tag, s.nth, s.html)
+        || appendIntoNthTag(t, 'main', 0, s.html) || appendIntoNthTag(t, 'body', 0, s.html);
+      if (out) t = out;
+    }
   }
   return t;
 }
@@ -3912,7 +4002,7 @@ function injectStyles() {
 :root{--kiln-bg:rgba(16,16,25,.92);--kiln-accent:#6366f1;--kiln-accent-h:#4f46e5;--kiln-ok:#34d399;
   --kiln-warn:#fbbf24;--kiln-err:#f87171;--kiln-font:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif}
 #kiln-fab-wrap{position:fixed;bottom:20px;right:20px;z-index:999999;font-family:var(--kiln-font)}
-#kiln-fab-wrap #kiln-undo-wrap{display:flex;flex-direction:column;gap:5px;position:absolute;right:56px;bottom:0}
+#kiln-fab-wrap #kiln-undo-wrap{display:flex;flex-direction:column;gap:5px;position:absolute;right:7px;bottom:58px}
 #kiln-fab-wrap #kiln-undo-wrap[hidden]{display:none!important}
 #kiln-fab-wrap #kiln-undo-wrap button{width:34px;height:34px;border-radius:50%;border:none;cursor:pointer;
   background:#fff;color:#374151;box-shadow:0 3px 12px rgba(0,0,0,.18);display:flex;align-items:center;
@@ -4017,6 +4107,9 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   color:#fff;background:var(--kiln-accent);border-color:var(--kiln-accent)}
 .kiln-hist-live{color:#059669;font-weight:700}
 .kiln-pick-hover{outline:2px dashed #34d399!important;outline-offset:3px;cursor:copy!important}
+.kiln-spot-hover{outline:2px dashed var(--kiln-accent)!important;outline-offset:4px;cursor:copy!important;position:relative}
+.kiln-spot-hover::after{content:"new section goes here ↓";position:absolute;left:50%;bottom:-14px;transform:translateX(-50%);
+  z-index:999999;background:var(--kiln-accent);color:#fff;font:600 12px var(--kiln-font);padding:4px 12px;border-radius:999px;white-space:nowrap}
 .kiln-pick-hover[data-cms],.kiln-pick-hover[data-cms-repeat],.kiln-pick-hover[data-cms-menu]{outline-color:#f87171!important;cursor:not-allowed!important}
 .kiln-img-handle{position:absolute;width:22px;height:22px;border-radius:50%;background:var(--kiln-accent);
   border:2.5px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.35);cursor:nwse-resize;z-index:9999998;touch-action:none}

@@ -323,6 +323,26 @@ export function appendIntoNthTag(raw, tag, nth, html) {
 }
 
 /**
+ * Insert HTML immediately AFTER the Nth <tag>'s closing tag — used to place a
+ * new section below an existing one anywhere in the page (not just at the end
+ * of <main>). Returns new HTML, or null if the element can't be located.
+ */
+export function insertAfterNthTag(raw, tag, nth, html) {
+  const doc = parse(raw, { sourceCodeLocationInfo: true });
+  const t = String(tag).toLowerCase();
+  let i = -1, found = null;
+  walk(doc, (node) => {
+    if (found || node.tagName !== t || !node.sourceCodeLocation?.startTag) return;
+    i++;
+    if (i === nth) found = node;
+  });
+  if (!found) return null;
+  const loc = found.sourceCodeLocation;
+  const at = loc.endTag ? loc.endTag.endOffset : loc.startTag.endOffset;  // void tags: after the start tag
+  return raw.slice(0, at) + html + raw.slice(at);
+}
+
+/**
  * Insert Kiln annotation attributes into the Nth <tag>'s start tag.
  * attrs must be a pre-built string like ` data-cms="hero_note"`.
  * Returns the new HTML, or null if the element can't be located.
