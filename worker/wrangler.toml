@@ -46,3 +46,42 @@ simple = { limit = 20, period = 60 }   # 20 requests per 60s per IP
 [[routes]]
 pattern = "auth.kilncms.com"
 custom_domain = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST / STAGING ENVIRONMENT (kiln-auth-staging.erikkwilder.workers.dev)
+#
+# A fully isolated copy of the backend: its OWN KV namespace and D1 database, so
+# nothing here touches production data, real customers, or real money. Deploy to
+# it with `npm run deploy:test` (from the repo root). Use it to click through
+# changes on real infrastructure before promoting to prod with `npm run deploy:prod`.
+# See ENVIRONMENTS.md.
+# ─────────────────────────────────────────────────────────────────────────────
+[env.staging]
+name = "kiln-auth-staging"
+workers_dev = true
+# CRITICAL: explicitly no routes. Without this, a named env inherits the
+# top-level [[routes]] (auth.kilncms.com custom domain) and a staging deploy
+# would hijack the production domain. Keep this empty.
+routes = []
+
+[env.staging.vars]
+# Staging site origins (preview deploys + localhost for `npm run dev`).
+ALLOWED_ORIGINS = "https://staging.kilncms.com,https://kiln-demo.pages.dev,http://localhost:8788,http://localhost:8787,http://127.0.0.1:8788"
+CLOUD_DASHBOARD = "https://staging-app.kilncms.com"
+CLOUD_ADMIN = "erikkurtu"
+
+[[env.staging.kv_namespaces]]
+binding = "KILN"
+id = "5900a59cba9e48568d9886d975571fd9"   # KILN_STAGING (isolated from prod)
+
+[[env.staging.d1_databases]]
+binding = "kiln_cloud"
+database_name = "kiln-cloud-staging"
+database_id = "153c3353-6e1e-4d18-a2b8-9f7b50f517ba"
+
+[env.staging.triggers]
+crons = ["*/5 * * * *"]
+
+# NOTE: staging has no [[routes]] block on purpose — it lives on the free
+# kiln-auth-staging.erikkwilder.workers.dev hostname, so it never collides with
+# the branded auth.kilncms.com production domain.
