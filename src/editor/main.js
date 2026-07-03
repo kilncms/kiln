@@ -300,7 +300,7 @@ function keyInScope(key) {
 
 /** Whether the current editor may use a given menu feature. Admins get everything. */
 function hasFeature(feature) {
-  if (mode === 'admin') return true;
+  if (mode === 'admin' || cfg.sandbox) return true;   // sandbox demo showcases everything
   const granted = state.scope?.features;
   const list = Array.isArray(granted) ? granted : EDITOR_DEFAULT_FEATURES;
   return list.includes(feature);
@@ -308,7 +308,7 @@ function hasFeature(feature) {
 
 /** Hide menu items an invited editor hasn't been granted (applied after the bar renders). */
 function applyFeatureGating() {
-  if (mode === 'admin') return;
+  if (mode === 'admin' || cfg.sandbox) return;
   const map = { 'kiln-menu': 'menu', 'kiln-findreplace': 'findreplace', 'kiln-newpost': 'newpost',
     'kiln-pagesettings': 'pagesettings', 'kiln-history': 'history', 'kiln-makeblock': 'makeeditable', 'kiln-addsection': 'makeeditable' };
   for (const [id, feat] of Object.entries(map)) {
