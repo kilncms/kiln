@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { indexHtml, applyEdits, readValues, pageFileCandidates, editHead, readHead, findNthTag, annotateNthTag, appendIntoNthTag, insertAfterNthTag, removeAnnotations } from '../src/engine.js';
+import { indexHtml, applyEdits, readValues, pageFileCandidates, editHead, readHead, findNthTag, annotateNthTag, appendIntoNthTag, insertAfterNthTag, removeAnnotations, removeKilnSection } from '../src/engine.js';
 
 test('editHead updates title and inserts/updates meta description', () => {
   const html = '<html><head>\n  <title>Old</title>\n</head><body>x</body></html>';
@@ -272,4 +272,13 @@ test('insertAfterNthTag: places html after the Nth element, or null when missing
   const out = insertAfterNthTag(raw, 'section', 0, '<section id="new">N</section>');
   assert.ok(out.includes('</section><section id="new">N</section><section id="b">'));
   assert.equal(insertAfterNthTag(raw, 'section', 9, '<x>'), null);
+});
+
+test('removeKilnSection: removes the kiln-added wrapper (or the repeat itself); null when missing', () => {
+  const raw = '<main><section class="x kiln-added"><h2 data-cms="g_title">G</h2><div data-cms-repeat="g"></div></section><p>after</p></main>';
+  const out = removeKilnSection(raw, 'g');
+  assert.equal(out, '<main><p>after</p></main>');
+  const bare = '<main><div data-cms-repeat="g2"><figure>a</figure></div></main>';
+  assert.equal(removeKilnSection(bare, 'g2'), '<main></main>');
+  assert.equal(removeKilnSection(raw, 'nope'), null);
 });

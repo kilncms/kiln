@@ -357,6 +357,41 @@ export function annotateNthTag(raw, tag, nth, attrs) {
  * Remove every Kiln annotation (data-cms*, data-kiln-gallery/events/filters)
  * from the element indexed under `key`. Returns new HTML or null.
  */
+/**
+ * Remove a Kiln-added section from the source: the element carrying
+ * data-cms-repeat="key", or its enclosing .kiln-added wrapper if there is one
+ * (that's the <section> "Add a gallery or events" writes). Returns new HTML,
+ * or null if the key can't be located.
+ */
+export function removeKilnSection(raw, key) {
+  const doc = parse(raw, { sourceCodeLocationInfo: true });
+  let target = null;
+  const containsKey = (node) => {
+    let hit = false;
+    walk(node, (n) => {
+      if (hit || !n.attrs) return;
+      if (n.attrs.some(a => a.name === 'data-cms-repeat' && a.value === key)) hit = true;
+    });
+    return hit;
+  };
+  walk(doc, (node) => {
+    if (target || !node.attrs || !node.sourceCodeLocation?.startTag) return;
+    const cls = node.attrs.find(a => a.name === 'class')?.value || '';
+    if (/\bkiln-added\b/.test(cls) && containsKey(node)) target = node;
+  });
+  if (!target) {
+    walk(doc, (node) => {
+      if (target || !node.attrs || !node.sourceCodeLocation?.startTag) return;
+      if (node.attrs.some(a => a.name === 'data-cms-repeat' && a.value === key)) target = node;
+    });
+  }
+  if (!target) return null;
+  const loc = target.sourceCodeLocation;
+  const start = loc.startTag.startOffset;
+  const end = loc.endTag ? loc.endTag.endOffset : loc.startTag.endOffset;
+  return raw.slice(0, start) + raw.slice(end);
+}
+
 export function removeAnnotations(raw, key) {
   const { fields } = indexHtml(raw);
   const f = fields.get(key);

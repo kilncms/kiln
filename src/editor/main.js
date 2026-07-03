@@ -10,7 +10,7 @@
  */
 
 import DOMPurify from 'dompurify';
-import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValues, findNthTag, annotateNthTag, appendIntoNthTag, insertAfterNthTag, removeAnnotations } from '../engine.js';
+import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValues, findNthTag, annotateNthTag, appendIntoNthTag, insertAfterNthTag, removeAnnotations, removeKilnSection } from '../engine.js';
 import {
   makeGh, getFile, resolvePageFile, editFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
@@ -978,17 +978,20 @@ function applyKeyDom(key, html) {
 }
 
 function applyUndoStep(s, dir) {
-  if (s.structural) {   // an added section (gallery/events)
-    if (dir === 'before') {
-      s.structural.node.remove();
-      const i = s.structural.op ? state.pendingStructural.indexOf(s.structural.op)
-        : state.pendingStructural.findIndex(op => op.html === s.structural.html);
-      if (i !== -1) state.pendingStructural.splice(i, 1);
-    } else {
+  if (s.structural) {   // a section that was added (gallery/events) — or removed
+    // For an ADD, "before" = section gone; for a REMOVAL it's the mirror image.
+    const wantPresent = s.structural.removed ? dir === 'before' : dir === 'after';
+    if (wantPresent) {
       if (s.structural.place) s.structural.place();
       else (document.querySelector('main') || document.body).appendChild(s.structural.node);
-      if (!cfg.sandbox && s.structural.op) state.pendingStructural.push(s.structural.op);
+    } else {
+      s.structural.node.remove();
     }
+    const opWanted = s.structural.removed ? !wantPresent : wantPresent;
+    const i = s.structural.op ? state.pendingStructural.indexOf(s.structural.op)
+      : state.pendingStructural.findIndex(op => op.html === s.structural.html);
+    if (opWanted) { if (!cfg.sandbox && s.structural.op && i === -1) state.pendingStructural.push(s.structural.op); }
+    else if (i !== -1) state.pendingStructural.splice(i, 1);
     return s.structural.node;
   }
   const entry = dir === 'before' ? s.prevEntry : s.nextEntry;
@@ -1671,7 +1674,9 @@ async function publish() {
     // applied to this commit (it would then be double-applied on the next Publish).
     const structuralOps = state.pendingStructural.slice();
     if (localEdits.length || structuralOps.length) {
-      const structDesc = structuralOps.map(s => s.op === 'annotate' ? `+${s.key}` : `-${s.key}`);
+      const structDesc = structuralOps.map(s => s.op === 'annotate' ? `+${s.key}`
+        : s.op === 'remove' || s.op === 'removeSection' ? `-${s.key}`
+        : `+${s.key || 'section'}`);
       result = await editFile(
         state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
         (text) => {
@@ -2464,6 +2469,7 @@ async function histFile(sha) {
 
 /** "hero_headline" → "hero headline"; strips leading +/- and generated suffixes. */
 function humanizeKey(k) {
+  if (k === undefined || k === null || k === 'undefined') return 'a section';
   return String(k).replace(/^[+-]/, '').replace(/_[a-z0-9]{5,}$/i, '').replace(/[_-]+/g, ' ').trim() || k;
 }
 
@@ -2503,7 +2509,7 @@ function currentDomHtmlFor(key) {
  * with the Publish button, undoable with ⌘Z); Cancel puts everything back.
  * Nothing touches GitHub here.
  */
-function previewRestore(changes, label, note) {
+function previewRestore(changes, label, note, removals = []) {
   document.getElementById('kiln-previewbar')?.remove();
   const applied = [];
   for (const { key, value } of changes) {
@@ -2515,19 +2521,48 @@ function previewRestore(changes, label, note) {
     setTimeout(() => el.classList.remove('kiln-flash'), 1600);
     applied.push({ key, value, before, el });
   }
-  if (!applied.length) return 0;
-  applied[0].el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Sections that must DISAPPEAR for this restore (e.g. a gallery that publish
+  // added): preview by hiding; Keep stages a removeSection op.
+  const removed = [];
+  const seenNodes = new Set();
+  for (const key of removals) {
+    const esc = CSS.escape(key);
+    const el = document.querySelector(`[data-cms-repeat="${esc}"], [data-cms="${esc}"]`);
+    const sec = el?.closest('.kiln-added') || (el?.hasAttribute('data-cms-repeat') ? el : null);
+    if (!sec || seenNodes.has(sec)) continue;
+    seenNodes.add(sec);
+    const repKey = sec.querySelector('[data-cms-repeat]')?.getAttribute('data-cms-repeat')
+      || sec.getAttribute('data-cms-repeat') || key;
+    sec.style.display = 'none';
+    removed.push({ node: sec, key: repKey });
+  }
+  if (!applied.length && !removed.length) return 0;
+  (applied[0]?.el || removed[0]?.node.previousElementSibling || document.body)
+    .scrollIntoView({ behavior: 'smooth', block: 'center' });
   const bar = document.createElement('div');
   bar.id = 'kiln-previewbar';
-  bar.innerHTML = `<span><strong>Previewing:</strong> ${label} — ${applied.length} section${applied.length > 1 ? 's' : ''} changed.
+  const nChanged = applied.length + removed.length;
+  bar.innerHTML = `<span><strong>Previewing:</strong> ${label} — ${nChanged} section${nChanged > 1 ? 's' : ''} changed${removed.length ? ` (${removed.length} removed)` : ''}.
     ${note ? `<small>${note}</small>` : ''} <small>Nothing is live yet.</small></span>
     <button class="kiln-btn-ghost" id="kiln-pv-cancel">Cancel</button>
     <button class="kiln-btn-publish" id="kiln-pv-keep">Keep — then Publish</button>`;
   document.body.appendChild(bar);
   bar.querySelector('#kiln-pv-keep').onclick = () => {
-    undoGroup(() => { for (const a of applied) stagePending(a.key, { html: a.value }); });
+    undoGroup(() => {
+      for (const a of applied) stagePending(a.key, { html: a.value });
+      for (const r of removed) {
+        const parent = r.node.parentElement, next = r.node.nextSibling;
+        const op = cfg.sandbox ? null : { op: 'removeSection', key: r.key };
+        if (op) state.pendingStructural.push(op);
+        r.node.style.display = '';
+        r.node.remove();
+        undoBucket.steps.push({ structural: { node: r.node, op, html: null, removed: true,
+          place: () => parent.insertBefore(r.node, next) } });
+      }
+    });
+    refreshPublishButton();
     bar.remove();
-    setStatus(`Kept ${applied.length} restored section${applied.length > 1 ? 's' : ''} — hit Publish to make it live (⌘Z undoes)`, 'saved');
+    setStatus(`Kept ${applied.length + removed.length} restored section${applied.length + removed.length > 1 ? 's' : ''} — hit Publish to make it live (⌘Z undoes)`, 'saved');
   };
   bar.querySelector('#kiln-pv-cancel').onclick = () => {
     for (const a of applied) {
@@ -2537,6 +2572,7 @@ function previewRestore(changes, label, note) {
         document.querySelectorAll(`[data-cms="${esc}"],[data-cms-repeat="${esc}"]`).forEach(n => n.classList.remove('kiln-modified'));
       }
     }
+    for (const r of removed) r.node.style.display = '';
     bar.remove();
     setStatus('Preview cancelled — the page is back to how it was', 'idle');
   };
@@ -2577,16 +2613,14 @@ async function historyPanel() {
     spin('Comparing with the version before it…');
     const before = readValues(await histFile(parentSha));
     const after = readValues(await histFile(c.sha));
-    const changes = [];
-    let structural = 0;
+    const changes = [], removals = [];
     for (const key of Object.keys(after)) {
-      if (before[key] === undefined) { structural++; continue; }   // that publish ADDED this section
+      if (before[key] === undefined) { removals.push(key); continue; }   // that publish ADDED this — undo = remove it
       if (before[key] !== after[key]) changes.push({ key, value: before[key] });
     }
-    const note = structural ? `${structural} added section${structural > 1 ? 's' : ''} can’t be un-added this way.` : '';
-    const n = previewRestore(changes, `undo “${escapeHtml(describeCommit(c.commit.message))}”`, note);
+    const n = previewRestore(changes, `undo “${escapeHtml(describeCommit(c.commit.message))}”`, '', removals);
     if (n) m.remove();
-    else status.textContent = changes.length
+    else status.textContent = changes.length || removals.length
       ? 'Those sections aren’t on this page anymore, so there’s nothing to put back.'
       : 'That publish didn’t change any section content on this page (it may have been photos or layout).';
   };
@@ -2596,14 +2630,20 @@ async function historyPanel() {
     spin('Reading that version…');
     const vals = readValues(await histFile(c.sha));
     const curVals = readValues(state.page.text);
-    const changes = [];
-    let gone = 0;
+    const changes = [], removals = [];
     for (const [key, value] of Object.entries(vals)) {
       if (currentValueFor(key, curVals) !== value) changes.push({ key, value });
     }
-    for (const key of Object.keys(curVals)) if (vals[key] === undefined) gone++;
+    let gone = 0;
+    for (const key of Object.keys(curVals)) {
+      if (vals[key] !== undefined) continue;
+      // Kiln-added sections (galleries/events) get removed with the restore;
+      // anything else that merely wasn't annotated back then stays as it is.
+      const el = document.querySelector(`[data-cms-repeat="${CSS.escape(key)}"], [data-cms="${CSS.escape(key)}"]`);
+      if (el?.closest('.kiln-added')) removals.push(key); else gone++;
+    }
     const note = gone ? `${gone} section${gone > 1 ? 's' : ''} added since then stay as they are.` : '';
-    const n = previewRestore(changes, `the page as it was ${escapeHtml(when)}`, note);
+    const n = previewRestore(changes, `the page as it was ${escapeHtml(when)}`, note, removals);
     if (n) m.remove();
     else status.textContent = 'The page already matches that version.';
   };
@@ -3182,10 +3222,10 @@ function insertNewSection(kind, anchor) {
     const tag = anchor.tagName.toLowerCase();
     const nth = domNth(anchor);
     anchor.after(node);
-    op = { op: 'insertAfter', tag, nth, html };
+    op = { op: 'insertAfter', tag, nth, html, key };
   } else {
     host.appendChild(node);
-    op = { op: 'appendMain', html };
+    op = { op: 'appendMain', html, key };
   }
   node.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
   setupRepeat(node.querySelector('[data-cms-repeat]'), key);
@@ -3360,6 +3400,7 @@ function applyStructural(text, ops) {
     if (s.op === 'annotate') t = annotateNthTag(t, s.tag, s.nth, s.attrs) || t;
     else if (s.op === 'remove') { const out = removeAnnotations(t, s.key); if (out !== null) t = out; }
     else if (s.op === 'appendMain') { const out = appendIntoNthTag(t, 'main', 0, s.html) || appendIntoNthTag(t, 'body', 0, s.html); if (out) t = out; }
+    else if (s.op === 'removeSection') { const out = removeKilnSection(t, s.key); if (out !== null) t = out; }
     else if (s.op === 'insertAfter') {
       // Place after the chosen element; if it can't be found in source anymore
       // (page changed underneath us), fall back to the end of <main>.
