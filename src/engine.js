@@ -23,6 +23,7 @@ const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'i
 const SAFE_ATTRS = new Set(['href', 'src', 'alt', 'title', 'class', 'target', 'rel', 'width', 'height', 'style']);
 function attrNameAllowed(name) {
   if (SAFE_ATTRS.has(name)) return true;
+  // data-* is fine (e.g. data-kiln-src/master/tags) except the structural data-cms* set.
   if (/^data-/i.test(name) && !/^data-cms/i.test(name)) return true;
   return false;
 }

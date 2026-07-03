@@ -27,7 +27,7 @@ export const SANITIZE = {
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'i', 'img', 'li', 'mark', 'ol', 'p', 's', 'small',
     'span', 'strong', 'sub', 'sup', 'time', 'u', 'ul'],
   ALLOWED_ATTR: ['href', 'target', 'rel', 'title', 'class', 'style', 'src', 'alt', 'width', 'height',
-    'datetime', 'download', 'loading', 'data-kiln-src'],
+    'datetime', 'download', 'loading', 'data-kiln-src', 'data-kiln-master'],
   ALLOWED_URI_REGEXP: KILN_URI_REGEXP,
 };
 
@@ -44,7 +44,7 @@ export const CONTAINER_SANITIZE = {
     'tr', 'u', 'ul'],
   ALLOWED_ATTR: ['href', 'target', 'rel', 'title', 'class', 'id', 'style', 'src', 'alt',
     'width', 'height', 'datetime', 'download', 'loading', 'decoding', 'colspan', 'rowspan',
-    'scope', 'headers', 'srcset', 'sizes', 'media', 'type', 'data-kiln-src', 'data-kiln-tags',
-    'data-cms', 'data-cms-attr', 'data-cms-plain'],
+    'scope', 'headers', 'srcset', 'sizes', 'media', 'type', 'data-kiln-src', 'data-kiln-master',
+    'data-kiln-tags', 'data-cms', 'data-cms-attr', 'data-cms-plain'],
   ALLOWED_URI_REGEXP: KILN_URI_REGEXP,
 };

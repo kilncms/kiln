@@ -321,6 +321,7 @@ function decorateField(el, key) {
 function setupRepeat(container, key) {
   container.classList.add('kiln-repeat');
   [...container.children].forEach((item) => attachItemControls(container, key, item));
+  renderTagPreview(container);   // show filter pills if any block is already tagged
 
   // A visible "+ Add" so adding a card/document doesn't depend on discovering
   // the hover controls. It clones the last block, ready to edit.
@@ -470,9 +471,51 @@ function editItemTags(container, key, item) {
     if (v) item.setAttribute('data-kiln-tags', v);
     else item.removeAttribute('data-kiln-tags');
     stageContainer(container, key);
+    renderTagPreview(container);   // pills appear/update immediately
     m.remove();
-    setStatus(v ? `Tagged: ${v} — Publish to make it live` : 'Tags removed — Publish to make it live', 'saved');
+    setStatus(v ? `Tagged “${v}” — filter buttons preview above the list. Publish to make them live for visitors.` : 'Tags removed — Publish to make it live', 'saved');
   };
+}
+
+/**
+ * Live preview of the visitor-side filter pills while editing. Real visitors get
+ * these from kiln-features.js after publish; the editor (and every always-editing
+ * demo visitor) needs to SEE them appear the moment a block is tagged, so we
+ * render an editor-owned bar here. It sits OUTSIDE the repeat container, so
+ * stageContainer never captures it, and it's rebuilt on every tag change.
+ */
+function renderTagPreview(container) {
+  const anchor = container.closest('table') || container;
+  const parent = anchor.parentElement;
+  if (!parent) return;
+  const existing = parent.querySelector(':scope > .kiln-filterbar-preview');
+  const items = [...container.children].filter(c => !c.classList.contains('kiln-repeat-add'));
+  const tags = [];
+  for (const it of items) for (const t of (it.getAttribute('data-kiln-tags') || '').split(',').map(s => s.trim()).filter(Boolean)) {
+    if (!tags.includes(t)) tags.push(t);
+  }
+  if (!tags.length) { existing?.remove(); return; }
+  const bar = existing || document.createElement('div');
+  bar.className = 'kiln-filterbar-preview';
+  bar.innerHTML = `<span class="kiln-fp-label">Filter preview</span>`;
+  const mk = (label, tag) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'kiln-fp-pill'; b.textContent = label;
+    if (tag === null) b.classList.add('kiln-fp-on');
+    b.onclick = (e) => {
+      e.stopPropagation();
+      bar.querySelectorAll('.kiln-fp-pill').forEach(p => p.classList.remove('kiln-fp-on'));
+      b.classList.add('kiln-fp-on');
+      for (const it of items) {
+        const mine = (it.getAttribute('data-kiln-tags') || '').split(',').map(s => s.trim());
+        it.style.display = (!tag || mine.includes(tag)) ? '' : 'none';
+      }
+    };
+    return b;
+  };
+  bar.appendChild(mk('All', null));
+  tags.forEach(t => bar.appendChild(mk(t, t)));
+  if (!existing) parent.insertBefore(bar, anchor);
 }
 
 /** Gallery repeats get a native multi-photo picker instead of clone-the-last-block. */
@@ -777,11 +820,136 @@ function imageToolbar(img, key) {
     tb.remove();
   };
   tb.querySelector('[data-act="replace"]').onclick = (e) => { e.stopPropagation(); pickImage(img, key); };
-  tb.querySelector('[data-act="done"]').onclick = (e) => { e.stopPropagation(); finish(); };
+
+  const handle = enableImageDragResize(img, key);
+  tb.querySelector('[data-act="done"]').onclick = (e) => { e.stopPropagation(); finish(); handle.remove(); };
   const away = (e) => {
-    if (!tb.contains(e.target) && e.target !== img) { finish(); document.removeEventListener('click', away); }
+    if (!tb.contains(e.target) && e.target !== img && e.target !== handle) {
+      finish(); handle.remove(); document.removeEventListener('click', away);
+    }
   };
   setTimeout(() => document.addEventListener('click', away), 0);
+}
+
+/**
+ * A bottom-right drag handle on an editable image. Dragging live-resizes how the
+ * image DISPLAYS; on release the file is resampled to be web-ready at that size,
+ * while the largest version we have is retained (data-kiln-master) so you can
+ * drag back up later without quality loss.
+ */
+function enableImageDragResize(img, key) {
+  const handle = document.createElement('div');
+  handle.className = 'kiln-img-handle';
+  handle.title = 'Drag to resize — the file is re-sampled to fit';
+  document.body.appendChild(handle);
+  const place = () => {
+    const r = img.getBoundingClientRect();
+    handle.style.left = `${r.right + window.scrollX - 11}px`;
+    handle.style.top = `${r.bottom + window.scrollY - 11}px`;
+  };
+  place();
+  window.addEventListener('scroll', place, true);
+  window.addEventListener('resize', place);
+  handle.remove = ((orig) => function () {
+    window.removeEventListener('scroll', place, true);
+    window.removeEventListener('resize', place);
+    orig.call(handle);
+  })(handle.remove);
+
+  let drag = null;
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    drag = { startX: e.clientX, startW: img.getBoundingClientRect().width };
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add('kiln-img-handle-on');
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const w = Math.max(40, Math.round(drag.startW + (e.clientX - drag.startX)));
+    const maxW = (img.parentElement?.getBoundingClientRect().width) || window.innerWidth;
+    img.style.width = `${Math.min(w, Math.round(maxW))}px`;
+    img.style.height = 'auto';
+    place();
+  });
+  handle.addEventListener('pointerup', async (e) => {
+    if (!drag) return;
+    const finalW = img.getBoundingClientRect().width;
+    drag = null;
+    handle.classList.remove('kiln-img-handle-on');
+    await resampleToDisplay(img, key, Math.round(finalW));
+    place();
+  });
+  return handle;
+}
+
+/** Load any URL (data:, blob:, /path) into an ImageBitmap. */
+async function urlToBitmap(url) {
+  const res = await fetch(url, { cache: 'no-store' });
+  return createImageBitmap(await res.blob());
+}
+
+/** Resample the retained master image to ~DPR×cssWidth and stage it as the src. */
+async function resampleToDisplay(img, key, cssWidth) {
+  try {
+    // The master is the largest version we hold. First resize captures it.
+    let master = img.getAttribute('data-kiln-master')
+      || img.getAttribute('data-kiln-src') || img.getAttribute('src');
+    master = safeUrl(master);
+    // SVGs are vector — they scale losslessly, so there's nothing to re-sample.
+    // Just set the display width and stage it.
+    if (/\.svg(\?|#|$)/i.test(master) || /^data:image\/svg/i.test(master)) {
+      img.style.width = `${cssWidth}px`;
+      img.style.height = 'auto';
+      img.removeAttribute('data-kiln-master');
+      stageImageEl(img, key);
+      setStatus(`Sized to ${cssWidth}px — Publish to keep it`, 'saved');
+      return;
+    }
+    img.setAttribute('data-kiln-master', master);
+    setStatus('Re-sampling to fit…', 'saving');
+    const bmp = await urlToBitmap(master);
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const targetW = Math.max(1, Math.min(Math.round(cssWidth * dpr), bmp.width, 2400));
+    const canvas = document.createElement('canvas');
+    canvas.width = targetW;
+    canvas.height = Math.round(bmp.height * (targetW / bmp.width));
+    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/webp', 0.85))
+      || await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    const base64 = btoa(bin);
+
+    img.style.width = `${cssWidth}px`;
+    img.style.height = 'auto';
+    if (cfg.sandbox) {
+      img.src = `data:image/webp;base64,${base64}`;
+      stageImageEl(img, key);
+      setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB) — Publish to keep it`, 'saved');
+      return;
+    }
+    const name = `img-${Date.now().toString(36)}.webp`;
+    const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `assets/uploads/${name}`;
+    await putBinaryFile(state.gh, cfg.repo, repoPath, { base64, branch: cfg.branch || 'main', message: `Resize ${name} (via Kiln)` });
+    img.src = URL.createObjectURL(blob);
+    img.setAttribute('data-kiln-src', `/assets/uploads/${name}`);
+    stageImageEl(img, key);
+    setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB) — Publish to put it live`, 'saved');
+  } catch (err) {
+    console.error('[kiln] resize', err);
+    setStatus('Resize failed — see console', 'error');
+  }
+}
+
+/** Stage an image element's current state (src/style/attrs) — container or single field. */
+function stageImageEl(img, key) {
+  img.classList.add('kiln-modified');
+  const repeat = img.closest('[data-cms-repeat]');
+  if (repeat) { stageContainer(repeat, repeat.getAttribute('data-cms-repeat')); return; }
+  const attrs = { style: img.getAttribute('style') || '', 'data-kiln-master': img.getAttribute('data-kiln-master') || '' };
+  if (cfg.sandbox) attrs.src = img.getAttribute('src');
+  else attrs.src = safeUrl(img.getAttribute('data-kiln-src') || img.getAttribute('src'));
+  stagePending(key, { attrs });
 }
 
 function pickImage(img, key) {
@@ -894,8 +1062,17 @@ function insertInlineImage(el) {
     const file = input.files[0];
     if (!file) return;
     try {
-      setStatus('Uploading image…', 'saving');
+      setStatus('Adding image…', 'saving');
       const { blob, base64, ext } = await downscale(file, 1200);
+      // Demo sandbox: never touches GitHub — embed the image as a data URL so it
+      // shows immediately and survives the sandbox's localStorage round-trip.
+      if (cfg.sandbox) {
+        el.focus();
+        document.execCommand('insertHTML', false,
+          `<img src="data:image/${ext};base64,${base64}" alt="" style="max-width:100%">`);
+        setStatus('Image added — Save, then Publish (demo: stays in your browser)', 'saved');
+        return;
+      }
       const slug = (file.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'image');
       const name = `${slug}-${Date.now().toString(36)}.${ext}`;
       const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `assets/uploads/${name}`;
@@ -925,6 +1102,12 @@ function uploadAnyFile() {
       const file = input.files[0];
       if (!file) return resolve(null);
       if (file.size > 15 * 1024 * 1024) { setStatus('Files over 15 MB don’t belong in a Git repo', 'error'); return resolve(null); }
+      // Demo sandbox: hand back an in-browser blob URL instead of committing to
+      // GitHub, so the demo can show a working document chip/card/link.
+      if (cfg.sandbox) {
+        setStatus(`${file.name} added (demo: stays in your browser)`, 'saved');
+        return resolve({ path: URL.createObjectURL(file), name: file.name, size: file.size });
+      }
       try {
         setStatus(`Uploading ${file.name}…`, 'saving');
         const buf = new Uint8Array(await file.arrayBuffer());
@@ -2882,6 +3065,11 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   padding:6px 14px;font:600 12px var(--kiln-font);cursor:pointer;white-space:nowrap}
 .kiln-pick-hover{outline:2px dashed #34d399!important;outline-offset:3px;cursor:copy!important}
 .kiln-pick-hover[data-cms],.kiln-pick-hover[data-cms-repeat],.kiln-pick-hover[data-cms-menu]{outline-color:#f87171!important;cursor:not-allowed!important}
+.kiln-img-handle{position:absolute;width:22px;height:22px;border-radius:50%;background:var(--kiln-accent);
+  border:2.5px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.35);cursor:nwse-resize;z-index:9999998;touch-action:none}
+.kiln-img-handle::after{content:"";position:absolute;inset:5px;border-right:2px solid #fff;border-bottom:2px solid #fff;
+  border-radius:0 0 2px 0}
+.kiln-img-handle-on{transform:scale(1.15)}
 #kiln-imgpop{position:absolute;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
   color:#fff;padding:6px 8px;border-radius:11px;display:flex;align-items:center;gap:5px;
   font-family:var(--kiln-font);font-size:12px;z-index:9999999;border:1px solid rgba(255,255,255,.08);
@@ -2958,6 +3146,13 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   border:1.5px dashed rgba(99,102,241,.5);border-radius:10px;padding:8px 18px;cursor:pointer;
   font-size:13px;font-weight:600;font-family:var(--kiln-font);transition:all .15s}
 .kiln-repeat-add:hover{background:rgba(99,102,241,.16)}
+.kiln-filterbar-preview{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin:0 0 14px;
+  padding:8px 10px;border:1.5px dashed rgba(99,102,241,.4);border-radius:11px;background:rgba(99,102,241,.05)}
+.kiln-fp-label{font:600 10.5px var(--kiln-font);letter-spacing:.08em;text-transform:uppercase;color:var(--kiln-accent);margin-right:2px}
+.kiln-fp-pill{border:1.5px solid rgba(99,102,241,.4);background:#fff;color:#4b5563;border-radius:999px;
+  padding:4px 13px;font:500 12.5px var(--kiln-font);cursor:pointer;transition:all .13s}
+.kiln-fp-pill:hover{border-color:var(--kiln-accent)}
+.kiln-fp-pill.kiln-fp-on{background:var(--kiln-accent);color:#fff;border-color:var(--kiln-accent);font-weight:600}
 .kiln-menu-row{display:flex;gap:6px;margin-bottom:6px;align-items:center}
 .kiln-menu-row input{flex:1;padding:8px!important;margin:0!important}
 .kiln-menu-row .kiln-menu-href{flex:1.2}
