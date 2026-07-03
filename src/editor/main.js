@@ -533,7 +533,7 @@ function setupRepeat(container, key) {
 }
 
 function attachItemControls(container, key, item) {
-  if (item.querySelector(':scope > .kiln-item-ctl')) return;
+  if (item.querySelector(':scope > .kiln-item-ctl, :scope > .kiln-ctl-cell')) return;
   item.classList.add('kiln-repeat-item');
   const ctl = document.createElement('div');
   ctl.className = 'kiln-item-ctl';
@@ -591,8 +591,18 @@ function attachItemControls(container, key, item) {
   };
   // A <div> is not valid inside <tr> — anchor the controls in the row's last
   // cell instead so table rows get working move/duplicate/remove buttons too.
-  if (item.tagName === 'TR' && item.lastElementChild) item.lastElementChild.appendChild(ctl);
-  else item.appendChild(ctl);
+  if (item.tagName === 'TR') {
+    // Never put controls inside a cell — the last cell is usually an editable
+    // field, so the buttons would cover the text being typed and their glyphs
+    // (↑↓＋🏷✕) would be swept into the committed value. A dedicated cell keeps
+    // them out of every field; containerCleanHtml strips it before staging.
+    const cell = document.createElement('td');
+    cell.className = 'kiln-ctl-cell';
+    cell.appendChild(ctl);
+    item.appendChild(cell);
+  } else {
+    item.appendChild(ctl);
+  }
 
   // Drag to reorder (↑↓ still work; this is for mouse users)
   item.draggable = true;
@@ -844,7 +854,7 @@ function eventForm(container, key, item) {
  *  the exact HTML that staging/publishing would write for it. */
 function containerCleanHtml(container) {
   const clone = container.cloneNode(true);
-  clone.querySelectorAll('.kiln-item-ctl, #kiln-toolbar, .kiln-repeat-add').forEach(n => n.remove());
+  clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, #kiln-toolbar, .kiln-repeat-add').forEach(n => n.remove());
   clone.querySelectorAll('[contenteditable]').forEach(n => n.removeAttribute('contenteditable'));
   clone.querySelectorAll('.kiln-field, .kiln-editing, .kiln-modified, .kiln-repeat-item, .kiln-flash, .kiln-dragging').forEach(n => {
     n.classList.remove('kiln-field', 'kiln-editing', 'kiln-modified', 'kiln-repeat-item', 'kiln-flash', 'kiln-dragging');
@@ -887,6 +897,8 @@ function startEditing(el, key) {
   if (state.active) cancelEditing();
   state.active = el;
   if (!state.originals.has(key)) state.originals.set(key, el.innerHTML);
+  // Keep this row's floating controls out of the way while typing in it.
+  el.closest('.kiln-repeat-item')?.classList.add('kiln-row-editing');
   el.classList.add('kiln-editing');
   el.contentEditable = 'true';
   el.focus();
@@ -905,6 +917,7 @@ function cancelEditing() {
   const key = el.getAttribute('data-cms');
   el.contentEditable = 'false';
   el.classList.remove('kiln-editing');
+  el.closest('.kiln-repeat-item')?.classList.remove('kiln-row-editing');
   const pendingEdit = state.pending.get(key);
   el.innerHTML = pendingEdit?.html ?? state.originals.get(key) ?? el.innerHTML;
   state.active = null;
@@ -1038,8 +1051,14 @@ document.addEventListener('keydown', (e) => {
 
 /** The committed value of a field's HTML (sanitized rich text, or escaped plain text). */
 function fieldValue(html, plain) {
-  if (plain) { const d = document.createElement('div'); d.innerHTML = html; return escapeHtml(d.textContent); }
-  return DOMPurify.sanitize(html, SANITIZE);
+  // Editing chrome can sit inside a field's DOM (row controls, the toolbar).
+  // Remove it as ELEMENTS first — sanitizing alone strips the tags but keeps
+  // their text, which is how ↑↓＋🏷✕ once ended up inside a table cell's value.
+  const d = document.createElement('div');
+  d.innerHTML = html;
+  d.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, .kiln-repeat-add, #kiln-toolbar').forEach(n => n.remove());
+  if (plain) return escapeHtml(d.textContent);
+  return DOMPurify.sanitize(d.innerHTML, SANITIZE);
 }
 
 function commitEdit(el, key) {
@@ -1048,6 +1067,7 @@ function commitEdit(el, key) {
   el.innerHTML = value;
   el.contentEditable = 'false';
   el.classList.remove('kiln-editing');
+  el.closest('.kiln-repeat-item')?.classList.remove('kiln-row-editing');
 
   // Link elements: apply the toolbar's href before staging (scheme-sanitized).
   const hrefInput = document.querySelector('#kiln-toolbar .kiln-href-input');
@@ -1087,6 +1107,7 @@ function commitEdit(el, key) {
 function committedHtml(el, plain, fallback) {
   if (plain) return fallback;
   const clone = el.cloneNode(true);
+  clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, .kiln-repeat-add, #kiln-toolbar').forEach(n => n.remove());
   clone.querySelectorAll('img[data-kiln-src]').forEach(img => {
     img.setAttribute('src', img.getAttribute('data-kiln-src'));
     img.removeAttribute('data-kiln-src');
@@ -2594,19 +2615,22 @@ function previewFieldRevert(key, value, histModal) {
  * button. Shows this one field's past versions (newest first) with an Undo that
  * PREVIEWS the change in the page before you keep it.
  */
-async function fieldHistoryPanel(key) {
+async function fieldHistoryPanel(key, isRepeat = false) {
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
   const m = modal(`
     <h3>History for this section</h3>
     <p class="kiln-dim"><code>${escapeHtml(key)}</code> — pick an earlier version to preview it in the
-    page, then keep or undo. Only this section changes.</p>
+    page, then keep or undo. ${isRepeat
+      ? 'This is a set of blocks (rows share their fields), so history covers the whole set.'
+      : 'Only this section changes.'}</p>
     <div id="kiln-fh" class="kiln-inv-list">Loading…</div>`);
   const box = m.querySelector('#kiln-fh');
 
   const rows = [];
   // Unpublished edit first (undo-before-publish).
   const pend = state.pending.get(key);
-  const liveEl = document.querySelector(`[data-cms="${CSS.escape(key)}"]`);
+  const esc = CSS.escape(key);
+  const liveEl = document.querySelector(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`);
 
   if (cfg.sandbox) {
     box.innerHTML = '<p class="kiln-dim">The demo doesn’t keep saved history — that comes with a real Kiln site. You can still undo an unpublished edit on the page.</p>';
@@ -2631,7 +2655,10 @@ async function fieldHistoryPanel(key) {
         <button class="kiln-btn-ghost">${UNDO_ICON} Undo this</button>`;
       r.querySelector('button').onclick = () => {
         state.pending.delete(key);
-        if (liveEl) { liveEl.innerHTML = (rows[0] && rows[0].v) ?? liveEl.innerHTML; liveEl.classList.remove('kiln-modified'); }
+        // applyKeyDom handles both plain fields and repeat containers (which
+        // need their editing handles re-wired after an innerHTML reset).
+        if (rows[0] && rows[0].v !== undefined && rows[0].v !== null) applyKeyDom(key, rows[0].v);
+        document.querySelectorAll(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`).forEach(n => n.classList.remove('kiln-modified'));
         refreshPublishButton(); m.remove();
         setStatus(`Undid the unpublished edit to “${key}”`, 'saved');
       };
@@ -3007,7 +3034,7 @@ const PICKABLE = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'a', 
   'em', 'td', 'th', 'tr', 'tbody', 'table', 'time', 'dl', 'dt', 'dd', 'caption', 'address']);
 
 const KILN_CHROME = '#kiln-fab-wrap,#kiln-topbar,#kiln-toolbar,#kiln-modal,#kiln-imgpop,'
-  + '#kiln-presence,#kiln-pickbar,#kiln-sandbox-banner,.kiln-item-ctl,.kiln-repeat-add,'
+  + '#kiln-presence,#kiln-pickbar,#kiln-sandbox-banner,.kiln-item-ctl,.kiln-ctl-cell,.kiln-repeat-add,'
   + '.kiln-filterbar,.kiln-evbar';
 
 function isKilnChrome(el) { return !!el.closest(KILN_CHROME); }
@@ -3679,7 +3706,11 @@ function renderToolbar(el, key) {
         const up = await uploadAnyFile();
         if (up && input) input.value = up.path;
       } else if (cmd === 'hist') {
-        fieldHistoryPanel(key);
+        // Fields inside a repeat share their key across every block (each table
+        // row reuses sd_notes etc.), so per-field history is ambiguous — track
+        // and restore the CONTAINER, which is also how these fields publish.
+        const rep = el.closest('[data-cms-repeat]');
+        fieldHistoryPanel(rep ? rep.getAttribute('data-cms-repeat') : key, !!rep);
         return;
       } else {
         document.execCommand(cmd, false, null);
@@ -3978,6 +4009,12 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-hist-row{flex-wrap:wrap}
 .kiln-hist-acts{display:flex;gap:6px;flex:none}
 .kiln-hist-acts .kiln-btn-ghost{font-size:11.5px;padding:5px 10px;white-space:nowrap}
+/* Ghost buttons are styled for the dark menu — inside white modals (history
+   rows) they were almost invisible. Give them real contrast there. */
+.kiln-modal-body .kiln-inv-row .kiln-btn-ghost,.kiln-modal-body .kiln-hist-acts .kiln-btn-ghost{
+  color:#1f2937;background:#f3f4f6;border:1px solid #cfd4db;font-weight:600}
+.kiln-modal-body .kiln-inv-row .kiln-btn-ghost:hover,.kiln-modal-body .kiln-hist-acts .kiln-btn-ghost:hover{
+  color:#fff;background:var(--kiln-accent);border-color:var(--kiln-accent)}
 .kiln-hist-live{color:#059669;font-weight:700}
 .kiln-pick-hover{outline:2px dashed #34d399!important;outline-offset:3px;cursor:copy!important}
 .kiln-pick-hover[data-cms],.kiln-pick-hover[data-cms-repeat],.kiln-pick-hover[data-cms-menu]{outline-color:#f87171!important;cursor:not-allowed!important}
@@ -4075,6 +4112,16 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-repeat-item{position:relative}
 .kiln-item-ctl{position:absolute;top:8px;right:8px;display:flex;gap:5px;z-index:9999;opacity:0;transition:opacity .15s}
 .kiln-repeat-item:hover>.kiln-item-ctl{opacity:1}
+.kiln-row-editing .kiln-item-ctl{opacity:0!important;pointer-events:none}
+/* Table rows keep their controls in a dedicated end-of-row cell (a floating
+   overlay would cover the last column's text while typing). */
+.kiln-ctl-cell{width:1%;white-space:nowrap;vertical-align:middle;background:none!important;border:none!important;padding:2px 4px!important}
+.kiln-ctl-cell .kiln-item-ctl{position:static;display:flex;opacity:0}
+.kiln-repeat-item:hover .kiln-ctl-cell .kiln-item-ctl{opacity:1}
+/* An empty field being edited must still show a caret and accept clicks. */
+.kiln-editing:empty{min-width:70px;min-height:1.15em;display:inline-block}
+td.kiln-editing:empty,th.kiln-editing:empty{display:table-cell}
+.kiln-editing{caret-color:var(--kiln-accent)}
 /* Touch devices have no hover: keep block controls permanently visible so
    move/duplicate/tag/remove (and the only reorder path on a phone) are reachable. */
 @media(hover:none){.kiln-item-ctl{opacity:1}}
