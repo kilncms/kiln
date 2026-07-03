@@ -60,9 +60,10 @@ const state = {
   pendingStructural: [],
   // What each field/container looked like before any editing this session —
   // seeded at decoration, updated after each publish. The undo stack uses these
-  // to put the DOM back when un-staging a change.
-  baseline: new Map(),        // key → clean innerHTML
-  baselineAttrs: new Map(),   // key → { attrName: value }
+  // to put the DOM back when un-staging a change. (NOT state.baseline — that is
+  // the publish-conflict snapshot set by loadPageSource.)
+  undoBase: new Map(),        // key → clean innerHTML
+  undoBaseAttrs: new Map(),   // key → { attrName: value }
 };
 
 // ─── Session undo/redo (⌘Z / ⌘⇧Z) ───────────────────────────────────────────
@@ -445,10 +446,10 @@ function decorateField(el, key) {
   el.title = `Edit: ${key}`;
   // Seed the undo baseline with the pre-edit state (first decoration wins;
   // keys inside repeats stage via their container, so their entry is unused).
-  if (!el.closest('[data-cms-repeat]') && !state.baseline.has(key)) state.baseline.set(key, el.innerHTML);
+  if (!el.closest('[data-cms-repeat]') && !state.undoBase.has(key)) state.undoBase.set(key, el.innerHTML);
   const attrName = el.getAttribute('data-cms-attr');
-  if (attrName && !state.baselineAttrs.has(key)) {
-    state.baselineAttrs.set(key, { [attrName]: el.getAttribute(attrName) || '' });
+  if (attrName && !state.undoBaseAttrs.has(key)) {
+    state.undoBaseAttrs.set(key, { [attrName]: el.getAttribute(attrName) || '' });
   }
   el.addEventListener('click', (e) => {
     // Cmd/Ctrl+click on a link follows it even in edit mode.
@@ -469,7 +470,7 @@ function setupRepeat(container, key) {
   container.classList.add('kiln-repeat');
   // Re-runnable: drop any add/options buttons from a previous setup first.
   container.querySelectorAll(':scope > .kiln-repeat-add').forEach(n => n.remove());
-  if (!state.baseline.has(key)) state.baseline.set(key, containerCleanHtml(container).innerHTML);
+  if (!state.undoBase.has(key)) state.undoBase.set(key, containerCleanHtml(container).innerHTML);
   [...container.children].forEach((item) => attachItemControls(container, key, item));
   renderTagPreview(container);   // show filter pills if any block is already tagged
 
@@ -918,11 +919,11 @@ function stagePending(key, patch, opts = {}) {
   if (!opts.noUndo) {
     step = { key, prevEntry: prev ? JSON.parse(JSON.stringify(prev)) : undefined };
     if (patch.html !== undefined) {
-      step.beforeHtml = prev?.html !== undefined ? prev.html : state.baseline.get(key);
+      step.beforeHtml = prev?.html !== undefined ? prev.html : state.undoBase.get(key);
       step.afterHtml = patch.html;
     }
     if (patch.attrs) {
-      const base = state.baselineAttrs.get(key) || {};
+      const base = state.undoBaseAttrs.get(key) || {};
       step.attrsBefore = {}; step.attrsAfter = {};
       for (const [a, v] of Object.entries(patch.attrs)) {
         step.attrsBefore[a] = prev?.attrs?.[a] !== undefined ? prev.attrs[a] : base[a];
@@ -1650,8 +1651,8 @@ async function publish() {
         // The published value is the new "unedited" state for session undo.
         try {
           const v = JSON.parse(snap);
-          if (v.html !== undefined) state.baseline.set(key, v.html);
-          if (v.attrs) state.baselineAttrs.set(key, { ...(state.baselineAttrs.get(key) || {}), ...v.attrs });
+          if (v.html !== undefined) state.undoBase.set(key, v.html);
+          if (v.attrs) state.undoBaseAttrs.set(key, { ...(state.undoBaseAttrs.get(key) || {}), ...v.attrs });
         } catch {}
         try {
           document.querySelectorAll('[data-cms="' + CSS.escape(key) + '"].kiln-modified')
