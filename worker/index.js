@@ -508,20 +508,26 @@ async function presencePing(request, env) {
   // name and page before composing pres:<repo>:<page>:<name> — otherwise a
   // crafted value could shadow another user's presence key. The trusted `role`
   // is server-derived above, so display-name spoofing is the whole ceiling here.
-  const safe = (s, n) => String(s).replace(/[: -]/g, ' ').slice(0, n);
+  const safe = (s, n) => String(s).replaceAll(':', ' ').slice(0, n);
   const page = safe(pagePath, 200);
   const nameKey = safe(who, 64);
-  await env.KILN.put(`pres:${repo}:${page}:${nameKey}`,
-    JSON.stringify({ name: nameKey, role, ts: Date.now() }), { expirationTtl: 90 });
+  const myKey = `pres:${repo}:${page}:${nameKey}`;
+  // Store the real (unsafened) path so the "who's online" list can show it.
+  await env.KILN.put(myKey,
+    JSON.stringify({ name: nameKey, role, page: String(pagePath).slice(0, 200), ts: Date.now() }),
+    { expirationTtl: 90 });
 
-  const others = [];
-  const list = await env.KILN.list({ prefix: `pres:${repo}:${page}:` });
+  // `others` = people on THIS page; `online` = everyone editing the site right now.
+  const others = [], online = [];
+  const list = await env.KILN.list({ prefix: `pres:${repo}:` });
   for (const k of list.keys) {
-    if (k.name === `pres:${repo}:${page}:${nameKey}`) continue;
+    if (k.name === myKey) continue;
     const v = await env.KILN.get(k.name, 'json');
-    if (v) others.push({ name: v.name, role: v.role });
+    if (!v) continue;
+    online.push({ name: v.name, role: v.role, page: v.page || '' });
+    if (v.page === String(pagePath)) others.push({ name: v.name, role: v.role });
   }
-  return json({ ok: true, others, scope });
+  return json({ ok: true, others, online, scope });
 }
 
 // ─── People (Google sign-in allowlist) ───────────────────────────────────────

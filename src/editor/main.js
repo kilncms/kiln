@@ -202,8 +202,40 @@ async function presencePing() {
     if (!res.ok) return;
     const data = await res.json();
     if (data.scope) state.scope = data.scope;   // editor path/section grants (see decorateFields)
+    state.online = data.online || [];
     updatePresenceUI(data.others || []);
+    updateOnlineChip();
   } catch { /* offline blip — presence is best-effort */ }
+}
+
+/** A small "who's online" pill in the Kiln menu header — everyone editing the site now. */
+function updateOnlineChip() {
+  const host = document.querySelector('#kiln-fab-menu .kiln-fab-head') || document.getElementById('kiln-topbar');
+  if (!host) return;
+  let chip = document.getElementById('kiln-online');
+  const others = state.online || [];
+  if (!others.length) { chip?.remove(); return; }
+  if (!chip) {
+    chip = document.createElement('button');
+    chip.id = 'kiln-online';
+    chip.type = 'button';
+    host.appendChild(chip);
+    chip.onclick = (e) => { e.stopPropagation(); whoIsOnlinePanel(); };
+  }
+  chip.innerHTML = `<span class="kiln-online-dot"></span>${others.length} online`;
+  chip.title = 'See who else is editing the site';
+}
+
+function whoIsOnlinePanel() {
+  const rows = (state.online || []).map(o => {
+    const where = o.page && o.page !== location.pathname ? `<small>editing ${escapeHtml(o.page)}</small>` : '<small>on this page</small>';
+    return `<div class="kiln-inv-row"><span><strong>${escapeHtml(o.name)}</strong> ${where}</span>
+      <small class="kiln-dim">${escapeHtml(o.role || 'editor')}</small></div>`;
+  }).join('');
+  modal(`<h3>Editing right now</h3>
+    <p class="kiln-dim">People signed into Kiln on this site in the last minute or so.</p>
+    <div class="kiln-inv-list">${rows || '<p class="kiln-dim">Just you.</p>'}</div>
+    <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
 }
 
 // ─── Editing scope (invited editors) ─────────────────────────────────────────
@@ -3450,6 +3482,11 @@ body:has(#kiln-topbar){padding-top:46px!important}
   box-shadow:0 6px 22px rgba(0,0,0,.3);max-width:74vw}
 .kiln-presence-dot{width:8px;height:8px;border-radius:50%;background:#fbbf24;flex:none;
   animation:kilnpulse 2s ease-in-out infinite}
+#kiln-online{display:inline-flex;align-items:center;gap:6px;margin-left:auto;background:rgba(52,211,153,.14);
+  color:#34d399;border:1px solid rgba(52,211,153,.3);border-radius:999px;padding:3px 10px;font:600 11px var(--kiln-font);cursor:pointer}
+#kiln-online:hover{background:rgba(52,211,153,.22)}
+.kiln-online-dot{width:7px;height:7px;border-radius:50%;background:#34d399;animation:kilnpulse 2s ease-in-out infinite}
+#kiln-topbar #kiln-online{margin-left:8px}
 @keyframes kilnpulse{0%,100%{opacity:1}50%{opacity:.35}}
 #kiln-menu-add{margin-top:4px;color:#4b5563;border-color:#e5e7eb;background:#f9fafb}`;
   document.head.appendChild(style);
