@@ -222,7 +222,15 @@ export async function handleCloud(request, env, url, path) {
     }
     const dupe = await env.kiln_cloud.prepare('SELECT id FROM sites WHERE origin = ?').bind(o).first();
     if (dupe) return json({ error: 'that site is already registered' }, 409);
-    const site = { id: uuid(), account_id: sess.account_id, repo, origin: o, plan: plan === 'managed' ? 'managed' : 'cloud', status: 'trialing', created_at: Date.now() };
+    // Anti-abuse: the 7-day self-serve trial clock is anchored to the FIRST time
+    // this origin was ever registered, so removing + re-adding a site can't farm
+    // a fresh trial indefinitely. (First registration records the timestamp.)
+    const firstSeenKey = `firstseen:${o}`;
+    let createdAt = Date.now();
+    const prior = await env.KILN.get(firstSeenKey);
+    if (prior) createdAt = Number(prior) || createdAt;
+    else await env.KILN.put(firstSeenKey, String(createdAt));   // no TTL — permanent trial marker
+    const site = { id: uuid(), account_id: sess.account_id, repo, origin: o, plan: plan === 'managed' ? 'managed' : 'cloud', status: 'trialing', created_at: createdAt };
     await env.kiln_cloud.prepare('INSERT INTO sites (id, account_id, repo, origin, plan, status, created_at) VALUES (?,?,?,?,?,?,?)')
       .bind(site.id, site.account_id, site.repo, site.origin, site.plan, site.status, site.created_at).run();
     const checkout = await lsCheckout(env, site);
@@ -248,8 +256,19 @@ export async function handleCloud(request, env, url, path) {
     const bodyText = await request.text();
     if (!(await verifyLsSignature(request, bodyText, env))) return json({ error: 'bad signature' }, 401);
     const evt = JSON.parse(bodyText);
+    // Act ONLY on subscription lifecycle events. Order/invoice events
+    // (order_created, subscription_payment_success) carry status "paid", which
+    // is not a subscription status — mapping it would wrongly flip a paying site
+    // to past_due on its first purchase and every renewal, and would store an
+    // order id in ls_subscription_id (breaking the portal lookup).
+    const eventName = evt?.meta?.event_name || '';
+    const isSubscription = eventName.startsWith('subscription_')
+      && !eventName.startsWith('subscription_payment_')
+      && evt?.data?.type === 'subscriptions';
+    if (!isSubscription) return json({ ok: true, ignored: eventName || 'non-subscription' });
+
     const siteId = evt?.meta?.custom_data?.site_id;
-    const subId = evt?.data?.id;
+    const subId = evt?.data?.id;   // a real subscription id, given the guard above
     const lsStatus = evt?.data?.attributes?.status;
     const status = LS_STATUS[lsStatus] || 'past_due';
     if (siteId) {

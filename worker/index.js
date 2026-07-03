@@ -96,7 +96,10 @@ export default {
       if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
       if (path === '/google/callback') return googleCallback(url, env);
       if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
-      if (path.startsWith('/gh/')) return await cors(env, request, await ghProxy(request, env, path.slice(3) + url.search));
+      // The commit proxy runs on the shared App installation token — throttle it
+      // (per IP) so one editor can't exhaust the owner's GitHub quota and DoS
+      // everyone else's editing. No-op unless the RL binding is configured.
+      if (path.startsWith('/gh/')) return (await rateLimited(request, env)) || await cors(env, request, await ghProxy(request, env, path.slice(3) + url.search));
 
       return new Response('kiln-auth: not found', { status: 404 });
     } catch (err) {
@@ -673,12 +676,35 @@ async function googleCallback(url, env) {
   }
 
   // Member: hand the site a one-time code it can exchange for its own cookie.
+  // The code is BOUND to the repo whose member-list authorized it and the origin
+  // it was minted for — googleClaim re-derives the authoritative repo for that
+  // origin and rejects a mismatch, so a member of repo A can't mint a code and
+  // have it redeemed as a member of an unrelated paid site B (cross-tenant bypass).
   const gcode = crypto.randomUUID().replaceAll('-', '');
-  await env.KILN.put(`gcode:${gcode}`, JSON.stringify({ name: displayName, days: person.days }),
+  await env.KILN.put(`gcode:${gcode}`,
+    JSON.stringify({ name: displayName, days: person.days, repo: state.repo, origin: state.origin }),
     { expirationTtl: 300 });
   const dest = state.returnTo.startsWith('/members') ? state.returnTo : '/members/';
   return Response.redirect(
     `${state.origin}/members-login.html?to=${encodeURIComponent(dest)}#kiln-gcode=${gcode}`, 302);
+}
+
+/**
+ * The repo that authoritatively owns a member-facing origin. Cloud sites map
+ * origin→repo in D1; the canonical instance's static sites are listed here.
+ * Returns null when unknown (single-tenant self-host worker — no cross-tenant risk).
+ */
+async function repoForOrigin(env, origin) {
+  if (env.kiln_cloud) {
+    try {
+      const row = await env.kiln_cloud.prepare(
+        "SELECT repo FROM sites WHERE origin = ? AND status IN ('active','trialing') LIMIT 1"
+      ).bind(origin).first();
+      if (row) return row.repo;
+    } catch { /* D1 unreachable — fall through */ }
+  }
+  const STATIC = { 'https://npu-i.pages.dev': 'erikkurtu/npu-i' };
+  return STATIC[origin] || null;
 }
 
 async function googleClaim(request, env) {
@@ -686,8 +712,17 @@ async function googleClaim(request, env) {
   if (!/^[a-f0-9]{32}$/.test(code || '')) return json({ error: 'bad code' }, 400);
   const data = await env.KILN.get(`gcode:${code}`, 'json');
   if (!data) return json({ error: 'expired' }, 404);
-  await env.KILN.delete(`gcode:${code}`);
-  return json({ ok: true, ...data });
+  await env.KILN.delete(`gcode:${code}`);   // single use, regardless of outcome
+  // Cross-tenant guard: the code's repo must be the repo that authoritatively
+  // owns the origin it was minted for. (Older codes with no repo/origin bound
+  // pass through unchanged for backward compatibility.)
+  if (data.repo && data.origin) {
+    const authRepo = await repoForOrigin(env, data.origin);
+    if (authRepo && authRepo !== data.repo) {
+      return json({ error: 'sign-in not valid for this site' }, 403);
+    }
+  }
+  return json({ ok: true, name: data.name, days: data.days });
 }
 
 // ─── GitHub proxy for editor sessions ────────────────────────────────────────
@@ -705,12 +740,13 @@ function isSensitivePath(p) {
   if (/^\.github\//.test(path) || /^cname$/i.test(path) || /^_redirects$/i.test(path) || /^_headers$/i.test(path)) return true;
   // Code that a host EXECUTES at the edge or at build time — an editor writing
   // any of these escalates from content into running code / deploy hijack.
-  //   Cloudflare Pages Functions + advanced-mode worker
-  if (/^functions\//.test(lower) || /^_worker\.js$/i.test(lower)) return true;
-  //   Host build/deploy config (Netlify, Vercel, Cloudflare, GitLab, Docker, npm scripts…)
-  if (/^(netlify\.toml|vercel\.json|wrangler\.toml|dockerfile|procfile|package\.json|package-lock\.json|_config\.yml|\.gitlab-ci\.yml|now\.json|render\.yaml|_worker\.js)$/i.test(lower)) return true;
-  //   Any CI/workflow YAML anywhere, and dotfiles that change tooling.
-  if (/(^|\/)\.[^/]+\.ya?ml$/i.test(lower) || /(^|\/)\.npmrc$/i.test(lower)) return true;
+  // Matched at ANY path depth (not just root) so nested build dirs can't slip by.
+  //   Cloudflare Pages Functions, advanced-mode worker, Jekyll plugins.
+  if (/(^|\/)functions\//.test(lower) || /(^|\/)_worker\.js$/i.test(lower) || /(^|\/)_plugins\//.test(lower)) return true;
+  //   Host build/deploy config (Netlify, Vercel, Cloudflare, GitLab, Docker, npm scripts, Jekyll…)
+  if (/(^|\/)(netlify\.toml|vercel\.json|wrangler\.toml|dockerfile|procfile|package\.json|package-lock\.json|_config\.ya?ml|gemfile|now\.json|render\.yaml)$/i.test(lower)) return true;
+  //   Any CI/workflow YAML, and dotfiles that change tooling.
+  if (/(^|\/)\.[^/]+\.ya?ml$/i.test(lower) || /workflows\/[^/]+\.ya?ml$/i.test(lower) || /(^|\/)\.npmrc$/i.test(lower)) return true;
   return false;
 }
 

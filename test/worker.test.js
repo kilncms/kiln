@@ -35,7 +35,9 @@ test('isSensitivePath: blocks host-executed code and build/deploy config', () =>
   for (const p of ['functions/members/_middleware.js', 'functions/api/x.js', '_worker.js',
     'netlify.toml', 'vercel.json', 'wrangler.toml', 'Dockerfile', 'package.json',
     'package-lock.json', '.gitlab-ci.yml', '.github/workflows/deploy.yaml', 'render.yaml',
-    'nested/.circleci.yml', '.npmrc'])
+    'nested/.circleci.yml', '.npmrc',
+    'site/functions/x.js', 'app/_worker.js', '_plugins/hack.rb', '_config.yaml',
+    'Gemfile', 'sub/.github.yml'])
     assert.equal(isSensitivePath(p), true, `should block: ${p}`);
   // Ordinary content must still pass.
   for (const p of ['index.html', 'about/index.html', 'assets/uploads/a.webp',

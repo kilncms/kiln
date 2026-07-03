@@ -60,10 +60,12 @@
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'kiln-pill';
+        b.setAttribute('aria-pressed', 'false');
         b.textContent = label;
         b.onclick = () => {
-          bar.querySelectorAll('.kiln-pill').forEach(p => p.classList.remove('kiln-pill-on'));
+          bar.querySelectorAll('.kiln-pill').forEach(p => { p.classList.remove('kiln-pill-on'); p.setAttribute('aria-pressed', 'false'); });
           b.classList.add('kiln-pill-on');
+          b.setAttribute('aria-pressed', 'true');
           for (const it of items) {
             const mine = splitTags(it.getAttribute('data-kiln-tags'));
             it.style.display = (!tag || mine.includes(tag)) ? '' : 'none';
@@ -73,6 +75,7 @@
       };
       const all = mk('All', null);
       all.classList.add('kiln-pill-on');
+      all.setAttribute('aria-pressed', 'true');
       bar.appendChild(all);
       tags.forEach(t => bar.appendChild(mk(t, t)));
       // A table body can't host the bar — put it before the table itself.
@@ -103,9 +106,11 @@
   function openLightbox(imgs, index) {
     if (!imgs.length) return;
     let i = index < 0 ? 0 : index;
+    const opener = document.activeElement;   // restore focus here on close
     const lb = document.createElement('div');
     lb.className = 'kiln-lightbox';
     lb.setAttribute('role', 'dialog');
+    lb.setAttribute('aria-modal', 'true');
     lb.setAttribute('aria-label', 'Image viewer');
     lb.innerHTML = `
       <button class="kiln-lb-close" aria-label="Close">✕</button>
@@ -134,18 +139,27 @@
     function close() {
       lb.remove();
       document.documentElement.style.overflow = '';
-      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onKey, true);
+      if (opener && opener.focus) opener.focus();   // restore focus to the thumbnail
     }
     function onKey(e) {
-      if (e.key === 'Escape') close();
-      else if (e.key === 'ArrowLeft') show(i - 1);
-      else if (e.key === 'ArrowRight') show(i + 1);
+      if (e.key === 'Escape') { close(); return; }
+      if (e.key === 'ArrowLeft') { show(i - 1); return; }
+      if (e.key === 'ArrowRight') { show(i + 1); return; }
+      if (e.key === 'Tab') {   // trap focus inside the viewer
+        const f = [...lb.querySelectorAll('button')].filter(b => b.style.visibility !== 'hidden');
+        if (!f.length) return;
+        const first = f[0], last = f[f.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
     }
     lb.querySelector('.kiln-lb-close').onclick = close;
     lb.querySelector('.kiln-lb-prev').onclick = (e) => { e.stopPropagation(); show(i - 1); };
     lb.querySelector('.kiln-lb-next').onclick = (e) => { e.stopPropagation(); show(i + 1); };
     lb.addEventListener('click', (e) => { if (e.target === lb) close(); });
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
+    lb.querySelector('.kiln-lb-close').focus();   // initial focus inside the dialog
     // Swipe on touch screens.
     let touchX = null;
     lb.addEventListener('touchstart', (e) => { touchX = e.touches[0].clientX; }, { passive: true });
@@ -167,15 +181,27 @@
     document.querySelectorAll('[data-kiln-events]').forEach(setupEvents);
   }
 
+  // Parse a datetime attribute in LOCAL time. A date-only value ("2026-07-03")
+  // is treated as an all-day event at local midnight (not UTC — otherwise US
+  // timezones land it on the previous day). Returns { date, allDay } or null.
+  function parseDT(s) {
+    if (!s) return null;
+    const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(String(s).trim());
+    if (!m) { const d = new Date(s); return isNaN(d) ? null : { date: d, allDay: false }; }
+    const [, y, mo, d, h, mi] = m;
+    if (h === undefined) return { date: new Date(+y, +mo - 1, +d), allDay: true };
+    return { date: new Date(+y, +mo - 1, +d, +h, +mi), allDay: false };
+  }
+
   function parseEvents(container) {
     return [...container.children].map(el => {
       const times = el.querySelectorAll('time[datetime]');
-      const start = times[0] ? new Date(times[0].getAttribute('datetime')) : null;
-      const end = times[1] ? new Date(times[1].getAttribute('datetime')) : null;
-      if (!start || isNaN(start)) return null;
+      const p0 = times[0] ? parseDT(times[0].getAttribute('datetime')) : null;
+      if (!p0) return null;
+      const p1 = times[1] ? parseDT(times[1].getAttribute('datetime')) : null;
       const title = (el.querySelector('.kiln-ev-title, h1,h2,h3,h4')?.textContent || 'Event').trim();
       const loc = (el.querySelector('.kiln-ev-loc')?.textContent || '').trim();
-      return { el, start, end, title, loc };
+      return { el, start: p0.date, end: p1 ? p1.date : null, allDay: p0.allDay, title, loc };
     }).filter(Boolean).sort((a, b) => a.start - b.start);
   }
 
@@ -184,13 +210,30 @@
   const FMT_TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
   const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 
+  /** Every day-key an event spans (start→end, capped) so multi-day events show on each day. */
+  function eventDayKeys(ev) {
+    const startDay = new Date(ev.start.getFullYear(), ev.start.getMonth(), ev.start.getDate());
+    let endDay = startDay;
+    if (ev.end && ev.end > ev.start) {
+      endDay = new Date(ev.end.getFullYear(), ev.end.getMonth(), ev.end.getDate());
+      // An end at exactly midnight ends the previous day (exclusive boundary).
+      if (ev.end.getHours() === 0 && ev.end.getMinutes() === 0 && endDay > startDay) {
+        endDay.setDate(endDay.getDate() - 1);
+      }
+    }
+    const keys = [];
+    const d = new Date(startDay);
+    for (let i = 0; i <= 366 && d <= endDay; i++) { keys.push(dayKey(d)); d.setDate(d.getDate() + 1); }
+    return keys;
+  }
+
   function setupEvents(container) {
     const bar = document.createElement('div');
     bar.className = 'kiln-evbar';
     bar.innerHTML = `
       <div class="kiln-evbar-views" role="tablist" aria-label="Calendar view">
         ${['list', 'month', 'week', 'day'].map(v =>
-          `<button type="button" class="kiln-pill" data-view="${v}">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}
+          `<button type="button" class="kiln-pill" role="tab" aria-selected="false" data-view="${v}">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}
       </div>
       <div class="kiln-evbar-nav" hidden>
         <button type="button" class="kiln-pill" data-nav="-1" aria-label="Previous">‹</button>
@@ -213,8 +256,11 @@
     const labelEl = bar.querySelector('.kiln-evbar-label');
 
     function render() {
-      bar.querySelectorAll('[data-view]').forEach(b =>
-        b.classList.toggle('kiln-pill-on', b.dataset.view === view));
+      bar.querySelectorAll('[data-view]').forEach(b => {
+        const on = b.dataset.view === view;
+        b.classList.toggle('kiln-pill-on', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
       try { sessionStorage.setItem('kiln_ev_view', view); } catch { /* ignore */ }
       const events = parseEvents(container);
       if (view === 'list') {
@@ -231,25 +277,40 @@
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'kiln-ev-chip';
-      chip.innerHTML = `<span class="kiln-ev-chip-t">${esc(FMT_TIME.format(ev.start))}</span> ${esc(ev.title)}`;
+      // All-day events show no bogus "12:00 AM"; timed events show the time,
+      // and a same-day end time renders as a range.
+      const timeLabel = ev.allDay ? ''
+        : (ev.end && dayKey(ev.end) === dayKey(ev.start) && ev.end > ev.start)
+          ? `${FMT_TIME.format(ev.start)}–${FMT_TIME.format(ev.end)}`
+          : FMT_TIME.format(ev.start);
+      chip.innerHTML = timeLabel
+        ? `<span class="kiln-ev-chip-t">${esc(timeLabel)}</span> ${esc(ev.title)}`
+        : esc(ev.title);
       chip.onclick = () => showEventPop(ev);
       return chip;
     }
 
     function showEventPop(ev) {
       document.querySelector('.kiln-ev-pop')?.remove();
+      const opener = document.activeElement;
       const pop = document.createElement('div');
       pop.className = 'kiln-ev-pop';
+      pop.setAttribute('role', 'dialog');
+      pop.setAttribute('aria-modal', 'true');
       const inner = document.createElement('div');
       inner.className = 'kiln-ev-pop-card';
       inner.appendChild(ev.el.cloneNode(true));
       const x = document.createElement('button');
       x.className = 'kiln-lb-close'; x.textContent = '✕'; x.setAttribute('aria-label', 'Close');
-      x.onclick = () => pop.remove();
+      const close = () => { pop.remove(); document.removeEventListener('keydown', onKey, true); if (opener && opener.focus) opener.focus(); };
+      const onKey = (e) => { if (e.key === 'Escape') close(); };
+      x.onclick = close;
       inner.prepend(x);
       pop.appendChild(inner);
-      pop.addEventListener('click', (e) => { if (e.target === pop) pop.remove(); });
+      pop.addEventListener('click', (e) => { if (e.target === pop) close(); });
       document.body.appendChild(pop);
+      document.addEventListener('keydown', onKey, true);
+      x.focus();
     }
 
     function renderMonth(events) {
@@ -260,7 +321,7 @@
       const daysInMonth = new Date(y, m + 1, 0).getDate();
       const byDay = {};
       for (const ev of events) {
-        (byDay[dayKey(ev.start)] = byDay[dayKey(ev.start)] || []).push(ev);
+        for (const k of eventDayKeys(ev)) (byDay[k] = byDay[k] || []).push(ev);
       }
       const dows = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
       let html = `<div class="kiln-cal-month">` + dows.map(d => `<div class="kiln-cal-dow">${d}</div>`).join('');
@@ -294,7 +355,7 @@
         const col = document.createElement('div');
         col.className = 'kiln-cal-wcol' + (dayKey(day) === today ? ' kiln-cal-today' : '');
         col.innerHTML = `<div class="kiln-cal-dow">${new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric' }).format(day)}</div>`;
-        events.filter(ev => dayKey(ev.start) === dayKey(day)).forEach(ev => col.appendChild(eventChip(ev)));
+        events.filter(ev => eventDayKeys(ev).includes(dayKey(day))).forEach(ev => col.appendChild(eventChip(ev)));
         wk.appendChild(col);
       }
     }
@@ -303,7 +364,7 @@
       labelEl.textContent = FMT_DAY.format(cursor);
       cal.innerHTML = '<div class="kiln-cal-day"></div>';
       const list = cal.firstChild;
-      const todays = events.filter(ev => dayKey(ev.start) === dayKey(cursor));
+      const todays = events.filter(ev => eventDayKeys(ev).includes(dayKey(cursor)));
       if (!todays.length) { list.innerHTML = '<p class="kiln-cal-empty">No events this day.</p>'; return; }
       todays.forEach(ev => {
         const item = document.createElement('div');
@@ -317,7 +378,9 @@
     bar.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => {
       const n = Number(b.dataset.nav);
       if (n === 0) cursor = new Date();
-      else if (view === 'month') cursor.setMonth(cursor.getMonth() + n);
+      // Anchor to day 1 before stepping months so the 29th–31st don't overflow
+      // (e.g. Jan 31 → "Feb 31" → Mar 3), which silently skips February.
+      else if (view === 'month') cursor = new Date(cursor.getFullYear(), cursor.getMonth() + n, 1);
       else if (view === 'week') cursor.setDate(cursor.getDate() + 7 * n);
       else cursor.setDate(cursor.getDate() + n);
       render();
