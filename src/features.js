@@ -17,6 +17,16 @@
 (function () {
   'use strict';
 
+  // Declared above init() on purpose: features.js is transform-only (esbuild keeps
+  // const semantics + TDZ here, unlike the editor bundle where const→var hoists), and
+  // it is injected after DOM ready so init() runs synchronously on the next line. Any
+  // module const reachable from init() must be initialized before that call or it TDZ-
+  // crashes visitor event calendars. See kiln-editor-const-init-order memory.
+  const FMT_MONTH = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' });
+  const FMT_DAY = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const FMT_TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+  const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
 
@@ -207,11 +217,6 @@
       return { el, start: p0.date, end: p1 ? p1.date : null, allDay: p0.allDay, title, loc };
     }).filter(Boolean).sort((a, b) => a.start - b.start);
   }
-
-  const FMT_MONTH = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' });
-  const FMT_DAY = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
-  const FMT_TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
-  const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 
   /** Every day-key an event spans (start→end, capped) so multi-day events show on each day. */
   function eventDayKeys(ev) {

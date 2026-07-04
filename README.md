@@ -106,8 +106,10 @@ Then install the app on your site's repo (pick **Only select repositories**).
 Add your site URL to `ALLOWED_ORIGINS` in `worker/wrangler.toml`, redeploy.
 
 **4. Add the script tags + `data-cms` attributes to your site** (see above), build the
-assets (`npm run build`) and copy `dist/kiln.js` + `dist/kiln-editor.js` into your site's
-`/assets/`, and add a `kiln.html` entry page at your site root (the wizard does this
+assets (`npm run build`) and copy `dist/kiln.js` + `dist/kiln-editor.js` +
+`dist/kiln-features.js` into your site's `/assets/` (kiln-features.js is lazy-loaded by
+kiln.js for galleries/filters/calendars — omit it and those 404 for visitors), and add a
+`kiln.html` entry page at your site root (the wizard does this
 for you). Push, then visit `your-site.com/kiln` and sign in. There is no edit button
 on the site itself; `/kiln` is the only way in.
 
@@ -208,7 +210,7 @@ printf 'https://kiln-auth.you.workers.dev' | npx wrangler pages secret put KILN_
 ```bash
 npm install
 npm test               # splice engine + transport suite (node --test)
-npm run build          # dist/kiln.js + dist/kiln-editor.js
+npm run build          # dist/kiln.js + dist/kiln-editor.js + dist/kiln-features.js
 GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   # full live-loop verification
 ```
 

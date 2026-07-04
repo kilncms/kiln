@@ -729,7 +729,10 @@ function galleryOptionsPanel(container, key) {
       <button class="kiln-btn-publish" id="kiln-gal-go">Apply</button>
     </div>`);
   m.querySelector('#kiln-gal-go').onclick = () => {
-    const v = m.querySelector('input[name="kiln-gal-thumb"]:checked').value;
+    // A hand-set data-kiln-thumb (e.g. 200) matches no preset, so nothing is
+    // checked — fall back to the current value instead of dereferencing null.
+    const checked = m.querySelector('input[name="kiln-gal-thumb"]:checked');
+    const v = checked ? checked.value : String(cur);
     container.setAttribute('data-kiln-thumb', v);
     applyGalleryThumb(container);
     if (!cfg.sandbox) stagePending(key, { attrs: { 'data-kiln-thumb': v } });
@@ -1698,6 +1701,30 @@ async function publish() {
   setStatus('Publishing — committing to GitHub…', 'saving');
   disablePublish(true);
   try {
+    // Prune orphaned uploads before committing. A swap that queued an upload and
+    // was then undone leaves the binary in pendingBinaries with no edit referencing
+    // it — committing it would push a public, unreferenced file to the live site,
+    // and its stale data-kiln-src marker would make watchDeploy point a live <img>
+    // at that (now-absent) path. Keep only binaries whose filename actually appears
+    // in a value we're about to commit.
+    if (state.pendingBinaries.size) {
+      const haystack = [
+        ...localEdits.map(e => e.html ?? e.value ?? ''),
+        ...partialEdits.map(e => e.html ?? e.value ?? ''),
+        ...state.pendingStructural.map(s => s.html || ''),
+      ].join('\n');
+      for (const path of [...state.pendingBinaries.keys()]) {
+        const base = path.split('/').pop();
+        if (base && !haystack.includes(base)) {
+          state.pendingBinaries.delete(path);
+          try {
+            document.querySelectorAll('img[data-kiln-src]').forEach(img => {
+              if ((img.getAttribute('data-kiln-src') || '').split('/').pop() === base) img.removeAttribute('data-kiln-src');
+            });
+          } catch {}
+        }
+      }
+    }
     // Commit any queued binaries (images/docs) FIRST, in one commit, so the files
     // exist before the page that references them goes live. Deferring them to here
     // is what makes "nothing is live until Publish" true (Discard = no orphans).
@@ -1709,6 +1736,10 @@ async function publish() {
       for (const { path } of files) state.pendingBinaries.delete(path);
     }
     let result = null;
+    // Track which keys actually made it into the commit vs. were skipped (e.g. a
+    // key another editor un-annotated between load and publish). The final callback
+    // run wins (editFile re-runs it on a sha-conflict retry).
+    let appliedKeys = new Set(), skippedKeys = new Set();
     // Freeze the structural ops we're sending so a mid-publish addition can't get
     // applied to this commit (it would then be double-applied on the next Publish).
     const structuralOps = state.pendingStructural.slice();
@@ -1722,7 +1753,9 @@ async function publish() {
           // Structural changes (make/unmake editable) first, so field edits can
           // reference newly-annotated keys; then splice the field edits.
           const t = applyStructural(text, structuralOps);
-          const { html, skipped } = applyEdits(t, localEdits);
+          const { html, applied, skipped } = applyEdits(t, localEdits);
+          appliedKeys = new Set(applied);
+          skippedKeys = new Set(skipped.map(s => s.key));
           for (const s of skipped) console.warn('[kiln] skipped:', s);
           return html;
         },
@@ -1737,6 +1770,10 @@ async function publish() {
     // Anything the user edited (or added) during the commit stays pending and keeps
     // its "modified" marker, so the next Publish picks it up.
     for (const [key, snap] of publishedSnapshot) {
+      // A field key whose every edit was skipped never reached the commit (it
+      // vanished from source, e.g. another editor un-annotated it). Keep it pending
+      // and modified rather than silently discarding the user's work.
+      if (skippedKeys.has(key) && !appliedKeys.has(key)) continue;
       if (state.pending.has(key) && JSON.stringify(state.pending.get(key)) === snap) {
         state.pending.delete(key);
         state.originals.delete(key);
@@ -1760,6 +1797,13 @@ async function publish() {
     updateUndoUi();
     await loadPageSource();
     refreshPublishButton();
+    // Don't let a fully-skipped edit report success silently — tell the user it's
+    // still pending because the section it targeted is gone from the page.
+    const keptSkipped = [...skippedKeys].filter(k => !appliedKeys.has(k) && state.pending.has(k));
+    if (keptSkipped.length) {
+      setStatus(`${keptSkipped.length} edit${keptSkipped.length > 1 ? 's' : ''} couldn't be applied — that section no longer exists on the page. Still pending.`, 'error');
+      return;
+    }
     if (result && result.unchanged && !partialEdits.length) { setStatus('Nothing changed', 'idle'); return; }
     watchDeploy(result?.commit?.sha, result?.text);
   } catch (err) {
@@ -2949,6 +2993,12 @@ async function saveDraft() {
     });
     state.pending.clear();
     clearSavedPending();
+    // Retire undo history at the draft boundary too: the edits now live in the
+    // draft branch, so ⌘Z would revert the DOM while the draft still carries them
+    // (and redo would re-stage an already-saved edit for a second commit).
+    editHistory.undo.length = 0;
+    editHistory.redo.length = 0;
+    updateUndoUi();
     document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
     refreshPublishButton();
     setStatus('Draft saved ✓ — nothing is live; resume it any time from this page', 'saved');
@@ -3088,6 +3138,12 @@ function schedulePanel() {
       if (!data.ok) throw new Error(data.error || 'failed');
       state.pending.clear();
       clearSavedPending();
+      // The edits now live in the schedule on the worker; retire undo history so
+      // ⌘Z can't revert the DOM out from under an already-scheduled edit (and redo
+      // can't re-stage it for a duplicate publish).
+      editHistory.undo.length = 0;
+      editHistory.redo.length = 0;
+      updateUndoUi();
       document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
       refreshPublishButton();
       status.textContent = `Scheduled for ${new Date(data.at).toLocaleString()} ✓ — safe to close.`;
@@ -3161,7 +3217,7 @@ const PICKABLE = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'a', 
   'em', 'td', 'th', 'tr', 'tbody', 'table', 'time', 'dl', 'dt', 'dd', 'caption', 'address']);
 
 const KILN_CHROME = '#kiln-fab-wrap,#kiln-topbar,#kiln-toolbar,#kiln-modal,#kiln-imgpop,#kiln-previewbar,'
-  + '#kiln-presence,#kiln-pickbar,#kiln-sandbox-banner,.kiln-item-ctl,.kiln-ctl-cell,.kiln-repeat-add,'
+  + '#kiln-presence,#kiln-pickbar,#kiln-sandbox-banner,#kiln-scope-note,.kiln-item-ctl,.kiln-ctl-cell,.kiln-repeat-add,'
   + '.kiln-filterbar,.kiln-filterbar-preview,.kiln-evbar,.kiln-img-handle';
 
 function isKilnChrome(el) { return !!el.closest(KILN_CHROME); }
@@ -4069,14 +4125,20 @@ function offerPendingRestore() {
   m.querySelector('#kiln-rest-no').onclick = () => { clearSavedPending(); m.remove(); };
   m.querySelector('#kiln-rest-yes').onclick = () => {
     for (const [key, edit] of Object.entries(saved.edits)) {
-      const el = document.querySelector(`[data-cms="${CSS.escape(key)}"], [data-cms-repeat="${CSS.escape(key)}"]`);
       state.pending.set(key, edit);
-      if (el && edit.html !== undefined && !el.hasAttribute('data-cms-repeat')) {
-        el.innerHTML = edit.html;
-        el.classList.add('kiln-modified');
-      } else if (el) {
-        el.classList.add('kiln-modified');
+      const esc = CSS.escape(key);
+      // applyKeyDom handles BOTH plain fields and repeat containers (re-wiring the
+      // repeat). The old code skipped repeats, so the DOM showed the un-restored
+      // content while Publish committed the restored html — publishing what wasn't
+      // previewed. Also restore attr edits (href/src/style), which were dropped.
+      if (edit.html !== undefined) applyKeyDom(key, edit.html);
+      if (edit.attrs) {
+        document.querySelectorAll(`[data-cms="${esc}"]`).forEach(n => {
+          for (const [a, v] of Object.entries(edit.attrs)) if (v !== undefined && v !== null) n.setAttribute(a, v);
+        });
       }
+      document.querySelectorAll(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`)
+        .forEach(n => n.classList.add('kiln-modified'));
     }
     refreshPublishButton();
     setStatus(`${keys.length} edit${keys.length > 1 ? 's' : ''} restored — Publish when ready`, 'saved');

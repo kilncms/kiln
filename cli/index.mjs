@@ -183,7 +183,10 @@ function wireSite(repo, workerUrl) {
 `);
     ok('wrote kiln.html (your /kiln sign-in page)');
   } else ok('kiln.html already present (left untouched)');
-  const wired = readdirSync('.').filter(f => f.endsWith('.html'))
+  // Exclude Kiln's own scaffold pages: kiln.html (just written) always references
+  // kiln.js, so counting it would falsely report the site as wired when the real
+  // content pages still aren't.
+  const wired = readdirSync('.').filter(f => f.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(f))
     .some(f => readFileSync(f, 'utf8').includes('kiln.js'));
   if (!wired) {
     warn('No page loads kiln.js yet. Add to every page before </body>:');
@@ -269,8 +272,9 @@ async function wizard() {
   hr('How will you run Kiln?');
   console.log(`   1. Kiln Cloud / Managed — we run the worker + GitHub App (paid; simplest)
    2. Self-hosted — you run your own worker + GitHub App (free, open source)\n`);
-  const mode = (await ask('Choose 1 or 2', '1')).trim();
-  const isCloud = mode !== '2';
+  let mode = (await ask('Choose 1 or 2', '1')).trim();
+  if (!['1', '2'].includes(mode)) mode = '1';   // unrecognized input → the shown default (Cloud)
+  const isCloud = mode === '1';
   if (isCloud) {
     // still need the repo (Step 1) before prepping, so fall through to detect it,
     // then hand off to cloudPrep. Self-host continues with the full flow below.
@@ -512,10 +516,13 @@ async function update() {
   const dir = prefix.replace(/^\//, '').replace(/\/$/, '') || '.';
   mkdirSync(dir, { recursive: true });
   for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) cpSync(path.join(PKG_ROOT, 'dist', f), path.join(dir, f));
-  ok(`copied the latest kiln.js + kiln-editor.js into ${dir}/`);
+  ok(`copied the latest kiln.js + kiln-editor.js + kiln-features.js into ${dir}/`);
   if (await yes('Commit and push now?', 'y')) {
-    shTry(`git add ${dir}/kiln.js ${dir}/kiln-editor.js && git commit -m "Update Kiln editor to latest" && git push`);
-    ok('pushed — your host will redeploy');
+    // Add all three bundles: kiln-features.js is lazy-loaded by kiln.js, so leaving
+    // it out ships a stale features runtime (e.g. event calendars) to visitors.
+    const r = shTry(`git add ${dir}/kiln.js ${dir}/kiln-editor.js ${dir}/kiln-features.js && git commit -m "Update Kiln editor to latest" && git push`);
+    if (r.ok) ok('pushed — your host will redeploy');
+    else { fail(`commit/push didn't complete — resolve the git error above, then: git add ${dir}/kiln*.js && git commit && git push`); process.exit(1); }
   } else info('Commit + push when ready and your host will redeploy.');
   process.exit(0);
 }

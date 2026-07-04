@@ -391,7 +391,7 @@ async function scheduleCreate(request, env) {
   }
   const id = crypto.randomUUID().replaceAll('-', '');
   await env.KILN.put(`sched:${id}`,
-    JSON.stringify({ repo, path, branch, edits: edits || null, content: edits ? null : content, message: message || 'Scheduled publish (via Kiln)', at: when, desc: desc || path, by: actor.name, byEmail: actor.email }),
+    JSON.stringify({ repo, path, branch, edits: edits || null, content: edits ? null : content, message: message || 'Scheduled publish (via Kiln)', at: when, desc: desc || path, by: actor.name, byEmail: actor.email, admin: !!actor.admin }),
     { expirationTtl: Math.ceil((when - Date.now()) / 1000) + 14 * 24 * 3600 });
   return json({ ok: true, id, at: when });
 }
@@ -430,6 +430,19 @@ async function runDueSchedules(env) {
     for (const k of page.keys) {
       const v = await env.KILN.get(k.name, 'json');
       if (!v || v.at > Date.now()) continue;
+      // Re-validate scope at fire time. A non-admin editor's access may have been
+      // narrowed or their scope changed since they scheduled this (peopleUpsert
+      // purges live sessions but leaves schedules); enforce the CURRENT scope so a
+      // revoked path can't still publish. `admin === false` is stored explicitly;
+      // legacy records without the field are left alone (can't retro-check).
+      if (v.admin === false) {
+        const people = await getPeople(env, v.repo);
+        const p = people.find(x => x.email === v.byEmail && x.role === 'editor');
+        if (!p || isSensitivePath(v.path) || !pathInScope(v.path, p.paths)) {
+          await env.KILN.delete(k.name);
+          continue;
+        }
+      }
       try {
         const itok = await installationToken(env, v.repo);
         if (!itok) continue;

@@ -37,6 +37,9 @@ const info = (m) => console.log('  · ' + m);
 
 if (!TOKEN || !ACCOUNT) die('set CF_API_TOKEN and CF_ACCOUNT_ID');
 if (!args.domain || !args.project) die('required: --domain=… --project=…');
+// Validate --to up front, before any Cloudflare mutation — a bare `--to` (no value)
+// must not run after Pages domains are already attached.
+if (args.to === true) die('--to needs a value: --to=owner@inbox.com (use = , not a space)');
 
 async function cf(method, path, body) {
   const res = await fetch(API + path, {
@@ -77,8 +80,7 @@ try {
 }
 
 // ── 3. Email Routing ─────────────────────────────────────────────────────────
-if (args.to === true) die('--to needs a value: --to=owner@inbox.com (use = , not a space)');
-  if (args.to) {
+if (args.to) {
   const local = typeof args.forward === 'string' ? args.forward : 'hello';
   const addr = `${local}@${domain}`;
 

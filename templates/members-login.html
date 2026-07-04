@@ -33,7 +33,10 @@
     (function () {
       var msg = document.getElementById('msg');
       var to = new URLSearchParams(location.search).get('to') || '/members/';
-      if (to.indexOf('/') !== 0) to = '/members/';
+      // Must be a same-site absolute path. Reject protocol-relative ("//evil.com")
+      // and backslash variants ("/\evil.com", which browsers normalize to "//")
+      // so ?to= can't open-redirect off-site.
+      if (!/^\/(?![/\\])/.test(to)) to = '/members/';
 
       function done(name) {
         msg.textContent = 'Welcome, ' + name + '! Taking you in…';

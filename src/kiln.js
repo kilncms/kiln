@@ -93,7 +93,15 @@
   /** The dedicated Kiln entry page, served at /kiln (kiln.html at the site root). */
   function isEntryPage() {
     if (cfg.entry === false) return false;
-    return /(^|\/)kiln(\.html)?$/.test(location.pathname);
+    var p = location.pathname;
+    // A site served under a base path can point at its own entry via cfg.entry.
+    if (typeof cfg.entry === 'string' && cfg.entry) {
+      var want = cfg.entry.replace(/\/+$/, '');
+      return p === want || p === want + '/' || p === want + '.html';
+    }
+    // Default: the root entry page only. Matches /kiln, /kiln/ (Pretty URLs) and
+    // /kiln.html — but NOT a nested content page like /blog/kiln.
+    return /^\/kiln(\.html)?\/?$/.test(p);
   }
 
   /** After OAuth the worker redirects back with #kiln-token=...&kiln-sid=...&kiln-exp=... */
