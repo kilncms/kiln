@@ -308,10 +308,22 @@ id = "${kvId}"
       by one. Full control over exactly what editors can touch.
    2. AI bulk-tag — paste KILN_PROMPT.md into Claude/Cursor/v0 with your repo
       and it annotates every page at once. Fastest for big sites.
-   3. Both: bulk-tag now, refine in the browser later.
+   3. Auto-tag a first pass right now — a conservative, reviewable guess
+      (headings, paragraphs, images, card lists, the menu; tables left alone).
 
   Either way you can add or remove editable sections any time — nothing here
   is a one-time decision.`);
+  if (await yes('Run the first-pass auto-tagger now? (review with git diff after)', 'n')) {
+    const { autotag } = await import(new URL('../src/autotag.js', import.meta.url));
+    let tagged = 0;
+    for (const f of readdirSync('.').filter(x => x.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(x))) {
+      const raw = readFileSync(f, 'utf8');
+      const { html, counts } = autotag(raw);
+      if (html !== raw) { writeFileSync(f, html); tagged += counts.fields + counts.images + counts.repeats + counts.menu; }
+    }
+    ok(`auto-tagged ${tagged} things — review with: git diff   (undo: git checkout -- .)`);
+    info('subfolders too? run: npx github:kilncms/kiln tag');
+  }
 
   // 8. Members (optional)
   if (await yes('\nSet up a members-only area (gated pages + documents)?', 'n')) {
@@ -364,6 +376,42 @@ id = "${kvId}"
   process.exit(0);
 }
 
+// ─── tag: heuristic first-pass auto-tagger ───────────────────────────────────
+
+async function tagCmd(args) {
+  const { autotag } = await import(new URL('../src/autotag.js', import.meta.url));
+  hr(args.dry ? 'Auto-tag (dry run)' : 'Auto-tag');
+  const files = [];
+  (function walk(dir) {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name.startsWith('.') || ['node_modules', '_templates', 'functions', 'assets'].includes(e.name)) continue;
+      const f = path.join(dir, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (e.name.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(e.name)) files.push(f);
+    }
+  })('.');
+  if (!files.length) { warn('no .html pages found here'); process.exit(1); }
+  const tot = { fields: 0, images: 0, repeats: 0, menu: 0 };
+  for (const f of files) {
+    const raw = readFileSync(f, 'utf8');
+    const { html, counts } = autotag(raw);
+    const changed = html !== raw;
+    if (changed && !args.dry) writeFileSync(f, html);
+    const bits = Object.entries(counts).filter(([, v]) => v).map(([k, v]) => `${v} ${k}`).join(', ');
+    console.log(`  ${changed ? (args.dry ? '~' : '✓') : '·'} ${f}${bits ? '  (' + bits + ')' : '  (nothing new to tag)'}`);
+    for (const k of Object.keys(tot)) tot[k] += counts[k];
+  }
+  hr('Summary');
+  console.log(`  ${tot.fields} text fields · ${tot.images} images · ${tot.repeats} block lists · ${tot.menu} menus${args.dry ? '   (dry run — nothing written)' : ''}`);
+  if (!args.dry) console.log(`
+  This is a FIRST PASS — review it before committing:
+    git diff              see exactly what was tagged
+    git checkout -- .     throw it all away
+  Refine any time in the browser: sign in at /kiln → ✨ Make text/images editable
+  (tables are left alone on purpose — tag those by hand or in the browser).`);
+  process.exit(0);
+}
+
 // ─── update ──────────────────────────────────────────────────────────────────
 
 async function update() {
@@ -406,6 +454,7 @@ async function addSiteCloud() {
 const [, , cmd, ...rest] = process.argv;
 const args = Object.fromEntries(rest.map(a => a.split('=')).map(([k, v]) => [k.replace(/^--/, ''), v ?? true]));
 if (cmd === 'doctor') doctor(args);
+else if (cmd === 'tag') tagCmd(args);
 else if (cmd === 'update') update();
 else if (cmd === 'add-site') addSiteCloud();
 else wizard();

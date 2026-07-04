@@ -59,8 +59,12 @@ export function decodeContent(b64) {
 
 // ─── File operations ─────────────────────────────────────────────────────────
 
-export async function getFile(gh, repo, path, ref) {
-  const data = await gh.request('GET', `/repos/${repo}/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}`);
+export async function getFile(gh, repo, path, ref, bust = false) {
+  // `bust`: skip every cache between us and GitHub. The contents API serves
+  // read-after-write STALE blobs for a few seconds after a commit — a retry
+  // that re-fetches without busting just gets the same stale sha again.
+  const cb = bust ? `&cb=${Date.now().toString(36)}` : '';
+  const data = await gh.request('GET', `/repos/${repo}/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}${cb}`);
   return { text: decodeContent(data.content), sha: data.sha };
 }
 
@@ -100,10 +104,13 @@ export async function putBinaryFile(gh, repo, path, { base64, branch, message, s
  * re-apply the transform against the fresh source. The transform re-locates
  * fields by key, so concurrent edits to *different* fields merge cleanly.
  */
-export async function editFile(gh, repo, path, branch, transform, message, attempts = 3) {
+export async function editFile(gh, repo, path, branch, transform, message, attempts = 4) {
   let lastErr;
   for (let i = 0; i < attempts; i++) {
-    const { text, sha } = await getFile(gh, repo, path, branch);
+    // Back off before retrying: publishing right after a previous commit can
+    // race GitHub's own read-after-write consistency, not just other editors.
+    if (i) await new Promise(r => setTimeout(r, 500 * i * i));
+    const { text, sha } = await getFile(gh, repo, path, branch, i > 0);
     const next = transform(text);
     if (next === text) return { unchanged: true };
     try {
