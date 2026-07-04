@@ -287,7 +287,7 @@ export async function handleCloud(request, env, url, path) {
       const sites = await env.kiln_cloud.prepare('SELECT s.*, a.github_login, a.email FROM sites s JOIN accounts a ON a.id = s.account_id ORDER BY s.created_at DESC').all();
       const rows = sites.results || [];
       const active = rows.filter(s => s.status === 'active');
-      const price = (p) => p === 'managed' ? 19.99 : 4.99;
+      const price = (p) => p === 'managed' ? 14.99 : 4.99;
       const mrr = active.reduce((m, s) => m + price(s.plan), 0);
       const store = await lsStoreMode(env);
       const insights = buildInsights(rows, accounts.n, price);

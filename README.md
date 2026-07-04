@@ -42,9 +42,13 @@ edit layer your client was missing.
    <div data-cms-menu="main"> <!-- nav managed across ALL pages at once --> </div>
    <div data-cms-list="post_list"> <!-- blog cards are prepended here --> </div>
    ```
-   Full conventions (incl. blog templates, new-page template, members area):
-   **[KILN_PROMPT.md](KILN_PROMPT.md)**, written so you can paste it straight into
-   Claude/v0/Lovable and have your AI wire up an existing site.
+   Three ways to get these onto an existing site: run `npx github:kilncms/kiln tag`
+   for a conservative first pass (headings, paragraphs, images, card lists, the menu —
+   tables left alone; review with `git diff`, running it twice adds nothing), click
+   elements in the browser with **✨ Make text/images editable** after you sign in, or
+   paste **[KILN_PROMPT.md](KILN_PROMPT.md)** into Claude/v0/Lovable and let your AI
+   wire the whole site. Full conventions (blog templates, new-page template, members
+   area) live in that same file.
 2. Create `/assets/kiln-config.js`:
    ```js
    window.KILN = {
@@ -68,9 +72,10 @@ edit layer your client was missing.
 
 | Piece | What | Size / cost |
 |---|---|---|
-| `kiln.js` | boot shim every visitor loads | ~6.7 KB raw / ~2.7 KB gzip |
-| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~266 KB raw / ~205 KB gzip, admins only |
-| `kiln-auth` worker | GitHub App OAuth + Google sign-in + commit proxy | Cloudflare Workers free tier |
+| `kiln.js` | boot shim every visitor loads | ~8 KB raw / ~3 KB gzip |
+| `kiln-features.js` | visitor runtime for galleries/filters/calendars, loaded only on pages that use them | ~16 KB raw / ~5 KB gzip |
+| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~348 KB raw / ~102 KB gzip, editors only |
+| `kiln-auth` worker | sign-in (GitHub App + Google) and the commit pipeline every edit flows through | Cloudflare Workers free tier |
 | your repo | the content database (with full version history) | free |
 | Cloudflare Pages | hosting + members-area functions | free, commercial use allowed |
 
@@ -111,21 +116,45 @@ on the site itself; `/kiln` is the only way in.
 
 ## What editors can do
 
-Click any outlined text and type. The toolbar offers **bold / italic / underline / links /
-clear**, an **insert image** button (uploads, downscales, commits), and a **Style…**
-dropdown listing the site's own CSS classes (`window.KILN.styles`), so typography stays
-designed and editors pick from the palette. Repeatable blocks (`data-cms-repeat`) get
-duplicate/remove controls. Links get an href field plus a 📎 **attach file** upload
-(files land in `/assets/files/`, or in `/members/files/`, auto-gated, when you're on a
-members page). **+ New…** creates blog posts or standalone pages from your `_templates/`.
-**Menu…** edits the navigation across every page of the site in one atomic commit.
+Click any outlined text and type. The toolbar has **bold / italic / underline / lists /
+links / clear** and a **Style** menu listing the site's own CSS classes
+(`window.KILN.styles`), so typography stays designed and editors pick from the palette.
+Everything stages on the page and publishes together as one commit — **⌘Z / Ctrl+Z**
+undoes any staged change, blocks and image swaps included.
+
+- **Images** — click to replace (auto-compressed), write alt text, and drag the corner
+  handle to resize the moment the image is added. Kiln keeps the full-resolution
+  original and publishes a web-optimized copy at the chosen size, so enlarging later
+  never degrades.
+- **Documents** — insert a PDF or file into text as a link, a chip, or a card, and
+  choose whether it opens in a new tab or downloads. Files land in `/assets/files/`
+  (or the gated `/members/files/` on a members page).
+- **Blocks & tables** — anything in a `data-cms-repeat` gets duplicate / reorder /
+  remove / tag controls, table rows included. Tag blocks and visitors get automatic
+  filter buttons.
+- **Galleries & events** — add a photo gallery (multi-upload, captions, per-gallery
+  thumbnail size; visitors get a full-screen viewer) or an events list (structured
+  form; visitors get list + month/week/day calendar views) anywhere on a page — you
+  click where the new section goes.
+- **Drafts, scheduling, history** — save privately, publish at a chosen time, and
+  browse every published version in plain language. Undoing always **previews on the
+  page first** (keep or cancel), per section or for the whole page, and undoing a
+  publish that *added* a section removes it again.
+- **Site-wide** — **Site menu** edits navigation across every page in one commit;
+  **Find & replace** changes a phrase everywhere at once; **Page settings** edits the
+  title, description, and social image; **+ New** creates posts and pages from your
+  `_templates/`.
+- **Together** — editors see who else is online and on which page; conflicting edits
+  to the same field get an explicit warning with both versions kept.
 
 ## Editors & members without GitHub accounts (Google sign-in)
 
-Open **People & access** in the admin bar and add someone by their Google email as an
-**Editor** or **Member**, with an access duration you choose (**1 to 360 days**). For editors
-you can also limit which pages they may touch (e.g. just `blog`); leave it blank for the whole
-site. They sign in at `yoursite.com/kiln` with their Google account, with no GitHub account
+Open **People & access** in the Kiln menu and add someone by their Google email as an
+**Editor** or **Member**, with an access duration you choose (**1–360 days**, or never
+expires). Editors can be scoped to specific pages and even specific sections — the picker
+shows each section with the first words of its content so you know what you're granting —
+and you choose which menu tools they get (drafts, history, new posts, scheduling, the site
+menu, find & replace). Leave it all blank for the whole site. They sign in at `yoursite.com/kiln` with their Google account, with no GitHub account
 ever and no links to leak. Removing someone revokes their access immediately, including any
 active session. Editor commits are authored with their name and committed by your GitHub App's
 bot, and the worker enforces a strict allowlist: that one repo, only the paths granted to them,
@@ -185,22 +214,27 @@ Repo layout:
 
 ```
 src/engine.js        the splice engine (parse5 offsets, batch edits, attr edits)
-src/github.js        transports (direct / proxied), 409-retry edits, atomic commits
+src/github.js        transports (direct / proxied), conflict-retry edits, atomic commits
+src/autotag.js       the heuristic first-pass auto-tagger behind `kiln tag`
 src/kiln.js          boot shim
+src/features.js      visitor runtime (gallery lightbox, tag filters, event calendar)
 src/editor/main.js   editor UI bundle source
-worker/              kiln-auth Cloudflare Worker
+cli/index.mjs        the setup wizard + doctor + tag commands
+worker/              kiln-auth Cloudflare Worker (sign-in + commit pipeline)
 templates/           members-area scaffolding the wizard copies into a new site
-test/                engine + transport tests
-scripts/             build + live e2e
+test/                engine + transport + autotag tests
+scripts/             build, live e2e, managed onboarding
 ```
 
 ## Limitations (honest list)
 
 - One CMS instance edits one repo per site config; monorepos work via `root`.
-- Editing happens per-page; site-wide find-replace is not a thing (yet).
-- `<title>`/`<head>` content isn't click-editable (no DOM affordance); a page-settings panel is planned.
-- Editors and members are added by email (Google sign-in), so each person needs a Google account.
-- Concurrent edits to the *same* field: last write wins (different fields merge cleanly).
+- Static sites only: your host must redeploy on push, and a publish takes about a
+  minute to go live (that's the deploy, not Kiln).
+- Editors and members sign in with Google, so each person needs a Google account.
+- No media library yet — every image upload is a new file; nothing lists or prunes them.
+- Renaming a page means making a new one; there's no slug-change-with-redirect.
+- The auto-tagger deliberately skips tables — tag those by hand or in the browser.
 
 ## License
 
@@ -222,8 +256,10 @@ nothing. Your content still lives in YOUR repo on YOUR hosting, so you can move 
 self-hosting any time. Plainly stated: Cloud holds the app token that writes to your repo,
 which is what any hosted CMS backend is.
 
-**Fully managed ($19.99/mo per site):** we set your existing site up on Kiln for you —
-hosting, the worker, the GitHub App, and the annotation — so you touch no code. Your content
-still lives in your own repo, with a guaranteed transfer-out path.
+**Fully managed ($14.99/mo per site):** we set your existing site up on Kiln —
+hosting, the worker, the GitHub App, and the tagging — so you touch no code. Your content
+still lives in your own repo, with a guaranteed transfer-out path. Want everything
+hand-tagged and configured with you, plus a revision round? Concierge setup & tagging is
+a one-time $399 on any plan.
 
-Both are self-serve with a 7-day free trial at [kilncms.com](https://kilncms.com).
+Both paid plans are self-serve with a 7-day free trial at [kilncms.com](https://kilncms.com).
