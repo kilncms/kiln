@@ -1250,7 +1250,13 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     setStatus('Re-sampling to fit…', 'saving');
     // Prefer the in-memory master bitmap (set when the image was added) so a
     // resize BEFORE publish resamples from the original, not a URL that isn't live.
-    const bmp = masterBitmaps.get(master) || await urlToBitmap(master);
+    let bmp = masterBitmaps.get(master);
+    if (!bmp) {
+      // The master path may not be live yet (upload queued for the next
+      // Publish) — fall back to what the image is showing right now.
+      try { bmp = await urlToBitmap(master); }
+      catch { bmp = await urlToBitmap(img.currentSrc || img.src); }
+    }
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const targetW = Math.max(1, Math.min(Math.round(cssWidth * dpr), bmp.width, 2400));
     const scaled = await bitmapToScaled(bmp, targetW);
@@ -1499,6 +1505,7 @@ function insertInlineImage(el) {
       const urlPath = `/assets/uploads/${name}`;
       stageBinary(repoPath, base64);   // committed with Publish, not now
       const blobUrl = URL.createObjectURL(blob);
+      masterBitmaps.set(urlPath, await createImageBitmap(blob));   // pre-publish resizes read this
       el.focus();
       document.execCommand('insertHTML', false,
         `<img src="${blobUrl}" data-kiln-src="${urlPath}" alt="" style="max-width:100%">`);
