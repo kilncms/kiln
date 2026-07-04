@@ -296,7 +296,24 @@ id = "${kvId}"
     info('Tip: paste KILN_PROMPT.md into your AI tool and it does this + data-cms annotations for you.');
   } else ok('pages already load kiln.js');
 
-  // 7. Members (optional)
+  // 7. Making pages editable — an explicit choice, not an assumption. Nothing
+  // is auto-tagged: the admin can start with ZERO editable sections and add
+  // them one by one from the browser once they're up and running.
+  hr('Making pages editable');
+  console.log(`
+  Kiln edits only what you mark editable. Pick how you want to do that:
+
+   1. In the browser (recommended to start) — sign in at your site's /kiln,
+      open ✨ Make text/images editable, and click sections to tag them one
+      by one. Full control over exactly what editors can touch.
+   2. AI bulk-tag — paste KILN_PROMPT.md into Claude/Cursor/v0 with your repo
+      and it annotates every page at once. Fastest for big sites.
+   3. Both: bulk-tag now, refine in the browser later.
+
+  Either way you can add or remove editable sections any time — nothing here
+  is a one-time decision.`);
+
+  // 8. Members (optional)
   if (await yes('\nSet up a members-only area (gated pages + documents)?', 'n')) {
     cpSync(path.join(PKG_ROOT, 'templates', 'functions'), 'functions', { recursive: true });
     if (!existsSync('members-login.html')) cpSync(path.join(PKG_ROOT, 'templates', 'members-login.html'), 'members-login.html');
@@ -309,7 +326,7 @@ id = "${kvId}"
     ok('members functions copied + 3 Pages secrets set (active after your next deploy)');
   }
 
-  // 8. Google (optional, manual client creation — Google has no API for it)
+  // 9. Google (optional, manual client creation — Google has no API for it)
   if (await yes('Set up Google sign-in for editors/members?', 'n')) {
     console.log(`
   Google doesn't allow creating OAuth clients by API, so this part is manual (once):
@@ -329,7 +346,7 @@ id = "${kvId}"
     }
   }
 
-  // 9. Commit + summary
+  // 10. Commit + summary
   if (await yes('\nCommit and push the Kiln wiring now?', 'y')) {
     shTry(`git add -A && git commit -m "Add Kiln (${siteUrl})" && git push`);
     ok('pushed — Cloudflare is deploying');
@@ -341,7 +358,8 @@ id = "${kvId}"
   Worker    ${workerUrl}
   People    sign in → People & access → add editors/members by email (Google sign-in)
   Check up  npx github:kilncms/kiln doctor
-  Annotate  paste KILN_PROMPT.md into your AI to make pages editable
+  Annotate  sign in → ✨ Make text/images editable (click sections to tag them),
+            or paste KILN_PROMPT.md into your AI to bulk-tag every page
 `);
   process.exit(0);
 }
