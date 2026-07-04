@@ -2576,7 +2576,7 @@ function previewRestore(changes, label, note, removals = []) {
     bar.remove();
     setStatus('Preview cancelled — the page is back to how it was', 'idle');
   };
-  return applied.length;
+  return applied.length + removed.length;
 }
 
 async function historyPanel() {
@@ -3385,7 +3385,15 @@ async function annotateElement(el, kind, key) {
   if (!node) throw new Error('could not locate this element in the page source. If the site builds this page with JavaScript, annotate the source file by hand.');
   const srcText = node.innerText.replace(/\s+/g, ' ').trim().slice(0, 60);
   if (domText && srcText && domText !== srcText) {
-    throw new Error('the page source doesn’t match what’s on screen (it may have just been edited) — reload and try again.');
+    // Often the site's own JS rewrote the text (dates, counters). The element
+    // POSITION still matches, so annotating is safe — but confirm, because the
+    // editor will show (and could overwrite) the source version, not the
+    // script's output.
+    if (!confirm(`Heads up: this text reads differently in the page source`
+      + ` (a script on your site may update it on load).\n\nOn screen: “${domText}”\nIn source: “${srcText}”\n\n`
+      + `Making it editable means edits replace the SOURCE text, and your script may keep changing what visitors see. Make it editable anyway?`)) {
+      throw new Error('cancelled — the source text didn’t match what’s on screen.');
+    }
   }
   state.pendingStructural.push({ op: 'annotate', tag, nth, attrs, key });
   applyAnnotationToDom(el, kind, key);
@@ -3534,8 +3542,8 @@ function renderAdminBar() {
       <span id="kiln-fab-badge" hidden></span>
     </button>
     <div id="kiln-undo-wrap" hidden>
-      <button id="kiln-undo-btn" title="Undo last change (⌘Z)" aria-label="Undo">${UNDO_ICON}</button>
-      <button id="kiln-redo-btn" title="Redo (⌘⇧Z)" aria-label="Redo"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M21 7v6h-6"/><path d="M20.5 13a9 9 0 1 1-2.6-8.4L21 7"/></svg></button>
+      <button id="kiln-undo-btn" title="Undo last change (⌘Z)">${UNDO_ICON} Undo</button>
+      <button id="kiln-redo-btn" title="Redo (⌘⇧Z)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M21 7v6h-6"/><path d="M20.5 13a9 9 0 1 1-2.6-8.4L21 7"/></svg> Redo</button>
     </div>
     <div class="kiln-status" id="kiln-status" hidden></div>`;
   document.body.appendChild(fab);
@@ -4043,11 +4051,11 @@ function injectStyles() {
 :root{--kiln-bg:rgba(16,16,25,.92);--kiln-accent:#6366f1;--kiln-accent-h:#4f46e5;--kiln-ok:#34d399;
   --kiln-warn:#fbbf24;--kiln-err:#f87171;--kiln-font:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif}
 #kiln-fab-wrap{position:fixed;bottom:20px;right:20px;z-index:999999;font-family:var(--kiln-font)}
-#kiln-fab-wrap #kiln-undo-wrap{display:flex;flex-direction:column;gap:5px;position:absolute;right:7px;bottom:58px}
+#kiln-fab-wrap #kiln-undo-wrap{display:flex;flex-direction:row;gap:6px;position:absolute;right:0;bottom:58px}
 #kiln-fab-wrap #kiln-undo-wrap[hidden]{display:none!important}
-#kiln-fab-wrap #kiln-undo-wrap button{width:34px;height:34px;border-radius:50%;border:none;cursor:pointer;
-  background:#fff;color:#374151;box-shadow:0 3px 12px rgba(0,0,0,.18);display:flex;align-items:center;
-  justify-content:center;transition:all .13s}
+#kiln-fab-wrap #kiln-undo-wrap button{height:32px;padding:0 13px;border-radius:999px;border:none;cursor:pointer;
+  background:#fff;color:#374151;box-shadow:0 3px 12px rgba(0,0,0,.18);display:inline-flex;align-items:center;gap:6px;
+  font:600 12.5px var(--kiln-font);white-space:nowrap;transition:all .13s}
 #kiln-fab-wrap #kiln-undo-wrap button:hover:not(:disabled){background:#eef2ff;color:var(--kiln-accent)}
 #kiln-fab-wrap #kiln-undo-wrap button:disabled{opacity:.35;cursor:default}
 #kiln-topbar #kiln-undo-wrap{display:inline-flex;gap:4px}
