@@ -299,12 +299,14 @@ export async function handleCloud(request, env, url, path) {
     // while a byte-identical replay is rejected).
     const evtKey = `lsevt:${subId || siteId}:${evt?.data?.attributes?.updated_at || ''}:${lsStatus}`;
     if (await env.KILN.get(evtKey)) return json({ ok: true, replayed: true });
-    await env.KILN.put(evtKey, '1', { expirationTtl: 7 * 24 * 3600 });
+    // Apply the state change FIRST, then record the dedupe key — otherwise a D1
+    // failure would leave the key set and silently drop LS's retry of this event.
     if (siteId) {
       await env.kiln_cloud.prepare('UPDATE sites SET status = ?, ls_subscription_id = ? WHERE id = ?').bind(status, subId || null, siteId).run();
     } else if (subId) {
       await env.kiln_cloud.prepare('UPDATE sites SET status = ? WHERE ls_subscription_id = ?').bind(status, subId).run();
     }
+    await env.KILN.put(evtKey, '1', { expirationTtl: 7 * 24 * 3600 });
     return json({ ok: true });
   }
 

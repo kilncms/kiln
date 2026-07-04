@@ -921,13 +921,17 @@ async function commitDiffInScope(env, itok, sess, bodyText) {
   };
   try {
     const newTree = await gh(`/repos/${sess.repo}/git/trees/${tree}?recursive=1`);
+    // A truncated tree means we can only see PART of it — an out-of-scope change
+    // beyond the cutoff would go unchecked, so refuse rather than fail open.
     const before = new Map();
     const parentSha = Array.isArray(parents) ? parents[0] : null;
     if (parentSha) {
       const pc = await gh(`/repos/${sess.repo}/git/commits/${parentSha}`);
       const pt = await gh(`/repos/${sess.repo}/git/trees/${pc.tree.sha}?recursive=1`);
+      if (pt.truncated) return json({ error: 'repo too large to verify commit scope safely' }, 413);
       for (const e of pt.tree || []) if (e.type === 'blob') before.set(e.path, e.sha);
     }
+    if (newTree.truncated) return json({ error: 'commit too large to verify scope safely' }, 413);
     const after = new Map();
     for (const e of newTree.tree || []) if (e.type === 'blob') after.set(e.path, e.sha);
     // Every path whose blob changed, was added, or was removed must be in scope.
