@@ -371,9 +371,14 @@ function decorateFields() {
       return;
     }
     if (source && (source.kind === 'list' || source.kind === 'menu')) return; // structural, never inline-editable
+    // Fields inside a repeat publish through their container, so the CONTAINER's
+    // scope governs them. Never set a per-field title inside a repeat — it would
+    // be committed into the container HTML on the next reorder/edit.
+    if (inRepeat) {
+      if (keyInScope(el.closest('[data-cms-repeat]').getAttribute('data-cms-repeat'))) decorateField(el, key);
+      return;
+    }
     if (!keyInScope(key)) { el.title = 'Not in your editing scope'; return; }
-    // Fields inside a repeat publish through their container — same scope gate.
-    if (inRepeat && !keyInScope(el.closest('[data-cms-repeat]').getAttribute('data-cms-repeat'))) return;
     decorateField(el, key);
   });
 
@@ -862,12 +867,14 @@ function containerCleanHtml(container) {
   const clone = container.cloneNode(true);
   clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, #kiln-toolbar, .kiln-repeat-add').forEach(n => n.remove());
   clone.querySelectorAll('[contenteditable]').forEach(n => n.removeAttribute('contenteditable'));
-  clone.querySelectorAll('.kiln-field, .kiln-editing, .kiln-modified, .kiln-repeat-item, .kiln-flash, .kiln-dragging').forEach(n => {
-    n.classList.remove('kiln-field', 'kiln-editing', 'kiln-modified', 'kiln-repeat-item', 'kiln-flash', 'kiln-dragging');
+  clone.querySelectorAll('.kiln-field, .kiln-editing, .kiln-modified, .kiln-repeat-item, .kiln-row-editing, .kiln-flash, .kiln-dragging').forEach(n => {
+    n.classList.remove('kiln-field', 'kiln-editing', 'kiln-modified', 'kiln-repeat-item', 'kiln-row-editing', 'kiln-flash', 'kiln-dragging');
     if (n.getAttribute('class') === '') n.removeAttribute('class');
     if (n.hasAttribute('data-cms')) n.removeAttribute('title');
     n.removeAttribute('draggable');
   });
+  // Any leftover Kiln scope-note title (set on non-decorated out-of-scope nodes).
+  clone.querySelectorAll('[title="Not in your editing scope"]').forEach(n => n.removeAttribute('title'));
   clone.querySelectorAll('img[data-kiln-src]').forEach(img => {
     img.setAttribute('src', img.getAttribute('data-kiln-src'));
     img.removeAttribute('data-kiln-src');
@@ -1012,7 +1019,18 @@ function applyUndoStep(s, dir) {
   const attrs = dir === 'before' ? s.attrsBefore : s.attrsAfter;
   if (attrs) {
     document.querySelectorAll(`[data-cms="${CSS.escape(s.key)}"]`).forEach(n => {
-      for (const [a, v] of Object.entries(attrs)) if (v !== undefined) n.setAttribute(a, v);
+      for (const [a, v] of Object.entries(attrs)) {
+        // Undefined "before" for an image-swap attr means it didn't exist —
+        // REMOVE it (don't skip), so an undone swap can't leave data-kiln-src
+        // behind to be re-committed later. Also retire the orphaned upload.
+        if (v === undefined) {
+          if (a === 'data-kiln-src') {
+            const orphan = n.getAttribute('data-kiln-src');
+            if (orphan) for (const p of [...state.pendingBinaries.keys()]) if (p.endsWith(orphan.replace(/^\//, ''))) state.pendingBinaries.delete(p);
+            n.removeAttribute(a);
+          }
+        } else n.setAttribute(a, v);
+      }
     });
   }
   const modified = state.pending.has(s.key);
@@ -1091,9 +1109,12 @@ function commitEdit(el, key) {
   el.closest('.kiln-repeat-item')?.classList.remove('kiln-row-editing');
 
   // Link elements: apply the toolbar's href before staging (scheme-sanitized).
-  const hrefInput = document.querySelector('#kiln-toolbar .kiln-href-input');
+  // Exclude the image toolbar's alt-text input, which shares the styling class
+  // but is NOT an href — otherwise editing a link while an image toolbar is
+  // open would write the alt text into the link's href.
+  const hrefInput = el.tagName === 'A' ? document.querySelector('#kiln-toolbar .kiln-href-input:not([data-act="alt"])') : null;
   const hrefValue = hrefInput ? safeUrl(hrefInput.value) : null;
-  const hrefChanged = hrefInput && el.tagName === 'A' && hrefValue !== el.getAttribute('href');
+  const hrefChanged = hrefInput && hrefValue !== el.getAttribute('href');
 
   // Clicking into a field and back out WITHOUT changing anything must not create
   // a phantom edit (which would light up the badge and enable Publish/Discard).
@@ -2906,6 +2927,15 @@ async function ensureDraftBranch() {
 
 async function saveDraft() {
   if (!state.pending.size) return;
+  // Drafts save only text/attribute edits. Uploaded images and added sections
+  // live in pendingBinaries/pendingStructural, which a draft can't carry — a
+  // draft referencing an uncommitted image would publish a broken link, and an
+  // annotation-dependent edit would be silently dropped. Make the user publish
+  // (or discard) those first rather than lose them.
+  if (state.pendingBinaries.size || state.pendingStructural.length) {
+    setStatus('Publish your new images / added sections first — drafts save text edits only', 'error');
+    return;
+  }
   setStatus('Saving draft…', 'saving');
   try {
     await ensureDraftBranch();
@@ -2993,6 +3023,12 @@ async function checkForDraft() {
 
 function schedulePanel() {
   if (!state.pending.size) return;
+  // Scheduling re-applies text edits later against the live source; it can't
+  // carry queued image uploads or added sections (same reason as drafts).
+  if (state.pendingBinaries.size || state.pendingStructural.length) {
+    setStatus('Publish your new images / added sections first — scheduling covers text edits only', 'error');
+    return;
+  }
   const inOneHour = new Date(Date.now() + 3600000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   const m = modal(`
     <h3>Schedule these ${state.pending.size} edit${state.pending.size > 1 ? 's' : ''}</h3>

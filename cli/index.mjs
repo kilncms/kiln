@@ -75,6 +75,9 @@ async function doctor(args) {
   site ||= await ask('Site URL (https://…)');
   repo ||= await ask('GitHub repo (owner/name)');
   worker ||= await ask('Worker URL (https://…workers.dev)');
+  // Accept a scheme-less answer (example.com) without crashing on new URL().
+  const withScheme = (u) => u && !/^https?:\/\//i.test(u) ? `https://${u}` : u;
+  site = withScheme(site); worker = withScheme(worker);
   let pass = 0, total = 0;
   const check = (label, good, detail = '', optional = false) => {
     if (good) { total++; pass++; ok(`${label}${detail ? ` — ${detail}` : ''}`); }
@@ -149,11 +152,110 @@ async function doctor(args) {
 
 // ─── wizard ──────────────────────────────────────────────────────────────────
 
+/** Copy the bundle, write config + entry page, and check the scripts are wired.
+ *  Shared by self-host and Cloud modes (they differ only in the worker URL). */
+function wireSite(repo, workerUrl) {
+  mkdirSync('assets', { recursive: true });
+  for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) {
+    cpSync(path.join(PKG_ROOT, 'dist', f), path.join('assets', f));
+  }
+  ok('copied kiln.js + kiln-editor.js + kiln-features.js into assets/');
+  if (!existsSync('assets/kiln-config.js')) {
+    writeFileSync('assets/kiln-config.js', `window.KILN = {
+  repo:   '${repo}',
+  branch: 'main',
+  worker: '${workerUrl}',
+  styles: [],
+};
+`);
+    ok('wrote assets/kiln-config.js');
+  } else ok('assets/kiln-config.js already present (left untouched)');
+  if (!existsSync('kiln.html')) {
+    writeFileSync('kiln.html', `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"><title>Sign in · Kiln</title>
+</head><body>
+<!-- Kiln entry point. Visiting /kiln shows the sign-in; there is no edit button on the site. -->
+<script src="/assets/kiln-config.js"></script>
+<script src="/assets/kiln.js" defer></script>
+</body></html>
+`);
+    ok('wrote kiln.html (your /kiln sign-in page)');
+  } else ok('kiln.html already present (left untouched)');
+  const wired = readdirSync('.').filter(f => f.endsWith('.html'))
+    .some(f => readFileSync(f, 'utf8').includes('kiln.js'));
+  if (!wired) {
+    warn('No page loads kiln.js yet. Add to every page before </body>:');
+    console.log('     <script src="/assets/kiln-config.js"></script>\n     <script src="/assets/kiln.js" defer></script>');
+    info('Tip: paste KILN_PROMPT.md into your AI tool and it does this + data-cms annotations for you.');
+  } else ok('pages already load kiln.js');
+}
+
+/** Offer the first-pass auto-tagger. Shared by both modes. */
+async function offerAutotag() {
+  hr('Making pages editable');
+  console.log(`
+  Kiln edits only what you mark editable. Pick how you want to do that:
+
+   1. In the browser (recommended to start) — sign in at your site's /kiln,
+      open ✨ Make text/images editable, and click sections to tag them one
+      by one. Full control over exactly what editors can touch.
+   2. AI bulk-tag — paste KILN_PROMPT.md into Claude/Cursor/v0 with your repo
+      and it annotates every page at once. Fastest for big sites.
+   3. Auto-tag a first pass right now — a conservative, reviewable guess
+      (headings, paragraphs, images, card lists, the menu; tables are never
+      made repeatable).
+
+  Either way you can add or remove editable sections any time — nothing here
+  is a one-time decision.`);
+  if (await yes('Run the first-pass auto-tagger now? (review with git diff after)', 'n')) {
+    const { autotag } = await import(new URL('../src/autotag.js', import.meta.url));
+    let tagged = 0;
+    for (const f of readdirSync('.').filter(x => x.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(x))) {
+      const raw = readFileSync(f, 'utf8');
+      const { html, counts } = autotag(raw);
+      if (html !== raw) { writeFileSync(f, html); tagged += counts.fields + counts.images + counts.repeats + counts.menu; }
+    }
+    ok(`auto-tagged ${tagged} things — review with: git diff   (undo: git checkout -- .)`);
+    info('subfolders too? run: npx github:kilncms/kiln tag');
+  }
+}
+
+/** Kiln Cloud / Managed prep: we run the worker + GitHub App, so this only
+ *  points your repo at our infrastructure and wires the files. No Cloudflare
+ *  login, no worker deploy, no app registration. */
+async function cloudPrep(repo) {
+  const WORKER = 'https://auth.kilncms.com';
+  const APP = 'https://github.com/apps/kiln-cms/installations/new';
+  const DASH = 'https://app.kilncms.com';
+  hr('Kiln Cloud — prep your repo');
+  info('We run the sign-in & commit worker and the GitHub App. This just points');
+  info('your repo at them and wires the editor files. No Cloudflare login needed.\n');
+
+  wireSite(repo, WORKER);
+  await offerAutotag();
+
+  hr('Done — 2 clicks left (in your browser)');
+  console.log(`
+  1. Install the Kiln GitHub App on THIS repo (choose "Only select repositories"):
+     ${APP}
+  2. Subscribe and add your site (repo + live URL) at:
+     ${DASH}
+
+  Commit & push the changes this made, connect your repo to a host that
+  auto-deploys on push (Cloudflare Pages recommended), then edit at
+  yoursite.com/kiln.  Health-check any time:  npx github:kilncms/kiln doctor
+`);
+  if (await yes('Commit and push the Kiln wiring now?', 'y')) {
+    const r = shTry(`git add -A && git commit -m "Add Kiln (Cloud)" && git push`);
+    if (r.ok) ok('pushed'); else warn(`couldn't push automatically — commit & push manually:\n${r.out}`);
+  }
+  process.exit(0);
+}
+
 async function wizard() {
   hr('Kiln setup');
-  console.log(`  This wires up GitHub + Cloudflare (and optionally Google) for the site
-  in the CURRENT directory. Everything scriptable happens automatically;
-  you'll be asked to click exactly three green buttons along the way.\n`);
 
   // 0. prerequisites
   hr('Checking tools');
@@ -162,6 +264,21 @@ async function wizard() {
   const hasGh = shTry('gh --version').ok;
   info(hasGh ? 'gh CLI found' : 'gh CLI not found (fine if your site is already on GitHub)');
   info('wrangler runs via npx (no install needed)');
+
+  // How will Kiln run? Cloud/Managed = we run the plumbing; self-host = you do.
+  hr('How will you run Kiln?');
+  console.log(`   1. Kiln Cloud / Managed — we run the worker + GitHub App (paid; simplest)
+   2. Self-hosted — you run your own worker + GitHub App (free, open source)\n`);
+  const mode = (await ask('Choose 1 or 2', '1')).trim();
+  const isCloud = mode !== '2';
+  if (isCloud) {
+    // still need the repo (Step 1) before prepping, so fall through to detect it,
+    // then hand off to cloudPrep. Self-host continues with the full flow below.
+  } else {
+    console.log(`\n  Self-host wires GitHub + Cloudflare (and optionally Google) for the site
+  in the CURRENT directory. Everything scriptable happens automatically;
+  you'll be asked to click exactly three green buttons along the way.`);
+  }
 
   // 1. GitHub repo
   hr('Step 1 · Your site on GitHub');
@@ -183,6 +300,9 @@ async function wizard() {
     repo = sh('gh repo view --json nameWithOwner -q .nameWithOwner').trim();
     ok(`created + pushed: ${repo}`);
   }
+
+  // Cloud/Managed: everything past here (worker, app, Pages) is ours to run.
+  if (isCloud) return cloudPrep(repo);
 
   // 2. Worker
   hr('Step 2 · Deploy your Kiln auth worker (free Cloudflare Worker)');
@@ -259,87 +379,35 @@ id = "${kvId}"
     info(`Opening the dashboard — Workers & Pages → Create → Pages → Connect to Git → ${repo}.`);
     info('Leave build command EMPTY, output directory "/". Then come back here.');
     openUrl('https://dash.cloudflare.com/?to=/:account/workers-and-pages/create/pages');
-    await pollUntil(`waiting for ${project}.pages.dev to answer`,
-      () => fetch(`https://${project}.pages.dev/`).then(r => r.ok), 6000);
+    if (!(await pollUntil(`waiting for ${project}.pages.dev to answer`,
+      () => fetch(`https://${project}.pages.dev/`).then(r => r.ok), 6000))) {
+      fail(`Timed out waiting for ${project}.pages.dev.\n  Finish Connect-to-Git in the Cloudflare dashboard, then re-run: npx github:kilncms/kiln`);
+      process.exit(1);
+    }
   }
   const siteUrl = `https://${project}.pages.dev`;
 
-  // 5. Allow origin + (optional) custom domain
+  // 5. Allow origin + (optional) custom domain (apex AND www — visitors reach both)
   hr('Step 6 · Allow your site to talk to the worker');
   const custom = await ask('Custom domain (Enter to skip)', '');
-  const origins = [siteUrl, custom && `https://${custom.replace(/^https?:\/\//, '')}`, 'http://localhost:8788']
-    .filter(Boolean).join(',');
+  const bare = custom.replace(/^https?:\/\//, '').replace(/^www\./, '');
+  const origins = [siteUrl,
+    custom && `https://${bare}`,
+    custom && `https://www.${bare}`,
+    'http://localhost:8788'].filter(Boolean).join(',');
   const toml = readFileSync(path.join(workerDir, 'wrangler.toml'), 'utf8')
     .replace(/ALLOWED_ORIGINS = ".*"/, `ALLOWED_ORIGINS = "${origins}"`);
   writeFileSync(path.join(workerDir, 'wrangler.toml'), toml);
-  shTry('npx wrangler deploy', { cwd: workerDir });
-  ok(`worker now accepts: ${origins}`);
+  const redep = shTry('npx wrangler deploy', { cwd: workerDir });
+  if (redep.ok) ok(`worker now accepts: ${origins}`);
+  else { warn(`worker redeploy failed — your site can't talk to the worker until you run 'npx wrangler deploy' in ${workerDir}/:\n${redep.out}`); }
 
   // 6. Site wiring
   hr('Step 7 · Wire the site');
-  mkdirSync('assets', { recursive: true });
-  for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) {
-    cpSync(path.join(PKG_ROOT, 'dist', f), path.join('assets', f));
-  }
-  if (!existsSync('assets/kiln-config.js')) {
-    writeFileSync('assets/kiln-config.js', `window.KILN = {
-  repo:   '${repo}',
-  branch: 'main',
-  worker: '${workerUrl}',
-  styles: [],
-};
-`);
-    ok('wrote assets/kiln-config.js');
-  } else ok('assets/kiln-config.js already present (left untouched)');
-  if (!existsSync('kiln.html')) {
-    writeFileSync('kiln.html', `<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex"><title>Sign in · Kiln</title>
-</head><body>
-<!-- Kiln entry point. Visiting /kiln shows the sign-in; there is no edit button on the site. -->
-<script src="/assets/kiln-config.js"></script>
-<script src="/assets/kiln.js" defer></script>
-</body></html>
-`);
-    ok('wrote kiln.html (your /kiln sign-in page)');
-  } else ok('kiln.html already present (left untouched)');
-  const wired = readdirSync('.').filter(f => f.endsWith('.html'))
-    .some(f => readFileSync(f, 'utf8').includes('kiln.js'));
-  if (!wired) {
-    warn('No page loads kiln.js yet. Add to every page before </body>:');
-    console.log('     <script src="/assets/kiln-config.js"></script>\n     <script src="/assets/kiln.js" defer></script>');
-    info('Tip: paste KILN_PROMPT.md into your AI tool and it does this + data-cms annotations for you.');
-  } else ok('pages already load kiln.js');
+  wireSite(repo, workerUrl);
 
-  // 7. Making pages editable — an explicit choice, not an assumption. Nothing
-  // is auto-tagged: the admin can start with ZERO editable sections and add
-  // them one by one from the browser once they're up and running.
-  hr('Making pages editable');
-  console.log(`
-  Kiln edits only what you mark editable. Pick how you want to do that:
-
-   1. In the browser (recommended to start) — sign in at your site's /kiln,
-      open ✨ Make text/images editable, and click sections to tag them one
-      by one. Full control over exactly what editors can touch.
-   2. AI bulk-tag — paste KILN_PROMPT.md into Claude/Cursor/v0 with your repo
-      and it annotates every page at once. Fastest for big sites.
-   3. Auto-tag a first pass right now — a conservative, reviewable guess
-      (headings, paragraphs, images, card lists, the menu; tables left alone).
-
-  Either way you can add or remove editable sections any time — nothing here
-  is a one-time decision.`);
-  if (await yes('Run the first-pass auto-tagger now? (review with git diff after)', 'n')) {
-    const { autotag } = await import(new URL('../src/autotag.js', import.meta.url));
-    let tagged = 0;
-    for (const f of readdirSync('.').filter(x => x.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(x))) {
-      const raw = readFileSync(f, 'utf8');
-      const { html, counts } = autotag(raw);
-      if (html !== raw) { writeFileSync(f, html); tagged += counts.fields + counts.images + counts.repeats + counts.menu; }
-    }
-    ok(`auto-tagged ${tagged} things — review with: git diff   (undo: git checkout -- .)`);
-    info('subfolders too? run: npx github:kilncms/kiln tag');
-  }
+  // 7. Making pages editable.
+  await offerAutotag();
 
   // 8. Members (optional)
   if (await yes('\nSet up a members-only area (gated pages + documents)?', 'n')) {
@@ -376,8 +444,9 @@ id = "${kvId}"
 
   // 10. Commit + summary
   if (await yes('\nCommit and push the Kiln wiring now?', 'y')) {
-    shTry(`git add -A && git commit -m "Add Kiln (${siteUrl})" && git push`);
-    ok('pushed — Cloudflare is deploying');
+    const r = shTry(`git add -A && git commit -m "Add Kiln (${siteUrl})" && git push`);
+    if (r.ok) ok('pushed — Cloudflare is deploying');
+    else warn(`couldn't push automatically — commit & push manually:\n${r.out}`);
   }
   hr('Done 🔥');
   console.log(`
@@ -424,7 +493,7 @@ async function tagCmd(args) {
     git diff              see exactly what was tagged
     git checkout -- .     throw it all away
   Refine any time in the browser: sign in at /kiln → ✨ Make text/images editable
-  (tables are left alone on purpose — tag those by hand or in the browser).`);
+  (tables are never made repeatable on purpose — tag those by hand or in the browser).`);
   process.exit(0);
 }
 
@@ -442,7 +511,7 @@ async function update() {
   if (prefix === null) { fail('No page here loads kiln.js — run the wizard first (npx github:kilncms/kiln).'); process.exit(1); }
   const dir = prefix.replace(/^\//, '').replace(/\/$/, '') || '.';
   mkdirSync(dir, { recursive: true });
-  for (const f of ['kiln.js', 'kiln-editor.js']) cpSync(path.join(PKG_ROOT, 'dist', f), path.join(dir, f));
+  for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) cpSync(path.join(PKG_ROOT, 'dist', f), path.join(dir, f));
   ok(`copied the latest kiln.js + kiln-editor.js into ${dir}/`);
   if (await yes('Commit and push now?', 'y')) {
     shTry(`git add ${dir}/kiln.js ${dir}/kiln-editor.js && git commit -m "Update Kiln editor to latest" && git push`);

@@ -77,7 +77,8 @@ try {
 }
 
 // ── 3. Email Routing ─────────────────────────────────────────────────────────
-if (args.to) {
+if (args.to === true) die('--to needs a value: --to=owner@inbox.com (use = , not a space)');
+  if (args.to) {
   const local = typeof args.forward === 'string' ? args.forward : 'hello';
   const addr = `${local}@${domain}`;
 

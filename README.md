@@ -44,7 +44,7 @@ edit layer your client was missing.
    ```
    Three ways to get these onto an existing site: run `npx github:kilncms/kiln tag`
    for a conservative first pass (headings, paragraphs, images, card lists, the menu —
-   tables left alone; review with `git diff`, running it twice adds nothing), click
+   tables are never made repeatable (cell text can still be tagged); review with `git diff`, running it twice adds nothing), click
    elements in the browser with **✨ Make text/images editable** after you sign in, or
    paste **[KILN_PROMPT.md](KILN_PROMPT.md)** into Claude/v0/Lovable and let your AI
    wire the whole site. Full conventions (blog templates, new-page template, members
@@ -147,7 +147,9 @@ undoes any staged change, blocks and image swaps included.
 - **Together** — editors see who else is online and on which page; conflicting edits
   to the same field get an explicit warning with both versions kept.
 
-## Editors & members without GitHub accounts (Google sign-in)
+## Google sign-in
+
+(a.k.a. "Editors & members without GitHub accounts")
 
 Open **People & access** in the Kiln menu and add someone by their Google email as an
 **Editor** or **Member**, with an access duration you choose (**1–360 days**, or never

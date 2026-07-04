@@ -275,6 +275,18 @@ export async function handleCloud(request, env, url, path) {
     return portal ? json({ url: portal }) : json({ error: 'no billing portal yet' }, 404);
   }
 
+  // Fresh checkout link for a site that has no live subscription yet (trial,
+  // abandoned checkout, or canceled) — so a customer can pay without having to
+  // remove and re-add the site (which would re-anchor their trial clock).
+  if (path === '/cloud/checkout') {
+    if (!sess) return json({ error: 'not signed in' }, 401);
+    const site = await env.kiln_cloud.prepare('SELECT * FROM sites WHERE id = ? AND account_id = ?').bind(url.searchParams.get('site'), sess.account_id).first();
+    if (!site) return json({ error: 'no such site' }, 404);
+    if (site.ls_subscription_id) return json({ error: 'already subscribed — use Manage billing' }, 409);
+    const checkout = await lsCheckout(env, site);
+    return checkout ? json({ url: checkout }) : json({ error: 'billing not configured' }, 503);
+  }
+
   // Lemon Squeezy webhook — the ONLY thing that flips a site to active.
   if (path === '/cloud/webhook/ls' && request.method === 'POST') {
     const bodyText = await request.text();
