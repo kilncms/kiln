@@ -829,6 +829,18 @@ async function ghProxy(request, env, ghPath) {
   if (sess.exp && sess.exp < Date.now()) return json({ error: 'session expired' }, 401);
   if (sess.role !== 'editor') return json({ error: 'not an editor session' }, 403);
 
+  // Path traversal guard (ALL methods): the allowlist matches on the raw path,
+  // but GitHub's fetch collapses `..` — so `/repos/OWNER/A/contents/../../B/…`
+  // passes the `startsWith` prefix yet lands on repo B (same installation token).
+  // Reject any `..` segment, decoded, before it can slip past the allowlist.
+  {
+    let decoded = ghPath;
+    try { decoded = decodeURIComponent(ghPath); } catch { /* keep raw */ }
+    if (/(^|[/\\])\.\.([/\\]|$)/.test(decoded) || /%2e%2e/i.test(ghPath)) {
+      return json({ error: 'bad path' }, 400);
+    }
+  }
+
   if (!proxyAllowed(request.method, ghPath, sess.repo)) {
     return json({ error: 'path not allowed', path: ghPath }, 403);
   }
