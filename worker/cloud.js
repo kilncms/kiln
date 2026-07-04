@@ -17,6 +17,8 @@
  * checkout/portal report "billing not configured" until you add your Lemon Squeezy keys.
  */
 
+import { RUNBOOK_HTML } from './runbook.js';
+
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
 const UA = 'kiln-cloud';
@@ -329,6 +331,11 @@ export async function handleCloud(request, env, url, path) {
   // ── Admin (owner only) ──
   if (path.startsWith('/admin/cloud/')) {
     if (!sess || sess.login !== (env.CLOUD_ADMIN || '')) return json({ error: 'forbidden' }, 403);
+    // The operator's playbook — served ONLY to the authenticated super-admin, so
+    // the ops details never sit in public HTML. The dashboard opens it in a tab.
+    if (path === '/admin/cloud/runbook') {
+      return new Response(RUNBOOK_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Robots-Tag': 'noindex' } });
+    }
     if (path === '/admin/cloud/overview') {
       const accounts = await env.kiln_cloud.prepare('SELECT COUNT(*) n FROM accounts').first();
       const sites = await env.kiln_cloud.prepare('SELECT s.*, a.github_login, a.email FROM sites s JOIN accounts a ON a.id = s.account_id ORDER BY s.created_at DESC').all();
