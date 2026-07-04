@@ -231,10 +231,14 @@ export async function handleCloud(request, env, url, path) {
     if (!repo || !origin) return json({ error: 'repo and origin required' }, 400);
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'repo must be owner/name' }, 400);
     let o; try { o = new URL(origin).origin; } catch { return json({ error: 'origin must be a URL' }, 400); }
-    // Ownership: the signer must actually have push on this repo. Installation
-    // existence is NOT authorization — without this, anyone could register any
-    // repo that happens to have the Kiln app installed.
-    if (!(await userCanPush(sess.gh, repo))) {
+    // Ownership: the signer must actually own/push this repo. Installation
+    // existence is NOT authorization. A repo under the signer's own account
+    // (owner === their login) is theirs by definition; otherwise (an org repo)
+    // verify push via their token. The owner-match first means an expired user
+    // token can't wrongly block someone registering their own personal repo.
+    const owner = repo.split('/')[0].toLowerCase();
+    const ownsIt = owner === String(sess.login || '').toLowerCase() || await userCanPush(sess.gh, repo);
+    if (!ownsIt) {
       return json({ error: 'you need push access to this repo to register it' }, 403);
     }
     if (!(await repoInstalled(env, repo))) {
