@@ -65,6 +65,12 @@ export async function getFile(gh, repo, path, ref, bust = false) {
   // that re-fetches without busting just gets the same stale sha again.
   const cb = bust ? `&cb=${Date.now().toString(36)}` : '';
   const data = await gh.request('GET', `/repos/${repo}/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}${cb}`);
+  // GitHub omits `content` for blobs over 1 MB — fetch the blob directly by sha
+  // so a large HTML page stays editable instead of silently reading as empty.
+  if (data.content === undefined || data.content === '') {
+    const blob = await gh.request('GET', `/repos/${repo}/git/blobs/${data.sha}`);
+    return { text: decodeContent(blob.content), sha: data.sha };
+  }
   return { text: decodeContent(data.content), sha: data.sha };
 }
 

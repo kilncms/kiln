@@ -53,6 +53,17 @@ async function repoInstalled(env, repo) {
   return r.ok;
 }
 
+/** Does the signed-in user (via their stored OAuth token) have push on the repo? */
+async function userCanPush(userToken, repo) {
+  if (!userToken) return false;
+  try {
+    const r = await fetch(`${GH}/repos/${repo}`, { headers: { Authorization: `Bearer ${userToken}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+    if (!r.ok) return false;
+    const j = await r.json();
+    return !!(j.permissions && (j.permissions.push || j.permissions.admin || j.permissions.maintain));
+  } catch { return false; }
+}
+
 // ─── Dashboard sessions (KV) ──────────────────────────────────────────────────
 
 // Bearer-token sessions (the dashboard lives on a different origin than this API,
@@ -191,7 +202,10 @@ export async function handleCloud(request, env, url, path) {
     if (!user) return json({ error: 'github sign-in failed' }, 401);
     const account = await upsertAccount(env, user.login, user.email);
     const sid = uuid();
-    await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: account.id, login: user.login }), { expirationTtl: 30 * 24 * 3600 });
+    // Keep the user's OAuth token server-side (never sent to the browser) so
+    // /cloud/sites can verify the signer actually has push on the repo they're
+    // registering — installation-existence is not authorization.
+    await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: account.id, login: user.login, gh: tok.access_token || null }), { expirationTtl: 30 * 24 * 3600 });
     return Response.redirect(`${dash}#kc_token=${sid}`, 302);   // dashboard reads + stores this
   }
 
@@ -217,6 +231,12 @@ export async function handleCloud(request, env, url, path) {
     if (!repo || !origin) return json({ error: 'repo and origin required' }, 400);
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'repo must be owner/name' }, 400);
     let o; try { o = new URL(origin).origin; } catch { return json({ error: 'origin must be a URL' }, 400); }
+    // Ownership: the signer must actually have push on this repo. Installation
+    // existence is NOT authorization — without this, anyone could register any
+    // repo that happens to have the Kiln app installed.
+    if (!(await userCanPush(sess.gh, repo))) {
+      return json({ error: 'you need push access to this repo to register it' }, 403);
+    }
     if (!(await repoInstalled(env, repo))) {
       return json({ error: 'install the Kiln app on this repo first', install_url: 'https://github.com/apps/kiln-cms/installations/new' }, 409);
     }
@@ -270,7 +290,16 @@ export async function handleCloud(request, env, url, path) {
     const siteId = evt?.meta?.custom_data?.site_id;
     const subId = evt?.data?.id;   // a real subscription id, given the guard above
     const lsStatus = evt?.data?.attributes?.status;
-    const status = LS_STATUS[lsStatus] || 'past_due';
+    // Ignore unknown statuses rather than downgrading a paying site to past_due.
+    if (!LS_STATUS[lsStatus]) return json({ ok: true, ignored: `unknown status ${lsStatus}` });
+    const status = LS_STATUS[lsStatus];
+    // Replay guard: a captured valid delivery could otherwise be re-POSTed to
+    // flip a re-subscribed customer back to canceled. Dedupe on a stable id
+    // (updated_at makes the same subscription's DISTINCT transitions unique,
+    // while a byte-identical replay is rejected).
+    const evtKey = `lsevt:${subId || siteId}:${evt?.data?.attributes?.updated_at || ''}:${lsStatus}`;
+    if (await env.KILN.get(evtKey)) return json({ ok: true, replayed: true });
+    await env.KILN.put(evtKey, '1', { expirationTtl: 7 * 24 * 3600 });
     if (siteId) {
       await env.kiln_cloud.prepare('UPDATE sites SET status = ?, ls_subscription_id = ? WHERE id = ?').bind(status, subId || null, siteId).run();
     } else if (subId) {

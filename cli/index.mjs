@@ -195,8 +195,17 @@ async function wizard() {
   const workerName = await ask('Worker name', 'kiln-auth');
   info('Creating the KV namespace (your browser may open for Cloudflare login)…');
   const kv = shTry(`npx wrangler kv namespace create KILN`, { cwd: workerDir });
-  const kvId = kv.out.match(/id = "([a-f0-9]{32})"/)?.[1];
-  if (!kvId && !/already exists/i.test(kv.out)) { fail(`KV creation failed:\n${kv.out}`); process.exit(1); }
+  let kvId = kv.out.match(/id = "([a-f0-9]{32})"/)?.[1];
+  if (!kvId && /already exists/i.test(kv.out)) {
+    // Re-run: the namespace exists, so `create` printed no id. Look it up rather
+    // than writing id = "null" into wrangler.toml (which breaks the next deploy).
+    const list = shTry(`npx wrangler kv namespace list`, { cwd: workerDir });
+    try {
+      const entry = JSON.parse(list.out).find(n => /(^|_)KILN$/.test(n.title) || n.title === 'KILN');
+      kvId = entry?.id;
+    } catch { /* fall through to the error below */ }
+  }
+  if (!kvId) { fail(`Couldn't determine the KILN KV namespace id:\n${kv.out}`); process.exit(1); }
   writeFileSync(path.join(workerDir, 'wrangler.toml'), `name = "${workerName}"
 main = "index.js"
 compatibility_date = "2026-06-01"
@@ -219,18 +228,25 @@ id = "${kvId}"
   if (!status.json.configured) {
     info('Opening the one-button registration page…');
     openUrl(`${workerUrl}/setup`);
-    await pollUntil('waiting for you to press "Create the Kiln GitHub App"',
-      async () => (await fetchJson(`${workerUrl}/setup/status`)).json.configured);
+    if (!(await pollUntil('waiting for you to press "Create the Kiln GitHub App"',
+      async () => (await fetchJson(`${workerUrl}/setup/status`)).json.configured))) {
+      fail(`Timed out waiting for the GitHub App registration.\n  Finish it at ${workerUrl}/setup, then re-run: npx github:kilncms/kiln`);
+      process.exit(1);
+    }
   } else ok(`App already registered: ${status.json.slug}`);
   const slug = (await fetchJson(`${workerUrl}/setup/status`)).json.slug;
+  if (!slug) { fail(`The worker reports no App slug yet — finish registration at ${workerUrl}/setup and re-run.`); process.exit(1); }
 
   hr('Step 4 · Install the App on your repo (click 2 of 3)');
   const installed = (await fetchJson(`${workerUrl}/setup/install-check?repo=${repo}`)).json.installed;
   if (!installed) {
     info(`Opening the install page — choose "Only select repositories" → ${repo}`);
     openUrl(`https://github.com/apps/${slug}/installations/new`);
-    await pollUntil('waiting for the install',
-      async () => (await fetchJson(`${workerUrl}/setup/install-check?repo=${repo}`)).json.installed);
+    if (!(await pollUntil('waiting for the install',
+      async () => (await fetchJson(`${workerUrl}/setup/install-check?repo=${repo}`)).json.installed))) {
+      fail(`Timed out waiting for the app install.\n  Install it at https://github.com/apps/${slug}/installations/new, then re-run.`);
+      process.exit(1);
+    }
   } else ok('App already installed on this repo');
 
   // 4. Cloudflare Pages — click 3
@@ -384,7 +400,7 @@ async function tagCmd(args) {
   const files = [];
   (function walk(dir) {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.name.startsWith('.') || ['node_modules', '_templates', 'functions', 'assets'].includes(e.name)) continue;
+      if (e.name.startsWith('.') || ['node_modules', '_templates', 'functions', 'assets', 'dist', 'build', 'public', 'out', '_site', '.git'].includes(e.name)) continue;
       const f = path.join(dir, e.name);
       if (e.isDirectory()) walk(f);
       else if (e.name.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(e.name)) files.push(f);

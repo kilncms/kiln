@@ -50,9 +50,15 @@ function safeUrl(value) {
  * url(), expression(), @import and friends are rejected wholesale.
  */
 export function safeStyle(value) {
-  const v = String(value);
-  if (/url\s*\(|expression\s*\(|javascript:|@import|behavior\s*:|binding\s*:|-moz-binding/i.test(v)) return '';
-  return v;
+  // Decode CSS escapes (\75rl( → url() to a browser) BEFORE matching, so the
+  // denylist can't be slipped with `\65xpression(` / `\75rl(`. Then reject the
+  // whole value if it still contains any fetch/scripting construct. Also reject
+  // a raw backslash — no legitimate inline style Kiln writes needs one, and it
+  // removes the entire escape-obfuscation surface.
+  const raw = String(value);
+  if (raw.includes('\\')) return '';
+  if (/url\s*\(|expression\s*\(|javascript:|@import|behavior\s*:|binding\s*:|-moz-binding|image-set\s*\(/i.test(raw)) return '';
+  return raw;
 }
 
 /**
@@ -513,6 +519,8 @@ function walk(node, fn) {
   fn(node);
   const kids = node.childNodes || [];
   for (const child of kids) walk(child, fn);
-  // template elements keep children in .content
-  if (node.content) walk(node.content, fn);
+  // Deliberately DO NOT descend into <template>.content: the browser DOM the
+  // editor counts against (getElementsByTagName / querySelectorAll) doesn't
+  // either, so descending here would make findNthTag's index diverge and
+  // make-editable would annotate the wrong element on a page with a <template>.
 }

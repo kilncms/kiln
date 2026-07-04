@@ -92,7 +92,7 @@ export default {
       if (path === '/schedule' && request.method === 'POST') return await cors(env, request, await scheduleCreate(request, env));
       if (path === '/schedules' && request.method === 'GET') return await cors(env, request, await scheduleList(request, env, url));
       if (path === '/schedule/cancel' && request.method === 'POST') return await cors(env, request, await scheduleCancel(request, env));
-      if (path === '/presence' && request.method === 'POST') return await cors(env, request, await presencePing(request, env));
+      if (path === '/presence' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await presencePing(request, env));
       if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
       if (path === '/google/callback') return googleCallback(url, env);
       if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
@@ -577,7 +577,24 @@ async function peopleUpsert(request, env) {
   const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
   people.push(person);
   await env.KILN.put(`people:${repo}`, JSON.stringify(people));
+  // Purge this person's live editor sessions so a scope/role/feature change
+  // takes effect immediately — the frozen `paths` in an old esess would
+  // otherwise keep their previous access until it expired (up to 360 days).
+  await purgeEditorSessions(env, repo, addr);
   return json({ ok: true, person });
+}
+
+/** Delete every live esess for one person on one repo (scope change / removal). */
+async function purgeEditorSessions(env, repo, addr) {
+  let cursor;
+  do {
+    const page = await env.KILN.list({ prefix: 'esess:', cursor });
+    for (const k of page.keys) {
+      const v = await env.KILN.get(k.name, 'json');
+      if (v && v.repo === repo && v.email === addr) await env.KILN.delete(k.name);
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
 }
 
 async function peopleRemove(request, env) {
@@ -829,6 +846,11 @@ async function ghProxy(request, env, ghPath) {
     try {
       const parsed = JSON.parse(peek);
       if (Array.isArray(parsed.tree)) {
+        // A subtree entry (type:"tree") pulls in a whole subtree we can't see —
+        // editors must submit blob-level entries only, each individually scoped.
+        if (parsed.tree.some(e => e && e.type === 'tree')) {
+          return json({ error: 'editors may not submit subtree entries' }, 403);
+        }
         if (parsed.tree.some(e => e && isSensitivePath(e.path))) {
           return json({ error: 'forbidden path for editor' }, 403);
         }
@@ -841,6 +863,24 @@ async function ghProxy(request, env, ghPath) {
 
   const itok = await installationToken(env, sess.repo);
   if (!itok) return json({ error: 'app not installed on repo', repo: sess.repo }, 503);
+
+  // Git-data write scope (C1): `git/trees` is peeked above, but `git/commits`
+  // and `git/refs` could otherwise point main at ANY tree/commit — bypassing
+  // path scope (rollback the whole site, swap in an out-of-scope tree, inject
+  // .github). Two guards make the whole Git-data write chain safe:
+  //   • ref writes: forbid `force` (GitHub then enforces fast-forward-only, so a
+  //     scoped editor can only ADVANCE the branch, never rewrite/rollback it);
+  //   • commit creates: diff the proposed tree against its parent and require
+  //     every changed path to be in-scope and non-sensitive.
+  if (!sess.admin && (request.method === 'POST' || request.method === 'PATCH')
+      && /\/git\/refs(\/|$)/.test(cleanPath)) {
+    try { if (JSON.parse(await request.clone().text())?.force) return json({ error: 'editors may not force-update refs' }, 403); }
+    catch { /* non-JSON — allowlist gated the route */ }
+  }
+  if (!sess.admin && request.method === 'POST' && /\/git\/commits$/.test(cleanPath)) {
+    const scopeErr = await commitDiffInScope(env, itok, sess, await request.clone().text());
+    if (scopeErr) return scopeErr;
+  }
 
   const headers = {
     Authorization: `Bearer ${itok}`,
@@ -862,6 +902,46 @@ async function ghProxy(request, env, ghPath) {
   }
   const res = await fetch(`${GH}${ghPath}`, { method: request.method, headers, body });
   return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'application/json' } });
+}
+
+/**
+ * Reject a proposed commit whose diff (vs its first parent) touches any path
+ * outside the editor's scope or any sensitive path. Returns a 403 Response to
+ * short-circuit, or null when the commit is in-scope. Fails CLOSED on any error.
+ */
+async function commitDiffInScope(env, itok, sess, bodyText) {
+  let tree, parents;
+  try { const b = JSON.parse(bodyText); tree = b.tree; parents = b.parents; }
+  catch { return json({ error: 'unreadable commit body' }, 400); }
+  if (!tree) return json({ error: 'commit needs a tree' }, 400);
+  const gh = async (p) => {
+    const r = await fetch(`${GH}${p}`, { headers: { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+    if (!r.ok) throw new Error(`gh ${p} ${r.status}`);
+    return r.json();
+  };
+  try {
+    const newTree = await gh(`/repos/${sess.repo}/git/trees/${tree}?recursive=1`);
+    const before = new Map();
+    const parentSha = Array.isArray(parents) ? parents[0] : null;
+    if (parentSha) {
+      const pc = await gh(`/repos/${sess.repo}/git/commits/${parentSha}`);
+      const pt = await gh(`/repos/${sess.repo}/git/trees/${pc.tree.sha}?recursive=1`);
+      for (const e of pt.tree || []) if (e.type === 'blob') before.set(e.path, e.sha);
+    }
+    const after = new Map();
+    for (const e of newTree.tree || []) if (e.type === 'blob') after.set(e.path, e.sha);
+    // Every path whose blob changed, was added, or was removed must be in scope.
+    const changed = new Set();
+    for (const [p, sha] of after) if (before.get(p) !== sha) changed.add(p);
+    for (const p of before.keys()) if (!after.has(p)) changed.add(p);
+    for (const p of changed) {
+      if (isSensitivePath(p)) return json({ error: 'commit touches a forbidden path', path: p }, 403);
+      if (!pathInScope(p, sess.paths)) return json({ error: 'commit touches a path outside your scope', path: p }, 403);
+    }
+    return null;
+  } catch (err) {
+    return json({ error: 'could not verify commit scope', detail: String(err.message || err) }, 502);
+  }
 }
 
 async function installationToken(env, repo) {

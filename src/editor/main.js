@@ -12,7 +12,7 @@
 import DOMPurify from 'dompurify';
 import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValues, findNthTag, annotateNthTag, appendIntoNthTag, insertAfterNthTag, removeAnnotations, removeKilnSection } from '../engine.js';
 import {
-  makeGh, getFile, resolvePageFile, editFile, putBinaryFile, commitFiles, deployState,
+  makeGh, getFile, resolvePageFile, editFile, putFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
 
 const cfg = window.KILN || {};
@@ -73,6 +73,7 @@ const state = {
 // stack works at the "committed change" level, like Canva's.
 const editHistory = { undo: [], redo: [] };
 let undoBucket = null;   // when set, stagePending records into this composite entry
+let activeOriginalHtml = null;   // the currently-edited element's own pre-edit HTML (for Esc)
 
 /** Group several stagePending calls into ONE undo entry (e.g. a multi-section restore). */
 function undoGroup(fn) {
@@ -488,7 +489,7 @@ function setupRepeat(container, key) {
     const last = [...container.children].filter(c => !c.classList.contains('kiln-repeat-add')).pop();
     if (!last) return;
     const clone = last.cloneNode(true);
-    clone.querySelectorAll('.kiln-item-ctl, #kiln-toolbar').forEach(n => n.remove());
+    clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, #kiln-toolbar').forEach(n => n.remove());
     clone.classList.remove('kiln-repeat-item');
     clone.querySelectorAll('[data-cms]').forEach(n => {
       n.classList.remove('kiln-field', 'kiln-editing', 'kiln-modified');
@@ -576,7 +577,7 @@ function attachItemControls(container, key, item) {
   dup.onclick = (e) => {
     e.stopPropagation();
     const clone = item.cloneNode(true);
-    clone.querySelectorAll('.kiln-item-ctl, #kiln-toolbar').forEach(n => n.remove());
+    clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, #kiln-toolbar').forEach(n => n.remove());
     clone.classList.remove('kiln-repeat-item');
     clone.querySelectorAll('[data-cms]').forEach(n => {
       n.classList.remove('kiln-field', 'kiln-editing', 'kiln-modified');
@@ -902,6 +903,10 @@ function startEditing(el, key) {
   if (state.active) cancelEditing();
   state.active = el;
   if (!state.originals.has(key)) state.originals.set(key, el.innerHTML);
+  // THIS element's own pre-edit content, for a correct Esc/cancel. The shared
+  // state.originals map is keyed by data-cms name, which repeats across blocks —
+  // restoring from it would paste a sibling block's text into this one.
+  activeOriginalHtml = el.innerHTML;
   // Keep this row's floating controls out of the way while typing in it.
   el.closest('.kiln-repeat-item')?.classList.add('kiln-row-editing');
   el.classList.add('kiln-editing');
@@ -923,9 +928,15 @@ function cancelEditing() {
   el.contentEditable = 'false';
   el.classList.remove('kiln-editing');
   el.closest('.kiln-repeat-item')?.classList.remove('kiln-row-editing');
-  const pendingEdit = state.pending.get(key);
-  el.innerHTML = pendingEdit?.html ?? state.originals.get(key) ?? el.innerHTML;
+  // Restore THIS element's own content: its pending value if it isn't inside a
+  // repeat (repeat fields stage under the container, never their own key), else
+  // its captured pre-edit HTML — never the shared-key map, which holds a
+  // sibling block's text.
+  const inRepeat = !!el.closest('[data-cms-repeat]');
+  const pendingEdit = inRepeat ? null : state.pending.get(key);
+  el.innerHTML = pendingEdit?.html ?? activeOriginalHtml ?? el.innerHTML;
   state.active = null;
+  activeOriginalHtml = null;
   removeToolbar();
 }
 
@@ -1715,11 +1726,17 @@ async function publish() {
           if (v.attrs) state.undoBaseAttrs.set(key, { ...(state.undoBaseAttrs.get(key) || {}), ...v.attrs });
         } catch {}
         try {
-          document.querySelectorAll('[data-cms="' + CSS.escape(key) + '"].kiln-modified')
+          document.querySelectorAll('[data-cms="' + CSS.escape(key) + '"].kiln-modified, [data-cms-repeat="' + CSS.escape(key) + '"].kiln-modified')
             .forEach(el => el.classList.remove('kiln-modified'));
         } catch {}
       }
     }
+    // Undo/redo operate on STAGED changes. Once published, those entries would
+    // desync the page from the now-live site (⌘Z would revert the DOM but stage
+    // nothing), so retire the history at the publish boundary.
+    editHistory.undo.length = 0;
+    editHistory.redo.length = 0;
+    updateUndoUi();
     await loadPageSource();
     refreshPublishButton();
     if (result && result.unchanged && !partialEdits.length) { setStatus('Nothing changed', 'idle'); return; }
@@ -2423,7 +2440,7 @@ async function invitePanel() {
         const row = document.createElement('div');
         row.className = 'kiln-inv-row';
         row.innerHTML = `<span><strong>${escapeHtml(p.name)}</strong>
-          <small>${escapeHtml(p.email)} · ${p.role}${scope ? ' · ' + escapeHtml(scope) : ''} · ${p.days ? p.days + 'd' : 'never expires'}</small></span>
+          <small>${escapeHtml(p.email)} · ${escapeHtml(p.role)}${scope ? ' · ' + escapeHtml(scope) : ''} · ${p.days ? p.days + 'd' : 'never expires'}</small></span>
           <button class="kiln-btn-ghost">Remove</button>`;
         row.querySelector('button').onclick = async () => {
           await fetch(`${cfg.worker}/admin/people/remove`, {
@@ -3107,9 +3124,9 @@ const PICKABLE = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'a', 
   'img', 'div', 'section', 'article', 'figure', 'figcaption', 'blockquote', 'small', 'strong',
   'em', 'td', 'th', 'tr', 'tbody', 'table', 'time', 'dl', 'dt', 'dd', 'caption', 'address']);
 
-const KILN_CHROME = '#kiln-fab-wrap,#kiln-topbar,#kiln-toolbar,#kiln-modal,#kiln-imgpop,'
+const KILN_CHROME = '#kiln-fab-wrap,#kiln-topbar,#kiln-toolbar,#kiln-modal,#kiln-imgpop,#kiln-previewbar,'
   + '#kiln-presence,#kiln-pickbar,#kiln-sandbox-banner,.kiln-item-ctl,.kiln-ctl-cell,.kiln-repeat-add,'
-  + '.kiln-filterbar,.kiln-evbar';
+  + '.kiln-filterbar,.kiln-filterbar-preview,.kiln-evbar,.kiln-img-handle';
 
 function isKilnChrome(el) { return !!el.closest(KILN_CHROME); }
 
