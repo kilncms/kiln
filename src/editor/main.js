@@ -393,8 +393,14 @@ function decorateFields() {
   });
 
   // Clicking away SAVES your edit (staged for Publish). Esc reverts it.
+  // The image popover and its drag handle are body-level editor chrome, NOT
+  // outside clicks — committing on them rewrote the field's innerHTML mid-
+  // resize, detaching the very image the handle was resizing (drags after the
+  // first then moved an orphaned element, and the in-flight resample corrupted
+  // the staged-upload map).
   document.addEventListener('click', (e) => {
-    if (state.active && !state.active.contains(e.target) && !e.target.closest('#kiln-toolbar')) {
+    if (state.active && !state.active.contains(e.target)
+      && !e.target.closest('#kiln-toolbar, #kiln-imgpop, .kiln-img-handle')) {
       commitEdit(state.active, state.active.getAttribute('data-cms'));
     }
   });
@@ -440,7 +446,7 @@ function inlineImgPopover(img) {
   // the surrounding field's commit persists the change).
   const handle = enableImageDragResize(img, null, false);
   const away = (e) => {
-    if (!pop.contains(e.target) && e.target !== img && e.target !== handle) {
+    if (!pop.contains(e.target) && e.target !== img && !e.target.closest('.kiln-img-handle')) {
       pop.remove(); handle.remove(); document.removeEventListener('click', away, true);
     }
   };
@@ -467,6 +473,11 @@ function decorateField(el, key) {
     }
     e.preventDefault(); e.stopPropagation();
     if (state.active !== el) startEditing(el, key);
+    // An image inside this rich-text field: open its size/remove popover right
+    // here. The document-level fallback (init's IMG click listener) never sees
+    // this click because of the stopPropagation above — which used to make
+    // inline images un-resizable once their insert-time popover closed.
+    if (state.active === el && e.target.tagName === 'IMG' && e.target !== el) inlineImgPopover(e.target);
   });
 }
 
@@ -910,7 +921,11 @@ function stageContainer(container, key) {
 }
 
 function startEditing(el, key) {
-  if (state.active) cancelEditing();
+  // COMMIT the previous field, don't cancel it. Clicking from one field straight
+  // into another never reaches the document-level click-away commit (the new
+  // field's handler stops propagation), so cancelling here silently REVERTED the
+  // first field's edit. Click-away semantics are "save"; Esc is the revert.
+  if (state.active && state.active !== el) commitEdit(state.active, state.active.getAttribute('data-cms'));
   state.active = el;
   if (!state.originals.has(key)) state.originals.set(key, el.innerHTML);
   // THIS element's own pre-edit content, for a correct Esc/cancel. The shared
@@ -1193,10 +1208,14 @@ function imageToolbar(img, key) {
   tb.querySelector('[data-act="replace"]').onclick = (e) => { e.stopPropagation(); pickImage(img, key); };
 
   const handle = enableImageDragResize(img, key);
-  tb.querySelector('[data-act="done"]').onclick = (e) => { e.stopPropagation(); finish(); handle.remove(); };
+  // Match ANY current handle, not the one captured above: "Replace image…"
+  // spawns a fresh handle (showResizeNow), and treating it as an outside click
+  // closed this toolbar after the first drag.
+  const removeHandles = () => document.querySelectorAll('.kiln-img-handle').forEach(h => h.remove());
+  tb.querySelector('[data-act="done"]').onclick = (e) => { e.stopPropagation(); finish(); removeHandles(); };
   const away = (e) => {
-    if (!tb.contains(e.target) && e.target !== img && e.target !== handle) {
-      finish(); handle.remove(); document.removeEventListener('click', away);
+    if (!tb.contains(e.target) && e.target !== img && !e.target.closest('.kiln-img-handle')) {
+      finish(); removeHandles(); document.removeEventListener('click', away);
     }
   };
   setTimeout(() => document.addEventListener('click', away), 0);
@@ -1296,6 +1315,16 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     const targetW = Math.max(1, Math.min(Math.round(cssWidth * dpr), bmp.width, 2400));
     const scaled = await bitmapToScaled(bmp, targetW);
     const blob = scaled.blob, base64 = scaled.base64;
+
+    // The awaits above yield to other handlers — if anything replaced this
+    // element meanwhile (e.g. a field commit rewrote its innerHTML), finishing
+    // would resize a detached node and, worse, retire the LIVE image's queued
+    // upload from pendingBinaries (publishing a page that references a file
+    // that never gets committed). Bail instead.
+    if (!img.isConnected) {
+      setStatus('That image changed while re-sampling — click it and resize again', 'error');
+      return;
+    }
 
     img.style.width = `${cssWidth}px`;
     img.style.height = 'auto';
@@ -1426,7 +1455,7 @@ function showResizeNow(img, key) {
   const handle = enableImageDragResize(img, key);
   img.scrollIntoView({ behavior: 'smooth', block: 'center' });
   const away = (e) => {
-    if (e.target === img || e.target === handle || e.target.closest('#kiln-toolbar, #kiln-imgpop, #kiln-modal')) return;
+    if (e.target === img || e.target.closest('.kiln-img-handle, #kiln-toolbar, #kiln-imgpop, #kiln-modal')) return;
     handle.remove();
     document.removeEventListener('click', away, true);
   };
