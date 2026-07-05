@@ -12,8 +12,9 @@
     "test": "node --test test/*.test.js",
     "dev": "cd worker && npx wrangler dev --local --port 8787",
     "deploy:test": "npm run build && cd worker && npx wrangler deploy --env staging",
-    "deploy:prod": "npm run build && npm test && cd worker && npx wrangler deploy",
-    "deploy:worker": "cd worker && npx wrangler deploy"
+    "deploy:prod": "npm run build && npm test && cd worker && npx wrangler deploy && cd .. && node scripts/propagate-bundles.mjs",
+    "deploy:worker": "cd worker && npx wrangler deploy",
+    "propagate": "node scripts/propagate-bundles.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",

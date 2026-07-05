@@ -108,6 +108,14 @@ curl -s https://auth.kilncms.com/setup/status     # must be {"configured":true,.
 3. **prod:** `npm run deploy:prod`, then `curl …/setup/status` to confirm, then push the
    site repos' `main`.
 
+`deploy:prod` ends by running `scripts/propagate-bundles.mjs`, which copies the fresh
+`dist/` bundles into every consumer checkout that carries its own copies (the demo,
+managed customer sites), commits, and pushes them — so their Pages projects redeploy in
+the same breath. If a consumer can't be updated, the deploy **exits non-zero**: a green
+`deploy:prod` now means the worker AND every bundle-copy site are current. Run it alone
+any time with `npm run propagate`. New consumer site? Add one line to the `CONSUMERS`
+list at the top of `scripts/propagate-bundles.mjs`.
+
 ---
 
 ## Resources (canonical instance)

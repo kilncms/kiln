@@ -219,6 +219,7 @@ export const RUNBOOK_HTML = `<!doctype html>
         <li>Commit, push. Their host redeploys; visitors see no change; editors get the new features.</li>
         <li>If anything looks wrong: <code>git revert</code> the commit, push. Instantly back to the old bundle.</li>
       </ol>
+      <div class="call rule"><span class="tag">Automatic for sites you keep checked out</span><p>Consumer repos cloned on the Mac Mini (the demo, npu-i, any managed site you add to <code>CONSUMERS</code> in <code>scripts/propagate-bundles.mjs</code>) are refreshed <em>automatically</em> at the end of every <code>npm run deploy:prod</code> — copied, committed, pushed. If one can't be updated the deploy reports failure, so "deploy succeeded" always means those sites are current. The manual steps above are only for customer repos you don't keep locally.</p></div>
     </section>
 
     <section id="s5">
