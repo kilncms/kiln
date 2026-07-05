@@ -71,7 +71,9 @@ for (const c of CONSUMERS) {
     catch { /* staged changes exist — commit them */ }
     git(dir, 'commit', '-q', '-m',
       `chore: refresh Kiln bundles to kilncms/kiln@${kilnSha}\n\n(automated by scripts/propagate-bundles.mjs during deploy:prod)`);
-    git(dir, 'push');
+    // Explicit refspec: don't depend on upstream tracking, which history
+    // rewrites (git-filter-repo) silently drop.
+    git(dir, 'push', 'origin', 'HEAD');
     ok(`${label}: ${stale.join(', ')} refreshed → pushed (Pages will redeploy)`);
   } catch (err) {
     failures++;
