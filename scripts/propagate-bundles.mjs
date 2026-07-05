@@ -62,19 +62,25 @@ for (const c of CONSUMERS) {
   try {
     const stale = BUNDLES.filter(b =>
       !existsSync(path.join(dir, c.dest, b)) || sha(path.join(dir, c.dest, b)) !== sha(path.join(PKG_ROOT, 'dist', b)));
-    if (!stale.length) { ok(`${label}: already current`); continue; }
-
-    for (const b of stale) copyFileSync(path.join(PKG_ROOT, 'dist', b), path.join(dir, c.dest, b));
-    git(dir, 'add', ...BUNDLES.map(b => path.join(c.dest, b)));
-    // Copy may have merely restored local drift back to what's already committed.
-    try { git(dir, 'diff', '--cached', '--quiet'); ok(`${label}: restored to committed state (nothing to push)`); continue; }
-    catch { /* staged changes exist — commit them */ }
-    git(dir, 'commit', '-q', '-m',
-      `chore: refresh Kiln bundles to kilncms/kiln@${kilnSha}\n\n(automated by scripts/propagate-bundles.mjs during deploy:prod)`);
-    // Explicit refspec: don't depend on upstream tracking, which history
-    // rewrites (git-filter-repo) silently drop.
-    git(dir, 'push', 'origin', 'HEAD');
-    ok(`${label}: ${stale.join(', ')} refreshed → pushed (Pages will redeploy)`);
+    let committed = false;
+    if (stale.length) {
+      for (const b of stale) copyFileSync(path.join(PKG_ROOT, 'dist', b), path.join(dir, c.dest, b));
+      git(dir, 'add', ...BUNDLES.map(b => path.join(c.dest, b)));
+      // Copy may have merely restored local drift back to what's already committed.
+      try { git(dir, 'diff', '--cached', '--quiet'); }
+      catch {
+        git(dir, 'commit', '-q', '-m',
+          `chore: refresh Kiln bundles to kilncms/kiln@${kilnSha}\n\n(automated by scripts/propagate-bundles.mjs during deploy:prod)`);
+        committed = true;
+      }
+    }
+    // ALWAYS push (idempotent): a prior run may have committed and then failed
+    // to push — a worktree-only "already current" check would report green while
+    // the remote (and the live site) still runs old bundles. Explicit refspec:
+    // upstream tracking is silently dropped by history rewrites (git-filter-repo).
+    const out = git(dir, 'push', 'origin', 'HEAD', '--porcelain');
+    const pushed = committed || !/^=/m.test(out || '=');
+    ok(`${label}: ${committed ? stale.join(', ') + ' refreshed → pushed' : pushed ? 'pushed pending commits' : 'already current'}${pushed ? ' (Pages will redeploy)' : ''}`);
   } catch (err) {
     failures++;
     bad(`${label}: ${String(err.message || err).split('\n')[0]} — this site is still running OLD bundles`);
