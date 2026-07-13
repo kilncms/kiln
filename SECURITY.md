@@ -20,10 +20,10 @@ updated as we investigate and ship a fix.
 
 | Version | Supported |
 |---------|-----------|
-| 0.2.x   | yes       |
-| < 0.2   | no        |
+| 0.3.x   | yes       |
+| < 0.3   | no        |
 
-Security fixes land on the current `0.2.x` line.
+Security fixes land on the latest release line.
 
 ## Security-sensitive surface
 
@@ -31,8 +31,11 @@ If you are reviewing or reporting, these are the areas that matter most:
 
 - **GitHub App OAuth** — sign-in flow, `state` nonces, and the server-side
   session/refresh-token store in Workers KV.
-- **Magic-link editor tokens** — single-use invite minting and redemption; the
-  editor never holds GitHub credentials directly.
+- **Google sign-in for editors and members** — invited people are added to a
+  per-repo email allowlist (the "People" list) and authenticate with Google;
+  editor sessions are opaque tokens stored in Workers KV, scoped to the repo
+  and to the path/section grants for that person. Editors never hold GitHub
+  credentials, and the GitHub App installation token never reaches the browser.
 - **Commit proxy** — the `kiln-auth` worker holds a GitHub App installation
   token and proxies editor commits behind a strict method+path allowlist
   (one repo, content paths only, no deletes). Bypasses of that allowlist are

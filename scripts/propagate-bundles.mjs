@@ -60,6 +60,29 @@ for (const c of CONSUMERS) {
   }
   found++;
   try {
+    // Branch guard: `push origin HEAD` publishes WHATEVER branch the checkout is
+    // on — a feature branch or unrelated local commits must never land on a
+    // customer's default branch, and a side branch push won't deploy anyway.
+    let defaultBranch = '';
+    try {
+      defaultBranch = git(dir, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD').trim().replace(/^origin\//, '');
+    } catch {
+      try {   // origin/HEAD unset locally (fresh/partial clone) — ask the remote once
+        git(dir, 'remote', 'set-head', 'origin', '--auto');
+        defaultBranch = git(dir, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD').trim().replace(/^origin\//, '');
+      } catch { /* handled below */ }
+    }
+    const branch = git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim();
+    if (!defaultBranch) {
+      failures++;
+      bad(`${label}: can't resolve origin's default branch — refusing to push blind. Run: git -C ${dir} remote set-head origin --auto, then re-run`);
+      continue;
+    }
+    if (branch !== defaultBranch) {
+      failures++;
+      bad(`${label}: checkout is on '${branch}' but origin's default branch is '${defaultBranch}' — refusing to commit/push. Run: git -C ${dir} checkout ${defaultBranch}, then re-run: npm run propagate`);
+      continue;
+    }
     const stale = BUNDLES.filter(b =>
       !existsSync(path.join(dir, c.dest, b)) || sha(path.join(dir, c.dest, b)) !== sha(path.join(PKG_ROOT, 'dist', b)));
     let committed = false;
@@ -83,7 +106,11 @@ for (const c of CONSUMERS) {
     ok(`${label}: ${committed ? stale.join(', ') + ' refreshed → pushed' : pushed ? 'pushed pending commits' : 'already current'}${pushed ? ' (Pages will redeploy)' : ''}`);
   } catch (err) {
     failures++;
-    bad(`${label}: ${String(err.message || err).split('\n')[0]} — this site is still running OLD bundles`);
+    const detail = `${err.stderr || ''}\n${err.message || err}`;
+    const hint = /non-fast-forward|fetch first|\[rejected\]/i.test(detail)
+      ? ` — remote has commits this checkout lacks. Run: git -C ${dir} pull --rebase, then: npm run propagate`
+      : '';
+    bad(`${label}: ${String(err.message || err).split('\n')[0]}${hint} — this site is still running OLD bundles`);
   }
 }
 

@@ -21,25 +21,30 @@ feature, open an issue first so we can agree on the approach before you build it
 ```bash
 npm install
 npm test               # splice engine + transport suite (node --test)
-npm run build          # dist/kiln.js + dist/kiln-editor.js (+ demo/assets sync)
-GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   # full live-loop verification
+npm run build          # dist/kiln.js + dist/kiln-editor.js + dist/kiln-features.js
 ```
 
 `npm test` runs the engine and transport suites and is the fastest signal that a
-change is sound. `npm run build` produces the shipped bundles. The e2e script
-exercises a real GitHub round-trip and needs a token.
+change is sound. `npm run build` produces the shipped bundles.
+
+`scripts/e2e.mjs` is **maintainer-only**: it exercises a real GitHub round-trip
+against the live public demo repo, which external contributors' tokens can't
+write to. CI plus `npm test` is the expected verification path for outside PRs.
 
 ## Repo layout
 
 ```
 src/engine.js        the splice engine (parse5 offsets, batch edits, attr edits)
-src/github.js        transports (direct / proxied), 409-retry edits, atomic commits
+src/github.js        transports (direct / proxied), conflict-retry edits, atomic commits
+src/autotag.js       the heuristic first-pass auto-tagger behind `kiln tag`
 src/kiln.js          boot shim
+src/features.js      visitor runtime (gallery lightbox, tag filters, event calendar)
 src/editor/main.js   editor UI bundle source
-worker/              kiln-auth Cloudflare Worker
-demo/                the demo site (deployed to demo.kilncms.com)
-test/                engine + transport tests
-scripts/             build + live e2e
+cli/index.mjs        the setup wizard + doctor + tag + update commands
+worker/              kiln-auth Cloudflare Worker (sign-in + commit pipeline)
+templates/           members-area scaffolding the wizard copies into a new site
+test/                engine + transport + autotag tests
+scripts/             build, live e2e (maintainer-only), managed onboarding
 ```
 
 ## Pull request expectations

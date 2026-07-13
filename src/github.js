@@ -54,7 +54,17 @@ export function decodeContent(b64) {
   const bin = atob(b64.replace(/\s/g, ''));
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
+  // Decode strictly. A non-fatal decoder would silently replace every invalid
+  // byte with U+FFFD; committing that back rewrites a legacy (windows-1252 /
+  // ISO-8859-1) page's accents and symbols to "�". Refuse instead of corrupting
+  // — Kiln's promise is byte-for-byte preservation outside the edited range.
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    const err = new Error('This page isn’t UTF-8 encoded, so Kiln won’t edit it (that would corrupt its accented characters and symbols). Re-save the file as UTF-8, then try again.');
+    err.code = 'NOT_UTF8';
+    throw err;
+  }
 }
 
 // ─── File operations ─────────────────────────────────────────────────────────

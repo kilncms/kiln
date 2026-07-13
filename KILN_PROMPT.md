@@ -70,6 +70,10 @@ Editors can tag any block (🏷 on its hover controls) with comma-separated tags
 pills above the list — “All” plus one per tag. You can also pre-tag blocks in HTML with
 `data-kiln-tags="new, upcoming"` on the repeat's direct children. No extra markup needed.
 
+To opt a container into the filter bar explicitly (rather than relying on it being
+inferred from tagged children), put `data-kiln-filters` on the container itself. The
+bar still only appears once at least one child actually has tags.
+
 ### Photo gallery
 
 Add `data-kiln-gallery` next to `data-cms-repeat` to turn a repeat into a gallery:
@@ -84,6 +88,11 @@ a lightbox with paging, keyboard arrows, captions, and swipe:
   </figure>
 </div>
 ```
+
+Optional: set the thumbnail size per gallery with `data-kiln-thumb="120|180|260"` on
+the same container (pixels; 120 = small, 180 = the default, 260 = large — those three
+match the editor's Small/Medium/Large presets, though any pixel value works). Editors
+can change it later from the gallery's options panel.
 
 ### Events with calendar views
 
@@ -168,13 +177,11 @@ Anything under `/members/` (pages AND files like PDFs) becomes members-gated (Go
    `members/_middleware.js`, `api/member-redeem-google.js`) into the site's
    `functions/` directory, and
    `templates/members-login.html` to the site root.
-2. Set secrets on the Cloudflare Pages project:
+2. Set two secrets on the Cloudflare Pages project:
    ```bash
    openssl rand -hex 32 | npx wrangler pages secret put KILN_MEMBER_SECRET --project-name <project>
-   printf 'owner/repo'  | npx wrangler pages secret put KILN_REPO --project-name <project>
    printf 'https://YOUR-KILN-AUTH.workers.dev' | npx wrangler pages secret put KILN_WORKER --project-name <project>
    ```
-   (`KILN_WORKER` is only needed if you enable Google member sign-in.)
 Admins add members by email in People &amp; access; they sign in with Google (1–360 days access).
 
 ## 7. Site config + scripts

@@ -12,10 +12,12 @@ export async function onRequestPost({ request, env }) {
   const { code } = await request.json().catch(() => ({}));
   if (!code) return json({ error: 'missing code' }, 400);
 
+  // Send our own origin so the worker can enforce that this code was minted for
+  // THIS site (cross-tenant member bypass guard).
   const res = await fetch(`${env.KILN_WORKER}/google/claim`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, origin: new URL(request.url).origin }),
   });
   const data = await res.json();
   if (!res.ok || !data.ok) return json({ error: 'invalid or expired sign-in, try again' }, 403);

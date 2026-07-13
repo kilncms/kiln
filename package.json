@@ -1,9 +1,12 @@
 {
   "name": "kiln",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Click-to-edit CMS for static sites. GitHub as the backend. Free hosting as the host.",
   "license": "AGPL-3.0-only",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "kiln": "cli/index.mjs"
   },
@@ -16,9 +19,11 @@
     "deploy:worker": "cd worker && npx wrangler deploy",
     "propagate": "node scripts/propagate-bundles.mjs"
   },
+  "dependencies": {
+    "parse5": "^8.0.0"
+  },
   "devDependencies": {
     "esbuild": "^0.25.0",
-    "parse5": "^8.0.0",
     "dompurify": "^3.2.0",
     "wrangler": "^4.0.0"
   }

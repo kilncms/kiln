@@ -133,9 +133,17 @@ async function init() {
       const user = await state.gh.request('GET', '/user');
       state.user = user.login;
     } catch (err) {
-      console.warn('[kiln] token rejected, back to login', err);
-      localStorage.removeItem(ADMIN_KEY);
-      location.reload();
+      // Only a real auth rejection should sign the owner out. A network or worker
+      // blip (no HTTP status) must NOT nuke a valid session — that would log them
+      // out every time their wifi hiccups. Surface it and let a reload recover.
+      if (err.status === 401 || err.status === 403) {
+        console.warn('[kiln] token rejected, back to login', err);
+        localStorage.removeItem(ADMIN_KEY);
+        location.reload();
+        return;
+      }
+      console.warn('[kiln] could not verify session (offline?)', err);
+      setStatus('Can’t reach GitHub right now — check your connection and reload.', 'error');
       return;
     }
   } else {
@@ -178,10 +186,12 @@ function withAutoRefresh(gh, stored) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sid: stored.sid }),
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (!data.token) {
-          localStorage.removeItem(ADMIN_KEY);
-          location.reload();
+          // Sign out ONLY when the worker says the refresh token is dead (401).
+          // A transient 5xx/network failure must not destroy a session that will
+          // work again once the worker recovers — just fail this one request.
+          if (res.status === 401) { localStorage.removeItem(ADMIN_KEY); location.reload(); }
           throw err;
         }
         localStorage.setItem(ADMIN_KEY, JSON.stringify({ ...stored, token: data.token, exp: data.exp }));
@@ -833,11 +843,15 @@ function eventForm(container, key, item) {
     const title = v('title'), date = v('date'), start = v('start');
     if (!title || !date) { m.querySelector('#kiln-ev-title').focus(); return; }
     const startIso = `${date}T${start || '00:00'}`;
+    // No start time → an all-day event. Emit a DATE-ONLY datetime so the visitor
+    // calendar renders it as all-day; a "…T00:00" value would show a bogus
+    // "12:00 AM" chip (features.js only treats date-only values as all-day).
+    const startAttr = start ? startIso : date;
     const endIso = v('end') ? `${date}T${v('end')}` : '';
     const dateLabel = new Date(startIso).toLocaleDateString(undefined,
       { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
     const timeLabel = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-    const when = `<time datetime="${startIso}">${escapeHtml(dateLabel)}${start ? ' · ' + escapeHtml(timeLabel(startIso)) : ''}</time>`
+    const when = `<time datetime="${startAttr}">${escapeHtml(dateLabel)}${start ? ' · ' + escapeHtml(timeLabel(startIso)) : ''}</time>`
       + (endIso ? ` – <time datetime="${endIso}">${escapeHtml(timeLabel(endIso))}</time>` : '');
     const html = `
       <h3 class="kiln-ev-title" data-cms="ev_title">${escapeHtml(title)}</h3>
@@ -1134,12 +1148,28 @@ function commitEdit(el, key) {
   const hrefValue = hrefInput ? safeUrl(hrefInput.value) : null;
   const hrefChanged = hrefInput && hrefValue !== el.getAttribute('href');
 
+  const repeat = el.closest('[data-cms-repeat]');
+
   // Clicking into a field and back out WITHOUT changing anything must not create
   // a phantom edit (which would light up the badge and enable Publish/Discard).
+  // Crucially, if an edit was staged earlier this session and the field is now
+  // back to its original value, we must DROP the staged edit — otherwise Publish
+  // commits that stale intermediate value while the page shows the original.
+  // (Repeat fields share keys and stage as a whole container, so they never take
+  // this path; they always re-stage from the current DOM below.)
   const original = state.originals.get(key);
-  const unchanged = original !== undefined && fieldValue(original, plain) === value && !hrefChanged;
+  const unchanged = !repeat && original !== undefined && fieldValue(original, plain) === value && !hrefChanged;
   if (unchanged) {
     state.originals.delete(key);
+    if (state.pending.has(key)) {
+      const prev = state.pending.get(key);
+      state.pending.delete(key);
+      el.classList.remove('kiln-modified');
+      // Record the un-stage as a normal undo step so ⌘Z still restores it.
+      pushUndoEntry({ steps: [{ key, prevEntry: JSON.parse(JSON.stringify(prev)), nextEntry: undefined,
+        beforeHtml: prev.html, afterHtml: state.undoBase.get(key) }] });
+      refreshPublishButton();
+    }
     state.active = null;
     removeToolbar();
     return;
@@ -1148,7 +1178,6 @@ function commitEdit(el, key) {
   el.classList.add('kiln-modified');
   if (hrefChanged) el.setAttribute('href', hrefValue);
 
-  const repeat = el.closest('[data-cms-repeat]');
   if (repeat) {
     // Fields inside repeatable blocks publish as the whole container,
     // so duplicated blocks (with duplicate keys) stay unambiguous.
@@ -1838,7 +1867,10 @@ async function publish() {
   } catch (err) {
     console.error('[kiln] publish', err);
     setStatus('Publish failed — see console', 'error');
-    disablePublish(false);
+    // Re-enable Publish so the user can retry. disablePublish(false) would keep
+    // the button disabled when only binaries/structural ops are pending (its
+    // check is `!state.pending.size`); refreshPublishButton counts those too.
+    refreshPublishButton();
   }
 }
 
@@ -1963,6 +1995,15 @@ function renderSandboxBanner() {
   #kiln-sandbox-banner b{color:#fff}
   #kiln-sandbox-banner button{background:#fff;color:#1c1c28;border:0;border-radius:999px;
     padding:7px 15px;font:600 12px sans-serif;cursor:pointer;white-space:nowrap}
+  /* On narrow screens the pill can't hold the sentence — the rounded shape
+     collapses into a dark blob over the hero. Become a flat, full-width bottom
+     bar instead, sitting above the editor FAB. */
+  @media (max-width:640px){
+    #kiln-sandbox-banner{left:0;right:0;bottom:0;transform:none;max-width:none;width:100%;
+      border-radius:0;padding:10px 14px;gap:10px;box-shadow:0 -4px 20px rgba(0,0,0,.28)}
+    #kiln-sandbox-banner span{flex:1;min-width:0;font-size:12px;line-height:1.3}
+    #kiln-sandbox-banner button{flex:none}
+  }
   [data-kiln-sandbox] #kiln-newpost,[data-kiln-sandbox] #kiln-menu,[data-kiln-sandbox] #kiln-pagesettings,
   [data-kiln-sandbox] #kiln-findreplace,[data-kiln-sandbox] #kiln-history,[data-kiln-sandbox] #kiln-signout{display:none!important}`;
   document.head.appendChild(st);
@@ -2200,6 +2241,21 @@ function menuEditor() {
   const anchors = [...docFrag.querySelectorAll('a')];
   const itemTag = anchors.length && anchors.every(a => a.parentElement && a.parentElement.tagName === 'LI')
     ? 'li' : null;
+  // Also preserve the surrounding <ul>/<ol>. When the menu is tagged on a <nav>
+  // (what autotag does), menuField.inner is the whole <ul>…</ul>; rebuilding only
+  // the <li> rows would drop the <ul>, orphaning <li> under <nav> and breaking
+  // every `nav ul li` rule site-wide. If the items sit in exactly one list, keep
+  // that list's open/close tags (with its attributes).
+  let listOpen = '', listClose = '';
+  if (itemTag === 'li') {
+    const lists = [...docFrag.body.querySelectorAll('ul, ol')].filter(l => l.querySelector('li > a'));
+    if (lists.length === 1) {
+      const tag = lists[0].tagName.toLowerCase();
+      const attrs = [...lists[0].attributes].map(a => ` ${a.name}="${escapeHtml(a.value)}"`).join('');
+      listOpen = `<${tag}${attrs}>`;
+      listClose = `</${tag}>`;
+    }
+  }
 
   const m = modal(`
     <h3>Site menu</h3>
@@ -2239,14 +2295,17 @@ function menuEditor() {
     const status = m.querySelector('#kiln-menu-status');
     const menuKey = menuField.key;
     const wrap = (a) => itemTag ? `<${itemTag}>${a}</${itemTag}>` : a;
-    const newInner = '\n      ' + rows
+    const items = rows
       .filter(r => r.label.trim())
       // safeUrl() the href before it's spliced: menu inner-HTML bypasses DOMPurify,
       // and escapeHtml alone doesn't neutralize javascript:/data: schemes, so an
       // editor could otherwise plant script on every page's nav. (safeUrl mirrors
       // the engine's own href gate.)
       .map(r => wrap(`<a href="${escapeHtml(safeUrl(r.href.trim() || '/'))}">${escapeHtml(r.label.trim())}</a>`))
-      .join('\n      ') + '\n    ';
+      .join('\n        ');
+    const newInner = listOpen
+      ? `\n      ${listOpen}\n        ${items}\n      ${listClose}\n    `
+      : `\n      ${items}\n    `;
     try {
       status.textContent = 'Step 1 of 3 · Finding the site’s pages…';
       const branch = cfg.branch || 'main';

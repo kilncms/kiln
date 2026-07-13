@@ -40,6 +40,7 @@ const UA = 'kiln-auth-worker';
 
 import { handleCloud, expireStaleTrials } from './cloud.js';
 import { applyEdits } from '../src/engine.js';
+import { checkDocumentWrite, checkFragment, isHtmlPath } from './sanitize-guard.js';
 
 // UTF-8-safe base64 (GitHub content is base64; edits re-applied at cron time).
 function utf8FromB64(b64) {
@@ -384,6 +385,22 @@ async function scheduleCreate(request, env) {
   if (!actor) return json({ error: 'forbidden' }, 403);
   if (!actor.admin && (isSensitivePath(path) || !pathInScope(path, actor.paths))) {
     return json({ error: 'outside your editing scope' }, 403);
+  }
+  // Content guard for non-admin editors: scheduled field edits are re-applied
+  // raw against live source at fire time (runDueSchedules → applyEdits), so
+  // sanitize them at creation. Reject any executable markup in a field's HTML,
+  // and refuse full-page `content` snapshots from editors (they can't be diffed
+  // safely — editors schedule field-level `edits`, which the UI always sends).
+  if (!actor.admin) {
+    if (content && !edits) return json({ error: 'editors must schedule field edits, not a full page' }, 403);
+    if (Array.isArray(edits)) {
+      for (const e of edits) {
+        if (e && e.html !== undefined) {
+          const bad = checkFragment(e.html);
+          if (bad) return json({ error: 'scheduled edit contains disallowed markup', detail: bad }, 403);
+        }
+      }
+    }
   }
   const when = Date.parse(at);
   if (!when || when < Date.now() - 60000 || when > Date.now() + 366 * 24 * 3600 * 1000) {
@@ -755,15 +772,25 @@ async function repoForOrigin(env, origin) {
 }
 
 async function googleClaim(request, env) {
-  const { code } = await request.json().catch(() => ({}));
+  const { code, origin } = await request.json().catch(() => ({}));
   if (!/^[a-f0-9]{32}$/.test(code || '')) return json({ error: 'bad code' }, 400);
   const data = await env.KILN.get(`gcode:${code}`, 'json');
   if (!data) return json({ error: 'expired' }, 404);
   await env.KILN.delete(`gcode:${code}`);   // single use, regardless of outcome
-  // Cross-tenant guard: the code's repo must be the repo that authoritatively
-  // owns the origin it was minted for. (Older codes with no repo/origin bound
-  // pass through unchanged for backward compatibility.)
-  if (data.repo && data.origin) {
+  // PRIMARY cross-tenant guard: the site redeeming this code must be the same
+  // origin it was minted for. A member of site A signs in and gets a code bound
+  // to A; only A can redeem it. This is what stops a member of one site minting
+  // a code and POSTing it to a DIFFERENT site's redeem endpoint to be issued
+  // that site's member cookie. It does NOT depend on knowing origin→repo, so it
+  // protects self-host and static-allowlisted origins too. All codes minted by
+  // googleCallback carry `origin`; a code without one is rejected rather than
+  // trusted.
+  if (!data.origin || !origin || origin !== data.origin) {
+    return json({ error: 'sign-in not valid for this site' }, 403);
+  }
+  // SECONDARY (defense in depth): the code's origin must map to the code's repo
+  // where that mapping is known (Cloud/static).
+  if (data.repo) {
     const authRepo = await repoForOrigin(env, data.origin);
     if (authRepo && authRepo !== data.repo) {
       return json({ error: 'sign-in not valid for this site' }, 403);
@@ -794,6 +821,11 @@ function isSensitivePath(p) {
   if (/(^|\/)(netlify\.toml|vercel\.json|wrangler\.toml|dockerfile|procfile|package\.json|package-lock\.json|_config\.ya?ml|gemfile|now\.json|render\.yaml)$/i.test(lower)) return true;
   //   Any CI/workflow YAML, and dotfiles that change tooling.
   if (/(^|\/)\.[^/]+\.ya?ml$/i.test(lower) || /workflows\/[^/]+\.ya?ml$/i.test(lower) || /(^|\/)\.npmrc$/i.test(lower)) return true;
+  //   Executable/script assets — an editor writes content, never code. Blocking
+  //   these stops a scoped editor committing JS/WASM the page could load (which
+  //   would run with the site's full privileges) and complements the HTML
+  //   content guard (checkDocumentWrite) below.
+  if (/\.(m?js|cjs|jsx|tsx?|wasm)$/i.test(lower)) return true;
   return false;
 }
 
@@ -865,6 +897,28 @@ async function ghProxy(request, env, ghPath) {
     const filePath = decodeURIComponent(cleanPath.split('/contents/')[1] || '');
     if (isSensitivePath(filePath)) return json({ error: 'forbidden path for editor' }, 403);
     if (!pathInScope(filePath, sess.paths)) return json({ error: 'outside your editing scope', path: filePath }, 403);
+    // Content guard (C2): an editor session bypasses the browser's DOMPurify by
+    // PUTting raw markup here. For HTML pages, refuse any write that INTRODUCES
+    // executable markup (script/handlers/dangerous URLs/framing) not already in
+    // the committed version. Fails CLOSED — a guard error blocks the write.
+    if (isHtmlPath(filePath)) {
+      let newHtml, curSha;
+      try { const b = JSON.parse(await request.clone().text()); newHtml = utf8FromB64(b.content); curSha = b.sha; }
+      catch { return json({ error: 'unreadable write body' }, 400); }
+      if (newHtml === undefined) return json({ error: 'write needs content' }, 400);
+      let oldHtml = null;
+      if (curSha) {
+        try {
+          const itok0 = await installationToken(env, sess.repo);
+          const blob = await fetch(`${GH}/repos/${sess.repo}/git/blobs/${curSha}`,
+            { headers: { Authorization: `Bearer ${itok0}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+          if (blob.ok) oldHtml = utf8FromB64((await blob.json()).content);
+          else return json({ error: 'could not verify page content safely' }, 502);
+        } catch { return json({ error: 'could not verify page content safely' }, 502); }
+      }
+      const bad = checkDocumentWrite(oldHtml, newHtml);
+      if (bad) return json({ error: 'blocked: editors cannot add scripts or executable markup to a page', detail: bad }, 403);
+    }
   }
   if (request.method === 'POST' && /\/git\/trees$/.test(cleanPath)) {
     const peek = await request.clone().text();
@@ -966,6 +1020,21 @@ async function commitDiffInScope(env, itok, sess, bodyText) {
     for (const p of changed) {
       if (isSensitivePath(p)) return json({ error: 'commit touches a forbidden path', path: p }, 403);
       if (!pathInScope(p, sess.paths)) return json({ error: 'commit touches a path outside your scope', path: p }, 403);
+    }
+    // Content guard on the git-data write path (new post / multi-file commit):
+    // for every changed HTML blob, diff its markup against the parent version and
+    // refuse any newly-introduced executable content. Fails CLOSED on any error.
+    const blobText = async (sha) => {
+      const r = await fetch(`${GH}/repos/${sess.repo}/git/blobs/${sha}`, { headers: { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+      if (!r.ok) throw new Error(`blob ${sha} ${r.status}`);
+      return utf8FromB64((await r.json()).content);
+    };
+    for (const p of changed) {
+      if (!isHtmlPath(p) || !after.has(p)) continue; // removals need no content check
+      const newHtml = await blobText(after.get(p));
+      const oldHtml = before.has(p) ? await blobText(before.get(p)) : null;
+      const bad = checkDocumentWrite(oldHtml, newHtml);
+      if (bad) return json({ error: 'blocked: editors cannot add scripts or executable markup to a page', path: p, detail: bad }, 403);
     }
     return null;
   } catch (err) {

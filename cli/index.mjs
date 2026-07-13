@@ -18,6 +18,16 @@ import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Kiln relies on global fetch and crypto.getRandomValues (Node 18+) and is only
+// tested on Node 20+. Fail fast with a clear message instead of a confusing
+// ReferenceError halfway through setup.
+const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
+if (NODE_MAJOR < 20) {
+  console.error(`\n  kiln needs Node 20 or newer — you're running Node ${process.version}.`);
+  console.error('  Upgrade at https://nodejs.org (or: nvm install 20) and re-run.\n');
+  process.exit(1);
+}
+
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 const ask = async (q, dflt) => {
@@ -33,7 +43,8 @@ const hr = (s) => console.log(`\n━━ ${s} ${'━'.repeat(Math.max(2, 56 - s.l
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 function sh(cmd, opts = {}) {
-  return execSync(cmd, { encoding: 'utf8', stdio: opts.show ? 'inherit' : 'pipe', cwd: opts.cwd }).toString?.() ?? '';
+  // execSync returns null with stdio:'inherit' — optional-chain so show:true doesn't throw on success
+  return execSync(cmd, { encoding: 'utf8', stdio: opts.show ? 'inherit' : 'pipe', cwd: opts.cwd })?.toString?.() ?? '';
 }
 function shTry(cmd, opts = {}) {
   try { return { ok: true, out: sh(cmd, opts) }; } catch (e) { return { ok: false, out: String(e.stdout || e.message) }; }
@@ -57,6 +68,23 @@ async function pollUntil(label, fn, intervalMs = 4000, timeoutMs = 30 * 60 * 100
 async function fetchJson(url, opts) {
   const res = await fetch(url, opts);
   return { status: res.status, headers: res.headers, json: await res.json().catch(() => ({})) };
+}
+/** Create the KILN KV namespace (or find it on a re-run) and return its id. Exits on failure. */
+function kvNamespaceId(workerDir) {
+  const kv = shTry('npx wrangler kv namespace create KILN', { cwd: workerDir });
+  let kvId = kv.out.match(/id = "([a-f0-9]{32})"/)?.[1];
+  if (!kvId && /already exists/i.test(kv.out)) {
+    // Re-run: the namespace exists, so `create` printed no id. Look it up rather
+    // than writing id = "null" into wrangler.toml (which breaks the next deploy).
+    const list = shTry('npx wrangler kv namespace list', { cwd: workerDir });
+    try {
+      // wrangler may print a banner/update-notice before the JSON — parse from the first '['
+      const entry = JSON.parse(list.out.slice(list.out.indexOf('['))).find(n => /(^|_)KILN$/.test(n.title) || n.title === 'KILN');
+      kvId = entry?.id;
+    } catch { /* fall through to the error below */ }
+  }
+  if (!kvId) { fail(`Couldn't determine the KILN KV namespace id:\n${kv.out}`); process.exit(1); }
+  return kvId;
 }
 
 // ─── doctor ──────────────────────────────────────────────────────────────────
@@ -152,15 +180,38 @@ async function doctor(args) {
 
 // ─── wizard ──────────────────────────────────────────────────────────────────
 
+/** Commit and push ONLY the files Kiln itself created/modified. Never `git add -A`:
+ *  a stray .env or key file in the site dir must not end up in a (possibly public)
+ *  repo just because the user said yes to "commit the Kiln wiring". */
+function commitAndPush(files, message) {
+  const paths = [...new Set(files)].filter(f => existsSync(f));
+  if (!paths.length) { info('nothing to commit'); return; }
+  const add = spawnSync('git', ['add', '--', ...paths], { encoding: 'utf8' });
+  if (add.status !== 0) { warn(`git add failed — commit & push manually:\n${add.stderr || add.stdout}`); return; }
+  // Copies may be byte-identical to what's already committed (re-run) — that's fine.
+  const staged = spawnSync('git', ['diff', '--cached', '--quiet'], { encoding: 'utf8' });
+  if (staged.status !== 0) {
+    const c = spawnSync('git', ['commit', '-m', message], { encoding: 'utf8' });
+    if (c.status !== 0) { warn(`couldn't commit automatically — commit & push manually:\n${c.stderr || c.stdout}`); return; }
+  } else info('Kiln files already committed — pushing');
+  const p = spawnSync('git', ['push'], { encoding: 'utf8' });
+  if (p.status === 0) ok('pushed');
+  else warn(`couldn't push automatically — push manually:\n${p.stderr || p.stdout}`);
+}
+
 /** Copy the bundle, write config + entry page, and check the scripts are wired.
- *  Shared by self-host and Cloud modes (they differ only in the worker URL). */
+ *  Shared by self-host and Cloud modes (they differ only in the worker URL).
+ *  Returns the list of files it created/updated (for the scoped commit). */
 function wireSite(repo, workerUrl) {
+  const wrote = [];
   mkdirSync('assets', { recursive: true });
   for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) {
     cpSync(path.join(PKG_ROOT, 'dist', f), path.join('assets', f));
+    wrote.push(path.join('assets', f));
   }
   ok('copied kiln.js + kiln-editor.js + kiln-features.js into assets/');
   if (!existsSync('assets/kiln-config.js')) {
+    wrote.push('assets/kiln-config.js');
     writeFileSync('assets/kiln-config.js', `window.KILN = {
   repo:   '${repo}',
   branch: 'main',
@@ -171,6 +222,7 @@ function wireSite(repo, workerUrl) {
     ok('wrote assets/kiln-config.js');
   } else ok('assets/kiln-config.js already present (left untouched)');
   if (!existsSync('kiln.html')) {
+    wrote.push('kiln.html');
     writeFileSync('kiln.html', `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -193,9 +245,11 @@ function wireSite(repo, workerUrl) {
     console.log('     <script src="/assets/kiln-config.js"></script>\n     <script src="/assets/kiln.js" defer></script>');
     info('Tip: paste KILN_PROMPT.md into your AI tool and it does this + data-cms annotations for you.');
   } else ok('pages already load kiln.js');
+  return wrote;
 }
 
-/** Offer the first-pass auto-tagger. Shared by both modes. */
+/** Offer the first-pass auto-tagger. Shared by both modes.
+ *  Returns the list of files it actually rewrote (for the scoped commit). */
 async function offerAutotag() {
   hr('Making pages editable');
   console.log(`
@@ -212,17 +266,19 @@ async function offerAutotag() {
 
   Either way you can add or remove editable sections any time — nothing here
   is a one-time decision.`);
+  const taggedFiles = [];
   if (await yes('Run the first-pass auto-tagger now? (review with git diff after)', 'n')) {
     const { autotag } = await import(new URL('../src/autotag.js', import.meta.url));
     let tagged = 0;
     for (const f of readdirSync('.').filter(x => x.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(x))) {
       const raw = readFileSync(f, 'utf8');
       const { html, counts } = autotag(raw);
-      if (html !== raw) { writeFileSync(f, html); tagged += counts.fields + counts.images + counts.repeats + counts.menu; }
+      if (html !== raw) { writeFileSync(f, html); taggedFiles.push(f); tagged += counts.fields + counts.images + counts.repeats + counts.menu; }
     }
     ok(`auto-tagged ${tagged} things — review with: git diff   (undo: git checkout -- .)`);
     info('subfolders too? run: npx github:kilncms/kiln tag');
   }
+  return taggedFiles;
 }
 
 /** Kiln Cloud / Managed prep: we run the worker + GitHub App, so this only
@@ -236,8 +292,8 @@ async function cloudPrep(repo) {
   info('We run the sign-in & commit worker and the GitHub App. This just points');
   info('your repo at them and wires the editor files. No Cloudflare login needed.\n');
 
-  wireSite(repo, WORKER);
-  await offerAutotag();
+  const kilnFiles = wireSite(repo, WORKER);
+  kilnFiles.push(...await offerAutotag());
 
   hr('Done — 2 clicks left (in your browser)');
   console.log(`
@@ -251,8 +307,7 @@ async function cloudPrep(repo) {
   yoursite.com/kiln.  Health-check any time:  npx github:kilncms/kiln doctor
 `);
   if (await yes('Commit and push the Kiln wiring now?', 'y')) {
-    const r = shTry(`git add -A && git commit -m "Add Kiln (Cloud)" && git push`);
-    if (r.ok) ok('pushed'); else warn(`couldn't push automatically — commit & push manually:\n${r.out}`);
+    commitAndPush(kilnFiles, 'Add Kiln (Cloud)');
   }
   process.exit(0);
 }
@@ -289,7 +344,7 @@ async function wizard() {
   let repo;
   const remote = shTry('git remote get-url origin');
   if (remote.ok && /github\.com/.test(remote.out)) {
-    repo = remote.out.trim().match(/github\.com[:/]([^/]+\/[^/.]+)/)?.[1];
+    repo = remote.out.trim().match(/github\.com[:/]([^/]+\/.+?)(?:\.git)?\/?$/)?.[1];
     ok(`already on GitHub: ${repo}`);
   } else {
     if (!hasGh) { fail('No GitHub remote and no gh CLI. Install gh (brew install gh) or push your site to GitHub first.'); process.exit(1); }
@@ -300,7 +355,9 @@ async function wizard() {
     const name = await ask('New repo name', path.basename(process.cwd()));
     const priv = await yes('Private repo?', 'y');
     if (!existsSync('.git')) sh('git init -b main');
-    sh(`gh repo create ${name} ${priv ? '--private' : '--public'} --source . --push`, { show: true });
+    // argv form (no shell) so unusual repo names can't break or inject into the command line
+    const create = spawnSync('gh', ['repo', 'create', name, priv ? '--private' : '--public', '--source', '.', '--push'], { stdio: 'inherit' });
+    if (create.status !== 0) { fail('gh repo create failed — see the error above, then re-run.'); process.exit(1); }
     repo = sh('gh repo view --json nameWithOwner -q .nameWithOwner').trim();
     ok(`created + pushed: ${repo}`);
   }
@@ -311,36 +368,113 @@ async function wizard() {
   // 2. Worker
   hr('Step 2 · Deploy your Kiln auth worker (free Cloudflare Worker)');
   const workerDir = 'kiln-worker';
-  if (!existsSync(workerDir)) {
-    mkdirSync(workerDir, { recursive: true });
-    cpSync(path.join(PKG_ROOT, 'worker', 'index.js'), path.join(workerDir, 'index.js'));
-    ok(`copied worker source into ${workerDir}/ (yours to keep + redeploy)`);
+  // The worker is multi-module: worker/index.js imports ./cloud.js (which imports
+  // ./runbook.js) and ../src/engine.js (which imports the npm package parse5).
+  // So the generated directory mirrors the kiln repo layout — kiln-worker/worker/*
+  // + kiln-worker/src/engine.js — keeping every relative import intact, and gets
+  // its own package.json so wrangler's bundler resolves parse5 from a local
+  // node_modules. wrangler.toml points main at worker/index.js.
+  mkdirSync(path.join(workerDir, 'worker'), { recursive: true });
+  mkdirSync(path.join(workerDir, 'src'), { recursive: true });
+  const putIfMissing = (from, to) => { if (existsSync(to)) return 0; cpSync(from, to); return 1; };
+  let copied = 0;
+  for (const f of ['index.js', 'cloud.js', 'runbook.js', 'cloud-schema.sql']) {
+    copied += putIfMissing(path.join(PKG_ROOT, 'worker', f), path.join(workerDir, 'worker', f));
   }
-  const workerName = await ask('Worker name', 'kiln-auth');
-  info('Creating the KV namespace (your browser may open for Cloudflare login)…');
-  const kv = shTry(`npx wrangler kv namespace create KILN`, { cwd: workerDir });
-  let kvId = kv.out.match(/id = "([a-f0-9]{32})"/)?.[1];
-  if (!kvId && /already exists/i.test(kv.out)) {
-    // Re-run: the namespace exists, so `create` printed no id. Look it up rather
-    // than writing id = "null" into wrangler.toml (which breaks the next deploy).
-    const list = shTry(`npx wrangler kv namespace list`, { cwd: workerDir });
-    try {
-      const entry = JSON.parse(list.out).find(n => /(^|_)KILN$/.test(n.title) || n.title === 'KILN');
-      kvId = entry?.id;
-    } catch { /* fall through to the error below */ }
+  copied += putIfMissing(path.join(PKG_ROOT, 'src', 'engine.js'), path.join(workerDir, 'src', 'engine.js'));
+  if (copied) ok(`copied worker source into ${workerDir}/ (yours to keep + redeploy)`);
+  if (!existsSync(path.join(workerDir, 'package.json'))) {
+    writeFileSync(path.join(workerDir, 'package.json'), JSON.stringify({
+      name: 'kiln-worker', private: true, type: 'module',
+      dependencies: { parse5: '^8.0.0' },
+    }, null, 2) + '\n');
   }
-  if (!kvId) { fail(`Couldn't determine the KILN KV namespace id:\n${kv.out}`); process.exit(1); }
-  writeFileSync(path.join(workerDir, 'wrangler.toml'), `name = "${workerName}"
-main = "index.js"
+  if (!existsSync(path.join(workerDir, 'node_modules', 'parse5'))) {
+    info("installing the worker's one npm dependency (parse5)…");
+    const inst = shTry('npm install --no-audit --no-fund', { cwd: workerDir });
+    if (!inst.ok) {
+      // Offline / npm-broken fallback: reuse the copies shipped with this kiln checkout.
+      let fell = false;
+      try {
+        for (const m of ['parse5', 'entities']) {   // entities = parse5's only dependency
+          cpSync(path.join(PKG_ROOT, 'node_modules', m), path.join(workerDir, 'node_modules', m), { recursive: true });
+        }
+        fell = true;
+      } catch { /* handled below */ }
+      if (fell) info('npm install failed — reused parse5 from the kiln package itself');
+      else { fail(`npm install failed in ${workerDir}/ — run it there manually, then re-run this wizard:\n${inst.out}`); process.exit(1); }
+    }
+  }
+
+  // Cloudflare auth preflight: a piped `wrangler kv/deploy` on a logged-out
+  // (especially headless) machine hangs silently waiting on a browser. Check
+  // first and run the login with visible stdio so the URL/prompts show up.
+  const who = shTry('npx wrangler whoami', { cwd: workerDir });
+  if (!who.ok || /not authenticated|not logged in/i.test(who.out)) {
+    info('Not logged in to Cloudflare — running wrangler login (finish it in your browser)…');
+    if (!shTry('npx wrangler login', { show: true, cwd: workerDir }).ok) {
+      fail('wrangler login failed — run `npx wrangler login` yourself, then re-run this wizard.');
+      process.exit(1);
+    }
+  } else ok('Cloudflare: logged in');
+
+  const tomlPath = path.join(workerDir, 'wrangler.toml');
+  let workerName;
+  if (existsSync(tomlPath)) {
+    // RE-RUN: merge, never clobber. Rewriting this file used to reset
+    // ALLOWED_ORIGINS to localhost and redeploy — instantly breaking sign-in on
+    // a working production site. Keep the user's origins/secret/route blocks;
+    // only add what's missing.
+    let toml = readFileSync(tomlPath, 'utf8');
+    workerName = toml.match(/^\s*name\s*=\s*"([^"]+)"/m)?.[1] || 'kiln-auth';
+    ok(`found existing ${tomlPath} — keeping your config (worker "${workerName}")`);
+    if (/^\s*main\s*=\s*"index\.js"/m.test(toml)) {
+      // migrate the old flat layout (a bare index.js could never deploy — its imports were missing)
+      toml = toml.replace(/^(\s*main\s*=\s*)"index\.js"/m, '$1"worker/index.js"');
+      info('updated main → worker/index.js (worker source now lives in worker/)');
+    }
+    if (!/\[triggers\]/.test(toml)) {
+      toml += `\n# Scheduled publishing: commit due posts every 5 minutes.\n[triggers]\ncrons = ["*/5 * * * *"]\n`;
+      info('added [triggers] crons — scheduled publishing will now fire');
+    }
+    if (!/binding\s*=\s*"KILN"/.test(toml)) {
+      const kvId = kvNamespaceId(workerDir);
+      toml += `\n[[kv_namespaces]]\nbinding = "KILN"\nid = "${kvId}"\n`;
+      info('added the KILN KV binding');
+    }
+    writeFileSync(tomlPath, toml);
+  } else {
+    workerName = await ask('Worker name', 'kiln-auth');
+    info('Creating the KV namespace…');
+    const kvId = kvNamespaceId(workerDir);
+    writeFileSync(tomlPath, `name = "${workerName}"
+main = "worker/index.js"
 compatibility_date = "2026-06-01"
 
+# Site origins allowed to authenticate through this worker (comma-separated).
+# The wizard replaces this with your real site origin(s) in Step 6.
 [vars]
 ALLOWED_ORIGINS = "http://localhost:8788"
 
 [[kv_namespaces]]
 binding = "KILN"
 id = "${kvId}"
+
+# Scheduled publishing: commit due posts every 5 minutes.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Per-IP rate limiting on the abuse-prone sign-in routes — uncomment to enable.
+# (The worker degrades safely to no throttling while this stays commented out.)
+# [[unsafe.bindings]]
+# name = "RL"
+# type = "ratelimit"
+# namespace_id = "1001"          # any unique number across this worker's limiters
+# simple = { limit = 20, period = 60 }   # 20 requests per 60s per IP
 `);
+  }
+  // Deploying here is required (Steps 3-5 need the worker URL live) and safe on
+  // re-runs: the merge above means we deploy the EXISTING origins, not a reset.
   const dep = shTry('npx wrangler deploy', { cwd: workerDir });
   const workerUrl = dep.out.match(/https:\/\/[^\s]+workers\.dev/)?.[0];
   if (!workerUrl) { fail(`worker deploy failed:\n${dep.out}`); process.exit(1); }
@@ -394,13 +528,26 @@ id = "${kvId}"
   // 5. Allow origin + (optional) custom domain (apex AND www — visitors reach both)
   hr('Step 6 · Allow your site to talk to the worker');
   const custom = await ask('Custom domain (Enter to skip)', '');
-  const bare = custom.replace(/^https?:\/\//, '').replace(/^www\./, '');
-  const origins = [siteUrl,
-    custom && `https://${bare}`,
-    custom && `https://www.${bare}`,
-    'http://localhost:8788'].filter(Boolean).join(',');
-  const toml = readFileSync(path.join(workerDir, 'wrangler.toml'), 'utf8')
-    .replace(/ALLOWED_ORIGINS = ".*"/, `ALLOWED_ORIGINS = "${origins}"`);
+  // strip scheme, leading www., and any trailing slash/path — "example.com/" must
+  // not become an origin like "https://example.com/" that never matches
+  const bare = custom.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '').trim();
+  const wanted = [siteUrl,
+    bare && `https://${bare}`,
+    bare && `https://www.${bare}`,
+    'http://localhost:8788'].filter(Boolean);
+  // UNION with whatever the file already allows (a re-run must never drop the
+  // origins a working site depends on), dedupe, and touch only this one line.
+  let toml = readFileSync(path.join(workerDir, 'wrangler.toml'), 'utf8');
+  const current = (toml.match(/ALLOWED_ORIGINS\s*=\s*"([^"]*)"/)?.[1] || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const origins = [...new Set([...current, ...wanted])].join(',');
+  if (/ALLOWED_ORIGINS\s*=\s*"[^"]*"/.test(toml)) {
+    toml = toml.replace(/ALLOWED_ORIGINS\s*=\s*"[^"]*"/, `ALLOWED_ORIGINS = "${origins}"`);
+  } else if (/^\[vars\]/m.test(toml)) {
+    toml = toml.replace(/^\[vars\]/m, `[vars]\nALLOWED_ORIGINS = "${origins}"`);
+  } else {
+    toml += `\n[vars]\nALLOWED_ORIGINS = "${origins}"\n`;
+  }
   writeFileSync(path.join(workerDir, 'wrangler.toml'), toml);
   const redep = shTry('npx wrangler deploy', { cwd: workerDir });
   if (redep.ok) ok(`worker now accepts: ${origins}`);
@@ -408,22 +555,31 @@ id = "${kvId}"
 
   // 6. Site wiring
   hr('Step 7 · Wire the site');
-  wireSite(repo, workerUrl);
+  const kilnFiles = wireSite(repo, workerUrl);
 
   // 7. Making pages editable.
-  await offerAutotag();
+  kilnFiles.push(...await offerAutotag());
 
   // 8. Members (optional)
   if (await yes('\nSet up a members-only area (gated pages + documents)?', 'n')) {
     cpSync(path.join(PKG_ROOT, 'templates', 'functions'), 'functions', { recursive: true });
-    if (!existsSync('members-login.html')) cpSync(path.join(PKG_ROOT, 'templates', 'members-login.html'), 'members-login.html');
+    kilnFiles.push('functions');
+    if (!existsSync('members-login.html')) {
+      cpSync(path.join(PKG_ROOT, 'templates', 'members-login.html'), 'members-login.html');
+      kilnFiles.push('members-login.html');
+    }
     mkdirSync('members', { recursive: true });
     const secret = [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, '0')).join('');
+    const missed = [];
     for (const [k, v] of [['KILN_MEMBER_SECRET', secret], ['KILN_REPO', repo], ['KILN_WORKER', workerUrl]]) {
-      spawnSync('npx', ['wrangler', 'pages', 'secret', 'put', k, '--project-name', project],
+      const r = spawnSync('npx', ['wrangler', 'pages', 'secret', 'put', k, '--project-name', project],
         { input: v, encoding: 'utf8' });
+      if (r.status !== 0) missed.push(k);
     }
-    ok('members functions copied + 3 Pages secrets set (active after your next deploy)');
+    if (missed.length) {
+      fail(`couldn't set Pages secret(s): ${missed.join(', ')} — the members area will 503 until you set them:`);
+      for (const k of missed) console.log(`      npx wrangler pages secret put ${k} --project-name ${project}`);
+    } else ok('members functions copied + 3 Pages secrets set (active after your next deploy)');
   }
 
   // 9. Google (optional, manual client creation — Google has no API for it)
@@ -448,9 +604,7 @@ id = "${kvId}"
 
   // 10. Commit + summary
   if (await yes('\nCommit and push the Kiln wiring now?', 'y')) {
-    const r = shTry(`git add -A && git commit -m "Add Kiln (${siteUrl})" && git push`);
-    if (r.ok) ok('pushed — Cloudflare is deploying');
-    else warn(`couldn't push automatically — commit & push manually:\n${r.out}`);
+    commitAndPush(kilnFiles, `Add Kiln (${siteUrl})`);
   }
   hr('Done 🔥');
   console.log(`
@@ -533,7 +687,7 @@ async function addSiteCloud() {
   hr('Add this site to Kiln Cloud');
   const dash = 'https://app.kilncms.com';
   const remote = shTry('git remote get-url origin');
-  const repo = remote.ok ? (remote.out.trim().match(/github\.com[:/]([^/]+\/[^/.]+)/)?.[1] || '') : '';
+  const repo = remote.ok ? (remote.out.trim().match(/github\.com[:/]([^/]+\/.+?)(?:\.git)?\/?$/)?.[1] || '') : '';
   if (repo) info(`detected repo: ${repo}`);
   info('Kiln Cloud onboarding lives in your dashboard — sign in with GitHub, pick the repo,');
   info('your site URL, and a plan. We run the worker + the app; you keep the repo + host.');

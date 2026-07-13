@@ -14,7 +14,7 @@ page, change it, and hit **Publish**. The edit becomes a Git commit and your hos
 The site IS the database.
 
 ```
-visitor   →  plain static site (~2.7 KB gzip boot shim, nothing else)
+visitor   →  plain static site (~3 KB gzip boot shim, nothing else)
 admin     →  visits yoursite.com/kiln → GitHub sign-in → edits inline → commit → live in ~1 min
 editor    →  added by email → signs in with Google at /kiln (no GitHub account!) → same editing
 member    →  added by email → signs in with Google → gated /members/ pages and documents unlock
@@ -72,9 +72,9 @@ edit layer your client was missing.
 
 | Piece | What | Size / cost |
 |---|---|---|
-| `kiln.js` | boot shim every visitor loads | ~8 KB raw / ~3 KB gzip |
+| `kiln.js` | boot shim every visitor loads | ~7 KB raw / ~3 KB gzip |
 | `kiln-features.js` | visitor runtime for galleries/filters/calendars, loaded only on pages that use them | ~16 KB raw / ~5 KB gzip |
-| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~348 KB raw / ~102 KB gzip, editors only |
+| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~355 KB raw / ~105 KB gzip, editors only |
 | `kiln-auth` worker | sign-in (GitHub App + Google) and the commit pipeline every edit flows through | Cloudflare Workers free tier |
 | your repo | the content database (with full version history) | free |
 | Cloudflare Pages | hosting + members-area functions | free, commercial use allowed |
@@ -91,9 +91,20 @@ npx wrangler kv namespace create KILN     # put the id in wrangler.toml
 npx wrangler deploy
 ```
 
-The manual path requires editing `worker/wrangler.toml`: set `ALLOWED_ORIGINS` and the
-KV namespace `id` to YOUR values. The fastest path skips all of this. `npx github:kilncms/kiln`
-automates the worker deploy, KV namespace, and config wiring for you.
+The manual path requires editing `worker/wrangler.toml` before `wrangler deploy`. The
+shipped file is the maintainer's production config, so a fresh account cannot deploy it
+as-is:
+
+- **Delete the `[[routes]]` block** (the `auth.kilncms.com` custom domain — you don't
+  own it, and Cloudflare will reject the deploy).
+- **Delete the `[[d1_databases]]` block** (Kiln Cloud billing only; self-host never
+  touches D1).
+- **Set the KV namespace `id`** to one you created (`npx wrangler kv namespace create KILN`).
+- **Set `ALLOWED_ORIGINS`** to your own site origin(s).
+
+The fastest path skips all of this: `npx github:kilncms/kiln` automates the worker
+deploy, KV namespace, and config wiring for you. Full walkthrough in
+[docs/self-hosting.md](docs/self-hosting.md).
 
 **2. Register your GitHub App (one click)**
 
@@ -115,6 +126,24 @@ on the site itself; `/kiln` is the only way in.
 
 > **Hosting note:** use Cloudflare Pages (or GitHub Pages) for business sites.
 > Vercel's free Hobby tier prohibits commercial use in its ToS.
+
+### The CLI
+
+`npx github:kilncms/kiln` with no arguments runs the setup wizard. Three more commands
+cover the rest of the lifecycle:
+
+```bash
+npx github:kilncms/kiln doctor     # health-check an install: worker, app, CORS, bundles, members gate
+npx github:kilncms/kiln update     # re-copy the latest editor bundles into the site, offer to commit
+npx github:kilncms/kiln add-site   # add this site to Kiln Cloud (opens the dashboard)
+npx github:kilncms/kiln tag        # conservative auto-annotation pass (see above)
+```
+
+`kiln update` is the self-host upgrade path: run it from your site's repo and it finds
+where `kiln.js` lives, drops the latest `kiln.js` + `kiln-editor.js` + `kiln-features.js`
+next to it, and offers to commit and push. `kiln doctor` reads `assets/kiln-config.js`
+if present and checks the worker, GitHub App registration and install, site liveness,
+CORS, and the members gate.
 
 ## What editors can do
 
@@ -164,6 +193,29 @@ active session. Editor commits are authored with their name and committed by you
 bot, and the worker enforces a strict allowlist: that one repo, only the paths granted to them,
 never CNAME/_redirects/.github, and no deletes.
 
+There's a one-page guide you can send to people you invite:
+[docs/for-editors.md](docs/for-editors.md) for editors,
+[docs/for-members.md](docs/for-members.md) for members.
+
+### Setup
+
+Google sign-in needs a Google OAuth client on your worker (one-time, ~5 minutes):
+
+1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create
+   an **OAuth 2.0 Client ID** of type **Web application** (create a project first if you
+   don't have one, and configure the consent screen when prompted).
+2. Add an **authorized redirect URI**: `https://YOUR-WORKER-URL/google/callback`
+   (e.g. `https://kiln-auth.you.workers.dev/google/callback`).
+3. Set the two secrets on the worker:
+   ```bash
+   cd worker
+   npx wrangler secret put GOOGLE_CLIENT_ID
+   npx wrangler secret put GOOGLE_CLIENT_SECRET
+   ```
+
+That's it. Open **People & access** in the Kiln menu and start adding editors and
+members by email.
+
 ## Blog posts with no build step
 
 Put two files in your repo, `_templates/post.html` (a full page using
@@ -185,11 +237,19 @@ into your site's `functions/`, then:
 
 ```bash
 openssl rand -hex 32 | npx wrangler pages secret put KILN_MEMBER_SECRET --project-name <project>
-printf 'you/your-repo'  | npx wrangler pages secret put KILN_REPO --project-name <project>
 printf 'https://kiln-auth.you.workers.dev' | npx wrangler pages secret put KILN_WORKER --project-name <project>
 ```
 
-> `KILN_WORKER` is only needed if you enable Google member sign-in.
+Those two secrets are all the members area needs: `KILN_MEMBER_SECRET` signs the member
+cookie, `KILN_WORKER` points the redeem function at your auth worker.
+
+## Guides
+
+- [docs/for-site-owners.md](docs/for-site-owners.md) — the admin guide: tagging, people,
+  publishing, drafts, history, members, upgrades, and how to leave.
+- [docs/for-editors.md](docs/for-editors.md) — send this to someone you invited as an editor.
+- [docs/for-members.md](docs/for-members.md) — send this to someone you gave members access.
+- [docs/self-hosting.md](docs/self-hosting.md) — the full self-host / agency deploy guide.
 
 ## Security model
 
