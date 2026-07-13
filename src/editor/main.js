@@ -1988,10 +1988,13 @@ function publishSandbox() {
 function renderSandboxBanner() {
   const st = document.createElement('style');
   st.textContent = `
-  #kiln-sandbox-banner{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:2147482000;
+  /* Left-anchored (not centered) so it stays clear of the bottom-RIGHT editor
+     status pill and the FAB, which a centered banner overlapped on ~1280px
+     laptops. Mobile (below) overrides this to a full-width bar. */
+  #kiln-sandbox-banner{position:fixed;left:18px;bottom:18px;z-index:2147482000;
     display:flex;align-items:center;gap:13px;background:#1c1c28;color:#fff;border-radius:999px;
     padding:9px 9px 9px 18px;font:13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-    box-shadow:0 10px 34px rgba(0,0,0,.34);max-width:94vw}
+    box-shadow:0 10px 34px rgba(0,0,0,.34);max-width:min(560px,60vw)}
   #kiln-sandbox-banner b{color:#fff}
   #kiln-sandbox-banner button{background:#fff;color:#1c1c28;border:0;border-radius:999px;
     padding:7px 15px;font:600 12px sans-serif;cursor:pointer;white-space:nowrap}
