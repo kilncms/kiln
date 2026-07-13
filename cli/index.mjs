@@ -139,8 +139,22 @@ async function doctor(args) {
     // kiln.js — read the real path off the page (sites vary: /assets/ vs /assets/js/).
     const kjMatch = homeHtml.match(/src="([^"]*kiln\.js)"/);
     const kjUrl = kjMatch ? new URL(kjMatch[1], site).href : `${site.replace(/\/$/, '')}/assets/kiln.js`;
-    const boot = await fetch(kjUrl).then(r => r.ok).catch(() => false);
-    check('kiln.js loads', boot, kjMatch ? kjMatch[1] : 'no kiln.js <script> found on the homepage');
+    const bootText = await fetch(kjUrl).then(r => r.ok ? r.text() : null).catch(() => null);
+    check('kiln.js loads', !!bootText, kjMatch ? kjMatch[1] : 'no kiln.js <script> found on the homepage');
+
+    // Is the deployed editor the latest? Read the build stamp off the live bundle
+    // and compare it to raw dist/VERSION on GitHub. Optional check (network /
+    // pinned-fork friendly) — the point is to tell a self-hoster when to run
+    // `kiln update`, not to fail the health check.
+    if (bootText) {
+      const mine = bootText.match(/KILN_VERSION\s*=\s*["']([\w.-]+)["']/)?.[1];
+      const latest = await fetch('https://raw.githubusercontent.com/kilncms/kiln/main/dist/VERSION', { cache: 'no-store' })
+        .then(r => r.ok ? r.text() : null).then(t => t && t.trim()).catch(() => null);
+      if (mine && latest) {
+        check('editor is up to date', mine === latest,
+          mine === latest ? `version ${mine}` : `you have ${mine}, latest is ${latest} — run: npx github:kilncms/kiln update`, true);
+      }
+    }
 
     // Is the host actually deploying FROM the repo? A direct-upload / stale project commits
     // Kiln edits to GitHub that never appear on the live site — and it fails silently.

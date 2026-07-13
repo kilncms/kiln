@@ -167,10 +167,58 @@ async function init() {
   if (journalAll().length) runJournal();
   checkForDraft();
   startPresence();
+  // Owner-only: quietly check whether a newer editor build exists.
+  if (mode === 'admin' && !cfg.sandbox) checkForUpdate();
 
   window.addEventListener('beforeunload', (e) => {
     if (state.pending.size || state.pendingBinaries.size || state.pendingStructural.length) { e.preventDefault(); e.returnValue = ''; }
   });
+}
+
+// ─── Update check (owner only) ───────────────────────────────────────────────
+// Compare this bundle's build stamp (__KILN_VERSION__, injected by build.mjs)
+// against the latest published one on GitHub. If a newer editor exists, show a
+// dismissible notice pointing at `kiln update`. Throttled to once per 6h per
+// browser, dismissal is remembered per-version, and it fails SILENTLY on any
+// network/rate-limit error — a version check must never disrupt editing.
+async function checkForUpdate() {
+  const mine = (typeof __KILN_VERSION__ !== 'undefined') ? String(__KILN_VERSION__) : 'dev';
+  if (mine === 'dev') return;
+  const readLS = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+  try {
+    const cached = JSON.parse(readLS('kiln_update_check') || 'null');
+    if (cached && Date.now() - cached.at < 6 * 3600 * 1000) {
+      if (cached.stale && cached.latest !== readLS('kiln_update_dismissed')) showUpdateNotice(cached.latest);
+      return;
+    }
+    const res = await fetch('https://raw.githubusercontent.com/kilncms/kiln/main/dist/VERSION', { cache: 'no-store' });
+    if (!res.ok) return;
+    const latest = (await res.text()).trim();
+    const stale = !!latest && /^[\w.-]+$/.test(latest) && latest !== mine;
+    try { localStorage.setItem('kiln_update_check', JSON.stringify({ at: Date.now(), latest, stale })); } catch { /* private mode */ }
+    if (stale && latest !== readLS('kiln_update_dismissed')) showUpdateNotice(latest);
+  } catch { /* offline / rate-limited — never bother the user */ }
+}
+
+function showUpdateNotice(latest) {
+  if (document.getElementById('kiln-update-note')) return;
+  const st = document.createElement('style');
+  st.textContent = '#kiln-update-note{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147482100;'
+    + 'display:flex;align-items:center;gap:12px;max-width:92vw;background:#1c1c28;color:#fff;border-radius:10px;'
+    + 'padding:9px 10px 9px 15px;font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.32)}'
+    + '#kiln-update-note code{background:rgba(255,255,255,.14);padding:1px 6px;border-radius:5px;font-size:12px}'
+    + '#kiln-update-note button{background:transparent;color:#fff;border:0;font-size:15px;cursor:pointer;padding:2px 4px;opacity:.7}'
+    + '#kiln-update-note button:hover{opacity:1}';
+  document.head.appendChild(st);
+  const el = document.createElement('div');
+  el.id = 'kiln-update-note';
+  el.innerHTML = '<span>A newer Kiln editor is available. Update: <code>npx github:kilncms/kiln update</code></span>'
+    + '<button id="kiln-update-x" aria-label="Dismiss">✕</button>';
+  document.body.appendChild(el);
+  el.querySelector('#kiln-update-x').onclick = () => {
+    try { localStorage.setItem('kiln_update_dismissed', latest); } catch { /* private mode */ }
+    el.remove();
+  };
 }
 
 /** Admin tokens expire after 8h; refresh through the worker-held refresh token. */

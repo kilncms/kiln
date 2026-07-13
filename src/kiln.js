@@ -19,6 +19,9 @@
   'use strict';
 
   var cfg = window.KILN || {};
+  // Build stamp (see scripts/build.mjs). Exposed so `kiln doctor` can read the
+  // deployed version off the page and flag when a newer editor is available.
+  window.KILN_VERSION = (typeof __KILN_VERSION__ !== 'undefined') ? __KILN_VERSION__ : 'dev';
   var ADMIN_KEY = 'kiln_admin';
   var EDITOR_KEY = 'kiln_editor';
   var scriptSrc = (document.currentScript && document.currentScript.src) || '/assets/kiln.js';
