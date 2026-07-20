@@ -269,9 +269,9 @@ cookie, `KILN_WORKER` points the redeem function at your auth worker.
 
 ```bash
 npm install
-npm test               # splice engine + transport suite (node --test)
+npm test               # splice engine + transport suite — 65 tests (node --test)
 npm run build          # dist/kiln.js + dist/kiln-editor.js + dist/kiln-features.js
-GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   # full live-loop verification
+GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   # full live-loop verification (5 legs)
 ```
 
 Repo layout:
