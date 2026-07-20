@@ -28,7 +28,11 @@ if (NODE_MAJOR < 20) {
   process.exit(1);
 }
 
-const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// In the git checkout the assets (dist/, worker/, templates/, src/) live one
+// level up; in the published create-kiln package they are vendored next to
+// this file by prepack.mjs. Prefer the vendored copies when present.
+const CLI_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PKG_ROOT = existsSync(path.join(CLI_DIR, 'dist', 'kiln.js')) ? CLI_DIR : path.resolve(CLI_DIR, '..');
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 const ask = async (q, dflt) => {
   const a = (await rl.question(`${q}${dflt !== undefined ? ` [${dflt}]` : ''}: `)).trim();

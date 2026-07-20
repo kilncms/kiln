@@ -1,0 +1,44 @@
+{
+  "name": "create-kiln",
+  "version": "0.1.0",
+  "description": "Setup wizard for Kiln — click-to-edit CMS for static sites. GitHub as the backend, free hosting as the host.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "bin": {
+    "create-kiln": "index.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "index.mjs",
+    "prepack.mjs",
+    "dist",
+    "worker",
+    "src",
+    "templates"
+  ],
+  "scripts": {
+    "prepack": "node prepack.mjs"
+  },
+  "dependencies": {
+    "parse5": "^8.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kilncms/kiln.git",
+    "directory": "cli"
+  },
+  "homepage": "https://kilncms.com",
+  "bugs": {
+    "url": "https://github.com/kilncms/kiln/issues"
+  },
+  "keywords": [
+    "cms",
+    "static-site",
+    "github",
+    "cloudflare",
+    "click-to-edit",
+    "kiln"
+  ]
+}
