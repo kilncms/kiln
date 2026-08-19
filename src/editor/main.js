@@ -18,6 +18,7 @@ import { initPalette, openPalette } from './palette.js';
 import { initSuggest, suggestChanges, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
 import { initComments, openComments, commentsTick } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
+import { initBlocks } from './blocks.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -34,7 +35,7 @@ const SANDBOX_TTL = 24 * 3600 * 1000;
 const EDITOR_DEFAULT_FEATURES = ['pagesettings', 'history', 'draft'];
 const UNDO_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-8.4L3 7"/></svg>';
 
-import { SANITIZE, CONTAINER_SANITIZE } from './sanitize.js';
+import { SANITIZE, CONTAINER_SANITIZE, BLOCK_SANITIZE } from './sanitize.js';
 
 // Any anchor opening a new tab gets rel="noopener" so the opened page can't
 // reach back through window.opener (reverse tabnabbing).
@@ -172,6 +173,7 @@ async function init() {
   checkForDraft();
   startPresence();
   initComments(cfg, mode, state, workerAuthHeaders, modal, setStatus, hasFeature, KILN_CHROME);
+  bootBlocks();
   // Owner-only: quietly check whether a newer editor build exists.
   if (mode === 'admin' && !cfg.sandbox) checkForUpdate();
 
@@ -395,7 +397,7 @@ function applyFeatureGating() {
   // no invited editor ever has it — the review queue stays admin-only.
   const map = { 'kiln-menu': 'menu', 'kiln-findreplace': 'findreplace', 'kiln-newpost': 'newpost',
     'kiln-pagesettings': 'pagesettings', 'kiln-history': 'history', 'kiln-makeblock': 'makeeditable', 'kiln-addsection': 'makeeditable',
-    'kiln-suggestions': 'suggestreview', 'kiln-comments': 'comments', 'kiln-ai': 'ai' };
+    'kiln-suggestions': 'suggestreview', 'kiln-comments': 'comments', 'kiln-ai': 'ai', 'kiln-blocks-layer': 'blocks' };
   for (const [id, feat] of Object.entries(map)) {
     const el = document.getElementById(id);
     if (el && !hasFeature(feat)) el.style.display = 'none';
@@ -1106,9 +1108,11 @@ function applyKeyDom(key, html) {
 }
 
 function applyUndoStep(s, dir) {
-  if (s.structural) {   // a section that was added (gallery/events) — or removed
+  if (s.structural) {   // a section that was added (gallery/events/blocks) — or removed
     // For an ADD, "before" = section gone; for a REMOVAL it's the mirror image.
-    const wantPresent = s.structural.removed ? dir === 'before' : dir === 'after';
+    // `unstaged` = a pending insert withdrawn via ✕: node AND its insert op
+    // travel together (both present "before", both gone "after").
+    const wantPresent = (s.structural.removed || s.structural.unstaged) ? dir === 'before' : dir === 'after';
     if (wantPresent) {
       if (s.structural.place) s.structural.place();
       else (document.querySelector('main') || document.body).appendChild(s.structural.node);
@@ -2130,6 +2134,7 @@ async function initSandbox() {
   renderAdminBar();
   decorateFields();
   renderSandboxBanner();
+  bootBlocks();   // chrome shows in the demo; inserting explains it needs a real site
 }
 
 /**
@@ -2543,7 +2548,7 @@ async function listSitePages() {
   const tree = await state.gh.request('GET',
     `/repos/${cfg.repo}/git/trees/${encodeURIComponent(cfg.branch || 'main')}?recursive=1`);
   _sitePagesCache = tree.tree.filter(t => t.type === 'blob' && t.path.endsWith('.html')
-    && !t.path.startsWith('_templates/')).map(t => t.path);
+    && !t.path.startsWith('_templates/') && !t.path.startsWith('_blocks/')).map(t => t.path);
   return _sitePagesCache;
 }
 
@@ -2609,6 +2614,7 @@ async function invitePanel() {
     { v: 'comments', label: 'Comments', def: false },
     // AI spends the owner's API credit, so the grant is opt-in — never a default.
     { v: 'ai', label: 'AI assist', def: false },
+    { v: 'blocks', label: 'Add sections (blocks)', def: false },
   ];
   m.querySelector('#kiln-p-features').innerHTML = FEATURES.map(f =>
     `<label style="font-weight:normal;display:inline-flex;gap:6px;align-items:center;font-size:12.5px;margin:0">
@@ -3626,7 +3632,7 @@ const PICKABLE = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'a', 
 const KILN_CHROME = '#kiln-fab-wrap,#kiln-topbar,#kiln-toolbar,#kiln-modal,#kiln-imgpop,#kiln-previewbar,'
   + '#kiln-presence,#kiln-pickbar,#kiln-sandbox-banner,#kiln-scope-note,.kiln-item-ctl,.kiln-ctl-cell,.kiln-repeat-add,'
   + '.kiln-filterbar,.kiln-filterbar-preview,.kiln-evbar,.kiln-img-handle,'
-  + '#kiln-cmt-layer,#kiln-cmt-hint,#kiln-cmt-pop,#kiln-cmt-composer';
+  + '#kiln-cmt-layer,#kiln-cmt-hint,#kiln-cmt-pop,#kiln-cmt-composer,#kiln-blocks-layer';
 
 function isKilnChrome(el) { return !!el.closest(KILN_CHROME); }
 
@@ -3737,27 +3743,52 @@ function insertNewSection(kind, anchor) {
   const heading = kind === 'gallery' ? 'Gallery' : 'Events';
   const html = `\n<section class="kiln-added" style="padding:2.5rem 0"><div style="max-width:1080px;margin:0 auto;padding:0 1.25rem">`
     + `<h2 data-cms="${key}_title">${heading}</h2><div data-cms-repeat="${key}" ${attr}></div></div></section>\n`;
-  const host = document.querySelector('main') || document.body;
   const wrap = document.createElement('div'); wrap.innerHTML = html.trim();
   const node = wrap.firstElementChild;
+  stageSectionInsert({ node, html, key, anchor });
+  node.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
+  setupRepeat(node.querySelector('[data-cms-repeat]'), key);
+  setStatus(`Added a ${kind} — click “+ Add ${kind === 'gallery' ? 'photos' : 'event'}”, then Publish`, 'saved');
+}
+
+/**
+ * Shared staging for a NEW top-level section — the gallery/events flow and the
+ * block library both land here. Places `node` live (after `anchor`, or at the
+ * end of <main>), stages the matching insertAfter/appendMain op for Publish
+ * (sandbox: preview-only), and records one undo entry. Returns the staged op,
+ * or null in the sandbox.
+ */
+function stageSectionInsert({ node, html, key, anchor }) {
+  const host = document.querySelector('main') || document.body;
+  // The block picker is async — if the anchor section vanished meanwhile
+  // (undo, another tab), fall back to the end of the page.
+  if (anchor && !anchor.isConnected) anchor = null;
+  const place = () => anchor ? anchor.after(node) : host.appendChild(node);
   // Live preview at the chosen spot; the same position is staged for the source.
   let op = null;
   if (anchor) {
     const tag = anchor.tagName.toLowerCase();
     const nth = domNth(anchor);
-    anchor.after(node);
+    place();
     op = { op: 'insertAfter', tag, nth, html, key };
   } else {
-    host.appendChild(node);
+    place();
     op = { op: 'appendMain', html, key };
   }
-  node.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
-  setupRepeat(node.querySelector('[data-cms-repeat]'), key);
-  // Stage it (sandbox: preview-only; real site: applied to the source at Publish).
   if (!cfg.sandbox) { state.pendingStructural.push(op); refreshPublishButton(); }
-  pushUndoEntry({ steps: [{ structural: { node, op: cfg.sandbox ? null : op, html, place: () => anchor ? anchor.after(node) : host.appendChild(node) } }] });
+  pushUndoEntry({ steps: [{ structural: { node, op: cfg.sandbox ? null : op, html, place } }] });
   node.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  setStatus(`Added a ${kind} — click “+ Add ${kind === 'gallery' ? 'photos' : 'event'}”, then Publish`, 'saved');
+  return cfg.sandbox ? null : op;
+}
+
+/** Boot the block library + section chrome (blocks.js gates itself by feature/scope). */
+function bootBlocks() {
+  initBlocks({ state, cfg, mode, hasFeature, pageInScope, keyInScope, modal, setStatus, escapeHtml,
+    isKilnChrome, decorateField, setupRepeat, pushUndoEntry, refreshPublishButton, stageSectionInsert,
+    sanitizeBlock: (html) => DOMPurify.sanitize(html, BLOCK_SANITIZE),
+    ghRequest: (method, path, body) => state.gh.request(method, path, body),
+    fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
+    putRepoFile: (path, opts) => putFile(state.gh, cfg.repo, path, opts) });
 }
 
 function makeEditableMode() {
@@ -4621,6 +4652,9 @@ function safeUrl(value) {
 
 function injectStyles() {
   const style = document.createElement('style');
+  // Marked so block previews can collect the SITE's styles without dragging
+  // Kiln's own chrome CSS into the preview iframes.
+  style.setAttribute('data-kiln', '1');
   style.textContent = `
 :root{--kiln-bg:rgba(16,16,25,.92);--kiln-accent:#6366f1;--kiln-accent-h:#4f46e5;--kiln-ok:#34d399;
   --kiln-warn:#fbbf24;--kiln-err:#f87171;--kiln-font:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif}
@@ -4976,6 +5010,24 @@ body:has(#kiln-topbar){padding-top:46px!important}
 .kiln-cmt-resolved summary{cursor:pointer;font:600 12px var(--kiln-font);color:#6b7280;margin:4px 0 8px}
 #kiln-cmt-pop .kiln-cmt-thread{border:none;padding:0;margin:0}
 #kiln-comments{position:relative}
-#kiln-comments[data-badge]::after{content:attr(data-badge);position:absolute;top:50%;right:8px;transform:translateY(-50%);min-width:17px;height:17px;border-radius:9px;background:var(--kiln-warn);color:#1c1300;font:700 10.5px/17px var(--kiln-font);text-align:center;padding:0 4px}`;
+#kiln-comments[data-badge]::after{content:attr(data-badge);position:absolute;top:50%;right:8px;transform:translateY(-50%);min-width:17px;height:17px;border-radius:9px;background:var(--kiln-warn);color:#1c1300;font:700 10.5px/17px var(--kiln-font);text-align:center;padding:0 4px}
+/* Block library: hover dividers between sections, remove affordance, picker rows */
+#kiln-blocks-layer{position:absolute;top:0;left:0;width:100%;height:0;pointer-events:none;z-index:999997;font-family:var(--kiln-font)}
+.kiln-block-gap{position:absolute;height:24px;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;pointer-events:auto;opacity:0;transition:opacity .15s}
+.kiln-block-gap:hover,.kiln-block-gap:focus-within{opacity:1}
+.kiln-block-gap::before{content:"";position:absolute;left:8px;right:8px;top:50%;height:2px;margin-top:-1px;background:var(--kiln-accent);border-radius:2px;opacity:.85}
+.kiln-block-gap button{position:relative;background:var(--kiln-accent);color:#fff;border:none;border-radius:999px;padding:4px 14px;font:600 12px var(--kiln-font);cursor:pointer;box-shadow:0 3px 12px rgba(0,0,0,.28);white-space:nowrap}
+.kiln-block-gap button:hover{background:var(--kiln-accent-h)}
+.kiln-block-remove{position:absolute;pointer-events:auto;transform:translateX(-100%);background:var(--kiln-bg);color:#fff;border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:5px 12px;font:600 11.5px var(--kiln-font);cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.3)}
+.kiln-block-remove:hover{background:#ef4444;border-color:#ef4444}
+.kiln-blk-card{max-width:660px}
+.kiln-blk-row{display:flex;align-items:center;gap:12px;border:1.5px solid #eef0f3;border-radius:12px;padding:10px;margin-bottom:10px}
+.kiln-blk-prev{flex:none;width:230px;height:120px;overflow:hidden;border-radius:8px;background:#f3f4f6;position:relative}
+.kiln-blk-prev iframe{border:0;position:absolute;top:0;left:0;transform-origin:0 0;pointer-events:none}
+.kiln-blk-meta{flex:1;min-width:0;font-size:13px}
+.kiln-blk-meta strong{display:block;color:#111827}
+.kiln-blk-meta small{display:block;color:#6b7280;margin-top:2px;overflow:hidden;text-overflow:ellipsis}
+.kiln-blk-ex{background:#0f172a;color:#e2e8f0;font:11px/1.55 ui-monospace,Menlo,monospace;padding:12px;border-radius:10px;overflow:auto;max-height:260px;white-space:pre}
+@media(max-width:640px){.kiln-blk-row{flex-wrap:wrap}.kiln-blk-prev{width:100%}}`;
   document.head.appendChild(style);
 }

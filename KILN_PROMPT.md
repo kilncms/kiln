@@ -115,6 +115,39 @@ Tags, galleries, and events are powered by `kiln-features.js` (copied alongside
 `kiln.js`); the boot shim loads it only on pages that use one of these, and everything
 degrades to the plain markup without JavaScript.
 
+## Block library (optional but powerful)
+
+Give editors a Squarespace-style "+ Add section": every `_blocks/*.html` file in the
+repo is one **block** — a ready-made section editors can insert between any two
+top-level sections of a page (hover the gap, click "+ Add section", pick from the
+library). Build a handful of on-brand blocks and editors compose pages only from
+sections you approved.
+
+A block file is a SINGLE top-level element (typically a `<section>`) using the normal
+Kiln annotations, named by an optional manifest comment on the FIRST line:
+
+```html
+<!-- kiln-block: {"title":"Feature cards","description":"A heading with three editable cards."} -->
+<section class="features">
+  <h2 data-cms="cards_title">Why choose us</h2>
+  <div class="card-grid" data-cms-repeat="cards">
+    <div class="card"><h3 data-cms="card_title">Fast</h3><p data-cms="card_body">…</p></div>
+    <div class="card"><h3 data-cms="card_title">Friendly</h3><p data-cms="card_body">…</p></div>
+  </div>
+</section>
+```
+
+Rules: one top-level element per file. No manifest → the filename becomes the title
+(`feature-cards.html` → "Feature cards"). Reuse the site's existing classes so blocks
+inherit its look (the picker previews each block wearing the page's own stylesheets).
+Key names only need to be unique within the block — Kiln de-duplicates them against
+the target page on insert (`cards` → `cards_2`). Blocks are content-only: `<script>`
+tags and event handlers are stripped when a block is inserted, so keep behavior in
+the site's own JS, keyed off classes.
+
+Admins always have the block chrome; grant editors the **Add sections (blocks)** tool
+in People & access.
+
 ## 3. Managed menu (optional but recommended)
 
 Mark the nav links container on EVERY page (and in templates) identically. Kiln's menu
@@ -239,6 +272,7 @@ this one repo and signs in at `yoursite.com/kiln`.
 - [ ] Editable text/images/links annotated; keys unique per page; nothing nested
 - [ ] Card grids / doc lists wrapped in `data-cms-repeat` (tables: on the `<tbody>`)
 - [ ] Galleries marked `data-kiln-gallery`, event lists `data-kiln-events` (both alongside `data-cms-repeat`)
+- [ ] (Blocks) `_blocks/*.html` — one file per section editors may add themselves
 - [ ] `/assets/kiln-features.js` copied alongside `kiln.js`
 - [ ] Nav marked `data-cms-menu="main"` identically on every page and template
 - [ ] (Blog) `blog/index.html` + `_templates/post.html` + `_templates/post-card.html`

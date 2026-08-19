@@ -48,3 +48,16 @@ export const CONTAINER_SANITIZE = {
     'data-kiln-tags', 'data-cms', 'data-cms-attr', 'data-cms-plain'],
   ALLOWED_URI_REGEXP: KILN_URI_REGEXP,
 };
+
+// A `_blocks/*.html` snippet about to be inserted as a whole new section: the
+// container allowlist PLUS the structural Kiln attributes a block is built
+// from (a repeat container, a gallery/events marker). CONTAINER_SANITIZE
+// itself must NOT allow these — it sanitizes the INSIDE of a repeat, where a
+// nested data-cms-repeat is never legal. Scripts, handlers, style/iframe stay
+// out exactly as in the base config.
+export const BLOCK_SANITIZE = {
+  ...CONTAINER_SANITIZE,
+  ALLOWED_ATTR: [...CONTAINER_SANITIZE.ALLOWED_ATTR,
+    'data-cms-repeat', 'data-cms-menu', 'data-cms-list',
+    'data-kiln-gallery', 'data-kiln-events', 'data-kiln-filters', 'data-kiln-thumb'],
+};
