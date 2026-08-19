@@ -16,6 +16,7 @@ import {
 } from '../github.js';
 import { initPalette, openPalette } from './palette.js';
 import { initSuggest, suggestChanges, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
+import { initTheme, openThemePanel } from './theme.js';
 import { initComments, openComments, commentsTick } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 import { initBlocks } from './blocks.js';
@@ -395,7 +396,7 @@ function applyFeatureGating() {
   if (mode === 'admin' || cfg.sandbox) return;
   // 'suggestreview' is deliberately not in the worker's GRANTABLE_FEATURES, so
   // no invited editor ever has it — the review queue stays admin-only.
-  const map = { 'kiln-menu': 'menu', 'kiln-findreplace': 'findreplace', 'kiln-newpost': 'newpost',
+  const map = { 'kiln-menu': 'menu', 'kiln-theme': 'theme', 'kiln-findreplace': 'findreplace', 'kiln-newpost': 'newpost',
     'kiln-pagesettings': 'pagesettings', 'kiln-history': 'history', 'kiln-makeblock': 'makeeditable', 'kiln-addsection': 'makeeditable',
     'kiln-suggestions': 'suggestreview', 'kiln-comments': 'comments', 'kiln-ai': 'ai', 'kiln-blocks-layer': 'blocks' };
   for (const [id, feat] of Object.entries(map)) {
@@ -407,6 +408,9 @@ function applyFeatureGating() {
   // the worker rejects it anyway) and Share preview (their preview branch is
   // written per-suggestion instead); drafts stay — kiln-drafts never goes live.
   if (!hasFeature('draft')) { const d = document.getElementById('kiln-draft'); if (d) d.dataset.gated = '1'; }
+  // Suggest-mode editors also lose Theme: its Apply writes stylesheets to the
+  // live branch directly, which the worker refuses for suggest sessions anyway.
+  if (isSuggestMode()) { const t = document.getElementById('kiln-theme'); if (t) t.style.display = 'none'; }
   if (!hasFeature('schedule') || isSuggestMode()) { const s = document.getElementById('kiln-schedule'); if (s) s.dataset.gated = '1'; }
   if (!hasFeature('draft') || isSuggestMode()) { const p = document.getElementById('kiln-sharepreview'); if (p) p.dataset.gated = '1'; }
 }
@@ -2609,6 +2613,7 @@ async function invitePanel() {
     { v: 'newpost', label: 'New posts & pages', def: false },
     { v: 'schedule', label: 'Schedule publishing', def: false },
     { v: 'menu', label: 'Edit site menu', def: false },
+    { v: 'theme', label: 'Theme (colors & fonts)', def: false },
     { v: 'findreplace', label: 'Find & replace', def: false },
     { v: 'makeeditable', label: 'Make things editable', def: false },
     { v: 'comments', label: 'Comments', def: false },
@@ -4064,6 +4069,8 @@ function renderAdminBar() {
     ghRequest: (method, path, body) => state.gh.request(method, path, body) });
   initAssist({ state, cfg, mode, modal, setStatus, escapeHtml, workerAuthHeaders,
     stagePending, stageContainer, commitEdit, humanizeKey });
+  initTheme({ state, cfg, mode, modal, setStatus, escapeHtml, pageInScope, journalAdd, djb2,
+    fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main') });
   if ((localStorage.getItem('kiln_ui_mode') || 'fab') === 'bar') { renderTopBar(); return; }
   const fab = document.createElement('div');
   fab.id = 'kiln-fab-wrap';
@@ -4094,6 +4101,7 @@ function renderAdminBar() {
         <div class="kiln-fab-label">Whole site</div>
         <button id="kiln-palette-btn" class="kiln-fab-item">Search &amp; jump <span class="kiln-pal-kbd">⌘K</span></button>
         <button id="kiln-menu" class="kiln-fab-item">Site menu</button>
+        <button id="kiln-theme" class="kiln-fab-item">Theme</button>
         <button id="kiln-findreplace" class="kiln-fab-item">Find &amp; replace</button>
         ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-fab-item">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}
         ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
@@ -4208,6 +4216,7 @@ function renderAdminBar() {
   fab.querySelector('#kiln-publish').onclick = close(publish);
   fab.querySelector('#kiln-newpost').onclick = close(newContent);
   fab.querySelector('#kiln-menu').onclick = close(menuEditor);
+  fab.querySelector('#kiln-theme').onclick = close(openThemePanel);
   fab.querySelector('#kiln-history').onclick = close(historyPanel);
   fab.querySelector('#kiln-done').onclick = close(doneEditing);
   fab.querySelector('#kiln-discard').onclick = close(discardEdits);
@@ -4255,6 +4264,7 @@ function renderTopBar() {
     <button id="kiln-palette-btn" class="kiln-btn-ghost" title="Search &amp; jump (⌘K)">Search</button>
     <button id="kiln-newpost" class="kiln-btn-ghost">+ New</button>
     <button id="kiln-menu" class="kiln-btn-ghost">Menu</button>
+    <button id="kiln-theme" class="kiln-btn-ghost">Theme</button>
     <button id="kiln-pagesettings" class="kiln-btn-ghost">Page</button>
     <button id="kiln-findreplace" class="kiln-btn-ghost">Replace</button>
     <button id="kiln-history" class="kiln-btn-ghost">History</button>
@@ -4274,6 +4284,7 @@ function renderTopBar() {
   bar.querySelector('#kiln-publish').onclick = publish;
   bar.querySelector('#kiln-newpost').onclick = newContent;
   bar.querySelector('#kiln-menu').onclick = menuEditor;
+  bar.querySelector('#kiln-theme').onclick = openThemePanel;
   bar.querySelector('#kiln-pagesettings').onclick = pageSettingsPanel;
   bar.querySelector('#kiln-findreplace').onclick = findReplacePanel;
   bar.querySelector('#kiln-palette-btn').onclick = openPalette;
@@ -4881,6 +4892,19 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-sug-decided summary{cursor:pointer;font-size:12.5px;color:#6b7280;margin-bottom:6px}
 .kiln-sug-decided .kiln-inv-row{margin-top:6px}
 .kiln-sug-preview-link{word-break:break-all;font-size:13.5px;color:var(--kiln-accent)}
+/* Theme panel: token rows grouped by kind. Value inputs stay compact — the
+   global 100%-width modal input rule is overridden here. */
+.kiln-th-src,.kiln-th-hint{font-size:11px;color:#9ca3af;margin:2px 2px 4px;line-height:1.45}
+.kiln-th-row{display:flex;align-items:center;gap:10px;padding:6px 2px;border-bottom:1px solid #f3f4f6}
+.kiln-th-name,.kiln-th-val{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kiln-th-name{flex:1;min-width:0;font:600 13px var(--kiln-font);color:#374151}
+.kiln-th-swatch{flex:none;width:26px;height:26px;border-radius:8px;border:1px solid rgba(0,0,0,.14)}
+.kiln-th-row input,.kiln-th-select{margin:0;border:1.5px solid #e5e7eb;border-radius:8px;background:#fff}
+.kiln-th-row input[type=color]{flex:none;width:46px;height:30px;padding:1px 2px;cursor:pointer}
+.kiln-th-row input[type=text]{flex:0 1 180px;width:180px;padding:7px 9px;font-size:12.5px;font-family:ui-monospace,Menlo,monospace}
+.kiln-th-select{flex:0 1 220px;max-width:220px;padding:7px 8px;font:12.5px var(--kiln-font);color:#1c1c28}
+.kiln-th-val{flex:0 1 auto;max-width:230px;font:12px ui-monospace,Menlo,monospace;color:#9ca3af}
+.kiln-th-example{background:#f6f7f9;border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;font:12px/1.6 ui-monospace,Menlo,monospace;overflow-x:auto}
 .kiln-repeat-item{position:relative}
 .kiln-item-ctl{position:absolute;top:8px;right:8px;display:flex;gap:5px;z-index:9999;opacity:0;transition:opacity .15s}
 .kiln-repeat-item:hover>.kiln-item-ctl{opacity:1}

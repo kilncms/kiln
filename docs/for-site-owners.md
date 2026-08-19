@@ -68,6 +68,38 @@ add them, from least to most effort:
 
 Most sites end up using a mix: auto-tag first, then click-to-tag the stragglers.
 
+## Theme tokens
+
+Open **Theme** in the Kiln menu (under *Whole site*) and your site's design system —
+brand colors, font choices, key sizes — becomes a control panel. No setup file: Kiln
+reads the CSS custom properties your stylesheets declare on `:root`, which most
+hand-written and AI-generated sites already have. If yours doesn't, add one block:
+
+```css
+:root {
+  --brand-primary: #b8472a;
+  --brand-ink: #1c1c28;
+  --font-display: 'Fraunces', serif;
+  --space-hero: 6rem;
+}
+```
+
+…and use the variables in your rules (`color: var(--brand-primary)`). The panel then
+shows a color picker per color, a font menu per font (offering fonts the page already
+loads — to introduce a brand-new font, add its `<link>`/`@font-face` to the site
+first), and a unit-preserving input per size. Values it can't safely edit as a single
+control — `var()` references, gradients, `url()`s, shadows — are listed read-only.
+
+Changes preview live on the page as you drag. **Apply** commits them to the
+stylesheet file itself — one commit per touched stylesheet, byte-exact around the
+edited values — and the status line reports when the live site has picked it up.
+Because the stylesheet is the source of truth, your CSS *is* the brand kit: nothing
+to keep in sync, and every change is in your git history like any other edit.
+
+Invited editors don't get the panel by default — grant **Theme (colors & fonts)** in
+People & access (their stylesheet writes stay inside their page scope, like
+everything else).
+
 ## Inviting people
 
 Open **People & access** in the Kiln menu. Add a person by their Google email and
@@ -87,8 +119,8 @@ For each person you also set:
   picker shows each section with the first words of its content, so you know exactly
   what you're granting. Leave it blank for the whole page.
 - **Feature grants** (editors) — which menu tools they get: drafts, history, new
-  posts, scheduling, the site menu, find & replace, AI assist, adding sections
-  from the [block library](#block-library).
+  posts, scheduling, the site menu, find & replace, AI assist, theme tokens,
+  adding sections from the [block library](#block-library).
 - **Suggest-only publishing** (editors) — see below.
 
 Removing someone revokes their access immediately, active session included.

@@ -258,6 +258,11 @@ serves — the sign-in screen; there is no edit button anywhere on the site):
 </body></html>
 ```
 
+Put the site's brand decisions — colors, font stacks, key sizes — in CSS custom properties
+on `:root` (e.g. `--brand-primary: #b8472a; --font-display: 'Fraunces', serif;`) and reference
+them via `var()`. Kiln's Theme panel discovers `:root` tokens automatically and lets the owner
+retune the whole site's look without touching CSS.
+
 ## 8. Hosting
 
 Use Cloudflare Pages (free tier allows commercial sites; connect the GitHub repo with NO

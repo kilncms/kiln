@@ -1231,7 +1231,7 @@ async function peopleList(request, env, url) {
 }
 
 // Menu features an admin can grant an editor. People/settings stay owner-only.
-const GRANTABLE_FEATURES = ['menu', 'findreplace', 'newpost', 'pagesettings', 'history', 'schedule', 'draft', 'makeeditable', 'comments', 'ai', 'blocks'];
+const GRANTABLE_FEATURES = ['menu', 'findreplace', 'newpost', 'pagesettings', 'history', 'schedule', 'draft', 'makeeditable', 'comments', 'ai', 'blocks', 'theme'];
 
 async function peopleUpsert(request, env) {
   const { repo, email, name, role, days, paths, keys, features, mode } = await request.json().catch(() => ({}));
