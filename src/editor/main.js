@@ -2111,13 +2111,33 @@ function journalAdd(entry) {
 }
 
 let journalTimer = null;
+let journalTickN = 0;
 function runJournal() {
   if (journalTimer) return;
   const tick = async () => {
     const list = journalAll();
     if (!list.length) { clearInterval(journalTimer); journalTimer = null; setStatusIdle(); return; }
+    journalTickN++;
     const keep = [];
+    let failed = false;
     for (const e of list) {
+      // Deploy state (entries that carry a commit sha) is an ACCELERANT and a
+      // failure detector, never the source of truth for "live" — hosts skip
+      // superseded builds, so a commit's own deployment can hang forever while
+      // the change ships inside a later build. The url/compare probe below
+      // still decides. Polled every 2nd tick (12s) to stay polite via proxy.
+      if (e.sha && !e.deployed && state.gh && journalTickN % 2 === 1) {
+        try {
+          const ds = await deployState(state.gh, cfg.repo, e.sha);
+          if (ds === 'failure' || ds === 'error') {
+            setStatus('Build failed — open commit', 'error',
+              { href: `https://github.com/${cfg.repo}/commit/${e.sha}` });
+            failed = true;
+            continue;                       // drop the entry — it will never go live
+          }
+          if (ds === 'success') e.deployed = true;   // strong signal; probe confirms below
+        } catch { /* deploy-state read failed — the probe still decides */ }
+      }
       let live = false;
       try {
         if (e.type === 'url') {
@@ -2129,7 +2149,8 @@ function runJournal() {
         }
       } catch { /* network blip — keep waiting */ }
       if (live) {
-        setStatus(`${e.desc} — live ✓`, 'saved');
+        if (e.deployed) setStatus('Live ✓ — view site', 'saved', { href: e.target });
+        else setStatus(`${e.desc} — live ✓`, 'saved');
         if (e.target === location.pathname || e.target === location.pathname + location.search) swapImagePreviews();
       } else if (Date.now() - e.started > 6 * 60 * 1000) {
         setStatus(`${e.desc} — published ✓ (taking longer than usual to appear; it will)`, 'saved');
@@ -2138,7 +2159,7 @@ function runJournal() {
       }
     }
     journalSave(keep);
-    if (keep.length) {
+    if (keep.length && !failed) {
       setStatus(`Publishing ${keep.length === 1 ? `“${keep[0].desc}”` : keep.length + ' changes'}… usually under a minute`, 'saving');
     }
   };
@@ -2147,7 +2168,11 @@ function runJournal() {
 }
 
 function setStatusIdle() {
-  setTimeout(() => setStatus(`Signed in as ${state.user}`, 'idle'), 4000);
+  setTimeout(() => {
+    // Never let the idle reset paper over a visible failure (e.g. build failed).
+    if (document.getElementById('kiln-status')?.classList.contains('kiln-status--error')) return;
+    setStatus(`Signed in as ${state.user}`, 'idle');
+  }, 4000);
 }
 
 function swapImagePreviews() {
@@ -2159,9 +2184,9 @@ function swapImagePreviews() {
 }
 
 /** Compatibility wrapper: page-edit publishes register a compare entry. */
-function watchDeploy(_sha, committedText) {
+function watchDeploy(sha, committedText) {
   if (committedText) {
-    journalAdd({ type: 'compare', target: location.pathname, expect: djb2(committedText), desc: 'Your page edit' });
+    journalAdd({ type: 'compare', target: location.pathname, expect: djb2(committedText), desc: 'Your page edit', sha });
   } else {
     setStatus('Published to GitHub ✓', 'saved');
     setStatusIdle();
@@ -2237,7 +2262,7 @@ function newContent() {
       const commit = await commitFiles(state.gh, cfg.repo, branch, files,
         `New ${kind}: ${title} (via Kiln)`);
 
-      journalAdd({ type: 'url', target: href, desc: `New ${kind} “${title}”` });
+      journalAdd({ type: 'url', target: href, desc: `New ${kind} “${title}”`, sha: commit.sha });
       status.innerHTML = `Committed ✓ — the site is rebuilding (usually under a minute).<br>
         <small>Safe to close this window: Kiln keeps watching in the background and the link below
         starts working the moment the ${kind} is live${kind === 'page' ? ' — then add it to your navigation via <strong>Site menu</strong>' : ''}.</small>`;
@@ -2382,7 +2407,7 @@ function menuEditor() {
       const commit = await commitFiles(state.gh, cfg.repo, branch, changed,
         `Update menu on ${changed.length} pages (via Kiln)`);
       const thisPage = changed.find(c => c.path === state.page.path);
-      if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Menu update' });
+      if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Menu update', sha: commit.sha });
       status.innerHTML = `Step 2 of 3 · Committed ✓ — the site is rebuilding.
         ${skippedPages ? skippedPages + ' page(s) had no managed menu and were left alone.' : ''}<br>
         <small><strong>Safe to close this window</strong> — Kiln keeps watching in the background and
@@ -2807,6 +2832,62 @@ function previewRestore(changes, label, note, removals = []) {
   return applied.length + removed.length;
 }
 
+// ─── Named versions (Figma-style restore points) ─────────────────────────────
+// Stored as lightweight git tags `refs/tags/kiln/<unix-ts>-<slug>`, so they
+// cost nothing, outlive Kiln itself, and ride the existing worker allowlist
+// (POST /git/refs to create, GET /git/matching-refs/ to list; ref DELETE isn't
+// allowlisted, so Kiln doesn't offer deletion).
+
+function slugifyVersionName(name) {
+  return String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+}
+
+/** 'refs/tags/kiln/1724000000-summer-menu' → { stamp, slug, name, date }; null if not ours. */
+function parseVersionTag(ref) {
+  const m = String(ref).match(/(?:^|\/)kiln\/(\d+)-([a-z0-9][a-z0-9-]*)$/);
+  if (!m) return null;
+  const stamp = parseInt(m[1], 10);
+  return { stamp, slug: m[2], name: m[2].replace(/-/g, ' '), date: new Date(stamp * 1000) };
+}
+
+/**
+ * Visual check in front of every restore: the page as it is beside the page as
+ * it would be. Both iframes are fully sandboxed (no tokens, so scripts are
+ * inert) and fed raw HTML via srcdoc — relative asset URLs still resolve
+ * against this page. Resolves 'stage' | 'cancel' (back to history) | 'closed'.
+ */
+function confirmRestoreVisual({ title, nowText, thenText, thenLabel = 'This version' }) {
+  return new Promise((resolve) => {
+    const m = modal(`
+      <h3>${title}</h3>
+      <div class="kiln-vrestore-grid">
+        <figure class="kiln-vrestore-pane"><figcaption>Now</figcaption>
+          <iframe sandbox="" class="kiln-vrestore-frame" title="The page as it is now"></iframe></figure>
+        <figure class="kiln-vrestore-pane"><figcaption>${escapeHtml(thenLabel)}</figcaption>
+          <iframe sandbox="" class="kiln-vrestore-frame" title="The page after restoring"></iframe></figure>
+      </div>
+      <p class="kiln-dim">Interactive parts are frozen in these previews. Staging only previews the change
+      on the page — nothing goes live until you hit Publish.</p>
+      <div class="kiln-modal-actions">
+        <button class="kiln-btn-ghost" id="kiln-vr-cancel">Cancel</button>
+        <button class="kiln-btn-publish" id="kiln-vr-stage">Stage restore</button>
+      </div>`);
+    m.querySelector('.kiln-modal-card').classList.add('kiln-vrestore-card');
+    const [nowFrame, thenFrame] = m.querySelectorAll('.kiln-vrestore-frame');
+    nowFrame.srcdoc = nowText;
+    thenFrame.srcdoc = thenText;
+    // Esc / ✕ / backdrop remove the modal without hitting our buttons — settle then.
+    const mo = new MutationObserver(() => {
+      if (!document.body.contains(m)) { mo.disconnect(); resolve('closed'); }
+    });
+    mo.observe(document.body, { childList: true });
+    // Close via the ✕ so modal() also unhooks its document keydown listener.
+    const done = (v) => { mo.disconnect(); m.querySelector('.kiln-modal-x')?.click(); resolve(v); };
+    m.querySelector('#kiln-vr-stage').onclick = () => done('stage');
+    m.querySelector('#kiln-vr-cancel').onclick = () => done('cancel');
+  });
+}
+
 async function historyPanel() {
   const m = modal(`
     <h3>Page history</h3>
@@ -2824,18 +2905,11 @@ async function historyPanel() {
     return;
   }
 
-  let commits = [];
-  try {
-    commits = await state.gh.request('GET',
-      `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=20`);
-  } catch (err) { status.textContent = `Could not load history: ${err.message}`; return; }
-
   const list = m.querySelector('#kiln-hist');
-  list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No saved versions yet — they appear after your first publish.</p>';
   const spin = (msg) => { status.innerHTML = `<span class="kiln-spin"></span> ${msg}`; };
 
   // Undo ONE publish: put back the sections it changed, leave everything since.
-  const undoCommit = async (c) => {
+  async function undoCommit(c) {
     const parentSha = c.parents?.[0]?.sha;
     if (!parentSha) { status.textContent = 'This is the very first version — there’s nothing before it to go back to.'; return; }
     spin('Comparing with the version before it…');
@@ -2846,17 +2920,29 @@ async function historyPanel() {
       if (before[key] === undefined) { removals.push(key); continue; }   // that publish ADDED this — undo = remove it
       if (before[key] !== after[key]) changes.push({ key, value: before[key] });
     }
-    const n = previewRestore(changes, `undo “${escapeHtml(describeCommit(c.commit.message))}”`, '', removals);
-    if (n) m.remove();
-    else status.textContent = changes.length || removals.length
-      ? 'Those sections aren’t on this page anymore, so there’s nothing to put back.'
-      : 'That publish didn’t change any section content on this page (it may have been photos or layout).';
-  };
+    if (!changes.length && !removals.length) {
+      status.textContent = 'That publish didn’t change any section content on this page (it may have been photos or layout).';
+      return;
+    }
+    // Project this page's source with just those sections put back, for the visual.
+    let thenText = applyEdits(state.page.text, changes.map(({ key, value }) => ({ key, html: value }))).html;
+    for (const key of removals) thenText = removeKilnSection(thenText, key) ?? thenText;
+    const what = escapeHtml(describeCommit(c.commit.message));
+    const choice = await confirmRestoreVisual({
+      title: `Undo “${what}”?`, nowText: state.page.text, thenText, thenLabel: 'After undo',
+    });
+    if (choice === 'cancel') { historyPanel(); return; }
+    if (choice !== 'stage') return;
+    const n = previewRestore(changes, `undo “${what}”`, '', removals);
+    if (!n) setStatus('Those sections aren’t on this page anymore, so there’s nothing to put back.', 'error');
+  }
 
-  // Whole-page: every section back to how it was at that version.
-  const restoreVersion = async (c, when) => {
+  // Whole-page: every section back to how it was at that version (a commit sha
+  // from the list below, or a named version's tagged sha).
+  async function restoreVersion(sha, what) {
     spin('Reading that version…');
-    const vals = readValues(await histFile(c.sha));
+    const thenText = await histFile(sha);
+    const vals = readValues(thenText);
     const curVals = readValues(state.page.text);
     const changes = [], removals = [];
     for (const [key, value] of Object.entries(vals)) {
@@ -2870,11 +2956,94 @@ async function historyPanel() {
       const el = document.querySelector(`[data-cms-repeat="${CSS.escape(key)}"], [data-cms="${CSS.escape(key)}"]`);
       if (el?.closest('.kiln-added')) removals.push(key); else gone++;
     }
+    if (!changes.length && !removals.length) { status.textContent = 'The page already matches that version.'; return; }
+    const choice = await confirmRestoreVisual({
+      title: `Go back to ${what}?`, nowText: state.page.text, thenText,
+    });
+    if (choice === 'cancel') { historyPanel(); return; }
+    if (choice !== 'stage') return;
     const note = gone ? `${gone} section${gone > 1 ? 's' : ''} added since then stay as they are.` : '';
-    const n = previewRestore(changes, `the page as it was ${escapeHtml(when)}`, note, removals);
-    if (n) m.remove();
-    else status.textContent = 'The page already matches that version.';
-  };
+    const n = previewRestore(changes, `the page as it was ${what}`, note, removals);
+    if (!n) setStatus('Those sections aren’t on this page anymore, so there’s nothing to put back.', 'error');
+  }
+
+  async function loadNamedVersions() {
+    const box = m.querySelector('#kiln-nv');
+    if (!box) return;
+    let refs = [];
+    try {
+      refs = await state.gh.request('GET', `/repos/${cfg.repo}/git/matching-refs/tags/kiln/`);
+    } catch (err) {
+      box.innerHTML = `<p class="kiln-dim">Couldn’t load named versions: ${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    if (!Array.isArray(refs)) refs = [];
+    const vers = refs.map(r => ({ ...parseVersionTag(r.ref), sha: r.object?.sha }))
+      .filter(v => v.stamp && v.sha)
+      .sort((a, b) => b.stamp - a.stamp);
+    box.innerHTML = vers.length ? ''
+      : '<p class="kiln-dim">No named versions yet — hit ⭑ on any publish below to keep it findable.</p>';
+    for (const v of vers) {
+      const when = v.date.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      const row = document.createElement('div');
+      row.className = 'kiln-inv-row';
+      row.innerHTML = `<span><strong>${escapeHtml(v.name)}</strong>
+        <small>${when} · ${escapeHtml(String(v.sha).slice(0, 7))}</small></span>
+        <span class="kiln-hist-acts"><button class="kiln-btn-ghost" title="Every section back to how it was in this named version">Go back to this</button></span>`;
+      row.querySelector('button').onclick = () =>
+        restoreVersion(v.sha, `“${escapeHtml(v.name)}”`).catch(err => { status.textContent = `Couldn’t read that version: ${err.message}`; });
+      box.appendChild(row);
+    }
+  }
+
+  // "⭑ Name" on a publish row → inline input → tag that commit.
+  function nameVersionInline(row, c) {
+    const acts = row.querySelector('.kiln-hist-acts');
+    const form = document.createElement('span');
+    form.className = 'kiln-nv-form';
+    form.innerHTML = `<input type="text" class="kiln-nv-input" maxlength="40" placeholder="e.g. Summer menu">
+      <button class="kiln-btn-ghost" data-nv="save">Save</button>
+      <button class="kiln-btn-ghost" data-nv="cancel" aria-label="Cancel naming">✕</button>`;
+    acts.style.display = 'none';
+    acts.after(form);
+    const input = form.querySelector('input');
+    const closeForm = () => { form.remove(); acts.style.display = ''; };
+    form.querySelector('[data-nv="cancel"]').onclick = closeForm;
+    const save = async () => {
+      const raw = input.value.trim();
+      const slug = slugifyVersionName(raw);
+      if (!slug) { status.textContent = 'Give it a name with some letters or numbers.'; input.focus(); return; }
+      const btn = form.querySelector('[data-nv="save"]');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        await state.gh.request('POST', `/repos/${cfg.repo}/git/refs`,
+          { ref: `refs/tags/kiln/${Math.floor(Date.now() / 1000)}-${slug}`, sha: c.sha });
+        closeForm();
+        status.textContent = `Saved as “${raw}” — it’s in Named versions above.`;
+        loadNamedVersions();
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Save';
+        status.textContent = err.status === 422
+          ? 'A version with that name was just created — try a slightly different name.'
+          : `Couldn’t name it: ${err.message}`;
+      }
+    };
+    form.querySelector('[data-nv="save"]').onclick = save;
+    input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } };
+    input.focus();
+  }
+
+  list.insertAdjacentHTML('beforebegin',
+    '<h4>Named versions</h4><div id="kiln-nv" class="kiln-inv-list"><p class="kiln-dim">Loading…</p></div><h4>Recent publishes</h4>');
+  loadNamedVersions();
+
+  let commits = [];
+  try {
+    commits = await state.gh.request('GET',
+      `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=20`);
+  } catch (err) { status.textContent = `Could not load history: ${err.message}`; return; }
+
+  list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No saved versions yet — they appear after your first publish.</p>';
 
   commits.forEach((c, i) => {
     const div = document.createElement('div');
@@ -2885,10 +3054,12 @@ async function historyPanel() {
       <span class="kiln-hist-acts">
         <button class="kiln-btn-ghost" data-act="undo" title="Put back just what this publish changed">${UNDO_ICON} Undo this change</button>
         ${i === 0 ? '' : '<button class="kiln-btn-ghost" data-act="restore" title="Every section back to how it was at this point">Go back to this</button>'}
+        <button class="kiln-btn-ghost" data-act="name" title="Name this version so it’s easy to find and restore later">⭑ Name</button>
       </span>`;
     div.querySelector('[data-act="undo"]').onclick = () => undoCommit(c).catch(err => { status.textContent = `Couldn’t compare versions: ${err.message}`; });
     const rBtn = div.querySelector('[data-act="restore"]');
-    if (rBtn) rBtn.onclick = () => restoreVersion(c, when).catch(err => { status.textContent = `Couldn’t read that version: ${err.message}`; });
+    if (rBtn) rBtn.onclick = () => restoreVersion(c.sha, escapeHtml(when)).catch(err => { status.textContent = `Couldn’t read that version: ${err.message}`; });
+    div.querySelector('[data-act="name"]').onclick = () => nameVersionInline(div, c);
     list.appendChild(div);
   });
 }
@@ -3018,7 +3189,7 @@ function pageSettingsPanel() {
         `Page settings: ${state.page.path} (via Kiln)`);
       if (result.unchanged) { status.textContent = 'Nothing changed.'; return; }
       await loadPageSource();
-      journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: 'Page settings' });
+      journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: 'Page settings', sha: result.commit?.sha });
       status.textContent = 'Committed ✓ — safe to close; Kiln will confirm when live.';
     } catch (err) { status.textContent = `Failed: ${err.message}`; }
   };
@@ -3084,9 +3255,9 @@ function findReplacePanel() {
         status.textContent = 'Committing…';
         try {
           const changed = hits.map(h => ({ path: h.path, text: h.text.split(find).join(repl) }));
-          await commitFiles(state.gh, cfg.repo, branch, changed, `Replace “${find}” → “${repl}” on ${changed.length} pages (via Kiln)`);
+          const commit = await commitFiles(state.gh, cfg.repo, branch, changed, `Replace “${find}” → “${repl}” on ${changed.length} pages (via Kiln)`);
           const thisPage = changed.find(c => c.path === state.page.path);
-          if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Find & replace' });
+          if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Find & replace', sha: commit.sha });
           status.textContent = 'Committed ✓ — rebuilding. Safe to close; Kiln will confirm when live.';
           act.remove();
         } catch (err) { status.textContent = `Failed: ${err.message}`; }
@@ -3191,7 +3362,7 @@ async function checkForDraft() {
     try {
       const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
         () => draft.text, `Publish draft: ${state.page.path} (via Kiln)`);
-      journalAdd({ type: 'compare', target: location.pathname, expect: djb2(draft.text), desc: 'Draft publish' });
+      journalAdd({ type: 'compare', target: location.pathname, expect: djb2(draft.text), desc: 'Draft publish', sha: result?.commit?.sha });
       await loadPageSource();
       status.textContent = 'Published ✓ — your site rebuilds now; the change goes live in about a minute.';
     } catch (err) { status.textContent = `Failed: ${err.message}`; }
@@ -3338,7 +3509,7 @@ function settingsPanel() {
         const close = out.lastIndexOf('};');
         return out.slice(0, close) + flags + out.slice(close);
       }, 'Kiln settings (via Kiln)');
-      journalAdd({ type: 'compare', target: '/assets/kiln-config.js', expect: djb2(result.text), desc: 'Site settings' });
+      journalAdd({ type: 'compare', target: '/assets/kiln-config.js', expect: djb2(result.text), desc: 'Site settings', sha: result.commit?.sha });
       status.textContent = 'Committed ✓ — applies to everyone after the rebuild (~1 min).' + (uiChanged ? ' Reloading…' : '');
       if (uiChanged) setTimeout(() => location.reload(), 1500);
     } catch (err) { status.textContent = `Failed: ${err.message}`; }
@@ -4211,13 +4382,16 @@ function disablePublish(yes) {
 }
 
 let statusHideTimer = null;
-function setStatus(text, kind) {
+function setStatus(text, kind, opts) {
   const el = document.getElementById('kiln-status');
   if (!el) return;
   // A spinner rides alongside busy ('saving') states so publishing/uploading
-  // reads as active work, not a frozen label.
+  // reads as active work, not a frozen label. opts.href turns the whole line
+  // into a link (e.g. "Live ✓ — view site", "Build failed — open commit").
   el.innerHTML = (kind === 'saving' ? '<span class="kiln-spin" aria-hidden="true"></span>' : '')
-    + `<span>${escapeHtml(text)}</span>`;
+    + (opts?.href
+      ? `<a class="kiln-status-link" href="${escapeHtml(opts.href)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`
+      : `<span>${escapeHtml(text)}</span>`);
   el.className = `kiln-status kiln-status--${kind}`;
   el.hidden = false;
   clearTimeout(statusHideTimer);
@@ -4367,6 +4541,8 @@ function injectStyles() {
 @keyframes kilnspin{to{transform:rotate(360deg)}}
 .kiln-status--saved{color:var(--kiln-ok)}
 .kiln-status--error{color:var(--kiln-err)}
+.kiln-status-link{color:inherit;font-weight:600;text-decoration:underline;text-underline-offset:2px}
+.kiln-status-link:hover{opacity:.85}
 .kiln-btn-publish{background:var(--kiln-accent);color:#fff;border:none;padding:7px 16px;border-radius:9px;
   cursor:pointer;font-size:13px;font-weight:600;font-family:var(--kiln-font);transition:background .15s,transform .1s}
 .kiln-btn-publish:hover:not(:disabled){background:var(--kiln-accent-h);transform:translateY(-1px)}
@@ -4581,6 +4757,17 @@ body:has(#kiln-topbar){padding-top:46px!important}
 .kiln-online-dot{width:7px;height:7px;border-radius:50%;background:#34d399;animation:kilnpulse 2s ease-in-out infinite}
 #kiln-topbar #kiln-online{margin-left:8px}
 @keyframes kilnpulse{0%,100%{opacity:1}50%{opacity:.35}}
-#kiln-menu-add{margin-top:4px;color:#4b5563;border-color:#e5e7eb;background:#f9fafb}`;
+#kiln-menu-add{margin-top:4px;color:#4b5563;border-color:#e5e7eb;background:#f9fafb}
+/* Named versions: inline naming form on a history row */
+.kiln-nv-form{display:flex;gap:6px;align-items:center;flex:none}
+.kiln-modal-body input.kiln-nv-input{width:170px;margin:0;padding:7px 9px;font-size:13px}
+.kiln-nv-form .kiln-btn-ghost{font-size:11.5px;padding:5px 10px;white-space:nowrap}
+/* Visual restore preview: current page beside the restored one, stacked when narrow */
+.kiln-modal-card.kiln-vrestore-card{max-width:min(1040px,94vw)}
+.kiln-vrestore-grid{display:flex;gap:12px;align-items:stretch}
+.kiln-vrestore-pane{flex:1 1 0;min-width:0;margin:0}
+.kiln-vrestore-pane figcaption{font:600 10.5px var(--kiln-font);letter-spacing:.07em;text-transform:uppercase;color:#6b7280;margin:0 0 6px}
+.kiln-vrestore-frame{width:100%;height:52vh;min-height:260px;border:1.5px solid #e5e7eb;border-radius:10px;background:#fff}
+@media(max-width:760px){.kiln-vrestore-grid{flex-direction:column}.kiln-vrestore-frame{height:36vh;min-height:180px}}`;
   document.head.appendChild(style);
 }
