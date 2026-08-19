@@ -2111,13 +2111,33 @@ function journalAdd(entry) {
 }
 
 let journalTimer = null;
+let journalTickN = 0;
 function runJournal() {
   if (journalTimer) return;
   const tick = async () => {
     const list = journalAll();
     if (!list.length) { clearInterval(journalTimer); journalTimer = null; setStatusIdle(); return; }
+    journalTickN++;
     const keep = [];
+    let failed = false;
     for (const e of list) {
+      // Deploy state (entries that carry a commit sha) is an ACCELERANT and a
+      // failure detector, never the source of truth for "live" — hosts skip
+      // superseded builds, so a commit's own deployment can hang forever while
+      // the change ships inside a later build. The url/compare probe below
+      // still decides. Polled every 2nd tick (12s) to stay polite via proxy.
+      if (e.sha && !e.deployed && state.gh && journalTickN % 2 === 1) {
+        try {
+          const ds = await deployState(state.gh, cfg.repo, e.sha);
+          if (ds === 'failure' || ds === 'error') {
+            setStatus('Build failed — open commit', 'error',
+              { href: `https://github.com/${cfg.repo}/commit/${e.sha}` });
+            failed = true;
+            continue;                       // drop the entry — it will never go live
+          }
+          if (ds === 'success') e.deployed = true;   // strong signal; probe confirms below
+        } catch { /* deploy-state read failed — the probe still decides */ }
+      }
       let live = false;
       try {
         if (e.type === 'url') {
@@ -2129,7 +2149,8 @@ function runJournal() {
         }
       } catch { /* network blip — keep waiting */ }
       if (live) {
-        setStatus(`${e.desc} — live ✓`, 'saved');
+        if (e.deployed) setStatus('Live ✓ — view site', 'saved', { href: e.target });
+        else setStatus(`${e.desc} — live ✓`, 'saved');
         if (e.target === location.pathname || e.target === location.pathname + location.search) swapImagePreviews();
       } else if (Date.now() - e.started > 6 * 60 * 1000) {
         setStatus(`${e.desc} — published ✓ (taking longer than usual to appear; it will)`, 'saved');
@@ -2138,7 +2159,7 @@ function runJournal() {
       }
     }
     journalSave(keep);
-    if (keep.length) {
+    if (keep.length && !failed) {
       setStatus(`Publishing ${keep.length === 1 ? `“${keep[0].desc}”` : keep.length + ' changes'}… usually under a minute`, 'saving');
     }
   };
@@ -2147,7 +2168,11 @@ function runJournal() {
 }
 
 function setStatusIdle() {
-  setTimeout(() => setStatus(`Signed in as ${state.user}`, 'idle'), 4000);
+  setTimeout(() => {
+    // Never let the idle reset paper over a visible failure (e.g. build failed).
+    if (document.getElementById('kiln-status')?.classList.contains('kiln-status--error')) return;
+    setStatus(`Signed in as ${state.user}`, 'idle');
+  }, 4000);
 }
 
 function swapImagePreviews() {
@@ -2159,9 +2184,9 @@ function swapImagePreviews() {
 }
 
 /** Compatibility wrapper: page-edit publishes register a compare entry. */
-function watchDeploy(_sha, committedText) {
+function watchDeploy(sha, committedText) {
   if (committedText) {
-    journalAdd({ type: 'compare', target: location.pathname, expect: djb2(committedText), desc: 'Your page edit' });
+    journalAdd({ type: 'compare', target: location.pathname, expect: djb2(committedText), desc: 'Your page edit', sha });
   } else {
     setStatus('Published to GitHub ✓', 'saved');
     setStatusIdle();
@@ -2237,7 +2262,7 @@ function newContent() {
       const commit = await commitFiles(state.gh, cfg.repo, branch, files,
         `New ${kind}: ${title} (via Kiln)`);
 
-      journalAdd({ type: 'url', target: href, desc: `New ${kind} “${title}”` });
+      journalAdd({ type: 'url', target: href, desc: `New ${kind} “${title}”`, sha: commit.sha });
       status.innerHTML = `Committed ✓ — the site is rebuilding (usually under a minute).<br>
         <small>Safe to close this window: Kiln keeps watching in the background and the link below
         starts working the moment the ${kind} is live${kind === 'page' ? ' — then add it to your navigation via <strong>Site menu</strong>' : ''}.</small>`;
@@ -2382,7 +2407,7 @@ function menuEditor() {
       const commit = await commitFiles(state.gh, cfg.repo, branch, changed,
         `Update menu on ${changed.length} pages (via Kiln)`);
       const thisPage = changed.find(c => c.path === state.page.path);
-      if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Menu update' });
+      if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Menu update', sha: commit.sha });
       status.innerHTML = `Step 2 of 3 · Committed ✓ — the site is rebuilding.
         ${skippedPages ? skippedPages + ' page(s) had no managed menu and were left alone.' : ''}<br>
         <small><strong>Safe to close this window</strong> — Kiln keeps watching in the background and
@@ -3018,7 +3043,7 @@ function pageSettingsPanel() {
         `Page settings: ${state.page.path} (via Kiln)`);
       if (result.unchanged) { status.textContent = 'Nothing changed.'; return; }
       await loadPageSource();
-      journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: 'Page settings' });
+      journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: 'Page settings', sha: result.commit?.sha });
       status.textContent = 'Committed ✓ — safe to close; Kiln will confirm when live.';
     } catch (err) { status.textContent = `Failed: ${err.message}`; }
   };
@@ -3084,9 +3109,9 @@ function findReplacePanel() {
         status.textContent = 'Committing…';
         try {
           const changed = hits.map(h => ({ path: h.path, text: h.text.split(find).join(repl) }));
-          await commitFiles(state.gh, cfg.repo, branch, changed, `Replace “${find}” → “${repl}” on ${changed.length} pages (via Kiln)`);
+          const commit = await commitFiles(state.gh, cfg.repo, branch, changed, `Replace “${find}” → “${repl}” on ${changed.length} pages (via Kiln)`);
           const thisPage = changed.find(c => c.path === state.page.path);
-          if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Find & replace' });
+          if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Find & replace', sha: commit.sha });
           status.textContent = 'Committed ✓ — rebuilding. Safe to close; Kiln will confirm when live.';
           act.remove();
         } catch (err) { status.textContent = `Failed: ${err.message}`; }
@@ -3191,7 +3216,7 @@ async function checkForDraft() {
     try {
       const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
         () => draft.text, `Publish draft: ${state.page.path} (via Kiln)`);
-      journalAdd({ type: 'compare', target: location.pathname, expect: djb2(draft.text), desc: 'Draft publish' });
+      journalAdd({ type: 'compare', target: location.pathname, expect: djb2(draft.text), desc: 'Draft publish', sha: result?.commit?.sha });
       await loadPageSource();
       status.textContent = 'Published ✓ — your site rebuilds now; the change goes live in about a minute.';
     } catch (err) { status.textContent = `Failed: ${err.message}`; }
@@ -3338,7 +3363,7 @@ function settingsPanel() {
         const close = out.lastIndexOf('};');
         return out.slice(0, close) + flags + out.slice(close);
       }, 'Kiln settings (via Kiln)');
-      journalAdd({ type: 'compare', target: '/assets/kiln-config.js', expect: djb2(result.text), desc: 'Site settings' });
+      journalAdd({ type: 'compare', target: '/assets/kiln-config.js', expect: djb2(result.text), desc: 'Site settings', sha: result.commit?.sha });
       status.textContent = 'Committed ✓ — applies to everyone after the rebuild (~1 min).' + (uiChanged ? ' Reloading…' : '');
       if (uiChanged) setTimeout(() => location.reload(), 1500);
     } catch (err) { status.textContent = `Failed: ${err.message}`; }
@@ -4211,13 +4236,16 @@ function disablePublish(yes) {
 }
 
 let statusHideTimer = null;
-function setStatus(text, kind) {
+function setStatus(text, kind, opts) {
   const el = document.getElementById('kiln-status');
   if (!el) return;
   // A spinner rides alongside busy ('saving') states so publishing/uploading
-  // reads as active work, not a frozen label.
+  // reads as active work, not a frozen label. opts.href turns the whole line
+  // into a link (e.g. "Live ✓ — view site", "Build failed — open commit").
   el.innerHTML = (kind === 'saving' ? '<span class="kiln-spin" aria-hidden="true"></span>' : '')
-    + `<span>${escapeHtml(text)}</span>`;
+    + (opts?.href
+      ? `<a class="kiln-status-link" href="${escapeHtml(opts.href)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`
+      : `<span>${escapeHtml(text)}</span>`);
   el.className = `kiln-status kiln-status--${kind}`;
   el.hidden = false;
   clearTimeout(statusHideTimer);
@@ -4367,6 +4395,8 @@ function injectStyles() {
 @keyframes kilnspin{to{transform:rotate(360deg)}}
 .kiln-status--saved{color:var(--kiln-ok)}
 .kiln-status--error{color:var(--kiln-err)}
+.kiln-status-link{color:inherit;font-weight:600;text-decoration:underline;text-underline-offset:2px}
+.kiln-status-link:hover{opacity:.85}
 .kiln-btn-publish{background:var(--kiln-accent);color:#fff;border:none;padding:7px 16px;border-radius:9px;
   cursor:pointer;font-size:13px;font-weight:600;font-family:var(--kiln-font);transition:background .15s,transform .1s}
 .kiln-btn-publish:hover:not(:disabled){background:var(--kiln-accent-h);transform:translateY(-1px)}
