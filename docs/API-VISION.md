@@ -132,6 +132,13 @@ webhook receiver.
 - **Phase 4 — ecosystem.** A recipes/templates marketplace (ties into the existing
   marketplace page): "specials from a sheet," "events from a calendar," etc.
 
+## Status
+
+**Phase 1 shipped** — `kiln-mcp` lives in [`mcp/`](../mcp/): a stdio MCP server
+(`list_pages` / `get_fields` / `edit_fields` / `site_info`) over the Phase 0 REST
+API, config via `KILN_WORKER_URL` + `KILN_API_TOKEN`. See `mcp/README.md` for
+token minting and Claude Code / Claude Desktop setup.
+
 ## Why now
 
 The agent wave needs a *safe write target for real websites*. Generation is

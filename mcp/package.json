@@ -1,0 +1,32 @@
+{
+  "name": "kiln-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Kiln: give AI agents safe, scoped write access to your website — every edit a sanitized, scoped, revertible git commit.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "bin": {
+    "kiln-mcp": "index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "lib.mjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "cms",
+    "kiln",
+    "ai-agents",
+    "website"
+  ]
+}
