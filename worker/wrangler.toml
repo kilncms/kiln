@@ -12,6 +12,11 @@ ALLOWED_ORIGINS = "https://demo.kilncms.com,https://kiln-demo.pages.dev,https://
 CLOUD_DASHBOARD = "https://app.kilncms.com"   # where /cloud/callback returns the customer
 CLOUD_ADMIN = "erikkurtu"                      # GitHub login allowed to hit /admin/cloud/*
 
+# AI assist (optional, bring-your-own-key): store your Anthropic API key as a
+# SECRET — never a [vars] entry — with `npx wrangler secret put AI_API_KEY`.
+# Without it, POST /ai/assist answers 501 and the editor explains what's missing.
+# Optional: set AI_MODEL in [vars] to override the default small/fast model.
+
 # KV: app credentials, OAuth state nonces, sessions, the People allowlist, installation-token cache.
 # SELF-HOSTERS: replace this `id` with the id of a KV namespace YOU created
 # (`npx wrangler kv namespace create KILN`), or let `npx github:kilncms/kiln` do it.

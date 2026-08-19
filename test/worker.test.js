@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath, validateSuggestionInput, suggestWriteViolation } from '../worker/index.js';
+import { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath, validateSuggestionInput, suggestWriteViolation, validateAiAssist } from '../worker/index.js';
 
 test('pathInScope: whole-site grants', () => {
   for (const p of [[''], ['*'], ['**'], []]) assert.equal(pathInScope('anything/here.html', p), true);
@@ -219,6 +219,66 @@ test('suggestWriteViolation: ref writes — only kiln heads move or appear', () 
   // Tag moves are left to the existing rules; git-data POSTs are ref-less and pass.
   assert.equal(suggestWriteViolation('PATCH', '/repos/o/r/git/refs/tags/v1', { sha: 'x' }), null);
   assert.equal(suggestWriteViolation('POST', '/repos/o/r/git/commits', { tree: 't' }), null);
+});
+
+test('validateAiAssist: text kinds — text required and capped at 8000', () => {
+  for (const kind of ['improve', 'shorten']) {
+    const ok = validateAiAssist({ kind, text: 'Our <b>famous</b> pies.' });
+    assert.deepEqual(ok, { kind, text: 'Our <b>famous</b> pies.', instruction: '' });
+  }
+  assert.equal(validateAiAssist({ kind: 'improve', text: 'x'.repeat(8000) }).error, undefined);   // at the cap
+  assert.equal(validateAiAssist({ kind: 'improve', text: 'x'.repeat(8001) }).error, 'text too long');
+  for (const bad of [undefined, '', '   ', 42, ['x']])
+    assert.equal(validateAiAssist({ kind: 'improve', text: bad }).error, 'missing text', `should reject text: ${bad}`);
+});
+
+test('validateAiAssist: tone/translate/custom need an instruction, capped at 200', () => {
+  for (const kind of ['tone', 'translate', 'custom']) {
+    assert.equal(validateAiAssist({ kind, text: 'hi' }).error, `${kind} needs an instruction`);
+    assert.equal(validateAiAssist({ kind, text: 'hi', instruction: '   ' }).error, `${kind} needs an instruction`);
+    assert.equal(validateAiAssist({ kind, text: 'hi', instruction: 42 }).error, `${kind} needs an instruction`);
+    assert.deepEqual(validateAiAssist({ kind, text: 'hi', instruction: ' warmer ' }),
+      { kind, text: 'hi', instruction: 'warmer' });
+    assert.equal(validateAiAssist({ kind, text: 'hi', instruction: 'i'.repeat(201) }).error, 'bad instruction');
+  }
+  // Improve/shorten take no instruction, but a stray (valid) one is tolerated — oversize still isn't.
+  assert.equal(validateAiAssist({ kind: 'improve', text: 'hi', instruction: 'zestier' }).instruction, 'zestier');
+  assert.equal(validateAiAssist({ kind: 'improve', text: 'hi', instruction: 'i'.repeat(201) }).error, 'bad instruction');
+});
+
+test('validateAiAssist: alt — absolute http(s) imageUrl only, private hosts refused', () => {
+  assert.deepEqual(validateAiAssist({ kind: 'alt', imageUrl: 'https://site.com/a.webp' }),
+    { kind: 'alt', imageUrl: 'https://site.com/a.webp' });
+  assert.equal(validateAiAssist({ kind: 'alt', imageUrl: 'http://site.com/a.png' }).error, undefined);
+  for (const bad of [undefined, '', 42, '/assets/a.png', 'not a url', 'x'.repeat(2001)])
+    assert.equal(validateAiAssist({ kind: 'alt', imageUrl: bad }).error, 'bad imageUrl', `should reject: ${bad}`);
+  for (const bad of ['javascript:alert(1)', 'data:image/png;base64,AAAA', 'file:///etc/passwd', 'ftp://x/a.png'])
+    assert.equal(validateAiAssist({ kind: 'alt', imageUrl: bad }).error, 'imageUrl must be http(s)', `should reject: ${bad}`);
+  // The worker fetches this URL — loopback / RFC-1918 / link-local metadata stay out of reach.
+  for (const host of ['localhost', 'sub.localhost', '127.0.0.1', '0.0.0.0', '[::1]',
+    '10.0.0.5', '192.168.1.1', '172.16.0.9', '172.31.255.1', '169.254.169.254'])
+    assert.equal(validateAiAssist({ kind: 'alt', imageUrl: `https://${host}/a.png` }).error,
+      'imageUrl host not allowed', `should reject host: ${host}`);
+  assert.equal(validateAiAssist({ kind: 'alt', imageUrl: 'https://172.32.0.1/a.png' }).error, undefined); // outside 172.16–31
+});
+
+test('validateAiAssist: fill — brief + up to 20 keyed fields, hints optional and capped', () => {
+  const ok = validateAiAssist({ kind: 'fill', brief: '  A pie shop in Decatur  ', fields: [{ key: 'hero_headline', hint: 'hero headline' }, { key: 'about_body' }] });
+  assert.deepEqual(ok, { kind: 'fill', brief: 'A pie shop in Decatur', fields: [{ key: 'hero_headline', hint: 'hero headline' }, { key: 'about_body' }] });
+  assert.equal(validateAiAssist({ kind: 'fill', brief: '', fields: [{ key: 'k' }] }).error, 'missing brief');
+  assert.equal(validateAiAssist({ kind: 'fill', brief: 'b'.repeat(2001), fields: [{ key: 'k' }] }).error, 'brief too long');
+  for (const bad of [undefined, [], 'nope', Array.from({ length: 21 }, (_, i) => ({ key: 'k' + i }))])
+    assert.equal(validateAiAssist({ kind: 'fill', brief: 'x', fields: bad }).error, 'bad fields', `should reject fields: ${JSON.stringify(bad)?.slice(0, 40)}`);
+  assert.equal(validateAiAssist({ kind: 'fill', brief: 'x', fields: [{ hint: 'no key' }] }).error, 'every field needs a key');
+  assert.equal(validateAiAssist({ kind: 'fill', brief: 'x', fields: [{ key: 'k'.repeat(201) }] }).error, 'every field needs a key');
+  assert.equal(validateAiAssist({ kind: 'fill', brief: 'x', fields: [{ key: 'a' }, { key: 'a' }] }).error, 'duplicate field key');
+  assert.equal(validateAiAssist({ kind: 'fill', brief: 'x', fields: [{ key: 'a', hint: 42 }] }).error, 'bad hint');
+  assert.equal(validateAiAssist({ kind: 'fill', brief: 'x', fields: [{ key: 'a', hint: 'h'.repeat(201) }] }).error, 'bad hint');
+});
+
+test('validateAiAssist: unknown kinds and junk bodies rejected', () => {
+  for (const bad of [{}, { kind: 'summon' }, { kind: 42 }, { kind: 'IMPROVE', text: 'x' }, undefined, null])
+    assert.equal(validateAiAssist(bad).error, 'unknown kind', `should reject: ${JSON.stringify(bad)}`);
 });
 
 test('commentKey: URI-encoded page keeps `:`-delimited keys unambiguous', () => {

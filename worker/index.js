@@ -35,6 +35,8 @@
  *   GET  /suggestions      ?repo= → suggestions (admins: all; editors: their own)
  *   POST /suggestions      editor submits {path,edits,note?,branch?,baseSha?}
  *   POST /suggestions/decide {id,approve,note?} → approve (server-side merge) / decline (admin only)
+ *   POST /ai/assist        scoped BYO-key AI: revise text / alt text / template fill
+ *                          (needs the AI_API_KEY secret; editors need the 'ai' feature)
  *
  * KV (binding: KILN):
  *   app:creds   {app_id, slug, client_id, client_secret, pk8}
@@ -126,6 +128,7 @@ export default {
       if (path === '/suggestions' && request.method === 'GET') return await cors(env, request, await suggestionList(request, env, url));
       if (path === '/suggestions' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionCreate(request, env));
       if (path === '/suggestions/decide' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionDecide(request, env));
+      if (path === '/ai/assist' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await aiAssist(request, env));
       if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
       if (path === '/google/callback') return googleCallback(url, env);
       if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
@@ -389,7 +392,7 @@ function normalizePaths(paths) {
 }
 
 // Exported for unit tests (test/worker.test.js); the Workers runtime uses only the default export.
-export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath, validateSuggestionInput, suggestWriteViolation };
+export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath, validateSuggestionInput, suggestWriteViolation, validateAiAssist };
 
 // ─── Scheduled publishing ────────────────────────────────────────────────────
 // sched:<id> → { repo, path, branch, content(b64), message, at, desc, by }
@@ -400,7 +403,7 @@ async function authActor(request, env, repo) {
   const sess = request.headers.get('X-Kiln-Session');
   if (sess && /^[a-f0-9]{64}$/.test(sess)) {
     const e = await env.KILN.get(`esess:${sess}`, 'json');
-    if (e && (!e.exp || e.exp >= Date.now()) && e.repo === repo && e.role === 'editor') return { name: e.name, email: e.email, paths: e.paths || [''], keys: e.keys || [], mode: e.mode || null, admin: false };
+    if (e && (!e.exp || e.exp >= Date.now()) && e.repo === repo && e.role === 'editor') return { name: e.name, email: e.email, paths: e.paths || [''], keys: e.keys || [], mode: e.mode || null, features: e.features || null, admin: false };
   }
   if (await requirePush(request, repo)) return { name: 'admin', admin: true };
   return null;
@@ -929,6 +932,289 @@ async function suggestionDecide(request, env) {
   }
 }
 
+// ─── AI assist (BYO-key, scoped) ─────────────────────────────────────────────
+// POST /ai/assist — small, bounded AI surfaces for the editor: revise a text
+// field, describe an image (alt text), or draft a new page's fields from a
+// one-line brief. The Anthropic key is the SELF-HOSTER'S (wrangler secret
+// AI_API_KEY) and never leaves this worker; the browser only ever talks to us.
+// AI output is DATA on the same footing as human typing — the editor renders it
+// through DOMPurify and stages it through the normal publish pipeline, and the
+// server-side sanitize-guard still vets the resulting write. Editors need the
+// 'ai' feature grant (it spends the owner's API credit); admins always may.
+
+const AI_API = 'https://api.anthropic.com/v1/messages';
+// The small/fast Claude model — right for copy-editing latency and cost.
+// Self-hosters can override with the AI_MODEL env var.
+const AI_DEFAULT_MODEL = 'claude-haiku-4-5';
+const AI_TEXT_KINDS = ['improve', 'shorten', 'tone', 'translate', 'custom'];
+// Instruction-bearing kinds: the extra line ("warmer", "Spanish", …) is required.
+const AI_INSTRUCTED = ['tone', 'translate', 'custom'];
+// Image types the vision API accepts as-is; anything else (avif, svg, …) is 415.
+const AI_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+// The system prompt is server-side and non-negotiable — a client can pick the
+// task, never the rules the revision plays by.
+const AI_SYSTEM = 'You revise website copy. Return ONLY the revised text with no preamble, explanation, or'
+  + ' commentary. Preserve any inline HTML tags present in the input. Never introduce scripts, styles, or'
+  + " event handlers. Keep the author's meaning and approximate length unless the instruction asks otherwise.";
+
+/**
+ * Validate an /ai/assist body. Pure (no env, no fetch); exported for unit
+ * tests. Returns { error } to reject (always a 400), or the normalized
+ * request: { kind, text, instruction } | { kind, imageUrl } |
+ * { kind, brief, fields:[{key, hint?}] }.
+ */
+function validateAiAssist(body = {}) {
+  const { kind } = body || {};
+  if (AI_TEXT_KINDS.includes(kind)) {
+    const { text, instruction } = body;
+    if (typeof text !== 'string' || !text.trim()) return { error: 'missing text' };
+    if (text.length > 8000) return { error: 'text too long' };
+    if (AI_INSTRUCTED.includes(kind) && (typeof instruction !== 'string' || !instruction.trim())) {
+      return { error: `${kind} needs an instruction` };
+    }
+    if (instruction !== undefined && instruction !== null
+      && (typeof instruction !== 'string' || instruction.length > 200)) {
+      return { error: 'bad instruction' };
+    }
+    return { kind, text, instruction: String(instruction || '').trim() };
+  }
+  if (kind === 'alt') {
+    const raw = body.imageUrl;
+    if (typeof raw !== 'string' || !raw || raw.length > 2000) return { error: 'bad imageUrl' };
+    let url;
+    try { url = new URL(raw); } catch { return { error: 'bad imageUrl' }; }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return { error: 'imageUrl must be http(s)' };
+    // SSRF hygiene: this worker fetches the URL — never let it aim at loopback,
+    // RFC-1918, or the link-local metadata range. Public image hosts only.
+    const host = url.hostname.toLowerCase();
+    if (host === 'localhost' || host === '0.0.0.0' || host === '[::1]' || host.endsWith('.localhost')
+      || /^127\./.test(host) || /^169\.254\./.test(host) || /^10\./.test(host)
+      || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) {
+      return { error: 'imageUrl host not allowed' };
+    }
+    return { kind, imageUrl: url.href };
+  }
+  if (kind === 'fill') {
+    const { brief, fields } = body;
+    if (typeof brief !== 'string' || !brief.trim()) return { error: 'missing brief' };
+    if (brief.length > 2000) return { error: 'brief too long' };
+    if (!Array.isArray(fields) || !fields.length || fields.length > 20) return { error: 'bad fields' };
+    const out = [];
+    const seen = new Set();
+    for (const f of fields) {
+      if (!f || typeof f.key !== 'string' || !f.key || f.key.length > 200) return { error: 'every field needs a key' };
+      if (seen.has(f.key)) return { error: 'duplicate field key' };
+      seen.add(f.key);
+      if (f.hint !== undefined && f.hint !== null && (typeof f.hint !== 'string' || f.hint.length > 200)) {
+        return { error: 'bad hint' };
+      }
+      out.push(f.hint ? { key: f.key, hint: f.hint } : { key: f.key });
+    }
+    return { kind, brief: brief.trim(), fields: out };
+  }
+  return { error: 'unknown kind' };
+}
+
+/** Models wrap answers in fences/quotes when they shouldn't — unwrap the whole-output cases only. */
+function aiStripWrapping(s) {
+  let t = String(s).trim();
+  const fence = /^```[\w-]*\r?\n([\s\S]*?)\r?\n?```$/.exec(t);
+  if (fence) t = fence[1].trim();
+  if (t.length > 1 && ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")))) {
+    t = t.slice(1, -1).trim();
+  }
+  return t;
+}
+
+/**
+ * One Anthropic Messages call. Returns { text } on success or { status, error }
+ * to relay (401→502 'ai key invalid', 429→429, anything else→502). Provider
+ * bodies/headers are NEVER echoed to the client — they can restate request
+ * metadata — and the key itself never appears in a log or response.
+ * `upstream` rides along so a caller can retry a 400 (e.g. a model override
+ * that lacks structured outputs) with a simpler payload.
+ */
+async function aiMessage(env, payload) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort('timeout'), 60000);
+  let res;
+  try {
+    res = await fetch(AI_API, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': env.AI_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({ model: env.AI_MODEL || AI_DEFAULT_MODEL, ...payload }),
+      signal: ctl.signal,
+    });
+  } catch {
+    return { status: 502, error: 'ai request failed' };
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) {
+    if (res.status === 401) return { status: 502, error: 'ai key invalid', upstream: 401 };
+    if (res.status === 429) return { status: 429, error: 'ai rate limited — try again in a moment', upstream: 429 };
+    return { status: 502, error: 'ai request failed', upstream: res.status };
+  }
+  const data = await res.json().catch(() => null);
+  if (!data || !Array.isArray(data.content)) return { status: 502, error: 'ai request failed' };
+  // Safety refusal comes back as HTTP 200 with stop_reason 'refusal'.
+  if (data.stop_reason === 'refusal') return { status: 502, error: 'ai declined this request' };
+  // Join TEXT blocks only — thinking-enabled model overrides interleave other block types.
+  const text = aiStripWrapping(data.content.filter(b => b && b.type === 'text').map(b => b.text).join(''));
+  if (!text) return { status: 502, error: 'ai returned nothing' };
+  return { text };
+}
+
+/**
+ * Fetch an image for the vision call: 10s timeout, 3 MB cap, image/* only, and
+ * redirects are followed by hand (max 3) so every hop stays on https — a
+ * redirect is not allowed to walk the fetch off to plain http or a data: URL.
+ * Returns { mediaType, b64 } or { error: 502|415 }.
+ */
+async function aiFetchImage(imageUrl) {
+  const MAX_BYTES = 3 * 1024 * 1024;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort('timeout'), 10000);
+  try {
+    let url = imageUrl;
+    let res = null;
+    for (let hop = 0; hop < 4; hop++) {
+      res = await fetch(url, { redirect: 'manual', signal: ctl.signal });
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get('Location');
+        if (!loc) return { error: 502 };
+        const next = new URL(loc, url);
+        if (next.protocol !== 'https:') return { error: 502 };   // no redirects off-https
+        url = next.href;
+        res = null;
+        continue;
+      }
+      break;
+    }
+    if (!res || !res.ok) return { error: 502 };
+    const type = (res.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+    if (!type.startsWith('image/')) return { error: 415 };
+    if (!AI_IMAGE_TYPES.includes(type)) return { error: 415 };
+    if (Number(res.headers.get('Content-Length') || 0) > MAX_BYTES) return { error: 502 };
+    // Read incrementally and bail at the cap — never buffer an oversized body
+    // whole just to measure it.
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_BYTES) {
+        try { await reader.cancel(); } catch { /* already closed */ }
+        return { error: 502 };
+      }
+      chunks.push(value);
+    }
+    if (!total) return { error: 502 };
+    return { mediaType: type, b64: bufToB64(concatBytes(...chunks)) };
+  } catch {
+    return { error: 502 };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function aiAssist(request, env) {
+  const body = await request.json().catch(() => ({}));
+  if (!/^[\w.-]+\/[\w.-]+$/.test(body.repo || '')) return json({ error: 'bad repo' }, 400);
+  const actor = await authActor(request, env, body.repo);
+  if (!actor) return json({ error: 'unauthorized' }, 401);
+  // `features: null` means the client-side default set, which never includes
+  // 'ai' — spending the owner's API credit takes an explicit grant.
+  if (!actor.admin && !(Array.isArray(actor.features) && actor.features.includes('ai'))) {
+    return json({ error: "the 'AI assist' feature is not enabled for your account" }, 403);
+  }
+  if (!env.AI_API_KEY) return json({ error: 'ai not configured', hint: 'wrangler secret put AI_API_KEY' }, 501);
+  const v = validateAiAssist(body);
+  if (v.error) return json({ error: v.error }, 400);
+
+  if (AI_TEXT_KINDS.includes(v.kind)) {
+    const ask = {
+      improve: 'Improve this website copy:',
+      shorten: 'Shorten this website copy while keeping its key points:',
+      tone: `Rewrite this website copy in this tone: ${v.instruction}`,
+      translate: `Translate this website copy to ${v.instruction}:`,
+      custom: v.instruction,
+    }[v.kind];
+    const r = await aiMessage(env, {
+      max_tokens: 16000,
+      system: AI_SYSTEM,
+      messages: [{ role: 'user', content: `${ask}\n\n${v.text}` }],
+    });
+    if (r.error) return json({ error: r.error }, r.status);
+    return json({ text: r.text });
+  }
+
+  if (v.kind === 'alt') {
+    const img = await aiFetchImage(v.imageUrl);
+    if (img.error === 415) return json({ error: 'that URL is not a supported image' }, 415);
+    if (img.error) return json({ error: 'could not fetch the image' }, 502);
+    const r = await aiMessage(env, {
+      max_tokens: 1024,
+      system: 'You write alt text for website images.',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.b64 } },
+          { type: 'text', text: 'Write one concise alt text for this image: plain text only, at most 125 characters, and no "image of" / "picture of" prefix. Describe what matters.' },
+        ],
+      }],
+    });
+    if (r.error) return json({ error: r.error }, r.status);
+    // Alt is an ATTRIBUTE value: force plain text, one line, sanely bounded.
+    const alt = r.text.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (!alt) return json({ error: 'ai returned nothing' }, 502);
+    return json({ alt });
+  }
+
+  // kind === 'fill' — draft every field of a new page from a one-line brief.
+  // Structured outputs pin the response to exactly the requested keys; the
+  // prompt also demands bare JSON so a model override without structured-output
+  // support still answers usably on the one retry without the format.
+  const schema = { type: 'object', properties: {}, required: v.fields.map(f => f.key), additionalProperties: false };
+  for (const f of v.fields) schema.properties[f.key] = { type: 'string' };
+  const fillPayload = {
+    max_tokens: 16000,
+    system: 'You draft the text content for a new web page. Respond with ONLY a JSON object mapping each'
+      + ' requested field key to its text. Values are plain text — no HTML tags, no markdown. Match each'
+      + " field's role: headlines short and punchy, body copy a sentence or three.",
+    messages: [{
+      role: 'user',
+      content: `Brief: ${v.brief}\n\nFields to write:\n${v.fields.map(f => `- ${f.key}${f.hint ? ` (${f.hint})` : ''}`).join('\n')}`,
+    }],
+  };
+  let r = await aiMessage(env, { ...fillPayload, output_config: { format: { type: 'json_schema', schema } } });
+  if (r.error && r.upstream === 400) r = await aiMessage(env, fillPayload);   // model without structured outputs
+  if (r.error) return json({ error: r.error }, r.status);
+  let parsed = null;
+  try { parsed = JSON.parse(r.text); } catch {
+    const m = /\{[\s\S]*\}/.exec(r.text);   // prose around the object — dig it out
+    if (m) { try { parsed = JSON.parse(m[0]); } catch { /* unparseable */ } }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return json({ error: 'ai returned unusable output' }, 502);
+  }
+  // Requested keys only, string values only. Null-prototype: a field literally
+  // named "__proto__" must stay plain data (same rule as commentCounts).
+  const fields = Object.create(null);
+  for (const f of v.fields) {
+    const val = Object.prototype.hasOwnProperty.call(parsed, f.key) ? parsed[f.key] : undefined;
+    if (typeof val === 'string' && val.trim()) fields[f.key] = aiStripWrapping(val).slice(0, 8000);
+  }
+  if (!Object.keys(fields).length) return json({ error: 'ai returned unusable output' }, 502);
+  return json({ fields });
+}
+
 // ─── People (Google sign-in allowlist) ───────────────────────────────────────
 // people:{repo} → [{ email, name, role: 'editor'|'member', days, paths? }]
 // `paths` (editors only) limits which file prefixes they may write; [''] = whole site.
@@ -944,7 +1230,7 @@ async function peopleList(request, env, url) {
 }
 
 // Menu features an admin can grant an editor. People/settings stay owner-only.
-const GRANTABLE_FEATURES = ['menu', 'findreplace', 'newpost', 'pagesettings', 'history', 'schedule', 'draft', 'makeeditable', 'comments'];
+const GRANTABLE_FEATURES = ['menu', 'findreplace', 'newpost', 'pagesettings', 'history', 'schedule', 'draft', 'makeeditable', 'comments', 'ai'];
 
 async function peopleUpsert(request, env) {
   const { repo, email, name, role, days, paths, keys, features, mode } = await request.json().catch(() => ({}));
