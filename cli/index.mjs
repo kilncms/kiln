@@ -6,6 +6,7 @@
  *   npx github:kilncms/kiln doctor     verify an existing Kiln installation
  *   npx github:kilncms/kiln update     refresh the on-page editor to the latest
  *   npx github:kilncms/kiln add-site   add this site to Kiln Cloud (hosted tier)
+ *   npx github:kilncms/kiln rescue <url>  copy your builder-hosted site to clean, Kiln-ready static HTML
  *
  * The wizard automates everything that CAN be automated (repo, worker, KV,
  * origins, secrets, wiring) and for the three steps platforms require a human
@@ -721,4 +722,5 @@ if (cmd === 'doctor') doctor(args);
 else if (cmd === 'tag') tagCmd(args);
 else if (cmd === 'update') update();
 else if (cmd === 'add-site') addSiteCloud();
+else if (cmd === 'rescue') import('./rescue.mjs').then(m => m.rescueCmd(rest.find(a => !a.startsWith('--')), args));
 else wizard();
