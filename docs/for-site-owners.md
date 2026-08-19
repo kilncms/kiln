@@ -87,7 +87,7 @@ For each person you also set:
   picker shows each section with the first words of its content, so you know exactly
   what you're granting. Leave it blank for the whole page.
 - **Feature grants** (editors) — which menu tools they get: drafts, history, new
-  posts, scheduling, the site menu, find & replace.
+  posts, scheduling, the site menu, find & replace, AI assist.
 - **Suggest-only publishing** (editors) — see below.
 
 Removing someone revokes their access immediately, active session included.
@@ -145,6 +145,34 @@ The worker enforces a hard allowlist on every editor commit — that one repo on
 the paths granted to them, and never CNAME, `_redirects`, `.github/`, `functions/`, or
 other sensitive files. No deletes, no force-pushes. And because every edit is a
 commit, anything they do is visible in your repo history and reversible.
+
+## AI assist (optional)
+
+Bring your own Anthropic API key and Kiln adds three small AI surfaces to the
+editor: a ✨ menu on the text toolbar (**Improve · Shorten · Change tone… ·
+Translate… · Custom…**, always with a before/after preview), **✨ Alt text** on
+the image toolbar, and an optional one-line brief on **＋ New post or page**
+that drafts the template's content for you.
+
+Setup is one command on your auth worker — the key is stored as a secret and
+never reaches the browser:
+
+```bash
+npx wrangler secret put AI_API_KEY
+```
+
+Two things worth knowing:
+
+- **Who sees it** — you (the owner) always have it once the key is set. Invited
+  editors only get the ✨ buttons if you grant them the **AI assist** feature in
+  People & access; each call spends your API credit, so the grant is opt-in.
+  Optionally set an `AI_MODEL` var on the worker to override the default
+  small/fast Claude model.
+- **Same rules as human edits** — AI output is treated exactly like typing: it
+  renders through the editor's sanitizer, stages like any edit, and publishes
+  through the same commit pipeline and server-side content guard. The AI can
+  suggest words; it can't sneak in scripts, and nothing goes live until you hit
+  Publish.
 
 ## Publishing, drafts, scheduling, history
 
