@@ -908,7 +908,7 @@ async function suggestionDecide(request, env) {
           content: b64FromUtf8(html), sha: cur.sha,
           // The SUGGESTER keeps authorship of their words; the decide record
           // (stored above) is where the approver is remembered.
-          author: { name: `${sug.by} (via Kiln)`, email: sug.email || 'kiln-editor@users.noreply.github.com' },
+          author: { name: `${sug.by} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' },
         }),
       });
       if (put.ok) {
