@@ -15,6 +15,7 @@ import {
   makeGh, getFile, resolvePageFile, editFile, putFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
 import { initPalette, openPalette } from './palette.js';
+import { initSuggest, suggestChanges, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -290,6 +291,7 @@ function workerAuthHeaders() {
 // at publish time, and same-field overwrites are gated by a confirm in publish().
 
 let presenceTimer = null;
+let presenceTickN = 0;
 async function presencePing() {
   try {
     const res = await fetch(`${cfg.worker}/presence`, {
@@ -300,12 +302,21 @@ async function presencePing() {
     if (!res.ok) return;
     const data = await res.json();
     if (data.scope) state.scope = data.scope;   // editor path/section grants (see decorateFields)
+    // A suggest-mode grant can arrive on a later tick (first ping offline) or
+    // change mid-session — keep the Publish button and gating honest. Both are
+    // idempotent and null-guarded before the bar renders.
+    refreshPublishButton();
+    applyFeatureGating();
     // One row per person (an older worker sent one row per page they'd visited).
     const seen = new Map();
     for (const o of data.online || []) if (!seen.has(o.name)) seen.set(o.name, o);
     state.online = [...seen.values()];
     updatePresenceUI(data.others || []);
     updateOnlineChip();
+    // Open-suggestions badge (admins): piggyback on the presence heartbeat, but
+    // lazily — every 3rd tick (~90s), a review-queue count doesn't need realtime.
+    presenceTickN++;
+    if (mode === 'admin' && presenceTickN % 3 === 1) refreshSuggestBadge();
   } catch { /* offline blip — presence is best-effort */ }
 }
 
@@ -360,6 +371,11 @@ function keyInScope(key) {
   return ks.some(p => key === p || key.startsWith(p));
 }
 
+/** Suggest-mode editor: their Publish proposes instead of committing (worker-enforced). */
+function isSuggestMode() {
+  return mode === 'editor' && !cfg.sandbox && state.scope?.mode === 'suggest';
+}
+
 /** Whether the current editor may use a given menu feature. Admins get everything. */
 function hasFeature(feature) {
   if (mode === 'admin' || cfg.sandbox) return true;   // sandbox demo showcases everything
@@ -371,15 +387,22 @@ function hasFeature(feature) {
 /** Hide menu items an invited editor hasn't been granted (applied after the bar renders). */
 function applyFeatureGating() {
   if (mode === 'admin' || cfg.sandbox) return;
+  // 'suggestreview' is deliberately not in the worker's GRANTABLE_FEATURES, so
+  // no invited editor ever has it — the review queue stays admin-only.
   const map = { 'kiln-menu': 'menu', 'kiln-findreplace': 'findreplace', 'kiln-newpost': 'newpost',
-    'kiln-pagesettings': 'pagesettings', 'kiln-history': 'history', 'kiln-makeblock': 'makeeditable', 'kiln-addsection': 'makeeditable' };
+    'kiln-pagesettings': 'pagesettings', 'kiln-history': 'history', 'kiln-makeblock': 'makeeditable', 'kiln-addsection': 'makeeditable',
+    'kiln-suggestions': 'suggestreview' };
   for (const [id, feat] of Object.entries(map)) {
     const el = document.getElementById(id);
     if (el && !hasFeature(feat)) el.style.display = 'none';
   }
-  // Draft/Schedule live in the pending-edits group; gate them too.
+  // Draft/Schedule/Share-preview live in the pending-edits group; gate them too.
+  // Suggest-mode editors lose Schedule (a schedule fires as a direct commit —
+  // the worker rejects it anyway) and Share preview (their preview branch is
+  // written per-suggestion instead); drafts stay — kiln-drafts never goes live.
   if (!hasFeature('draft')) { const d = document.getElementById('kiln-draft'); if (d) d.dataset.gated = '1'; }
-  if (!hasFeature('schedule')) { const s = document.getElementById('kiln-schedule'); if (s) s.dataset.gated = '1'; }
+  if (!hasFeature('schedule') || isSuggestMode()) { const s = document.getElementById('kiln-schedule'); if (s) s.dataset.gated = '1'; }
+  if (!hasFeature('draft') || isSuggestMode()) { const p = document.getElementById('kiln-sharepreview'); if (p) p.dataset.gated = '1'; }
 }
 
 function renderScopeNote() {
@@ -1772,9 +1795,28 @@ function flattenPending() {
   return edits;
 }
 
+/**
+ * Post-handoff clearing shared by schedule and suggest: the staged edits now
+ * live elsewhere (a worker schedule / suggestion), so retire the stage, the
+ * crash-recovery copy, the undo history (⌘Z must not revert the DOM out from
+ * under an already-handed-off edit) and the modified markers.
+ */
+function retireStaged() {
+  state.pending.clear();
+  clearSavedPending();
+  editHistory.undo.length = 0;
+  editHistory.redo.length = 0;
+  updateUndoUi();
+  document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
+  refreshPublishButton();
+}
+
 async function publish() {
   if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length) return;
   if (cfg.sandbox) return publishSandbox();
+  // Suggest-mode editors don't publish — their Publish proposes. (The worker's
+  // proxy guard enforces this server-side; the reroute here is the good UX.)
+  if (isSuggestMode()) return suggestChanges();
 
   // Edits inside a data-cms-partial (e.g. a shared footer or header) fan out to
   // every page; everything else commits to the current page only.
@@ -2501,6 +2543,10 @@ async function invitePanel() {
         <label style="margin-bottom:2px">Tools this editor can use</label>
         <div id="kiln-p-features" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin:2px 0 8px"></div>
         <p class="kiln-dim" style="margin:-2px 0 6px;font-size:12px">Editing text and images is always allowed. People &amp; access and site Settings stay owner-only.</p>
+        <label style="font-weight:normal;display:inline-flex;gap:6px;align-items:flex-start;margin:2px 0 4px;font-size:12.5px">
+          <input type="checkbox" id="kiln-p-suggest" style="margin-top:2px">
+          <span><strong>Suggest-only publishing</strong> — their Publish sends you a suggestion to
+          approve (under <em>Suggestions</em>) instead of changing the live site.</span></label>
       </div>
       <div class="kiln-modal-actions" style="justify-content:flex-start;margin-top:8px">
         <button class="kiln-btn-publish" id="kiln-p-add">Add person</button>
@@ -2667,10 +2713,11 @@ async function invitePanel() {
         const realPaths = (p.paths || []).filter(x => x && x !== '' && x !== '**');
         const keyScope = (p.keys || []).length ? ` · sections: ${p.keys.join(', ')}` : '';
         const scope = p.role === 'editor' ? ((realPaths.length ? realPaths.join(', ') : 'whole site') + keyScope) : '';
+        const roleLabel = p.role === 'editor' && p.mode === 'suggest' ? 'editor · suggest-only' : p.role;
         const row = document.createElement('div');
         row.className = 'kiln-inv-row';
         row.innerHTML = `<span><strong>${escapeHtml(p.name)}</strong>
-          <small>${escapeHtml(p.email)} · ${escapeHtml(p.role)}${scope ? ' · ' + escapeHtml(scope) : ''} · ${p.days ? p.days + 'd' : 'never expires'}</small></span>
+          <small>${escapeHtml(p.email)} · ${escapeHtml(roleLabel)}${scope ? ' · ' + escapeHtml(scope) : ''} · ${p.days ? p.days + 'd' : 'never expires'}</small></span>
           <button class="kiln-btn-ghost">Remove</button>`;
         row.querySelector('button').onclick = async () => {
           await fetch(`${cfg.worker}/admin/people/remove`, {
@@ -2696,11 +2743,13 @@ async function invitePanel() {
     const paths = m.querySelector('#kiln-p-paths').value.trim();
     const keys = m.querySelector('#kiln-p-keys').value.trim();
     const features = [...m.querySelectorAll('.kiln-p-feat:checked')].map(c => c.value);
+    const suggestOnly = m.querySelector('#kiln-p-suggest').checked;
     if (!email) return;
     const res = await fetch(`${cfg.worker}/admin/people`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
-      body: JSON.stringify({ repo: cfg.repo, email, name, role, days, paths, keys, features }),
+      body: JSON.stringify({ repo: cfg.repo, email, name, role, days, paths, keys, features,
+        ...(suggestOnly && { mode: 'suggest' }) }),
     });
     const data = await res.json();
     if (data.ok) {
@@ -2708,6 +2757,7 @@ async function invitePanel() {
       m.querySelector('#kiln-p-name').value = '';
       m.querySelector('#kiln-p-paths').value = '';
       m.querySelector('#kiln-p-keys').value = '';
+      m.querySelector('#kiln-p-suggest').checked = false;
       refreshPeople();
     }
   };
@@ -3447,16 +3497,8 @@ function schedulePanel() {
           desc: `${state.page.path} (${[...state.pending.keys()].slice(0, 3).join(', ')})` }) });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || 'failed');
-      state.pending.clear();
-      clearSavedPending();
-      // The edits now live in the schedule on the worker; retire undo history so
-      // ⌘Z can't revert the DOM out from under an already-scheduled edit (and redo
-      // can't re-stage it for a duplicate publish).
-      editHistory.undo.length = 0;
-      editHistory.redo.length = 0;
-      updateUndoUi();
-      document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
-      refreshPublishButton();
+      // The edits now live in the schedule on the worker — retire the stage.
+      retireStaged();
       status.textContent = `Scheduled for ${new Date(data.at).toLocaleString()} ✓ — safe to close.`;
       refreshList();
     } catch (err) { status.textContent = `Failed: ${err.message}`; }
@@ -3930,6 +3972,10 @@ function exitEditMode() {
 function renderAdminBar() {
   initPalette({ state, cfg, mode, pageInScope, keyInScope, humanizeKey, listSitePages, modal, setStatus, escapeHtml,
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main') });
+  initSuggest({ state, cfg, mode, modal, setStatus, escapeHtml, workerAuthHeaders, flattenPending, retireStaged,
+    saveDraft, journalAdd, humanizeKey,
+    fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
+    ghRequest: (method, path, body) => state.gh.request(method, path, body) });
   if ((localStorage.getItem('kiln_ui_mode') || 'fab') === 'bar') { renderTopBar(); return; }
   const fab = document.createElement('div');
   fab.id = 'kiln-fab-wrap';
@@ -3943,6 +3989,7 @@ function renderAdminBar() {
       <div id="kiln-grp-edits" class="kiln-fab-group" hidden>
         <div class="kiln-fab-label">Your unpublished edits</div>
         <button id="kiln-draft" class="kiln-fab-item">Save as draft</button>
+        <button id="kiln-sharepreview" class="kiln-fab-item">Share a preview link</button>
         <button id="kiln-schedule" class="kiln-fab-item">Schedule for later…</button>
         <button id="kiln-discard" class="kiln-fab-item kiln-fab-danger">Discard edits</button>
       </div>
@@ -3959,6 +4006,7 @@ function renderAdminBar() {
         <button id="kiln-palette-btn" class="kiln-fab-item">Search &amp; jump <span class="kiln-pal-kbd">⌘K</span></button>
         <button id="kiln-menu" class="kiln-fab-item">Site menu</button>
         <button id="kiln-findreplace" class="kiln-fab-item">Find &amp; replace</button>
+        ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-fab-item">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}
         ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
         <button id="kiln-settings" class="kiln-fab-item">Settings</button>
       </div>
@@ -4079,6 +4127,9 @@ function renderAdminBar() {
   fab.querySelector('#kiln-palette-btn').onclick = close(openPalette);
   fab.querySelector('#kiln-schedule').onclick = close(schedulePanel);
   fab.querySelector('#kiln-draft').onclick = close(saveDraft);
+  fab.querySelector('#kiln-sharepreview').onclick = close(sharePreviewPanel);
+  const sugBtn = fab.querySelector('#kiln-suggestions');
+  if (sugBtn) sugBtn.onclick = close(suggestionsPanel);
   const settingsBtn = fab.querySelector('#kiln-settings');
   if (settingsBtn) settingsBtn.onclick = close(settingsPanel);
   fab.querySelector('#kiln-signout').onclick = () => {
@@ -4094,6 +4145,7 @@ function renderAdminBar() {
   if (addSecBtn) addSecBtn.onclick = close(addSectionFlow);
 
   applyFeatureGating();
+  refreshPublishButton();   // suggest-mode label ("Suggest changes") from the first paint
   updateOnlineChip();
   setStatus(`Signed in as ${state.user} — click any outlined text to edit`, 'idle');
 }
@@ -4116,9 +4168,10 @@ function renderTopBar() {
     <button id="kiln-pagesettings" class="kiln-btn-ghost">Page</button>
     <button id="kiln-findreplace" class="kiln-btn-ghost">Replace</button>
     <button id="kiln-history" class="kiln-btn-ghost">History</button>
-    ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
+    ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button><button id="kiln-suggestions" class="kiln-btn-ghost" title="Review suggested changes">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
     <button id="kiln-settings" class="kiln-btn-ghost">Settings</button>
     <button id="kiln-draft" class="kiln-btn-ghost" hidden>Draft</button>
+    <button id="kiln-sharepreview" class="kiln-btn-ghost" hidden title="Save a draft, get a shareable link">Preview link</button>
     <button id="kiln-schedule" class="kiln-btn-ghost" hidden>Schedule</button>
     <button id="kiln-discard" class="kiln-btn-ghost" hidden>Discard</button>
     <button id="kiln-publish" class="kiln-btn-publish" disabled>Publish</button>
@@ -4137,7 +4190,10 @@ function renderTopBar() {
   bar.querySelector('#kiln-done').onclick = doneEditing;
   bar.querySelector('#kiln-discard').onclick = discardEdits;
   bar.querySelector('#kiln-draft').onclick = saveDraft;
+  bar.querySelector('#kiln-sharepreview').onclick = sharePreviewPanel;
   bar.querySelector('#kiln-schedule').onclick = schedulePanel;
+  const sugBtn = bar.querySelector('#kiln-suggestions');
+  if (sugBtn) sugBtn.onclick = suggestionsPanel;
   bar.querySelector('#kiln-signout').onclick = () => {
     if (state.pending.size && !confirm('Discard your unpublished edits and sign out?')) return;
     clearSavedPending();
@@ -4152,6 +4208,7 @@ function renderTopBar() {
   const settingsBtn = bar.querySelector('#kiln-settings');
   if (settingsBtn) settingsBtn.onclick = settingsPanel;
   applyFeatureGating();
+  refreshPublishButton();   // suggest-mode label ("Suggest changes") from the first paint
   updateOnlineChip();
   setStatus(`Signed in as ${state.user}`, 'idle');
 }
@@ -4365,7 +4422,9 @@ function refreshPublishButton() {
   const btn = document.getElementById('kiln-publish');
   if (btn) {
     btn.disabled = !anything;
-    btn.textContent = n ? `Publish ${n} edit${n > 1 ? 's' : ''}` : (anything ? 'Publish' : 'Publish');
+    // Suggest-mode editors propose — same button, honest label.
+    btn.textContent = isSuggestMode() ? 'Suggest changes'
+      : n ? `Publish ${n} edit${n > 1 ? 's' : ''}` : 'Publish';
   }
   const badge = document.getElementById('kiln-fab-badge');
   if (badge) { badge.hidden = !anything; badge.textContent = n || (state.pendingBinaries.size || state.pendingStructural.length ? '•' : ''); }
@@ -4374,12 +4433,14 @@ function refreshPublishButton() {
   if (grp) grp.hidden = !anything;
   const discard = document.getElementById('kiln-discard');
   if (discard) discard.textContent = n ? `Discard ${n} edit${n > 1 ? 's' : ''}` : 'Discard edits';
-  // Draft + Schedule need actual field edits (not just an uploaded binary), and
-  // an editor must be granted them (dataset.gated set by applyFeatureGating).
+  // Draft + Schedule + Share preview need actual field edits (not just an uploaded
+  // binary), and an editor must be granted them (dataset.gated set by applyFeatureGating).
   const sched = document.getElementById('kiln-schedule');
   if (sched) sched.style.display = (n && !sched.dataset.gated) ? '' : 'none';
   const draftBtn = document.getElementById('kiln-draft');
   if (draftBtn) draftBtn.style.display = (n && !draftBtn.dataset.gated) ? '' : 'none';
+  const shareBtn = document.getElementById('kiln-sharepreview');
+  if (shareBtn) shareBtn.style.display = (n && !shareBtn.dataset.gated) ? '' : 'none';
   savePendingToStorage();
 }
 
@@ -4695,6 +4756,26 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-inv-row small{color:#9ca3af;display:block;margin-top:1px}
 .kiln-dim{color:#9ca3af;font-size:12px;margin-top:10px;line-height:1.5}
 .kiln-np-step{font-size:13px;color:#4b5563;min-height:20px;line-height:1.5}
+/* Suggestions: the review queue + the little open-count badge on its button. */
+#kiln-sug-badge{display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;
+  border-radius:9px;background:var(--kiln-warn);color:#1c1300;font-size:10.5px;font-weight:700;
+  padding:0 5px;margin-left:5px;vertical-align:1px}
+#kiln-sug-badge[hidden]{display:none!important}
+.kiln-sug-item{border:1.5px solid #f3f4f6;border-radius:10px;padding:2px 4px}
+.kiln-sug-item .kiln-inv-row{border:none;padding:7px 8px}
+.kiln-sug-actions{display:flex;gap:6px;align-items:center;flex:none}
+.kiln-sug-actions .kiln-btn-publish{padding:6px 12px;font-size:12px}
+.kiln-sug-err{color:#b91c1c;font-size:12px;margin:0 8px 8px;line-height:1.45}
+.kiln-sug-diff{margin:0 8px 10px;border-top:1px solid #f3f4f6;padding-top:8px;font-size:12.5px;color:#374151}
+.kiln-sug-cols{display:grid;grid-template-columns:110px 1fr 1fr;gap:4px 10px;padding:4px 0;align-items:baseline}
+.kiln-sug-cols>span{overflow-wrap:anywhere}
+.kiln-sug-colhead{font:700 10.5px var(--kiln-font);text-transform:uppercase;letter-spacing:.05em;color:#9ca3af}
+.kiln-sug-before{color:#9ca3af;text-decoration:line-through;text-decoration-color:#fca5a5}
+.kiln-sug-after{color:#065f46}
+.kiln-sug-decided{margin-top:12px}
+.kiln-sug-decided summary{cursor:pointer;font-size:12.5px;color:#6b7280;margin-bottom:6px}
+.kiln-sug-decided .kiln-inv-row{margin-top:6px}
+.kiln-sug-preview-link{word-break:break-all;font-size:13.5px;color:var(--kiln-accent)}
 .kiln-repeat-item{position:relative}
 .kiln-item-ctl{position:absolute;top:8px;right:8px;display:flex;gap:5px;z-index:9999;opacity:0;transition:opacity .15s}
 .kiln-repeat-item:hover>.kiln-item-ctl{opacity:1}

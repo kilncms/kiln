@@ -56,6 +56,13 @@ If someone else is editing at the same time, you'll see who. If you both changed
 same piece of text, Kiln warns you before publishing and keeps both versions visible
 so nothing is silently lost.
 
+## Suggesting changes
+
+If your button says **Suggest changes** instead of Publish, your edits go to the site
+owner for approval rather than straight to the live site. Add a one-line note if you
+like, hit **Send suggestion**, and you're done — the owner reviews a before/after and
+approves or declines. Nothing you do can change the live site until they approve.
+
 ## "Read-only here" and limited access
 
 The owner may have given you access to specific pages, or specific sections of a
