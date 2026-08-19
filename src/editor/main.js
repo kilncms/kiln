@@ -16,6 +16,7 @@ import {
 } from '../github.js';
 import { initPalette, openPalette } from './palette.js';
 import { initSuggest, suggestChanges, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
+import { initComments, openComments, commentsTick } from './comments.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -169,6 +170,7 @@ async function init() {
   if (journalAll().length) runJournal();
   checkForDraft();
   startPresence();
+  initComments(cfg, mode, state, workerAuthHeaders, modal, setStatus, hasFeature, KILN_CHROME);
   // Owner-only: quietly check whether a newer editor build exists.
   if (mode === 'admin' && !cfg.sandbox) checkForUpdate();
 
@@ -318,6 +320,7 @@ async function presencePing() {
     presenceTickN++;
     if (mode === 'admin' && presenceTickN % 3 === 1) refreshSuggestBadge();
   } catch { /* offline blip — presence is best-effort */ }
+  commentsTick();   // comment badge/pins ride the same 30s tick (no second timer)
 }
 
 /** A small "who's online" pill in the Kiln menu header — everyone editing the site now. */
@@ -391,7 +394,7 @@ function applyFeatureGating() {
   // no invited editor ever has it — the review queue stays admin-only.
   const map = { 'kiln-menu': 'menu', 'kiln-findreplace': 'findreplace', 'kiln-newpost': 'newpost',
     'kiln-pagesettings': 'pagesettings', 'kiln-history': 'history', 'kiln-makeblock': 'makeeditable', 'kiln-addsection': 'makeeditable',
-    'kiln-suggestions': 'suggestreview' };
+    'kiln-suggestions': 'suggestreview', 'kiln-comments': 'comments' };
   for (const [id, feat] of Object.entries(map)) {
     const el = document.getElementById(id);
     if (el && !hasFeature(feat)) el.style.display = 'none';
@@ -2099,7 +2102,8 @@ function renderSandboxBanner() {
     #kiln-sandbox-banner button{flex:none}
   }
   [data-kiln-sandbox] #kiln-newpost,[data-kiln-sandbox] #kiln-menu,[data-kiln-sandbox] #kiln-pagesettings,
-  [data-kiln-sandbox] #kiln-findreplace,[data-kiln-sandbox] #kiln-history,[data-kiln-sandbox] #kiln-signout{display:none!important}`;
+  [data-kiln-sandbox] #kiln-findreplace,[data-kiln-sandbox] #kiln-history,[data-kiln-sandbox] #kiln-comments,
+  [data-kiln-sandbox] #kiln-signout{display:none!important}`;
   document.head.appendChild(st);
   const b = document.createElement('div');
   b.id = 'kiln-sandbox-banner';
@@ -2540,7 +2544,8 @@ async function invitePanel() {
         <button type="button" class="kiln-btn-pick" id="kiln-p-keypick" aria-expanded="false">▾ Choose sections</button></p>
       <div id="kiln-p-keylist" class="kiln-pick-box" style="display:none"></div>
       <div id="kiln-p-feat-wrap">
-        <label style="margin-bottom:2px">Tools this editor can use</label>
+        <label style="margin-bottom:2px">Tools this editor can use
+          <button type="button" class="kiln-btn-pick" id="kiln-p-reviewer" title="A comment-only seat: they review and leave comments, with no other tools">Reviewer preset</button></label>
         <div id="kiln-p-features" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin:2px 0 8px"></div>
         <p class="kiln-dim" style="margin:-2px 0 6px;font-size:12px">Editing text and images is always allowed. People &amp; access and site Settings stay owner-only.</p>
         <label style="font-weight:normal;display:inline-flex;gap:6px;align-items:flex-start;margin:2px 0 4px;font-size:12.5px">
@@ -2568,10 +2573,20 @@ async function invitePanel() {
     { v: 'menu', label: 'Edit site menu', def: false },
     { v: 'findreplace', label: 'Find & replace', def: false },
     { v: 'makeeditable', label: 'Make things editable', def: false },
+    { v: 'comments', label: 'Comments', def: false },
   ];
   m.querySelector('#kiln-p-features').innerHTML = FEATURES.map(f =>
     `<label style="font-weight:normal;display:inline-flex;gap:6px;align-items:center;font-size:12.5px;margin:0">
       <input type="checkbox" class="kiln-p-feat" value="${f.v}" ${f.def ? 'checked' : ''}> ${escapeHtml(f.label)}</label>`).join('');
+
+  // Reviewer preset: a comment-only seat — the Comments tool and nothing else,
+  // with the path/section scope cleared back to the defaults.
+  m.querySelector('#kiln-p-reviewer').onclick = (e) => {
+    e.preventDefault();
+    m.querySelectorAll('.kiln-p-feat').forEach(c => { c.checked = c.value === 'comments'; });
+    m.querySelector('#kiln-p-paths').value = '';
+    m.querySelector('#kiln-p-keys').value = '';
+  };
 
   // Show the scope fields only when adding an editor.
   const scopeEls = ['#kiln-p-paths-wrap', '#kiln-p-paths-hint', '#kiln-p-keys-wrap', '#kiln-p-keys-hint', '#kiln-p-feat-wrap']
@@ -3571,7 +3586,8 @@ const PICKABLE = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'a', 
 
 const KILN_CHROME = '#kiln-fab-wrap,#kiln-topbar,#kiln-toolbar,#kiln-modal,#kiln-imgpop,#kiln-previewbar,'
   + '#kiln-presence,#kiln-pickbar,#kiln-sandbox-banner,#kiln-scope-note,.kiln-item-ctl,.kiln-ctl-cell,.kiln-repeat-add,'
-  + '.kiln-filterbar,.kiln-filterbar-preview,.kiln-evbar,.kiln-img-handle';
+  + '.kiln-filterbar,.kiln-filterbar-preview,.kiln-evbar,.kiln-img-handle,'
+  + '#kiln-cmt-layer,#kiln-cmt-hint,#kiln-cmt-pop,#kiln-cmt-composer';
 
 function isKilnChrome(el) { return !!el.closest(KILN_CHROME); }
 
@@ -3998,6 +4014,7 @@ function renderAdminBar() {
         <button id="kiln-newpost" class="kiln-fab-item">＋ New post or page</button>
         <button id="kiln-pagesettings" class="kiln-fab-item">Page settings</button>
         <button id="kiln-history" class="kiln-fab-item">History &amp; restore</button>
+        <button id="kiln-comments" class="kiln-fab-item">💬 Comments</button>
         ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-addsection" class="kiln-fab-item">＋ Add a gallery or events</button>' : ''}
       ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-makeblock" class="kiln-fab-item">✨ Make text/images editable</button>' : ''}
       </div>
@@ -4130,6 +4147,7 @@ function renderAdminBar() {
   fab.querySelector('#kiln-sharepreview').onclick = close(sharePreviewPanel);
   const sugBtn = fab.querySelector('#kiln-suggestions');
   if (sugBtn) sugBtn.onclick = close(suggestionsPanel);
+  fab.querySelector('#kiln-comments').onclick = close(openComments);
   const settingsBtn = fab.querySelector('#kiln-settings');
   if (settingsBtn) settingsBtn.onclick = close(settingsPanel);
   fab.querySelector('#kiln-signout').onclick = () => {
@@ -4168,6 +4186,7 @@ function renderTopBar() {
     <button id="kiln-pagesettings" class="kiln-btn-ghost">Page</button>
     <button id="kiln-findreplace" class="kiln-btn-ghost">Replace</button>
     <button id="kiln-history" class="kiln-btn-ghost">History</button>
+    <button id="kiln-comments" class="kiln-btn-ghost">💬 Comments</button>
     ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button><button id="kiln-suggestions" class="kiln-btn-ghost" title="Review suggested changes">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
     <button id="kiln-settings" class="kiln-btn-ghost">Settings</button>
     <button id="kiln-draft" class="kiln-btn-ghost" hidden>Draft</button>
@@ -4187,6 +4206,7 @@ function renderTopBar() {
   bar.querySelector('#kiln-findreplace').onclick = findReplacePanel;
   bar.querySelector('#kiln-palette-btn').onclick = openPalette;
   bar.querySelector('#kiln-history').onclick = historyPanel;
+  bar.querySelector('#kiln-comments').onclick = openComments;
   bar.querySelector('#kiln-done').onclick = doneEditing;
   bar.querySelector('#kiln-discard').onclick = discardEdits;
   bar.querySelector('#kiln-draft').onclick = saveDraft;
@@ -4633,13 +4653,13 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-tb-label{color:#8b8e9c;margin-right:2px;font-size:11px}
 .kiln-tb-hint{color:#8b8e9c;font-size:11px;font-style:italic}
 #kiln-toolbar{cursor:grab;touch-action:none}
-#kiln-pickbar{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999998;display:flex;
+#kiln-pickbar,#kiln-cmt-hint{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999998;display:flex;
   align-items:center;gap:14px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
   color:#d6d8e1;font:13px/1.45 var(--kiln-font);padding:10px 16px;border-radius:13px;
   border:1px solid rgba(255,255,255,.1);box-shadow:0 12px 40px rgba(0,0,0,.4);max-width:92vw}
 #kiln-pickbar strong{color:#fff}
-#kiln-pickbar kbd{background:rgba(255,255,255,.12);border-radius:4px;padding:1px 5px;font-size:11px}
-#kiln-pickbar button{background:var(--kiln-accent);color:#fff;border:none;border-radius:8px;
+#kiln-pickbar kbd,#kiln-cmt-hint kbd{background:rgba(255,255,255,.12);border-radius:4px;padding:1px 5px;font-size:11px}
+#kiln-pickbar button,#kiln-cmt-hint button{background:var(--kiln-accent);color:#fff;border:none;border-radius:8px;
   padding:6px 14px;font:600 12px var(--kiln-font);cursor:pointer;white-space:nowrap}
 /* Restore-preview bar: same placement as the pick bar; the page shows the older
    version behind it until Keep or Cancel. */
@@ -4652,12 +4672,12 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 #kiln-previewbar .kiln-btn-publish{white-space:nowrap}
 .kiln-hist-row{flex-wrap:wrap}
 .kiln-hist-acts{display:flex;gap:6px;flex:none}
-.kiln-hist-acts .kiln-btn-ghost{font-size:11.5px;padding:5px 10px;white-space:nowrap}
+.kiln-hist-acts .kiln-btn-ghost,.kiln-cmt-thread .kiln-btn-ghost{font-size:11.5px;padding:5px 10px;white-space:nowrap}
 /* Ghost buttons are styled for the dark menu — inside white modals (history
    rows) they were almost invisible. Give them real contrast there. */
-.kiln-modal-body .kiln-inv-row .kiln-btn-ghost,.kiln-modal-body .kiln-hist-acts .kiln-btn-ghost{
+.kiln-modal-body .kiln-inv-row .kiln-btn-ghost,.kiln-modal-body .kiln-hist-acts .kiln-btn-ghost,.kiln-cmt-thread .kiln-btn-ghost{
   color:#1f2937;background:#f3f4f6;border:1px solid #cfd4db;font-weight:600}
-.kiln-modal-body .kiln-inv-row .kiln-btn-ghost:hover,.kiln-modal-body .kiln-hist-acts .kiln-btn-ghost:hover{
+.kiln-modal-body .kiln-inv-row .kiln-btn-ghost:hover,.kiln-modal-body .kiln-hist-acts .kiln-btn-ghost:hover,.kiln-cmt-thread .kiln-btn-ghost:hover{
   color:#fff;background:var(--kiln-accent);border-color:var(--kiln-accent)}
 .kiln-hist-live{color:#059669;font-weight:700}
 .kiln-pick-hover{outline:2px dashed #34d399!important;outline-offset:3px;cursor:copy!important}
@@ -4878,6 +4898,33 @@ body:has(#kiln-topbar){padding-top:46px!important}
 .kiln-pal-hit{background:rgba(251,191,36,.4);color:#fff;border-radius:3px;padding:0 2px}
 .kiln-pal-note{color:#8b8e9c;font:12.5px var(--kiln-font);padding:12px 10px 6px}
 .kiln-pal-foot{color:#6b7280;font:11px var(--kiln-font);padding:8px 10px 2px;border-top:1px solid rgba(255,255,255,.07);margin-top:8px}
-.kiln-pal-kbd{float:right;color:#6b7280;font-size:10px;border:1px solid rgba(255,255,255,.16);border-radius:5px;padding:1px 5px;margin-top:1px}`;
+.kiln-pal-kbd{float:right;color:#6b7280;font-size:10px;border:1px solid rgba(255,255,255,.16);border-radius:5px;padding:1px 5px;margin-top:1px}
+/* Comments: pins on the page, thread popover, composer, panel rows */
+#kiln-cmt-layer{position:fixed;inset:0;pointer-events:none;z-index:999998;font-family:var(--kiln-font)}
+.kiln-cmt-pin,.kiln-cmt-num{border-radius:50% 50% 50% 4px;background:var(--kiln-accent);color:#fff;display:flex;align-items:center;justify-content:center;font:700 11px var(--kiln-font)}
+.kiln-cmt-pin{position:absolute;transform:translate(-50%,-50%);width:24px;height:24px;border:2px solid #fff;box-shadow:0 2px 10px rgba(0,0,0,.35);cursor:pointer;pointer-events:auto;padding:0;transition:transform .12s}
+.kiln-cmt-pin:hover{transform:translate(-50%,-50%) scale(1.15)}
+.kiln-cmt-ghost{opacity:.6;border-style:dashed;background:#8b5cf6}
+.kiln-cmt-placing,.kiln-cmt-placing *{cursor:crosshair!important}
+#kiln-cmt-pop,#kiln-cmt-composer{position:fixed;z-index:9999998;width:300px;max-width:92vw;background:#fff;color:#1c1c28;border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.35);padding:14px;font-family:var(--kiln-font)}
+#kiln-cmt-pop{max-height:70vh;overflow-y:auto;padding-top:20px}
+#kiln-cmt-composer textarea{width:100%;min-height:76px;padding:9px;border:1.5px solid #e5e7eb;border-radius:10px;font:13.5px/1.45 var(--kiln-font);resize:vertical;box-sizing:border-box}
+#kiln-cmt-composer textarea:focus,.kiln-cmt-reply input[type=text]:focus{outline:none;border-color:var(--kiln-accent)}
+.kiln-cmt-head small,.kiln-cmt-meta,.kiln-cmt-as{color:#9ca3af;font-size:11.5px}
+.kiln-cmt-as{display:block;margin:6px 0 2px}
+.kiln-cmt-thread{border:1.5px solid #eef0f3;border-radius:12px;padding:12px;margin:0 0 10px;font-size:13px}
+.kiln-cmt-done{opacity:.78;background:#fafbfc}
+.kiln-cmt-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.kiln-cmt-num{flex:none;width:20px;height:20px}
+.kiln-cmt-msg{margin:0 0 8px}
+.kiln-cmt-meta{display:block;margin:8px 0 2px}
+.kiln-cmt-text{white-space:pre-wrap;overflow-wrap:break-word;color:#1f2937;line-height:1.5}
+.kiln-cmt-reply,.kiln-cmt-acts{display:flex;gap:6px;margin-top:8px}
+.kiln-cmt-reply input[type=text]{flex:1;min-width:0;width:auto;margin:0;padding:7px 9px;border:1.5px solid #e5e7eb;border-radius:9px;font-size:12.5px}
+.kiln-cmt-thread .kiln-cmt-del:hover{background:#ef4444;border-color:#ef4444}
+.kiln-cmt-resolved summary{cursor:pointer;font:600 12px var(--kiln-font);color:#6b7280;margin:4px 0 8px}
+#kiln-cmt-pop .kiln-cmt-thread{border:none;padding:0;margin:0}
+#kiln-comments{position:relative}
+#kiln-comments[data-badge]::after{content:attr(data-badge);position:absolute;top:50%;right:8px;transform:translateY(-50%);min-width:17px;height:17px;border-radius:9px;background:var(--kiln-warn);color:#1c1300;font:700 10.5px/17px var(--kiln-font);text-align:center;padding:0 4px}`;
   document.head.appendChild(style);
 }
