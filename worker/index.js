@@ -20,9 +20,13 @@
  *   POST /auth/refresh     {sid} → fresh access token
  *   POST /auth/logout      {sid}
  *   GET/POST /admin/people People allowlist (push-verified): add/remove editors & members
+ *   GET/POST /admin/api-tokens  scoped API tokens (push-verified); POST /admin/api-tokens/revoke
  *   GET  /google/login     ?origin=&return_to=&repo= → Google authorize (invited people)
  *   POST /google/claim     {code} → member session exchange
  *   ANY  /gh/*             session + path-scoped GitHub API proxy (editors)
+ *   GET  /api/v1/pages     list editable pages            (Bearer API token)
+ *   GET  /api/v1/fields    read a page's fields as JSON   (Bearer API token)
+ *   PATCH /api/v1/edits    apply field edits → one commit (Bearer API token)
  *
  * KV (binding: KILN):
  *   app:creds   {app_id, slug, client_id, client_secret, pk8}
@@ -30,6 +34,7 @@
  *   sid:<id>    {refresh_token}              (TTL 180 days, rotated)
  *   people:<repo> [{email,name,role,days,paths?}]  editor/member allowlist
  *   esess:<id>  {repo,name,role,email,paths}  (TTL = person.days)
+ *   atok:<sha>  {id,repo,name,paths,keys,readonly,created,exp}  API token, keyed by SHA-256(secret)  (TTL = days)
  *   itok:<repo> cached installation token    (TTL 50 min)
  *
  * Env vars: ALLOWED_ORIGINS — comma-separated site origins allowed to use auth.
@@ -39,7 +44,7 @@ const GH = 'https://api.github.com';
 const UA = 'kiln-auth-worker';
 
 import { handleCloud, expireStaleTrials } from './cloud.js';
-import { applyEdits } from '../src/engine.js';
+import { applyEdits, indexHtml, readValues, pageFileCandidates } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, isHtmlPath } from './sanitize-guard.js';
 
 // UTF-8-safe base64 (GitHub content is base64; edits re-applied at cron time).
@@ -90,6 +95,12 @@ export default {
       if (path === '/admin/people' && request.method === 'GET') return await cors(env, request, await peopleList(request, env, url));
       if (path === '/admin/people' && request.method === 'POST') return await cors(env, request, await peopleUpsert(request, env));
       if (path === '/admin/people/remove' && request.method === 'POST') return await cors(env, request, await peopleRemove(request, env));
+      if (path === '/admin/api-tokens' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenList(request, env, url));
+      if (path === '/admin/api-tokens' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenCreate(request, env));
+      if (path === '/admin/api-tokens/revoke' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenRevoke(request, env));
+      if (path === '/api/v1/pages' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiPages(request, env, url));
+      if (path === '/api/v1/fields' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiFields(request, env, url));
+      if (path === '/api/v1/edits' && request.method === 'PATCH') return (await rateLimited(request, env)) || await cors(env, request, await apiEdits(request, env));
       if (path === '/schedule' && request.method === 'POST') return await cors(env, request, await scheduleCreate(request, env));
       if (path === '/schedules' && request.method === 'GET') return await cors(env, request, await scheduleList(request, env, url));
       if (path === '/schedule/cancel' && request.method === 'POST') return await cors(env, request, await scheduleCancel(request, env));
@@ -357,7 +368,7 @@ function normalizePaths(paths) {
 }
 
 // Exported for unit tests (test/worker.test.js); the Workers runtime uses only the default export.
-export { pathInScope, isSensitivePath, normalizePaths };
+export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits };
 
 // ─── Scheduled publishing ────────────────────────────────────────────────────
 // sched:<id> → { repo, path, branch, content(b64), message, at, desc, by }
@@ -797,6 +808,278 @@ async function googleClaim(request, env) {
     }
   }
   return json({ ok: true, name: data.name, days: data.days });
+}
+
+// ─── API tokens (headless scoped access — Phase 0 of the REST API) ──────────
+// atok:<sha256hex(secret)> → { id, repo, name, paths, keys, readonly, created, exp }
+// An API token is a headless, scoped editor session: the owner mints a 64-hex
+// secret and hands it to a script/agent; every call rides the App installation
+// token but inherits the same guards as an invited editor (path scope,
+// sensitive-path denylist, sanitize-guard, section keys). Only the secret's
+// SHA-256 is stored — a KV dump can't be replayed as bearer tokens.
+
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function apiTokenCreate(request, env) {
+  const { repo, name, paths, keys, readonly, days } = await request.json().catch(() => ({}));
+  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  const label = String(name || '').trim().slice(0, 60);
+  if (!label) return json({ error: 'missing name' }, 400);
+  const d = Math.min(Math.max(Number(days) || 0, 0), 3650);   // 0 / absent = never expires
+  const secret = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
+  const record = {
+    id: crypto.randomUUID().replaceAll('-', '').slice(0, 8),
+    repo,
+    name: label,
+    paths: normalizePaths(paths),
+    keys: normalizePaths(keys).filter(k => k !== '').slice(0, 50),
+    readonly: !!readonly,
+    created: Date.now(),
+    exp: d ? Date.now() + d * 24 * 3600 * 1000 : null,
+  };
+  await env.KILN.put(`atok:${await sha256Hex(secret)}`, JSON.stringify(record),
+    d ? { expirationTtl: d * 24 * 3600 } : undefined);
+  // The secret appears in this response ONCE and is never recoverable again.
+  return json({ ok: true, token: secret, record });
+}
+
+async function apiTokenList(request, env, url) {
+  const repo = url.searchParams.get('repo') || '';
+  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  const tokens = [];
+  let cursor;
+  do {
+    const page = await env.KILN.list({ prefix: 'atok:', cursor });
+    for (const k of page.keys) {
+      const v = await env.KILN.get(k.name, 'json');
+      if (v && v.repo === repo) tokens.push(v);
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return json({ tokens: tokens.sort((a, b) => (b.created || 0) - (a.created || 0)) });
+}
+
+async function apiTokenRevoke(request, env) {
+  const { repo, id } = await request.json().catch(() => ({}));
+  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  if (!/^[a-f0-9]{8}$/.test(id || '')) return json({ error: 'bad id' }, 400);
+  let cursor;
+  do {
+    const page = await env.KILN.list({ prefix: 'atok:', cursor });
+    for (const k of page.keys) {
+      const v = await env.KILN.get(k.name, 'json');
+      if (v && v.repo === repo && v.id === id) {
+        await env.KILN.delete(k.name);
+        return json({ ok: true });
+      }
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return json({ error: 'not found' }, 404);
+}
+
+/** Resolve the API bearer secret to its stored token record, or null. */
+async function apiTokenAuth(request, env) {
+  const secret = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
+  if (!/^[a-f0-9]{64}$/.test(secret)) return null;
+  const tok = await env.KILN.get(`atok:${await sha256Hex(secret)}`, 'json');
+  // Trust the stored expiry, not only KV's TTL.
+  if (!tok || (tok.exp && tok.exp < Date.now())) return null;
+  return tok;
+}
+
+/** Section-key scope — same semantics as the editor's keyInScope: exact or prefix. */
+function keyInScope(key, keys) {
+  if (!Array.isArray(keys) || !keys.length) return true;
+  return keys.some(p => key === p || String(key).startsWith(p));
+}
+
+/** Filter a recursive git tree listing down to the HTML pages a token may see. */
+function apiPageFilter(tree, paths) {
+  const pages = [];
+  for (const e of tree || []) {
+    if (!e || e.type !== 'blob' || typeof e.path !== 'string') continue;
+    if (!isHtmlPath(e.path)) continue;
+    if (e.path.startsWith('_templates/') || e.path.startsWith('functions/')) continue;
+    if (isSensitivePath(e.path) || !pathInScope(e.path, paths)) continue;
+    pages.push(e.path);
+    if (pages.length >= 500) break;
+  }
+  return pages;
+}
+
+/** A page's fields as {key: {value, kind}}, limited to the token's section keys. */
+function apiFieldsFor(raw, keys) {
+  const { fields } = indexHtml(raw);
+  const values = readValues(raw);
+  const out = {};
+  for (const [key, f] of fields) {
+    if (!keyInScope(key, keys)) continue;
+    out[key] = { value: values[key], kind: f.kind };
+  }
+  return out;
+}
+
+/**
+ * Map the API's `path` (URL-ish or a repo file path) to the candidate repo
+ * files the token may touch: '/' → index.html, '/about/' → about/index.html,
+ * '/about' → about.html then about/index.html (engine.pageFileCandidates).
+ * Sensitive / out-of-scope candidates are dropped. {error: 400} = not an HTML
+ * page path; {error: 403} = nothing left in this token's scope.
+ */
+function apiPageCandidates(path, paths) {
+  let candidates;
+  try { candidates = pageFileCandidates(String(path || '/')); } catch { return { error: 400 }; }
+  if (!candidates.every(isHtmlPath)) return { error: 400 };
+  const ok = candidates.filter(c => !isSensitivePath(c) && pathInScope(c, paths));
+  return ok.length ? { candidates: ok } : { error: 403 };
+}
+
+/**
+ * Validate a PATCH /api/v1/edits batch before it touches GitHub. Shape checks
+ * plus the per-fragment content guard; the engine's attrNameAllowed stays the
+ * authority on WHICH attributes may be written (disallowed ones come back in
+ * `skipped`) — this only rejects values that aren't even attribute-shaped.
+ * Returns {status, error, detail?} to short-circuit, or null when acceptable.
+ */
+function validateApiEdits(edits, keys) {
+  if (!Array.isArray(edits) || !edits.length || edits.length > 500) return { status: 400, error: 'bad edits' };
+  for (const e of edits) {
+    if (!e || typeof e.key !== 'string' || !e.key) return { status: 400, error: 'every edit needs a key' };
+    if (!keyInScope(e.key, keys)) return { status: 403, error: "key outside this token's scope", detail: e.key };
+    const hasHtml = e.html !== undefined, hasAttr = e.attr !== undefined;
+    if (hasHtml === hasAttr) return { status: 400, error: 'each edit is {key,html} or {key,attr,value}', detail: e.key };
+    if (hasAttr) {
+      if (!/^[a-z][a-z-]*$/i.test(String(e.attr)) || e.value === undefined) {
+        return { status: 400, error: 'bad attr edit', detail: e.key };
+      }
+    } else {
+      const bad = checkFragment(String(e.html));
+      if (bad) return { status: 422, error: 'edit contains disallowed markup', detail: bad };
+    }
+  }
+  return null;
+}
+
+async function apiPages(request, env, url) {
+  const tok = await apiTokenAuth(request, env);
+  if (!tok) return json({ error: 'unauthorized' }, 401);
+  const itok = await installationToken(env, tok.repo);
+  if (!itok) return json({ error: 'app not installed on repo', repo: tok.repo }, 503);
+  const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA };
+  let ref = url.searchParams.get('ref') || '';
+  if (ref && !/^[\w./-]{1,100}$/.test(ref)) return json({ error: 'bad ref' }, 400);
+  try {
+    if (!ref) {
+      const repoRes = await fetch(`${GH}/repos/${tok.repo}`, { headers: h });
+      if (!repoRes.ok) return json({ error: 'could not read repo' }, 502);
+      ref = (await repoRes.json()).default_branch || 'main';
+    }
+    const treeRes = await fetch(`${GH}/repos/${tok.repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`, { headers: h });
+    if (treeRes.status === 404) return json({ error: 'ref not found' }, 404);
+    if (!treeRes.ok) return json({ error: 'could not list pages' }, 502);
+    const tree = await treeRes.json();
+    const out = { pages: apiPageFilter(tree.tree, tok.paths) };
+    if (tree.truncated) out.truncated = true;   // repo too big for one listing — pages is partial
+    return json(out);
+  } catch {
+    return json({ error: 'could not list pages' }, 502);
+  }
+}
+
+async function apiFields(request, env, url) {
+  const tok = await apiTokenAuth(request, env);
+  if (!tok) return json({ error: 'unauthorized' }, 401);
+  const resolved = apiPageCandidates(url.searchParams.get('path'), tok.paths);
+  if (resolved.error === 400) return json({ error: 'not an HTML page path' }, 400);
+  if (resolved.error) return json({ error: "outside this token's path scope" }, 403);
+  const itok = await installationToken(env, tok.repo);
+  if (!itok) return json({ error: 'app not installed on repo', repo: tok.repo }, 503);
+  const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA };
+  for (const candidate of resolved.candidates) {
+    let res;
+    try { res = await fetch(`${GH}/repos/${tok.repo}/contents/${encodeURIComponent(candidate)}`, { headers: h }); }
+    catch { return json({ error: 'could not read page' }, 502); }
+    if (res.status === 404) continue;
+    if (!res.ok) return json({ error: 'could not read page' }, 502);
+    const cur = await res.json();
+    if (typeof cur.content !== 'string') return json({ error: 'could not read page' }, 502);
+    return json({ path: candidate, fields: apiFieldsFor(utf8FromB64(cur.content), tok.keys) });
+  }
+  return json({ error: 'page not found' }, 404);
+}
+
+async function apiEdits(request, env) {
+  const tok = await apiTokenAuth(request, env);
+  if (!tok) return json({ error: 'unauthorized' }, 401);
+  if (tok.readonly) return json({ error: 'read-only token' }, 403);
+  const { path, edits, message } = await request.json().catch(() => ({}));
+  const resolved = apiPageCandidates(path, tok.paths);
+  if (resolved.error === 400) return json({ error: 'not an HTML page path' }, 400);
+  if (resolved.error) return json({ error: "outside this token's path scope" }, 403);
+  const invalid = validateApiEdits(edits, tok.keys);
+  if (invalid) return json({ error: invalid.error, ...(invalid.detail !== undefined && { detail: invalid.detail }) }, invalid.status);
+  const itok = await installationToken(env, tok.repo);
+  if (!itok) return json({ error: 'app not installed on repo', repo: tok.repo }, 503);
+  const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
+
+  const readPage = async (p) => {
+    const res = await fetch(`${GH}/repos/${tok.repo}/contents/${encodeURIComponent(p)}`, { headers: h });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`read ${res.status}`);
+    const cur = await res.json();
+    if (typeof cur.content !== 'string') throw new Error('unreadable content');
+    return cur;
+  };
+
+  try {
+    // Resolve to the first candidate that exists, then fetch → apply → guard →
+    // PUT, with ONE refetch-and-retry on a sha conflict (same merge model as the
+    // editor's editFile: edits re-locate fields by key against the fresh source,
+    // so concurrent edits to different fields merge cleanly).
+    let filePath = null, cur = null;
+    for (const candidate of resolved.candidates) {
+      cur = await readPage(candidate);
+      if (cur) { filePath = candidate; break; }
+    }
+    if (!filePath) return json({ error: 'page not found' }, 404);
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt) {
+        cur = await readPage(filePath);
+        if (!cur) return json({ error: 'page not found' }, 404);
+      }
+      const source = utf8FromB64(cur.content);
+      const { html, applied, skipped } = applyEdits(source, edits);
+      if (!applied.length) return json({ error: 'no edits could be applied', skipped }, 422);
+      if (html === source) return json({ ok: true, unchanged: true, commit: null, applied, skipped });
+      // Same server-side content guard as editor writes: the new document may
+      // introduce nothing executable that isn't already committed. Fails closed.
+      const bad = checkDocumentWrite(source, html);
+      if (bad) return json({ error: 'blocked: edits cannot add scripts or executable markup', detail: bad }, 422);
+      const put = await fetch(`${GH}/repos/${tok.repo}/contents/${encodeURIComponent(filePath)}`, {
+        method: 'PUT', headers: h,
+        body: JSON.stringify({
+          message: (typeof message === 'string' && message.trim()) ? message : `Kiln API: update ${filePath}`,
+          content: b64FromUtf8(html), sha: cur.sha,
+          author: { name: `${tok.name} (via Kiln API)`, email: 'kiln-api@users.noreply.github.com' },
+        }),
+      });
+      if (put.ok) {
+        const out = await put.json();
+        return json({ ok: true, commit: { sha: out.commit?.sha, url: out.commit?.html_url }, applied, skipped });
+      }
+      const err = await put.json().catch(() => ({}));
+      const conflict = put.status === 409 || (put.status === 422 && /sha/i.test(err.message || ''));
+      if (!conflict) return json({ error: 'commit failed', detail: err.message || String(put.status) }, 502);
+    }
+    return json({ error: 'conflict: page changed while editing, try again' }, 409);
+  } catch {
+    return json({ error: 'could not apply edits safely' }, 502);
+  }
 }
 
 // ─── GitHub proxy for editor sessions ────────────────────────────────────────
