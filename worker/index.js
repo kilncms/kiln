@@ -418,8 +418,8 @@ async function scheduleCreate(request, env) {
   // A schedule fires as a DIRECT commit (runDueSchedules, installation token) —
   // letting a suggest-mode editor schedule would sidestep the proxy's
   // suggest guard entirely. Same door, same lock.
-  if (!actor.admin && actor.mode === 'suggest') {
-    return json({ error: 'suggest-mode: publish goes through suggestions' }, 403);
+  if (!actor.admin && (actor.mode === 'suggest' || actor.mode === 'review')) {
+    return json({ error: actor.mode === 'review' ? 'review-mode: comment-only access' : 'suggest-mode: publish goes through suggestions' }, 403);
   }
   if (!actor.admin && (isSensitivePath(path) || !pathInScope(path, actor.paths))) {
     return json({ error: 'outside your editing scope' }, 403);
@@ -804,6 +804,7 @@ async function suggestionCreate(request, env) {
   if (!actor) return json({ error: 'unauthorized' }, 401);
   // An admin's suggestion would have no reviewer above them — they publish directly.
   if (actor.admin) return json({ error: 'admins publish directly' }, 400);
+  if (actor.mode === 'review') return json({ error: 'review-mode: comment-only access' }, 403);
   const v = validateSuggestionInput({ path, edits, note, branch, baseSha }, actor.keys);
   if (v.status) return json({ error: v.error, ...(v.detail !== undefined && { detail: v.detail }) }, v.status);
   // Same write scope as a live publish: the session's path grants + the
@@ -968,9 +969,10 @@ async function peopleUpsert(request, env) {
     // known-grantable set; empty/undefined → a sensible default applied client-side.
     if (Array.isArray(features)) person.features = features.filter(f => GRANTABLE_FEATURES.includes(f));
     // Suggest-mode: this editor's Publish becomes a suggestion an admin reviews
-    // (enforced by the /gh proxy — see suggestWriteViolation). Only the literal
-    // 'suggest' is stored; any other value means normal direct publishing.
-    if (mode === 'suggest') person.mode = 'suggest';
+    // (enforced by the /gh proxy — see suggestWriteViolation). Review-mode: a
+    // comment-only seat — every proxy write is refused. Only these two literals
+    // are stored; any other value means normal direct publishing.
+    if (mode === 'suggest' || mode === 'review') person.mode = mode;
   }
   const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
   people.push(person);
@@ -1099,7 +1101,7 @@ async function googleCallback(url, env) {
     const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
     const exp = person.days ? Date.now() + person.days * 24 * 3600 * 1000 : null;  // days:0 = never
     await env.KILN.put(`esess:${session}`,
-      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], features: person.features || null, mode: person.mode === 'suggest' ? 'suggest' : null, created: Date.now(), exp }),
+      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], features: person.features || null, mode: person.mode === 'suggest' || person.mode === 'review' ? person.mode : null, created: Date.now(), exp }),
       person.days ? { expirationTtl: person.days * 24 * 3600 } : undefined);
     const fp = { 'kiln-esession': session, 'kiln-name': displayName, 'kiln-repo': state.repo };
     if (exp) fp['kiln-exp'] = String(exp);
@@ -1572,6 +1574,10 @@ async function ghProxy(request, env, ghPath) {
   // publishing to the live branch goes through the suggestions queue. Checked
   // FIRST so a misdirected publish gets the intentional 403 before we spend
   // GitHub calls on content verification.
+  // Review-mode sessions are comment-only: the proxy is read-only for them.
+  if (sess.mode === 'review' && !['GET', 'HEAD'].includes(request.method)) {
+    return json({ error: 'review-mode: comment-only access' }, 403);
+  }
   if (sess.mode === 'suggest' && !['GET', 'HEAD'].includes(request.method)) {
     let sbody = null;
     try { sbody = JSON.parse(await request.clone().text()); } catch { /* non-JSON → treated as branch-less */ }

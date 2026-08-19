@@ -446,6 +446,8 @@ function updatePresenceUI(others) {
 function decorateFields() {
   // Out-of-scope page for this editor: leave everything read-only, say why.
   if (mode === 'editor' && !pageInScope()) { renderScopeNote(); return; }
+  // Review-mode seats comment; they never see edit affordances.
+  if (mode === 'editor' && state.scope?.mode === 'review') return;
 
   document.querySelectorAll('[data-cms]').forEach((el) => {
     const key = el.getAttribute('data-cms');
@@ -2586,6 +2588,8 @@ async function invitePanel() {
     m.querySelectorAll('.kiln-p-feat').forEach(c => { c.checked = c.value === 'comments'; });
     m.querySelector('#kiln-p-paths').value = '';
     m.querySelector('#kiln-p-keys').value = '';
+    m.querySelector('#kiln-p-suggest').checked = false;
+    m.dataset.mode = 'review';   // comment-only: the worker refuses every write for this seat
   };
 
   // Show the scope fields only when adding an editor.
@@ -2728,7 +2732,8 @@ async function invitePanel() {
         const realPaths = (p.paths || []).filter(x => x && x !== '' && x !== '**');
         const keyScope = (p.keys || []).length ? ` · sections: ${p.keys.join(', ')}` : '';
         const scope = p.role === 'editor' ? ((realPaths.length ? realPaths.join(', ') : 'whole site') + keyScope) : '';
-        const roleLabel = p.role === 'editor' && p.mode === 'suggest' ? 'editor · suggest-only' : p.role;
+        const roleLabel = p.role === 'editor' && p.mode === 'suggest' ? 'editor · suggest-only'
+          : p.role === 'editor' && p.mode === 'review' ? 'editor · review-only' : p.role;
         const row = document.createElement('div');
         row.className = 'kiln-inv-row';
         row.innerHTML = `<span><strong>${escapeHtml(p.name)}</strong>
@@ -2764,7 +2769,7 @@ async function invitePanel() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
       body: JSON.stringify({ repo: cfg.repo, email, name, role, days, paths, keys, features,
-        ...(suggestOnly && { mode: 'suggest' }) }),
+        ...(suggestOnly ? { mode: 'suggest' } : m.dataset.mode === 'review' ? { mode: 'review' } : {}) }),
     });
     const data = await res.json();
     if (data.ok) {
@@ -2773,6 +2778,7 @@ async function invitePanel() {
       m.querySelector('#kiln-p-paths').value = '';
       m.querySelector('#kiln-p-keys').value = '';
       m.querySelector('#kiln-p-suggest').checked = false;
+      delete m.dataset.mode;
       refreshPeople();
     }
   };
@@ -4440,6 +4446,12 @@ function refreshPublishButton() {
   // A queued upload with no field edit still needs a Publish to commit it.
   const anything = n || state.pendingBinaries.size || state.pendingStructural.length;
   const btn = document.getElementById('kiln-publish');
+  if (mode === 'editor' && state.scope?.mode === 'review') {
+    if (btn) btn.hidden = true;
+    const d = document.getElementById('kiln-draft');
+    if (d) d.hidden = true;
+    return;
+  }
   if (btn) {
     btn.disabled = !anything;
     // Suggest-mode editors propose — same button, honest label.
