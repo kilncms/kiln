@@ -20,6 +20,7 @@
  *   POST /auth/refresh     {sid} → fresh access token
  *   POST /auth/logout      {sid}
  *   GET/POST /admin/people People allowlist (push-verified): add/remove editors & members
+ *   GET/POST /admin/api-tokens  scoped API tokens (push-verified); POST /admin/api-tokens/revoke
  *   GET  /google/login     ?origin=&return_to=&repo= → Google authorize (invited people)
  *   POST /google/claim     {code} → member session exchange
  *   ANY  /gh/*             session + path-scoped GitHub API proxy (editors)
@@ -30,6 +31,7 @@
  *   sid:<id>    {refresh_token}              (TTL 180 days, rotated)
  *   people:<repo> [{email,name,role,days,paths?}]  editor/member allowlist
  *   esess:<id>  {repo,name,role,email,paths}  (TTL = person.days)
+ *   atok:<sha>  {id,repo,name,paths,keys,readonly,created,exp}  API token, keyed by SHA-256(secret)  (TTL = days)
  *   itok:<repo> cached installation token    (TTL 50 min)
  *
  * Env vars: ALLOWED_ORIGINS — comma-separated site origins allowed to use auth.
@@ -90,6 +92,9 @@ export default {
       if (path === '/admin/people' && request.method === 'GET') return await cors(env, request, await peopleList(request, env, url));
       if (path === '/admin/people' && request.method === 'POST') return await cors(env, request, await peopleUpsert(request, env));
       if (path === '/admin/people/remove' && request.method === 'POST') return await cors(env, request, await peopleRemove(request, env));
+      if (path === '/admin/api-tokens' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenList(request, env, url));
+      if (path === '/admin/api-tokens' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenCreate(request, env));
+      if (path === '/admin/api-tokens/revoke' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenRevoke(request, env));
       if (path === '/schedule' && request.method === 'POST') return await cors(env, request, await scheduleCreate(request, env));
       if (path === '/schedules' && request.method === 'GET') return await cors(env, request, await scheduleList(request, env, url));
       if (path === '/schedule/cancel' && request.method === 'POST') return await cors(env, request, await scheduleCancel(request, env));
@@ -797,6 +802,77 @@ async function googleClaim(request, env) {
     }
   }
   return json({ ok: true, name: data.name, days: data.days });
+}
+
+// ─── API tokens (headless scoped access — Phase 0 of the REST API) ──────────
+// atok:<sha256hex(secret)> → { id, repo, name, paths, keys, readonly, created, exp }
+// An API token is a headless, scoped editor session: the owner mints a 64-hex
+// secret and hands it to a script/agent; every call rides the App installation
+// token but inherits the same guards as an invited editor (path scope,
+// sensitive-path denylist, sanitize-guard, section keys). Only the secret's
+// SHA-256 is stored — a KV dump can't be replayed as bearer tokens.
+
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function apiTokenCreate(request, env) {
+  const { repo, name, paths, keys, readonly, days } = await request.json().catch(() => ({}));
+  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  const label = String(name || '').trim().slice(0, 60);
+  if (!label) return json({ error: 'missing name' }, 400);
+  const d = Math.min(Math.max(Number(days) || 0, 0), 3650);   // 0 / absent = never expires
+  const secret = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
+  const record = {
+    id: crypto.randomUUID().replaceAll('-', '').slice(0, 8),
+    repo,
+    name: label,
+    paths: normalizePaths(paths),
+    keys: normalizePaths(keys).filter(k => k !== '').slice(0, 50),
+    readonly: !!readonly,
+    created: Date.now(),
+    exp: d ? Date.now() + d * 24 * 3600 * 1000 : null,
+  };
+  await env.KILN.put(`atok:${await sha256Hex(secret)}`, JSON.stringify(record),
+    d ? { expirationTtl: d * 24 * 3600 } : undefined);
+  // The secret appears in this response ONCE and is never recoverable again.
+  return json({ ok: true, token: secret, record });
+}
+
+async function apiTokenList(request, env, url) {
+  const repo = url.searchParams.get('repo') || '';
+  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  const tokens = [];
+  let cursor;
+  do {
+    const page = await env.KILN.list({ prefix: 'atok:', cursor });
+    for (const k of page.keys) {
+      const v = await env.KILN.get(k.name, 'json');
+      if (v && v.repo === repo) tokens.push(v);
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return json({ tokens: tokens.sort((a, b) => (b.created || 0) - (a.created || 0)) });
+}
+
+async function apiTokenRevoke(request, env) {
+  const { repo, id } = await request.json().catch(() => ({}));
+  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  if (!/^[a-f0-9]{8}$/.test(id || '')) return json({ error: 'bad id' }, 400);
+  let cursor;
+  do {
+    const page = await env.KILN.list({ prefix: 'atok:', cursor });
+    for (const k of page.keys) {
+      const v = await env.KILN.get(k.name, 'json');
+      if (v && v.repo === repo && v.id === id) {
+        await env.KILN.delete(k.name);
+        return json({ ok: true });
+      }
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return json({ error: 'not found' }, 404);
 }
 
 // ─── GitHub proxy for editor sessions ────────────────────────────────────────
