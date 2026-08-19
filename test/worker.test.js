@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits } from '../worker/index.js';
+import { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath } from '../worker/index.js';
 
 test('pathInScope: whole-site grants', () => {
   for (const p of [[''], ['*'], ['**'], []]) assert.equal(pathInScope('anything/here.html', p), true);
@@ -124,4 +124,57 @@ test('validateApiEdits: shape, size, key scope, fragment guard', () => {
   // attrNameAllowed stays the engine's call: "onclick" is letters-only, so the
   // validator passes it and applyEdits reports it in `skipped` instead.
   assert.equal(validateApiEdits([{ key: 'k', attr: 'onclick', value: 'x' }], []), null);
+});
+
+test('normalizePagePath: opaque string, leading slash stripped, empty/traversal/oversize rejected', () => {
+  assert.equal(normalizePagePath('/about.html'), 'about.html');
+  assert.equal(normalizePagePath('//blog/post.html'), 'blog/post.html');
+  assert.equal(normalizePagePath('  /a  '), 'a');
+  assert.equal(normalizePagePath('a'.repeat(300)), 'a'.repeat(300));   // at the cap
+  assert.equal(normalizePagePath('a'.repeat(301)), null);
+  for (const bad of ['', '/', '   ', 'blog/../CNAME', 'a..b', undefined, 42])
+    assert.equal(normalizePagePath(bad), null, `should reject: ${bad}`);
+});
+
+test('validateCommentInput: normalizes path + text, anchor optional', () => {
+  const ok = validateCommentInput({ path: '/pricing.html', text: '  needs a comma  ' });
+  assert.deepEqual(ok, { page: 'pricing.html', text: 'needs a comma', anchor: null });
+  assert.equal(validateCommentInput({ path: '/p.html', text: 'x'.repeat(4000) }).error, undefined);
+  assert.equal(validateCommentInput({ path: '/p.html', text: 'x'.repeat(4001) }).error, 'text too long');
+  assert.equal(validateCommentInput({ path: '/p.html', text: '   ' }).error, 'missing text');
+  assert.equal(validateCommentInput({ path: '/p.html' }).error, 'missing text');
+  assert.equal(validateCommentInput({ path: '', text: 'hi' }).error, 'bad path');
+  assert.equal(validateCommentInput({ path: '/a/../b', text: 'hi' }).error, 'bad path');
+  assert.equal(validateCommentInput().error, 'bad path');
+});
+
+test('validateCommentInput: anchor caps — opaque but bounded', () => {
+  const good = { key: 'hero_headline', sel: 'main > h1', x: 0, y: 100, extra: 'kept' };
+  assert.deepEqual(validateCommentInput({ path: '/p', text: 'hi', anchor: good }).anchor, good); // stored as sent
+  assert.equal(validateCommentInput({ path: '/p', text: 'hi', anchor: null }).anchor, null);
+  for (const bad of [
+    'sel-as-string', ['array'], 7,                              // not a plain object
+    { key: 'k'.repeat(201) },                                   // key over 200
+    { sel: 42 },                                                // sel not a string
+    { x: -1 }, { y: 101 }, { x: NaN }, { x: '50' },             // x/y outside 0–100 numbers
+    { blob: 'x'.repeat(600) },                                  // serialized form over 600
+  ])
+    assert.equal(validateCommentInput({ path: '/p', text: 'hi', anchor: bad }).error, 'bad anchor',
+      `should reject anchor: ${JSON.stringify(bad)}`);
+});
+
+test('commentKey: URI-encoded page keeps `:`-delimited keys unambiguous', () => {
+  const key = commentKey('owner/repo', 'blog/a:b c.html', 'abc123def456');
+  assert.equal(key, 'cmt:owner/repo:blog%2Fa%3Ab%20c.html:abc123def456');
+  // Round-trip: repo and the encoded page contain no raw `:`, so the key always
+  // splits into exactly [cmt, repo, page, id].
+  const parts = key.split(':');
+  assert.equal(parts.length, 4);
+  assert.equal(decodeURIComponent(parts[2]), 'blog/a:b c.html');
+  assert.equal(parts[3], 'abc123def456');
+  // The id-less form is the page's list prefix — and can't bleed into a sibling
+  // page that shares a text prefix.
+  const prefix = commentKey('owner/repo', 'about', '');
+  assert.equal(commentKey('owner/repo', 'about', 'abc123def456').startsWith(prefix), true);
+  assert.equal(commentKey('owner/repo', 'about2', 'abc123def456').startsWith(prefix), false);
 });

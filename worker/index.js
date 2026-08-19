@@ -27,6 +27,11 @@
  *   GET  /api/v1/pages     list editable pages            (Bearer API token)
  *   GET  /api/v1/fields    read a page's fields as JSON   (Bearer API token)
  *   PATCH /api/v1/edits    apply field edits → one commit (Bearer API token)
+ *   GET  /comments         ?repo=&path= → a page's comment threads
+ *   GET  /comments/counts  ?repo= → open-thread count per page (badge)
+ *   POST /comments         new thread ({path,text,anchor?}) or reply ({path,thread,text})
+ *   POST /comments/resolve {path,thread,resolved} → resolve / reopen
+ *   POST /comments/delete  {path,thread} → delete a thread (admin only)
  *
  * KV (binding: KILN):
  *   app:creds   {app_id, slug, client_id, client_secret, pk8}
@@ -36,6 +41,8 @@
  *   esess:<id>  {repo,name,role,email,paths}  (TTL = person.days)
  *   atok:<sha>  {id,repo,name,paths,keys,readonly,created,exp}  API token, keyed by SHA-256(secret)  (TTL = days)
  *   itok:<repo> cached installation token    (TTL 50 min)
+ *   cmt:<repo>:<encodeURIComponent(page)>:<threadId>  comment thread
+ *               {id,page,status,anchor,created,resolved,messages}  (no TTL — kept until deleted)
  *
  * Env vars: ALLOWED_ORIGINS — comma-separated site origins allowed to use auth.
  */
@@ -105,6 +112,11 @@ export default {
       if (path === '/schedules' && request.method === 'GET') return await cors(env, request, await scheduleList(request, env, url));
       if (path === '/schedule/cancel' && request.method === 'POST') return await cors(env, request, await scheduleCancel(request, env));
       if (path === '/presence' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await presencePing(request, env));
+      if (path === '/comments' && request.method === 'GET') return await cors(env, request, await commentList(request, env, url));
+      if (path === '/comments' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentPost(request, env));
+      if (path === '/comments/counts' && request.method === 'GET') return await cors(env, request, await commentCounts(request, env, url));
+      if (path === '/comments/resolve' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentResolve(request, env));
+      if (path === '/comments/delete' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentDelete(request, env));
       if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
       if (path === '/google/callback') return googleCallback(url, env);
       if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
@@ -368,7 +380,7 @@ function normalizePaths(paths) {
 }
 
 // Exported for unit tests (test/worker.test.js); the Workers runtime uses only the default export.
-export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits };
+export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath };
 
 // ─── Scheduled publishing ────────────────────────────────────────────────────
 // sched:<id> → { repo, path, branch, content(b64), message, at, desc, by }
@@ -576,6 +588,157 @@ async function presencePing(request, env) {
   return json({ ok: true, others, online, scope });
 }
 
+// ─── Comments (review threads pinned to pages) ──────────────────────────────
+// cmt:<repo>:<encodeURIComponent(page)>:<threadId> → thread record. Comments are
+// plain-text DATA returned as JSON — never written into site HTML, so the
+// sanitizers don't apply; escaping at render time is the editor UI's job.
+// Author identity always comes from the auth actor, never the body (no spoofing).
+// No TTL: threads persist until an admin deletes them. Read-modify-write on
+// replies is last-write-wins (same as people/presence) — acceptable for review
+// chatter, not a ledger.
+
+/** Page paths are opaque strings: trim, drop leading slashes, cap at 300 chars,
+ *  refuse empty / `..`. Returns the normalized page or null. */
+function normalizePagePath(path) {
+  if (typeof path !== 'string') return null;
+  const p = path.trim().replace(/^\/+/, '');
+  if (!p || p.length > 300 || p.includes('..')) return null;
+  return p;
+}
+
+/** KV key for one thread. The page is URI-encoded so a page containing `:` (or
+ *  anything else) can't forge the key's delimiters — repo is [\w.-/] only, so
+ *  splitting on `:` stays unambiguous. */
+function commentKey(repo, page, id) {
+  return `cmt:${repo}:${encodeURIComponent(page)}:${id}`;
+}
+
+/** Validate a comment write. Returns { error } or the normalized { page, text, anchor }.
+ *  `anchor` is an opaque client hint ({key?, sel?, x?, y?}) — stored as sent, but
+ *  size-capped so a hostile client can't stuff arbitrary payloads into KV. */
+function validateCommentInput({ path, text, anchor } = {}) {
+  const page = normalizePagePath(path);
+  if (!page) return { error: 'bad path' };
+  if (typeof text !== 'string' || !text.trim()) return { error: 'missing text' };
+  const t = text.trim();
+  if (t.length > 4000) return { error: 'text too long' };
+  let a = null;
+  if (anchor !== undefined && anchor !== null) {
+    if (typeof anchor !== 'object' || Array.isArray(anchor)) return { error: 'bad anchor' };
+    let ser;
+    try { ser = JSON.stringify(anchor); } catch { return { error: 'bad anchor' }; }
+    if (typeof ser !== 'string' || ser.length > 600) return { error: 'bad anchor' };
+    for (const k of ['key', 'sel'])
+      if (anchor[k] !== undefined && (typeof anchor[k] !== 'string' || anchor[k].length > 200)) return { error: 'bad anchor' };
+    for (const k of ['x', 'y'])
+      if (anchor[k] !== undefined && !(typeof anchor[k] === 'number' && Number.isFinite(anchor[k]) && anchor[k] >= 0 && anchor[k] <= 100)) return { error: 'bad anchor' };
+    a = anchor;
+  }
+  return { page, text: t, anchor: a };
+}
+
+async function commentList(request, env, url) {
+  const repo = url.searchParams.get('repo') || '';
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'bad repo' }, 400);
+  const actor = await authActor(request, env, repo);
+  if (!actor) return json({ error: 'unauthorized' }, 401);
+  const page = normalizePagePath(url.searchParams.get('path') || '');
+  if (!page) return json({ error: 'bad path' }, 400);
+  const threads = [];
+  let truncated = false, cursor;
+  do {
+    const batch = await env.KILN.list({ prefix: commentKey(repo, page, ''), cursor });
+    for (const k of batch.keys) {
+      if (threads.length >= 300) { truncated = true; break; }
+      const v = await env.KILN.get(k.name, 'json');
+      if (v) threads.push(v);
+    }
+    cursor = truncated || batch.list_complete ? null : batch.cursor;
+  } while (cursor);
+  threads.sort((a, b) => (b.created || 0) - (a.created || 0));
+  return json(truncated ? { threads, truncated: true } : { threads });
+}
+
+async function commentCounts(request, env, url) {
+  const repo = url.searchParams.get('repo') || '';
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'bad repo' }, 400);
+  const actor = await authActor(request, env, repo);
+  if (!actor) return json({ error: 'unauthorized' }, 401);
+  // Null-prototype map: a page literally named "__proto__" must stay plain data.
+  const counts = Object.create(null);
+  let total = 0, seen = 0, truncated = false, cursor;
+  do {
+    const batch = await env.KILN.list({ prefix: `cmt:${repo}:`, cursor });
+    for (const k of batch.keys) {
+      if (seen >= 1000) { truncated = true; break; }
+      seen++;
+      const v = await env.KILN.get(k.name, 'json');
+      if (!v || v.status !== 'open') continue;
+      counts[v.page] = (counts[v.page] || 0) + 1;
+      total++;
+    }
+    cursor = truncated || batch.list_complete ? null : batch.cursor;
+  } while (cursor);
+  return json(truncated ? { counts, total, truncated: true } : { counts, total });
+}
+
+async function commentPost(request, env) {
+  const { repo, path, thread, text, anchor } = await request.json().catch(() => ({}));
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
+  const actor = await authActor(request, env, repo);
+  if (!actor) return json({ error: 'unauthorized' }, 401);
+  // Anchors belong to new threads only; on a reply the field is ignored.
+  const v = validateCommentInput({ path, text, anchor: thread == null ? anchor : undefined });
+  if (v.error) return json({ error: v.error }, 400);
+  const msg = { by: actor.name, email: actor.email, ts: Date.now(), text: v.text };
+  if (thread != null) {
+    if (!/^[a-f0-9]{12}$/.test(String(thread))) return json({ error: 'bad thread' }, 400);
+    const key = commentKey(repo, v.page, thread);
+    const t = await env.KILN.get(key, 'json');
+    if (!t) return json({ error: 'not found' }, 404);
+    if ((t.messages || []).length >= 200) return json({ error: 'thread full' }, 413);
+    t.messages = [...(t.messages || []), msg];
+    // Replying to a resolved thread does NOT reopen it — reopening is explicit.
+    await env.KILN.put(key, JSON.stringify(t));
+    return json({ thread: t });
+  }
+  const id = [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, '0')).join('');
+  const t = { id, page: v.page, status: 'open', anchor: v.anchor, created: Date.now(), resolved: null, messages: [msg] };
+  await env.KILN.put(commentKey(repo, v.page, id), JSON.stringify(t));
+  return json({ thread: t });
+}
+
+async function commentResolve(request, env) {
+  const { repo, path, thread, resolved } = await request.json().catch(() => ({}));
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
+  const actor = await authActor(request, env, repo);
+  if (!actor) return json({ error: 'unauthorized' }, 401);
+  const page = normalizePagePath(path);
+  if (!page || !/^[a-f0-9]{12}$/.test(String(thread || '')) || typeof resolved !== 'boolean') {
+    return json({ error: 'bad request' }, 400);
+  }
+  const key = commentKey(repo, page, thread);
+  const t = await env.KILN.get(key, 'json');
+  if (!t) return json({ error: 'not found' }, 404);
+  t.status = resolved ? 'resolved' : 'open';
+  t.resolved = resolved ? { by: actor.name, ts: Date.now() } : null;
+  await env.KILN.put(key, JSON.stringify(t));
+  return json({ thread: t });
+}
+
+async function commentDelete(request, env) {
+  const { repo, path, thread } = await request.json().catch(() => ({}));
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
+  const actor = await authActor(request, env, repo);
+  if (!actor) return json({ error: 'unauthorized' }, 401);
+  // Deletion is destructive and unscoped — owner only; editors (incl. reviewers) get 403.
+  if (!actor.admin) return json({ error: 'admin only' }, 403);
+  const page = normalizePagePath(path);
+  if (!page || !/^[a-f0-9]{12}$/.test(String(thread || ''))) return json({ error: 'bad request' }, 400);
+  await env.KILN.delete(commentKey(repo, page, thread));
+  return json({ ok: true });
+}
+
 // ─── People (Google sign-in allowlist) ───────────────────────────────────────
 // people:{repo} → [{ email, name, role: 'editor'|'member', days, paths? }]
 // `paths` (editors only) limits which file prefixes they may write; [''] = whole site.
@@ -591,7 +754,7 @@ async function peopleList(request, env, url) {
 }
 
 // Menu features an admin can grant an editor. People/settings stay owner-only.
-const GRANTABLE_FEATURES = ['menu', 'findreplace', 'newpost', 'pagesettings', 'history', 'schedule', 'draft', 'makeeditable'];
+const GRANTABLE_FEATURES = ['menu', 'findreplace', 'newpost', 'pagesettings', 'history', 'schedule', 'draft', 'makeeditable', 'comments'];
 
 async function peopleUpsert(request, env) {
   const { repo, email, name, role, days, paths, keys, features } = await request.json().catch(() => ({}));
