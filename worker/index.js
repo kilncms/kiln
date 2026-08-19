@@ -32,6 +32,9 @@
  *   POST /comments         new thread ({path,text,anchor?}) or reply ({path,thread,text})
  *   POST /comments/resolve {path,thread,resolved} → resolve / reopen
  *   POST /comments/delete  {path,thread} → delete a thread (admin only)
+ *   GET  /suggestions      ?repo= → suggestions (admins: all; editors: their own)
+ *   POST /suggestions      editor submits {path,edits,note?,branch?,baseSha?}
+ *   POST /suggestions/decide {id,approve,note?} → approve (server-side merge) / decline (admin only)
  *
  * KV (binding: KILN):
  *   app:creds   {app_id, slug, client_id, client_secret, pk8}
@@ -43,6 +46,9 @@
  *   itok:<repo> cached installation token    (TTL 50 min)
  *   cmt:<repo>:<encodeURIComponent(page)>:<threadId>  comment thread
  *               {id,page,status,anchor,created,resolved,messages}  (no TTL — kept until deleted)
+ *   sug:<repo>:<12hex>  suggestion {id,page,by,email,ts,note,edits:[{key,html}|{key,attr,value}],
+ *               branch|null,baseSha|null,status:'open'|'approved'|'declined',
+ *               decided:{by,ts,note?}|null,commit:{sha,url}|null}  (no TTL — the review trail persists)
  *
  * Env vars: ALLOWED_ORIGINS — comma-separated site origins allowed to use auth.
  */
@@ -117,6 +123,9 @@ export default {
       if (path === '/comments/counts' && request.method === 'GET') return await cors(env, request, await commentCounts(request, env, url));
       if (path === '/comments/resolve' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentResolve(request, env));
       if (path === '/comments/delete' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentDelete(request, env));
+      if (path === '/suggestions' && request.method === 'GET') return await cors(env, request, await suggestionList(request, env, url));
+      if (path === '/suggestions' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionCreate(request, env));
+      if (path === '/suggestions/decide' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionDecide(request, env));
       if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
       if (path === '/google/callback') return googleCallback(url, env);
       if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
@@ -380,7 +389,7 @@ function normalizePaths(paths) {
 }
 
 // Exported for unit tests (test/worker.test.js); the Workers runtime uses only the default export.
-export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath };
+export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath, validateSuggestionInput, suggestWriteViolation };
 
 // ─── Scheduled publishing ────────────────────────────────────────────────────
 // sched:<id> → { repo, path, branch, content(b64), message, at, desc, by }
@@ -391,7 +400,7 @@ async function authActor(request, env, repo) {
   const sess = request.headers.get('X-Kiln-Session');
   if (sess && /^[a-f0-9]{64}$/.test(sess)) {
     const e = await env.KILN.get(`esess:${sess}`, 'json');
-    if (e && (!e.exp || e.exp >= Date.now()) && e.repo === repo && e.role === 'editor') return { name: e.name, email: e.email, paths: e.paths || [''], admin: false };
+    if (e && (!e.exp || e.exp >= Date.now()) && e.repo === repo && e.role === 'editor') return { name: e.name, email: e.email, paths: e.paths || [''], keys: e.keys || [], mode: e.mode || null, admin: false };
   }
   if (await requirePush(request, repo)) return { name: 'admin', admin: true };
   return null;
@@ -406,6 +415,12 @@ async function scheduleCreate(request, env) {
   if (edits && (!Array.isArray(edits) || edits.length > 500)) return json({ error: 'bad edits' }, 400);
   const actor = await authActor(request, env, repo);
   if (!actor) return json({ error: 'forbidden' }, 403);
+  // A schedule fires as a DIRECT commit (runDueSchedules, installation token) —
+  // letting a suggest-mode editor schedule would sidestep the proxy's
+  // suggest guard entirely. Same door, same lock.
+  if (!actor.admin && actor.mode === 'suggest') {
+    return json({ error: 'suggest-mode: publish goes through suggestions' }, 403);
+  }
   if (!actor.admin && (isSensitivePath(path) || !pathInScope(path, actor.paths))) {
     return json({ error: 'outside your editing scope' }, 403);
   }
@@ -548,7 +563,7 @@ async function presencePing(request, env) {
     const e = await env.KILN.get(`esess:${sess}`, 'json');
     if (e && (!e.exp || e.exp >= Date.now()) && e.repo === repo && e.role === 'editor') {
       who = e.name; role = 'editor';
-      scope = { paths: e.paths || [''], keys: e.keys || [], features: e.features || null };  // editor UI uses this to gate handles + menu
+      scope = { paths: e.paths || [''], keys: e.keys || [], features: e.features || null, mode: e.mode || null };  // editor UI uses this to gate handles + menu + suggest-mode publish
     }
   }
   if (!who && (await requirePushCached(request, env, repo))) {
@@ -739,6 +754,181 @@ async function commentDelete(request, env) {
   return json({ ok: true });
 }
 
+// ─── Suggestions (suggest-mode publishing: propose → review → merge) ────────
+// sug:<repo>:<12hex> → suggestion record (see the KV block above). A suggestion
+// is a DEFERRED editor write: the same field-level {key,html}|{key,attr,value}
+// edits a live publish sends, held in KV until an admin decides. Approval runs
+// the identical server-side merge as PATCH /api/v1/edits — re-apply by key
+// against the CURRENT page, content-guard, PUT with the fresh sha — so interim
+// publishes to other fields survive and nothing executable can ride in. Edits
+// are validated at submission time (shape, fragment guard, section keys) AND
+// content-guarded again at approval; the suggester keeps commit authorship
+// while the decide record keeps the approver. No TTL: the trail persists.
+
+/** Validate a suggestion submission against the SESSION's section keys.
+ *  Returns { error, status, detail? } to reject, or the normalized
+ *  { page, edits, note, branch, baseSha }. Per-edit rules are validateApiEdits'
+ *  — a suggestion inherits exactly the checks a live API write gets. */
+function validateSuggestionInput({ path, edits, note, branch, baseSha } = {}, keys) {
+  const page = normalizePagePath(path);
+  if (!page) return { error: 'bad path', status: 400 };
+  const invalid = validateApiEdits(edits, keys);
+  if (invalid) return { error: invalid.error, status: invalid.status, ...(invalid.detail !== undefined && { detail: invalid.detail }) };
+  let n = '';
+  if (note !== undefined && note !== null) {
+    if (typeof note !== 'string' || note.length > 500) return { error: 'bad note', status: 400 };
+    n = note.trim();
+  }
+  // The optional preview branch must be a kiln scratch branch (the only heads a
+  // suggest-mode session may create — see suggestWriteViolation); it is stored
+  // for the admin's "Open preview" link, never dereferenced server-side.
+  let b = null;
+  if (branch !== undefined && branch !== null && branch !== '') {
+    if (typeof branch !== 'string' || branch.includes('..') || !/^kiln[/-][\w./-]{1,80}$/.test(branch)) {
+      return { error: 'bad branch', status: 400 };
+    }
+    b = branch;
+  }
+  let base = null;
+  if (baseSha !== undefined && baseSha !== null && baseSha !== '') {
+    if (!/^[a-f0-9]{40}$/.test(String(baseSha))) return { error: 'bad baseSha', status: 400 };
+    base = baseSha;
+  }
+  return { page, edits, note: n, branch: b, baseSha: base };
+}
+
+async function suggestionCreate(request, env) {
+  const { repo, path, edits, note, branch, baseSha } = await request.json().catch(() => ({}));
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
+  const actor = await authActor(request, env, repo);
+  if (!actor) return json({ error: 'unauthorized' }, 401);
+  // An admin's suggestion would have no reviewer above them — they publish directly.
+  if (actor.admin) return json({ error: 'admins publish directly' }, 400);
+  const v = validateSuggestionInput({ path, edits, note, branch, baseSha }, actor.keys);
+  if (v.status) return json({ error: v.error, ...(v.detail !== undefined && { detail: v.detail }) }, v.status);
+  // Same write scope as a live publish: the session's path grants + the
+  // sensitive denylist. A suggestion an admin approves must never reach a page
+  // the suggester couldn't have touched themselves.
+  if (isSensitivePath(v.page) || !pathInScope(v.page, actor.paths)) {
+    return json({ error: 'outside your editing scope' }, 403);
+  }
+  const id = [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, '0')).join('');
+  const sug = {
+    id, page: v.page, by: actor.name, email: actor.email, ts: Date.now(), note: v.note,
+    edits: v.edits, branch: v.branch, baseSha: v.baseSha, status: 'open', decided: null, commit: null,
+  };
+  await env.KILN.put(`sug:${repo}:${id}`, JSON.stringify(sug));
+  return json({ suggestion: sug });
+}
+
+async function suggestionList(request, env, url) {
+  const repo = url.searchParams.get('repo') || '';
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'bad repo' }, 400);
+  const actor = await authActor(request, env, repo);
+  if (!actor) return json({ error: 'unauthorized' }, 401);
+  const suggestions = [];
+  let truncated = false, cursor;
+  do {
+    const batch = await env.KILN.list({ prefix: `sug:${repo}:`, cursor });
+    for (const k of batch.keys) {
+      if (suggestions.length >= 300) { truncated = true; break; }
+      const v = await env.KILN.get(k.name, 'json');
+      if (!v) continue;
+      // Editors see only their own submissions; admins review everything.
+      if (!actor.admin && v.email !== actor.email) continue;
+      suggestions.push(v);
+    }
+    cursor = truncated || batch.list_complete ? null : batch.cursor;
+  } while (cursor);
+  suggestions.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const counts = { open: suggestions.filter(s => s.status === 'open').length };
+  return json(truncated ? { suggestions, counts, truncated: true } : { suggestions, counts });
+}
+
+async function suggestionDecide(request, env) {
+  const { repo, id, approve, note } = await request.json().catch(() => ({}));
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
+  const actor = await authActor(request, env, repo);
+  if (!actor) return json({ error: 'unauthorized' }, 401);
+  // Deciding lands (or buries) someone else's words on the live site — owner only.
+  if (!actor.admin) return json({ error: 'admin only' }, 403);
+  if (!/^[a-f0-9]{12}$/.test(String(id || '')) || typeof approve !== 'boolean') return json({ error: 'bad request' }, 400);
+  const key = `sug:${repo}:${id}`;
+  const sug = await env.KILN.get(key, 'json');
+  if (!sug) return json({ error: 'not found' }, 404);
+  if (sug.status !== 'open') return json({ error: 'already decided' }, 409);
+  const decided = { by: actor.name, ts: Date.now() };
+  if (typeof note === 'string' && note.trim()) decided.note = note.trim().slice(0, 500);
+
+  if (!approve) {
+    sug.status = 'declined';
+    sug.decided = decided;
+    await env.KILN.put(key, JSON.stringify(sug));
+    return json({ suggestion: sug });
+  }
+
+  // Approve = the same merge as PATCH /api/v1/edits: fetch the CURRENT page,
+  // re-apply the suggestion's edits by key, content-guard fail-closed, PUT with
+  // the fresh sha, ONE refetch-and-retry on a sha conflict. On conflict or a
+  // guard rejection the suggestion STAYS open so the admin can retry/decline.
+  const itok = await installationToken(env, repo);
+  if (!itok) return json({ error: 'app not installed on repo', repo }, 503);
+  const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
+  const readPage = async () => {
+    const res = await fetch(`${GH}/repos/${repo}/contents/${encodeURIComponent(sug.page)}`, { headers: h });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`read ${res.status}`);
+    const cur = await res.json();
+    if (typeof cur.content !== 'string') throw new Error('unreadable content');
+    return cur;
+  };
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const cur = await readPage();
+      if (!cur) return json({ error: 'page not found' }, 404);
+      const source = utf8FromB64(cur.content);
+      const { html, applied, skipped } = applyEdits(source, sug.edits);
+      if (!applied.length) return json({ error: 'no edits could be applied', skipped }, 422);
+      if (html === source) {
+        // The page already says this (perhaps the admin made the same edit) —
+        // nothing to commit, but the suggestion is honored.
+        sug.status = 'approved';
+        sug.decided = decided;
+        await env.KILN.put(key, JSON.stringify(sug));
+        return json({ suggestion: sug, unchanged: true });
+      }
+      // Same server-side content guard as every editor write path: the merged
+      // document may introduce nothing executable. Fails closed.
+      const bad = checkDocumentWrite(source, html);
+      if (bad) return json({ error: 'blocked: suggestion would add scripts or executable markup', detail: bad }, 422);
+      const put = await fetch(`${GH}/repos/${repo}/contents/${encodeURIComponent(sug.page)}`, {
+        method: 'PUT', headers: h,
+        body: JSON.stringify({
+          message: `Suggestion by ${sug.by}: ${sug.note || sug.page}`,
+          content: b64FromUtf8(html), sha: cur.sha,
+          // The SUGGESTER keeps authorship of their words; the decide record
+          // (stored above) is where the approver is remembered.
+          author: { name: `${sug.by} (via Kiln)`, email: sug.email || 'kiln-editor@users.noreply.github.com' },
+        }),
+      });
+      if (put.ok) {
+        const out = await put.json();
+        sug.status = 'approved';
+        sug.decided = decided;
+        sug.commit = { sha: out.commit?.sha, url: out.commit?.html_url };
+        await env.KILN.put(key, JSON.stringify(sug));
+        return json({ suggestion: sug, applied, skipped });
+      }
+      const err = await put.json().catch(() => ({}));
+      const conflict = put.status === 409 || (put.status === 422 && /sha/i.test(err.message || ''));
+      if (!conflict) return json({ error: 'commit failed', detail: err.message || String(put.status) }, 502);
+    }
+    return json({ error: 'conflict: the page changed while approving — try again' }, 409);
+  } catch {
+    return json({ error: 'could not apply the suggestion safely' }, 502);
+  }
+}
+
 // ─── People (Google sign-in allowlist) ───────────────────────────────────────
 // people:{repo} → [{ email, name, role: 'editor'|'member', days, paths? }]
 // `paths` (editors only) limits which file prefixes they may write; [''] = whole site.
@@ -757,7 +947,7 @@ async function peopleList(request, env, url) {
 const GRANTABLE_FEATURES = ['menu', 'findreplace', 'newpost', 'pagesettings', 'history', 'schedule', 'draft', 'makeeditable', 'comments'];
 
 async function peopleUpsert(request, env) {
-  const { repo, email, name, role, days, paths, keys, features } = await request.json().catch(() => ({}));
+  const { repo, email, name, role, days, paths, keys, features, mode } = await request.json().catch(() => ({}));
   if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
   const addr = String(email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) return json({ error: 'bad email' }, 400);
@@ -777,6 +967,10 @@ async function peopleUpsert(request, env) {
     // Per-editor feature grants (which menu tools they can use). Sanitized to the
     // known-grantable set; empty/undefined → a sensible default applied client-side.
     if (Array.isArray(features)) person.features = features.filter(f => GRANTABLE_FEATURES.includes(f));
+    // Suggest-mode: this editor's Publish becomes a suggestion an admin reviews
+    // (enforced by the /gh proxy — see suggestWriteViolation). Only the literal
+    // 'suggest' is stored; any other value means normal direct publishing.
+    if (mode === 'suggest') person.mode = 'suggest';
   }
   const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
   people.push(person);
@@ -905,7 +1099,7 @@ async function googleCallback(url, env) {
     const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
     const exp = person.days ? Date.now() + person.days * 24 * 3600 * 1000 : null;  // days:0 = never
     await env.KILN.put(`esess:${session}`,
-      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], features: person.features || null, created: Date.now(), exp }),
+      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], features: person.features || null, mode: person.mode === 'suggest' ? 'suggest' : null, created: Date.now(), exp }),
       person.days ? { expirationTtl: person.days * 24 * 3600 } : undefined);
     const fp = { 'kiln-esession': session, 'kiln-name': displayName, 'kiln-repo': state.repo };
     if (exp) fp['kiln-exp'] = String(exp);
@@ -1311,6 +1505,40 @@ function proxyAllowed(method, path, repo) {
   });
 }
 
+// Suggest-mode publish guard: a suggest-mode editor edits normally but cannot
+// land anything on the live branch — their Publish goes through /suggestions,
+// and the only DIRECT writes allowed are to kiln scratch branches (kiln-… /
+// kiln/…, e.g. kiln-drafts and kiln/suggest-* previews). Enforced fail-closed:
+//   • PUT /contents: the body's `branch` must name a kiln branch. An absent
+//     branch means the repo default — blocked, as is main/master/anything else.
+//   • PATCH /git/refs/heads/<b>: only kiln heads may move.
+//   • POST /git/refs: may only create refs/heads/kiln* heads. Tag refs are left
+//     to the existing rules (named versions are feature-gated away from suggest
+//     editors, so no extra machinery here).
+// Reads are untouched, as are the git-data POSTs (blobs/trees/commits) — those
+// become visible only when a ref points at them, and refs are guarded above.
+// `body` is the request's parsed JSON body (null when absent/non-JSON, which
+// for PUT /contents means no branch → blocked). Exported for unit tests.
+const KILN_BRANCH_RE = /^kiln[/-]/;
+function suggestWriteViolation(method, path, body) {
+  const deny = 'suggest-mode: publish goes through suggestions';
+  let clean = String(path).split('?')[0];
+  // Decode before matching: GitHub's router accepts %2F-encoded refs, so
+  // `/git/refs/heads%2Fmain` must be judged as `/git/refs/heads/main`.
+  try { clean = decodeURIComponent(clean); } catch { /* malformed — judge raw */ }
+  if (method === 'PUT' && clean.includes('/contents/')) {
+    const branch = body && typeof body.branch === 'string' ? body.branch : '';
+    if (!KILN_BRANCH_RE.test(branch)) return deny;
+  }
+  const heads = /\/git\/refs\/heads\/(.+)$/.exec(clean);
+  if (method === 'PATCH' && heads && !KILN_BRANCH_RE.test(heads[1])) return deny;
+  if (method === 'POST' && /\/git\/refs$/.test(clean)) {
+    const ref = body && typeof body.ref === 'string' ? body.ref : '';
+    if (ref.startsWith('refs/heads/') && !KILN_BRANCH_RE.test(ref.slice('refs/heads/'.length))) return deny;
+  }
+  return null;
+}
+
 async function ghProxy(request, env, ghPath) {
   const sessId = request.headers.get('X-Kiln-Session') || '';
   if (!/^[a-f0-9]{64}$/.test(sessId)) return json({ error: 'missing session' }, 401);
@@ -1339,6 +1567,18 @@ async function ghProxy(request, env, ghPath) {
   // Defense-in-depth + per-editor scope: editors may not write domain/redirect/CI
   // config, nor anything outside the paths granted to them in People & access.
   const cleanPath = ghPath.split('?')[0];
+
+  // Suggest-mode sessions: direct writes may only touch kiln scratch branches —
+  // publishing to the live branch goes through the suggestions queue. Checked
+  // FIRST so a misdirected publish gets the intentional 403 before we spend
+  // GitHub calls on content verification.
+  if (sess.mode === 'suggest' && !['GET', 'HEAD'].includes(request.method)) {
+    let sbody = null;
+    try { sbody = JSON.parse(await request.clone().text()); } catch { /* non-JSON → treated as branch-less */ }
+    const deny = suggestWriteViolation(request.method, ghPath, sbody);
+    if (deny) return json({ error: deny }, 403);
+  }
+
   if (request.method === 'PUT' && cleanPath.includes('/contents/')) {
     const filePath = decodeURIComponent(cleanPath.split('/contents/')[1] || '');
     if (isSensitivePath(filePath)) return json({ error: 'forbidden path for editor' }, 403);

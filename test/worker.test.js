@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath } from '../worker/index.js';
+import { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath, validateSuggestionInput, suggestWriteViolation } from '../worker/index.js';
 
 test('pathInScope: whole-site grants', () => {
   for (const p of [[''], ['*'], ['**'], []]) assert.equal(pathInScope('anything/here.html', p), true);
@@ -161,6 +161,64 @@ test('validateCommentInput: anchor caps — opaque but bounded', () => {
   ])
     assert.equal(validateCommentInput({ path: '/p', text: 'hi', anchor: bad }).error, 'bad anchor',
       `should reject anchor: ${JSON.stringify(bad)}`);
+});
+
+test('validateSuggestionInput: normalizes path + note, edits get the API-write checks', () => {
+  const ok = validateSuggestionInput({ path: '/about.html', edits: [{ key: 'hero', html: '<b>hi</b>' }], note: '  fix typo  ' }, []);
+  assert.deepEqual(ok, { page: 'about.html', edits: [{ key: 'hero', html: '<b>hi</b>' }], note: 'fix typo', branch: null, baseSha: null });
+  // A note is optional; absent/null → empty string, oversize → rejected.
+  assert.equal(validateSuggestionInput({ path: '/p.html', edits: [{ key: 'k', html: 'x' }] }, []).note, '');
+  assert.equal(validateSuggestionInput({ path: '/p.html', edits: [{ key: 'k', html: 'x' }], note: 'n'.repeat(501) }, []).status, 400);
+  assert.equal(validateSuggestionInput({ path: '/p.html', edits: [{ key: 'k', html: 'x' }], note: 42 }, []).status, 400);
+  // Bad page paths and edit batches short-circuit with the right status.
+  assert.equal(validateSuggestionInput({ path: '', edits: [{ key: 'k', html: 'x' }] }, []).status, 400);
+  assert.equal(validateSuggestionInput({ path: '/a/../b', edits: [{ key: 'k', html: 'x' }] }, []).status, 400);
+  assert.equal(validateSuggestionInput({ path: '/p.html', edits: 'nope' }, []).status, 400);
+  assert.equal(validateSuggestionInput({ path: '/p.html' }, []).status, 400);
+  // Per-edit rules are validateApiEdits': fragment guard and section-key scope apply.
+  assert.equal(validateSuggestionInput({ path: '/p.html', edits: [{ key: 'k', html: '<script>x()</script>' }] }, []).status, 422);
+  assert.equal(validateSuggestionInput({ path: '/p.html', edits: [{ key: 'specials', html: 'x' }] }, ['hero']).status, 403);
+  assert.equal(validateSuggestionInput({ path: '/p.html', edits: [{ key: 'hero_img', attr: 'src', value: '/a.png' }] }, ['hero']).status, undefined);
+});
+
+test('validateSuggestionInput: preview branch must be a kiln scratch branch, baseSha a full sha', () => {
+  const withBranch = (branch) => validateSuggestionInput({ path: '/p.html', edits: [{ key: 'k', html: 'x' }], branch }, []);
+  assert.equal(withBranch('kiln/suggest-erik').branch, 'kiln/suggest-erik');
+  assert.equal(withBranch('kiln-drafts').branch, 'kiln-drafts');
+  assert.equal(withBranch(undefined).branch, null);
+  assert.equal(withBranch('').branch, null);
+  for (const bad of ['main', 'kiln', 'kilnx/main', 'kiln/../main', 'kiln/' + 'b'.repeat(81), 42])
+    assert.equal(withBranch(bad).status, 400, `should reject branch: ${bad}`);
+  const withSha = (baseSha) => validateSuggestionInput({ path: '/p.html', edits: [{ key: 'k', html: 'x' }], baseSha }, []);
+  assert.equal(withSha('a'.repeat(40)).baseSha, 'a'.repeat(40));
+  assert.equal(withSha(undefined).baseSha, null);
+  for (const bad of ['a'.repeat(39), 'g'.repeat(40), 'HEAD']) assert.equal(withSha(bad).status, 400);
+});
+
+test('suggestWriteViolation: PUT /contents may only target kiln branches', () => {
+  const put = (body) => suggestWriteViolation('PUT', '/repos/o/r/contents/index.html', body);
+  // Absent branch = the repo default; main/master/anything non-kiln = the live site.
+  for (const body of [null, {}, { branch: 'main' }, { branch: 'master' }, { branch: 'feature/x' }, { branch: 42 }])
+    assert.match(put(body) || '', /suggestions/, `should block: ${JSON.stringify(body)}`);
+  assert.equal(put({ branch: 'kiln-drafts' }), null);
+  assert.equal(put({ branch: 'kiln/suggest-erik' }), null);
+  // Reads stay untouched.
+  assert.equal(suggestWriteViolation('GET', '/repos/o/r/contents/index.html', null), null);
+});
+
+test('suggestWriteViolation: ref writes — only kiln heads move or appear', () => {
+  // PATCH: only kiln/* heads may be advanced (encoded slashes are judged decoded).
+  assert.match(suggestWriteViolation('PATCH', '/repos/o/r/git/refs/heads/main', { sha: 'x' }) || '', /suggestions/);
+  assert.match(suggestWriteViolation('PATCH', '/repos/o/r/git/refs/heads%2Fmain', { sha: 'x' }) || '', /suggestions/);
+  assert.equal(suggestWriteViolation('PATCH', '/repos/o/r/git/refs/heads/kiln-drafts', { sha: 'x' }), null);
+  assert.equal(suggestWriteViolation('PATCH', '/repos/o/r/git/refs/heads/kiln%2Fsuggest-erik', { sha: 'x' }), null);
+  // POST /git/refs: creating non-kiln heads is blocked; kiln heads and tag refs pass.
+  assert.match(suggestWriteViolation('POST', '/repos/o/r/git/refs', { ref: 'refs/heads/main', sha: 'x' }) || '', /suggestions/);
+  assert.equal(suggestWriteViolation('POST', '/repos/o/r/git/refs', { ref: 'refs/heads/kiln/suggest-erik', sha: 'x' }), null);
+  assert.equal(suggestWriteViolation('POST', '/repos/o/r/git/refs', { ref: 'refs/tags/kiln/1-v', sha: 'x' }), null);
+  // Tag moves are left to the existing rules; git-data POSTs are ref-less and pass.
+  assert.equal(suggestWriteViolation('PATCH', '/repos/o/r/git/refs/tags/v1', { sha: 'x' }), null);
+  assert.equal(suggestWriteViolation('POST', '/repos/o/r/git/commits', { tree: 't' }), null);
 });
 
 test('commentKey: URI-encoded page keeps `:`-delimited keys unambiguous', () => {
