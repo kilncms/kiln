@@ -88,8 +88,42 @@ For each person you also set:
   what you're granting. Leave it blank for the whole page.
 - **Feature grants** (editors) — which menu tools they get: drafts, history, new
   posts, scheduling, the site menu, find & replace.
+- **Suggest-only publishing** (editors) — see below.
 
 Removing someone revokes their access immediately, active session included.
+
+### Suggest-mode editors
+
+Tick **Suggest-only publishing** on a person and their Publish button becomes
+**Suggest changes**: instead of committing to the live site, their edits arrive in
+your **Suggestions** panel (Kiln menu → Whole site) with their name, the page, and an
+optional note. You see a per-section before/after, then **Approve** or **Decline**.
+
+Approving merges the suggestion into the *current* page — their edits re-apply
+section by section on top of anything published since, so approving an old
+suggestion doesn't wipe newer work — and the commit carries their name as author.
+Declining records your call (with an optional note); nothing changes on the site.
+It's Google-Docs "suggesting" for your website, and the worker enforces it: a
+suggest-mode session physically cannot write to your live branch. They can still
+save drafts; scheduling is off for them (a schedule would publish directly).
+
+### Preview links
+
+Add one line to your `window.KILN` config and Kiln can hand out links to a built
+preview of unpublished work:
+
+```js
+preview: 'https://{branch}.<project>.pages.dev',   // Cloudflare Pages
+```
+
+On Netlify it's `preview: 'https://{branch}--<site>.netlify.app'` — and branch
+deploys must be enabled for the site (Site configuration → Build & deploy → Branches).
+`{branch}` is replaced with the branch's URL-safe alias.
+
+With it configured: **Share a preview link** (under *Your unpublished edits*) saves a
+draft and gives you a link to send around, and each suggestion also lands on its own
+`kiln/suggest-<name>` branch so the review panel offers **Open preview** — the real
+page, built by your host, before you approve.
 
 One prerequisite: Google sign-in needs a one-time OAuth client setup on your worker
 (two secrets, about five minutes). See
