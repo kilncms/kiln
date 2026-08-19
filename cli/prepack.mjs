@@ -17,6 +17,7 @@ const items = [
   ['dist', 'dist'],
   ['templates', 'templates'],
   ['src/engine.js', 'src/engine.js'],
+  ['src/autotag.js', 'src/autotag.js'],   // rescue.mjs auto-tags via PKG_ROOT/src/autotag.js
   ['worker/index.js', 'worker/index.js'],
   ['worker/cloud.js', 'worker/cloud.js'],
   ['worker/runbook.js', 'worker/runbook.js'],
