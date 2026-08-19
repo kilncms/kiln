@@ -35,6 +35,13 @@ const SANDBOX_TTL = 24 * 3600 * 1000;
 // esbuild hoists const→var, so a later declaration would read undefined at boot.)
 const EDITOR_DEFAULT_FEATURES = ['pagesettings', 'history', 'draft'];
 const UNDO_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-8.4L3 7"/></svg>';
+// Phone-first chrome: ONE media query decides "phone" — shared verbatim by the
+// CSS in injectStyles() and the few JS behavior forks (menu/toolbar positioning,
+// FAB + toolbar dragging). Declared above the init() call because esbuild hoists
+// const→var, so anything read during boot must already be initialized (same
+// story as EDITOR_DEFAULT_FEATURES above).
+const MOBILE_MQ = '(max-width: 700px), (pointer: coarse) and (max-width: 820px)';
+function isMobileEditor() { return window.matchMedia(MOBILE_MQ).matches; }
 
 import { SANITIZE, CONTAINER_SANITIZE, BLOCK_SANITIZE } from './sanitize.js';
 
@@ -4150,13 +4157,16 @@ function renderAdminBar() {
   const menu = fab.querySelector('#kiln-fab-menu');
 
   // Drag with a click/drag threshold so taps still open the menu.
+  // On phones the FAB is docked by CSS (drag would fight the dock and corrupt
+  // the saved desktop position) — a pointer there only ever toggles the menu.
   let drag = null;
   btn.addEventListener('pointerdown', (e) => {
-    drag = { x: e.clientX, y: e.clientY, left: fab.offsetLeft, top: fab.offsetTop, moved: false };
+    drag = { x: e.clientX, y: e.clientY, left: fab.offsetLeft, top: fab.offsetTop, moved: false, docked: isMobileEditor() };
     btn.setPointerCapture(e.pointerId);
   });
+  btn.addEventListener('pointercancel', () => { drag = null; });
   btn.addEventListener('pointermove', (e) => {
-    if (!drag) return;
+    if (!drag || drag.docked) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (Math.abs(dx) + Math.abs(dy) > 6) drag.moved = true;
     if (drag.moved) {
@@ -4177,6 +4187,9 @@ function renderAdminBar() {
   });
 
   function positionMenu() {
+    // Phone: the stylesheet's bottom-sheet rules own the geometry — wipe any
+    // inline coordinates a desktop open may have left, then just show it.
+    if (isMobileEditor()) { menu.style.cssText = ''; menu.hidden = false; return; }
     // Fixed coordinates, measured then clamped — works wherever the FAB is parked.
     menu.style.position = 'fixed';
     menu.style.visibility = 'hidden';
@@ -4199,8 +4212,10 @@ function renderAdminBar() {
   });
 
   // Hover opens the menu (click still works for touch); leaving the area closes it.
+  // Not on phones: emulated mouseenter from a tap would fight the tap toggle.
   let hoverTimer = null;
   fab.addEventListener('mouseenter', () => {
+    if (isMobileEditor()) return;
     clearTimeout(hoverTimer);
     if (menu.hidden) positionMenu();
   });
@@ -4341,6 +4356,7 @@ function discardEdits() {
  * AFTER the toolbar is in the DOM so its real (possibly wrapped) size is known.
  */
 function positionToolbar(tb, el) {
+  if (isMobileEditor()) { pinToolbarMobile(tb); return; }   // phone: fixed bar above the keyboard
   const r = el.getBoundingClientRect();
   const th = tb.offsetHeight, tw = tb.offsetWidth;
   let top;
@@ -4352,8 +4368,38 @@ function positionToolbar(tb, el) {
   tb.style.left = `${left + window.scrollX}px`;
 }
 
+/**
+ * Phone toolbar placement: ride the VISUAL viewport's bottom edge, which is the
+ * top of the on-screen keyboard while typing (iOS overlays the keyboard without
+ * shrinking the layout viewport, so position:fixed;bottom:0 would sit UNDER it).
+ * The stylesheet makes #kiln-toolbar a full-width fixed bar; this keeps its
+ * `top` glued to visualViewport height/offset until the toolbar leaves the DOM.
+ */
+function pinToolbarMobile(tb) {
+  const vv = window.visualViewport;
+  const place = () => {
+    if (!tb.isConnected) { off(); return; }   // self-unhooks on the tick after removal
+    const top = vv ? vv.offsetTop + vv.height - tb.offsetHeight
+      : window.innerHeight - tb.offsetHeight;
+    tb.style.top = `${Math.max(0, Math.round(top))}px`;
+    tb.style.left = '0px';
+  };
+  const off = () => {
+    if (!vv) return;
+    vv.removeEventListener('resize', place);
+    vv.removeEventListener('scroll', place);
+  };
+  if (vv) {
+    vv.addEventListener('resize', place);
+    vv.addEventListener('scroll', place);
+  }
+  tb._kilnVvOff = off;   // removeToolbar unhooks promptly (place() is the fallback)
+  place();
+}
+
 /** Drag anywhere on the toolbar chrome (not its buttons/inputs) to move it. */
 function makeToolbarDraggable(tb) {
+  if (isMobileEditor()) return;   // phone: the bar is pinned above the keyboard — never draggable
   let drag = null;
   tb.addEventListener('pointerdown', (e) => {
     if (e.target.closest('button, input, select, a')) return;
@@ -4491,7 +4537,12 @@ function renderToolbar(el, key) {
   tb.querySelector('.kiln-tb-cancel').onclick = (e) => { e.stopPropagation(); cancelEditing(); };
 }
 
-function removeToolbar() { document.getElementById('kiln-toolbar')?.remove(); }
+function removeToolbar() {
+  const tb = document.getElementById('kiln-toolbar');
+  if (!tb) return;
+  tb._kilnVvOff?.();   // drop the visualViewport listeners the mobile pin added
+  tb.remove();
+}
 
 function modal(bodyHtml) {
   document.getElementById('kiln-modal')?.remove();
@@ -5052,6 +5103,110 @@ body:has(#kiln-topbar){padding-top:46px!important}
 .kiln-blk-meta strong{display:block;color:#111827}
 .kiln-blk-meta small{display:block;color:#6b7280;margin-top:2px;overflow:hidden;text-overflow:ellipsis}
 .kiln-blk-ex{background:#0f172a;color:#e2e8f0;font:11px/1.55 ui-monospace,Menlo,monospace;padding:12px;border-radius:10px;overflow:auto;max-height:260px;white-space:pre}
-@media(max-width:640px){.kiln-blk-row{flex-wrap:wrap}.kiln-blk-prev{width:100%}}`;
+@media(max-width:640px){.kiln-blk-row{flex-wrap:wrap}.kiln-blk-prev{width:100%}}
+/* ─── Phone-first chrome ─────────────────────────────────────────────────────
+   Same components reshaped for thumbs: bottom sheets, ≥40px targets, a
+   keyboard-aware toolbar. Inert on desktop — the query is MOBILE_MQ, the same
+   one isMobileEditor() answers, so CSS and the JS forks flip together. */
+@media ${MOBILE_MQ}{
+/* No double-tap zoom / tap delay on Kiln chrome. */
+#kiln-fab-wrap,#kiln-fab,#kiln-topbar,#kiln-toolbar,#kiln-modal,#kiln-imgpop,#kiln-previewbar,#kiln-pickbar,
+#kiln-cmt-pop,#kiln-cmt-composer,#kiln-cmt-hint,#kiln-ai-menu,
+.kiln-item-ctl,.kiln-repeat-add,.kiln-block-gap,.kiln-block-remove,.kiln-img-handle{touch-action:manipulation}
+/* 16px inputs, or iOS zooms the page when one focuses. [type=…] matches the
+   base rules' specificity — a bare "input" here would lose to them. */
+.kiln-modal-body input[type=text],.kiln-modal-body input[type=email],.kiln-modal-body input[type=number],
+.kiln-modal-body select,.kiln-modal-body textarea,.kiln-pal-input,.kiln-href-input,
+#kiln-cmt-composer textarea,.kiln-cmt-reply input[type=text]{font-size:16px}
+/* FAB docks bottom-right (drag is off — see renderAdminBar). */
+#kiln-fab-wrap{left:auto!important;top:auto!important;
+  right:calc(14px + env(safe-area-inset-right,0px))!important;bottom:calc(16px + env(safe-area-inset-bottom,0px))!important}
+#kiln-fab{width:56px;height:56px}
+#kiln-fab-wrap #kiln-undo-wrap{bottom:66px}
+#kiln-fab-wrap #kiln-undo-wrap button{height:40px;padding:0 16px}
+/* FAB menu → bottom sheet; the 100vmax shadow is the scrim (tap = click-away). */
+#kiln-fab-menu{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;
+  width:auto;max-height:88dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  overscroll-behavior:contain;border-radius:20px 20px 0 0;border-bottom:none;
+  padding:4px 14px calc(14px + env(safe-area-inset-bottom,0px));
+  box-shadow:0 -12px 48px rgba(0,0,0,.45),0 0 0 100vmax rgba(10,10,18,.45)}
+#kiln-fab-menu::before{content:"";flex:none;width:42px;height:5px;border-radius:3px;
+  background:rgba(255,255,255,.28);margin:6px auto}
+.kiln-fab-item{display:flex;align-items:center;min-height:44px;font-size:15px;padding:10px 12px}
+.kiln-fab-primary{justify-content:center;min-height:50px;font-size:16px}
+/* The docked FAB rides the sheet's corner as tap-again-to-close — keep the
+   foot's Sign out clear of it. */
+.kiln-fab-foot{padding-right:72px}
+.kiln-fab-foot button{min-height:44px;font-size:13.5px;padding:8px 12px}
+.kiln-pal-kbd{display:none}
+/* Status toasts: top-center, clear of FAB and keyboard. */
+#kiln-fab-wrap .kiln-status{position:fixed;left:50%;right:auto;bottom:auto;
+  top:calc(10px + env(safe-area-inset-top,0px));transform:translateX(-50%);max-width:92vw}
+/* Top-bar mode: same bar, thumb-height targets, finger-scrollable. */
+#kiln-topbar{height:56px;-webkit-overflow-scrolling:touch}
+body:has(#kiln-topbar){padding-top:56px!important}
+#kiln-topbar button{min-height:44px;flex:none}
+/* Modals → bottom sheets: drag-handle bar, sticky action row. */
+#kiln-modal{align-items:flex-end;padding:0}
+.kiln-modal-card{max-width:none;width:100%;box-sizing:border-box;border-radius:20px 20px 0 0;max-height:92dvh}
+.kiln-modal-card::before{content:"";flex:none;width:42px;height:5px;border-radius:3px;background:#d7dade;margin:8px auto 0}
+.kiln-modal-x{top:14px;right:12px;width:38px;height:38px;font-size:16px}
+.kiln-modal-body{padding:16px 16px calc(18px + env(safe-area-inset-bottom,0px))}
+.kiln-modal-actions{position:sticky;bottom:0;background:#fff;padding:10px 0 4px;margin-top:14px}
+.kiln-modal-actions button,.kiln-btn-pick{min-height:44px}
+/* ⌘K palette: full screen instead — its input must stay top-anchored (keyboard). */
+#kiln-modal.kiln-palette-wrap{align-items:stretch}
+.kiln-palette-wrap .kiln-modal-card{max-width:none;height:100dvh;max-height:none;border-radius:0}
+.kiln-palette-wrap .kiln-modal-card::before{display:none}
+/* No backdrop to tap, no Esc on phones — show the ✕. */
+.kiln-palette-wrap .kiln-modal-x{display:flex;background:rgba(255,255,255,.14);color:#e7e7ee}
+.kiln-palette-wrap .kiln-pal-input{padding-right:58px}
+.kiln-palette-wrap .kiln-modal-body{display:flex;flex-direction:column;padding:12px}
+.kiln-pal-input{flex:none;padding:13px 14px}
+.kiln-pal-list{flex:1;max-height:none;-webkit-overflow-scrolling:touch}
+.kiln-pal-item{min-height:44px}
+/* Text/image toolbar: fixed bar ABOVE the keyboard (pinToolbarMobile tracks
+   the visual viewport; dragging is off). */
+#kiln-toolbar{position:fixed;top:auto;width:100%;max-width:none;box-sizing:border-box;cursor:default;
+  border-radius:14px 14px 0 0;border-left:none;border-right:none;border-bottom:none;
+  padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));gap:7px}
+.kiln-tb-grip,.kiln-tb-label,.kiln-tb-gap{display:none}
+.kiln-tb-fmt{min-width:40px;height:40px;font-size:14px}
+.kiln-tb-save{min-height:40px;padding:5px 16px;font-size:13.5px}
+.kiln-tb-cancel{min-height:40px;font-size:13.5px}
+.kiln-style-select{height:40px}
+#kiln-toolbar .kiln-href-input{flex:1;min-width:120px;width:auto}
+/* The toolbar's ✨ menu (inline-styled, assist.js) → small sheet. */
+#kiln-ai-menu{left:0!important;right:0!important;top:auto!important;bottom:0!important;min-width:0!important;
+  border-radius:16px 16px 0 0!important;box-shadow:0 -12px 48px rgba(0,0,0,.45)!important;
+  padding:10px 14px calc(14px + env(safe-area-inset-bottom,0px))!important}
+#kiln-ai-menu button{min-height:44px!important}
+#kiln-ai-menu input{min-height:40px;font-size:16px!important}
+/* Repeat blocks: thumb-size controls, always visible (no hover on touch). */
+.kiln-item-ctl{gap:8px;opacity:1}
+.kiln-item-ctl button{width:40px;height:40px;border-radius:10px;font-size:16px}
+.kiln-repeat-add{min-height:44px;font-size:14px}
+/* Comments: thumb-size pins; popover + composer → bottom sheets. */
+.kiln-cmt-pin{width:40px;height:40px;font-size:14px;border-radius:50% 50% 50% 5px}
+#kiln-cmt-pop,#kiln-cmt-composer{left:0!important;right:0!important;top:auto!important;bottom:0!important;
+  width:auto;max-width:none;border-radius:18px 18px 0 0;box-shadow:0 -14px 50px rgba(0,0,0,.4);
+  padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px))}
+#kiln-cmt-pop{max-height:70dvh;padding-top:30px}
+.kiln-cmt-reply input,.kiln-cmt-reply button,.kiln-cmt-acts button{min-height:40px}
+#kiln-cmt-hint{flex-wrap:wrap;top:calc(10px + env(safe-area-inset-top,0px))}
+#kiln-cmt-hint button{min-height:40px}
+/* Section chrome: add-section dividers stay visible (no hover on touch). */
+.kiln-block-gap{opacity:1;height:44px}
+.kiln-block-gap button{padding:10px 18px;font-size:13px}
+.kiln-block-remove{padding:11px 16px;font-size:12.5px}
+/* Image chrome: size buttons inherit .kiln-tb-fmt 40px; bigger drag handle. */
+#kiln-imgpop{max-width:96vw;flex-wrap:wrap;gap:7px;padding:8px}
+.kiln-img-handle{width:32px;height:32px;border-width:3px}
+.kiln-img-handle::after{inset:8px}
+/* Helper bars wrap instead of overflowing a 390px screen. */
+#kiln-pickbar,#kiln-previewbar{flex-wrap:wrap;max-width:94vw;top:calc(10px + env(safe-area-inset-top,0px))}
+#kiln-pickbar button,#kiln-previewbar button{min-height:40px}
+#kiln-scope-note,#kiln-presence{max-width:60vw;bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+}`;
   document.head.appendChild(style);
 }
