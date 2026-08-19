@@ -13,6 +13,7 @@
   "files": [
     "index.mjs",
     "rescue.mjs",
+    "new.mjs",
     "prepack.mjs",
     "dist",
     "worker",
