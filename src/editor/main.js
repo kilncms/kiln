@@ -16,6 +16,7 @@ import {
 } from '../github.js';
 import { initPalette, openPalette } from './palette.js';
 import { initSuggest, suggestChanges, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
+import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -391,7 +392,7 @@ function applyFeatureGating() {
   // no invited editor ever has it — the review queue stays admin-only.
   const map = { 'kiln-menu': 'menu', 'kiln-findreplace': 'findreplace', 'kiln-newpost': 'newpost',
     'kiln-pagesettings': 'pagesettings', 'kiln-history': 'history', 'kiln-makeblock': 'makeeditable', 'kiln-addsection': 'makeeditable',
-    'kiln-suggestions': 'suggestreview' };
+    'kiln-suggestions': 'suggestreview', 'kiln-ai': 'ai' };
   for (const [id, feat] of Object.entries(map)) {
     const el = document.getElementById(id);
     if (el && !hasFeature(feat)) el.style.display = 'none';
@@ -482,7 +483,7 @@ function decorateFields() {
   // the staged-upload map).
   document.addEventListener('click', (e) => {
     if (state.active && !state.active.contains(e.target)
-      && !e.target.closest('#kiln-toolbar, #kiln-imgpop, .kiln-img-handle')) {
+      && !e.target.closest('#kiln-toolbar, #kiln-imgpop, #kiln-ai-menu, .kiln-img-handle')) {
       commitEdit(state.active, state.active.getAttribute('data-cms'));
     }
   });
@@ -1290,6 +1291,7 @@ function imageToolbar(img, key) {
     <span class="kiln-tb-hint">drag the ● corner to resize</span>
     <input class="kiln-href-input" data-act="alt" type="text" value="${escapeHtml(img.getAttribute('alt') || '')}"
       placeholder="Describe this image (alt text)" title="Alt text — read by screen readers and search engines">
+    ${hasFeature('ai') ? '<button class="kiln-tb-fmt" id="kiln-ai" data-act="ai-alt" title="Describe this image with AI">✨ Alt text</button>' : ''}
     <button class="kiln-tb-save" data-act="done">Done</button>`;
   document.body.appendChild(tb);
   positionToolbar(tb, img);
@@ -1307,6 +1309,8 @@ function imageToolbar(img, key) {
     tb.remove();
   };
   tb.querySelector('[data-act="replace"]').onclick = (e) => { e.stopPropagation(); pickImage(img, key); };
+  const aiAltBtn = tb.querySelector('[data-act="ai-alt"]');
+  if (aiAltBtn) aiAltBtn.onclick = (e) => { e.stopPropagation(); assistAltText(img, key, altInput); };
 
   const handle = enableImageDragResize(img, key);
   // Match ANY current handle, not the one captured above: "Replace image…"
@@ -2248,6 +2252,9 @@ function newContent() {
         <span><strong>Page</strong><br><small>A standalone page (e.g. /services.html). Add it to the menu afterwards.</small></span></label>
     </div>
     <label>Title <input type="text" id="kiln-np-title" placeholder="What's it called?"></label>
+    ${!cfg.sandbox && hasFeature('ai') ? `<label>Brief — let AI draft the content (optional)
+      <textarea id="kiln-np-brief" rows="2" maxlength="2000" style="width:100%;font:inherit;resize:vertical"
+        placeholder="One line on what it should say, e.g. 'Announcing our fall pie menu'"></textarea></label>` : ''}
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
       <button class="kiln-btn-publish" id="kiln-np-go">Create</button>
@@ -2255,6 +2262,7 @@ function newContent() {
   m.querySelector('#kiln-np-go').onclick = async () => {
     const title = m.querySelector('#kiln-np-title').value.trim();
     const kind = m.querySelector('input[name="kiln-new-kind"]:checked').value;
+    const brief = m.querySelector('#kiln-np-brief')?.value.trim() || '';
     if (!title) return;
     const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || kind;
     const date = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
@@ -2278,15 +2286,37 @@ function newContent() {
       });
       if (exists) throw new Error(`${href} already exists — pick a different title`);
 
+      // Optional AI draft: fill the template's remaining text fields from the
+      // brief BEFORE the commit that creates the page. The title comes from the
+      // title input and the date stays untouched; drafted values are plain text,
+      // escaped like the title, so they ride the same pipeline as everything
+      // else. Any failure degrades to creating the page un-filled.
+      let draftFailed = '';
+      const aiDraft = async (html) => {
+        if (!brief) return html;
+        const skip = new Set(['post_title', 'post_date', 'page_title']);
+        const fillable = [...indexHtml(html).fields.values()]
+          .filter(f => f.kind === 'field' && f.inner && !skip.has(f.key))
+          .slice(0, 20)
+          .map(f => ({ key: f.key, hint: humanizeKey(f.key) }));
+        if (!fillable.length) return html;
+        status.textContent = 'Drafting the content with AI…';
+        const r = await draftFill(brief, fillable);
+        status.textContent = 'Committing to GitHub…';
+        if (r.error) { draftFailed = r.error; return html; }
+        const edits = Object.entries(r.fields).map(([key, text]) => ({ key, html: escapeHtml(text) }));
+        return edits.length ? applyEdits(html, edits).html : html;
+      };
+
       const files = [];
       if (kind === 'post') {
         const tpl = await getFile(state.gh, cfg.repo, root + '_templates/post.html', branch);
         const cardTpl = await getFile(state.gh, cfg.repo, root + '_templates/post-card.html', branch);
         const blogIndex = await getFile(state.gh, cfg.repo, root + 'blog/index.html', branch);
-        const postHtml = applyEdits(tpl.text, [
+        const postHtml = await aiDraft(applyEdits(tpl.text, [
           { key: 'post_title', html: escapeHtml(title) },
           { key: 'post_date', html: escapeHtml(date) },
-        ]).html.replaceAll('{{title}}', escapeHtml(title));
+        ]).html.replaceAll('{{title}}', escapeHtml(title)));
         const card = cardTpl.text
           .replaceAll('{{title}}', escapeHtml(title))
           .replaceAll('{{href}}', href)
@@ -2296,9 +2326,9 @@ function newContent() {
         files.push({ path: filePath, text: postHtml }, { path: root + 'blog/index.html', text: newIndex.html });
       } else {
         const tpl = await getFile(state.gh, cfg.repo, root + '_templates/page.html', branch);
-        const pageHtml = applyEdits(tpl.text, [
+        const pageHtml = await aiDraft(applyEdits(tpl.text, [
           { key: 'page_title', html: escapeHtml(title) },
-        ]).html.replaceAll('{{title}}', escapeHtml(title));
+        ]).html.replaceAll('{{title}}', escapeHtml(title)));
         files.push({ path: filePath, text: pageHtml });
       }
 
@@ -2307,6 +2337,7 @@ function newContent() {
 
       journalAdd({ type: 'url', target: href, desc: `New ${kind} “${title}”`, sha: commit.sha });
       status.innerHTML = `Committed ✓ — the site is rebuilding (usually under a minute).<br>
+        ${draftFailed ? `<small>The AI draft didn’t work (${escapeHtml(draftFailed)}) — the ${kind} was created without it.</small><br>` : ''}
         <small>Safe to close this window: Kiln keeps watching in the background and the link below
         starts working the moment the ${kind} is live${kind === 'page' ? ' — then add it to your navigation via <strong>Site menu</strong>' : ''}.</small>`;
       const started = Date.now();
@@ -2568,6 +2599,8 @@ async function invitePanel() {
     { v: 'menu', label: 'Edit site menu', def: false },
     { v: 'findreplace', label: 'Find & replace', def: false },
     { v: 'makeeditable', label: 'Make things editable', def: false },
+    // AI spends the owner's API credit, so the grant is opt-in — never a default.
+    { v: 'ai', label: 'AI assist', def: false },
   ];
   m.querySelector('#kiln-p-features').innerHTML = FEATURES.map(f =>
     `<label style="font-weight:normal;display:inline-flex;gap:6px;align-items:center;font-size:12.5px;margin:0">
@@ -3976,6 +4009,8 @@ function renderAdminBar() {
     saveDraft, journalAdd, humanizeKey,
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
     ghRequest: (method, path, body) => state.gh.request(method, path, body) });
+  initAssist({ state, cfg, mode, modal, setStatus, escapeHtml, workerAuthHeaders,
+    stagePending, stageContainer, commitEdit, humanizeKey });
   if ((localStorage.getItem('kiln_ui_mode') || 'fab') === 'bar') { renderTopBar(); return; }
   const fab = document.createElement('div');
   fab.id = 'kiln-fab-wrap';
@@ -4308,6 +4343,7 @@ function renderToolbar(el, key) {
       <button class="kiln-tb-fmt kiln-tb-clear" data-cmd="removeFormat" title="Clear formatting">Clear</button>`}
     ${isLink ? `<input class="kiln-href-input" type="text" value="${escapeHtml(el.getAttribute('href') || '')}" title="Where this links to" placeholder="/page.html or https://…">
       <button class="kiln-tb-fmt kiln-tb-attach" data-cmd="attach" title="Upload a file (PDF, doc…) and point this link at it">Attach file…</button>` : ''}
+    ${hasFeature('ai') ? '<button class="kiln-tb-fmt" id="kiln-ai" data-cmd="ai" title="AI assist — improve, shorten, change tone, translate">✨</button>' : ''}
     <span class="kiln-tb-gap"></span>
     <button class="kiln-tb-fmt" data-cmd="hist" title="This section's history — undo to a previous version">${HIST_ICON}</button>
     <button class="kiln-tb-save" title="Keep this edit (you can still Esc-revert until you click away)">Done</button>
@@ -4334,6 +4370,9 @@ function renderToolbar(el, key) {
         const input = tb.querySelector('.kiln-href-input');
         const up = await uploadAnyFile();
         if (up && input) input.value = up.path;
+      } else if (cmd === 'ai') {
+        openAssistMenu(el, key, btn);
+        return;   // the menu takes over — don't steal focus back to the field
       } else if (cmd === 'hist') {
         // Fields inside a repeat share their key across every block (each table
         // row reuses sd_notes etc.), so per-field history is ambiguous — track
