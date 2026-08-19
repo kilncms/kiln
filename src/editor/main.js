@@ -14,6 +14,7 @@ import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValu
 import {
   makeGh, getFile, resolvePageFile, editFile, putFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
+import { initPalette, openPalette } from './palette.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -343,10 +344,10 @@ function whoIsOnlinePanel() {
 // optional section prefixes (data-cms key prefixes; guides the UI so editors
 // only see handles on what they're meant to touch).
 
-function pageInScope() {
+function pageInScope(path = state.page.path) {
   const ps = state.scope?.paths;
   if (!ps || !ps.length || ps.some(p => p === '' || p === '*' || p === '**')) return true;
-  const f = String(state.page.path).replace(/^\/+/, '');
+  const f = String(path).replace(/^\/+/, '');
   return ps.some(p => {
     const pre = String(p).replace(/^\/+/, '').replace(/\/+$/, '');
     return !pre || f === pre || f.startsWith(pre + '/');
@@ -3927,6 +3928,8 @@ function exitEditMode() {
  * Position is remembered per-browser.
  */
 function renderAdminBar() {
+  initPalette({ state, cfg, mode, pageInScope, keyInScope, humanizeKey, listSitePages, modal, setStatus, escapeHtml,
+    fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main') });
   if ((localStorage.getItem('kiln_ui_mode') || 'fab') === 'bar') { renderTopBar(); return; }
   const fab = document.createElement('div');
   fab.id = 'kiln-fab-wrap';
@@ -3953,6 +3956,7 @@ function renderAdminBar() {
       </div>
       <div class="kiln-fab-group">
         <div class="kiln-fab-label">Whole site</div>
+        <button id="kiln-palette-btn" class="kiln-fab-item">Search &amp; jump <span class="kiln-pal-kbd">⌘K</span></button>
         <button id="kiln-menu" class="kiln-fab-item">Site menu</button>
         <button id="kiln-findreplace" class="kiln-fab-item">Find &amp; replace</button>
         ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
@@ -4072,6 +4076,7 @@ function renderAdminBar() {
   fab.querySelector('#kiln-discard').onclick = close(discardEdits);
   fab.querySelector('#kiln-pagesettings').onclick = close(pageSettingsPanel);
   fab.querySelector('#kiln-findreplace').onclick = close(findReplacePanel);
+  fab.querySelector('#kiln-palette-btn').onclick = close(openPalette);
   fab.querySelector('#kiln-schedule').onclick = close(schedulePanel);
   fab.querySelector('#kiln-draft').onclick = close(saveDraft);
   const settingsBtn = fab.querySelector('#kiln-settings');
@@ -4105,6 +4110,7 @@ function renderTopBar() {
       <button id="kiln-undo-btn" class="kiln-btn-ghost" title="Undo last change (⌘Z)" aria-label="Undo">${UNDO_ICON}</button>
       <button id="kiln-redo-btn" class="kiln-btn-ghost" title="Redo (⌘⇧Z)" aria-label="Redo"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M21 7v6h-6"/><path d="M20.5 13a9 9 0 1 1-2.6-8.4L21 7"/></svg></button>
     </span>
+    <button id="kiln-palette-btn" class="kiln-btn-ghost" title="Search &amp; jump (⌘K)">Search</button>
     <button id="kiln-newpost" class="kiln-btn-ghost">+ New</button>
     <button id="kiln-menu" class="kiln-btn-ghost">Menu</button>
     <button id="kiln-pagesettings" class="kiln-btn-ghost">Page</button>
@@ -4126,6 +4132,7 @@ function renderTopBar() {
   bar.querySelector('#kiln-menu').onclick = menuEditor;
   bar.querySelector('#kiln-pagesettings').onclick = pageSettingsPanel;
   bar.querySelector('#kiln-findreplace').onclick = findReplacePanel;
+  bar.querySelector('#kiln-palette-btn').onclick = openPalette;
   bar.querySelector('#kiln-history').onclick = historyPanel;
   bar.querySelector('#kiln-done').onclick = doneEditing;
   bar.querySelector('#kiln-discard').onclick = discardEdits;
@@ -4768,6 +4775,28 @@ body:has(#kiln-topbar){padding-top:46px!important}
 .kiln-vrestore-pane{flex:1 1 0;min-width:0;margin:0}
 .kiln-vrestore-pane figcaption{font:600 10.5px var(--kiln-font);letter-spacing:.07em;text-transform:uppercase;color:#6b7280;margin:0 0 6px}
 .kiln-vrestore-frame{width:100%;height:52vh;min-height:260px;border:1.5px solid #e5e7eb;border-radius:10px;background:#fff}
-@media(max-width:760px){.kiln-vrestore-grid{flex-direction:column}.kiln-vrestore-frame{height:36vh;min-height:180px}}`;
+@media(max-width:760px){.kiln-vrestore-grid{flex-direction:column}.kiln-vrestore-frame{height:36vh;min-height:180px}}
+/* ⌘K palette — dark card matching the Kiln chrome, riding on the modal() shell. */
+.kiln-palette-wrap .kiln-modal-card{background:var(--kiln-bg);-webkit-backdrop-filter:blur(16px);
+  backdrop-filter:blur(16px);color:#e7e7ee;max-width:580px;border:1px solid rgba(255,255,255,.09)}
+.kiln-palette-wrap .kiln-modal-x{display:none}
+.kiln-palette-wrap .kiln-modal-body{padding:10px}
+.kiln-pal-input{width:100%;box-sizing:border-box;background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.14);
+  color:#fff;border-radius:11px;padding:11px 14px;font:14px var(--kiln-font);outline:none}
+.kiln-pal-input:focus{border-color:var(--kiln-accent)}
+.kiln-pal-input::placeholder{color:#6b7280}
+.kiln-pal-list{max-height:52vh;overflow-y:auto;margin-top:6px}
+.kiln-pal-sec{font:600 9.5px var(--kiln-font);letter-spacing:.09em;text-transform:uppercase;color:#6b7280;
+  padding:9px 10px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kiln-pal-item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:none;
+  color:#d6d8e1;padding:8px 10px;border-radius:9px;cursor:pointer;font:13px var(--kiln-font)}
+.kiln-pal-item .kiln-pal-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.kiln-pal-item small{flex:1;text-align:right;color:#8b8e9c;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kiln-pal-item.kiln-pal-on{background:rgba(99,102,241,.32);color:#fff}
+.kiln-pal-snip .kiln-pal-name{white-space:normal;font-size:12.5px;line-height:1.45}
+.kiln-pal-hit{background:rgba(251,191,36,.4);color:#fff;border-radius:3px;padding:0 2px}
+.kiln-pal-note{color:#8b8e9c;font:12.5px var(--kiln-font);padding:12px 10px 6px}
+.kiln-pal-foot{color:#6b7280;font:11px var(--kiln-font);padding:8px 10px 2px;border-top:1px solid rgba(255,255,255,.07);margin-top:8px}
+.kiln-pal-kbd{float:right;color:#6b7280;font-size:10px;border:1px solid rgba(255,255,255,.16);border-radius:5px;padding:1px 5px;margin-top:1px}`;
   document.head.appendChild(style);
 }
