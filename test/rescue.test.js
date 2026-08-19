@@ -10,6 +10,8 @@ test('rescue: pageIdentity strips query/fragment/trailing slash, rejects off-ori
   assert.equal(pageIdentity('https://site.com/', SITE), '/');
   assert.equal(pageIdentity('https://site.com/about?x=1#team', SITE), '/about');
   assert.equal(pageIdentity('https://site.com/about/', SITE), '/about');
+  assert.equal(pageIdentity('/index.html', SITE), '/', '/index.html is the homepage');
+  assert.equal(pageIdentity('/blog/index.html', SITE), '/blog');
   assert.equal(pageIdentity('/blog/post-1', SITE), '/blog/post-1');
   assert.equal(pageIdentity('//site.com/a', SITE), '/a');
   assert.equal(pageIdentity('https://other.com/x', SITE), null);
@@ -127,6 +129,28 @@ test('rescue: cleanPage rewrites assets incl. srcset, reports off-origin leftove
   assert.ok(html.includes('href="/assets/rescued/cccc3333-site.css"'), 'stylesheet ref localized');
   assert.ok(html.includes('src="https://stray-cdn.example/pic.png"'), 'unlocalized off-origin asset left as-is');
   assert.deepEqual(offOrigin, ['https://stray-cdn.example/pic.png']);
+});
+
+test('rescue: cleanPage de-lazifies builder images (data-src promoted to src)', () => {
+  const raw = `<html><body>
+    <img data-src="https://cdn.builder.com/lazy.jpg" data-image="https://cdn.builder.com/lazy.jpg" data-load="false">
+    <img src="/eager.jpg" data-src="/eager.jpg">
+    </body></html>`;
+  const assetMap = new Map([['https://cdn.builder.com/lazy.jpg', 'assets/rescued/eeee5555-lazy.jpg']]);
+  const { html } = cleanPage(raw, { baseUrl: 'https://site.com/', assetMap });
+  assert.ok(html.includes('data-src="/assets/rescued/eeee5555-lazy.jpg"'), 'data-src localized');
+  assert.ok(html.includes('data-image="/assets/rescued/eeee5555-lazy.jpg"'), 'data-image localized');
+  assert.ok(/<img[^>]*data-load[^>]*src="\/assets\/rescued\/eeee5555-lazy\.jpg"/.test(html), 'src promoted from data-src');
+  assert.equal((html.match(/src="\/eager\.jpg"/g) || []).length, 2, 'existing src untouched, no double promotion');
+});
+
+test('rescue: svg sprite <use> refs collected and rewritten, fragment kept', () => {
+  const raw = '<html><body><svg><use xlink:href="/universal/svg/social.svg#instagram"></use></svg></body></html>';
+  const { assets } = extractRefs(raw, 'https://site.com/');
+  assert.ok(assets.includes('https://site.com/universal/svg/social.svg'), 'sprite collected without fragment');
+  const assetMap = new Map([['https://site.com/universal/svg/social.svg', 'assets/rescued/ffff6666-social.svg']]);
+  const { html } = cleanPage(raw, { baseUrl: 'https://site.com/', assetMap });
+  assert.ok(html.includes('xlink:href="/assets/rescued/ffff6666-social.svg#instagram"'));
 });
 
 test('rescue: cleanPage honors and removes <base href>', () => {

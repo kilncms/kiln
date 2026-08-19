@@ -60,12 +60,14 @@ function walkTree(node, fn) {
 // ─── pure: URL → file mapping ────────────────────────────────────────────────
 
 /** Page identity: same-origin pathname, ?query and #fragment stripped, trailing
- *  slash dropped (so /about and /about/ are one page). null = not a page URL. */
+ *  slash and /index.html dropped (so /about, /about/ and /about/index.html are
+ *  one page). null = not a page URL. */
 export function pageIdentity(href, base) {
   let u; try { u = new URL(href, base); } catch { return null; }
   if (!/^https?:$/.test(u.protocol)) return null;
   if (base && u.origin !== new URL(base).origin) return null;
-  return u.pathname.length > 1 ? (u.pathname.replace(/\/+$/, '') || '/') : u.pathname;
+  const p = u.pathname.replace(/\/index\.html?$/i, '/');
+  return p.length > 1 ? (p.replace(/\/+$/, '') || '/') : p;
 }
 
 const fileSeg = (s) => {
@@ -149,8 +151,10 @@ export function extractRefs(html, pageUrl) {
         if (id && !NON_PAGE_RE.test(id)) pages.add(id);
         break;
       }
-      case 'img': asset(getAttr(n, 'src')); if (getAttr(n, 'srcset')) srcset(getAttr(n, 'srcset')); break;
-      case 'source': asset(getAttr(n, 'src')); if (getAttr(n, 'srcset')) srcset(getAttr(n, 'srcset')); break;
+      case 'img': case 'source':
+        for (const at of ['src', 'data-src', 'data-image']) asset(getAttr(n, at));
+        for (const at of ['srcset', 'data-srcset']) if (getAttr(n, at)) srcset(getAttr(n, at));
+        break;
       case 'link': {
         const rels = relsOf(n);
         if (rels.includes('stylesheet') || rels.some(r => ICON_RELS.includes(r))) asset(getAttr(n, 'href'));
@@ -161,6 +165,7 @@ export function extractRefs(html, pageUrl) {
         if (['og:image', 'og:image:secure_url', 'twitter:image', 'twitter:image:src'].includes(key)) asset(getAttr(n, 'content'));
         break;
       }
+      case 'use': asset(getAttr(n, 'href') || getAttr(n, 'xlink:href')); break;   // svg sprites
       case 'style': cssUrls(textOf(n)).forEach(asset); break;
     }
     if (n.attrs && getAttr(n, 'style')?.includes('url(')) cssUrls(getAttr(n, 'style')).forEach(asset);
@@ -287,9 +292,16 @@ export function cleanPage(html, opts = {}) {
         break;
       case 'base': removals.push(n); cruft++; break;   // resolution already honored it
       case 'a': rwAttr(n, 'href', 'page'); break;
-      case 'img': rwAttr(n, 'src', 'asset'); rwSrcset(n, 'srcset'); break;
-      case 'source': rwAttr(n, 'src', 'asset'); rwSrcset(n, 'srcset'); break;
+      case 'img': case 'source': {
+        rwAttr(n, 'src', 'asset'); rwSrcset(n, 'srcset');
+        rwAttr(n, 'data-src', 'asset'); rwAttr(n, 'data-image', 'asset'); rwSrcset(n, 'data-srcset');
+        // the lazy-loader that would promote data-src at runtime is gone — do its job now
+        if (!getAttr(n, 'src') && getAttr(n, 'data-src')) n.attrs.push({ name: 'src', value: getAttr(n, 'data-src') });
+        if (!getAttr(n, 'srcset') && getAttr(n, 'data-srcset')) n.attrs.push({ name: 'srcset', value: getAttr(n, 'data-srcset') });
+        break;
+      }
       case 'video': case 'audio': rwAttr(n, 'src', 'asset'); rwAttr(n, 'poster', 'asset'); break;
+      case 'use': rwAttr(n, 'href', 'asset'); rwAttr(n, 'xlink:href', 'asset'); break;
       case 'style': {
         const t = n.childNodes?.[0];
         if (t && t.value?.includes('url(')) t.value = rwCssText(textOf(n));
@@ -358,9 +370,13 @@ export async function rescueCmd(startUrl, args = {}) {
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (ct && !ct.includes('text/html')) { failedPages.push({ path: id, reason: `not HTML (${ct.split(';')[0]})` }); continue; }
     const html = await res.text();
-    pages.set(id, { html, url: res.url });
     const finalId = pageIdentity(res.url, origin);
-    if (finalId && finalId !== id && !pages.has(finalId)) aliases.set(finalId, id);
+    if (finalId && finalId !== id) {
+      // redirected within the origin: same page under two paths — keep one copy
+      if (pages.has(finalId)) { aliases.set(id, finalId); continue; }
+      aliases.set(finalId, id);
+    }
+    pages.set(id, { html, url: res.url });
     const refs = extractRefs(html, res.url);
     for (const p of refs.pages) if (!seen.has(p)) { seen.add(p); queue.push(p); }
     for (const a of refs.assets) assetRefs.add(a);
@@ -379,9 +395,9 @@ export async function rescueCmd(startUrl, args = {}) {
     return u.origin === origin || BUILDER_CDN_RE.test(u.hostname) || hostCount.get(u.hostname) > 3;
   });
 
-  // page identity → output file (aliases: a redirect target counts as its page)
+  // page identity → output file (aliases: both sides of a redirect are one page)
   const pageMap = mapUrls([...pages.keys()]);
-  for (const [target, src] of aliases) if (!pageMap.has(target)) pageMap.set(target, pageMap.get(src));
+  for (const [from, to] of aliases) if (!pageMap.has(from) && pageMap.has(to)) pageMap.set(from, pageMap.get(to));
 
   if (dry) {
     let scripts = 0;
