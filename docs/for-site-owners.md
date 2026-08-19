@@ -87,7 +87,8 @@ For each person you also set:
   picker shows each section with the first words of its content, so you know exactly
   what you're granting. Leave it blank for the whole page.
 - **Feature grants** (editors) — which menu tools they get: drafts, history, new
-  posts, scheduling, the site menu, find & replace.
+  posts, scheduling, the site menu, find & replace, adding sections from the
+  [block library](#block-library).
 - **Suggest-only publishing** (editors) — see below.
 
 Removing someone revokes their access immediately, active session included.
@@ -163,6 +164,41 @@ commit, anything they do is visible in your repo history and reversible.
 
 If two people edit at once, each sees who else is on the page, and publishing warns
 before overwriting a field the other person changed. Different fields merge cleanly.
+
+## Block library
+
+Hover the gap between two sections of a page and Kiln shows a slim **+ Add section**
+divider (plus one at the end of the page). Clicking it opens a picker of your site's
+**blocks** — ready-made sections that live as plain HTML files in a `_blocks/` folder
+at the repo root. Each file is one block: a single top-level element (typically a
+`<section>`) with normal `data-cms` annotations inside, optionally named by a
+first-line comment:
+
+```html
+<!-- kiln-block: {"title":"Feature cards","description":"A heading with three editable cards."} -->
+<section class="features">…</section>
+```
+
+No manifest → the filename becomes the title (`feature-cards.html` → "Feature
+cards"). The picker previews each block wearing the page's own stylesheets, so what
+you see is what lands. Inserting stages the section like any other edit — nothing is
+live until Publish — and Kiln renames any `data-cms` key that would collide with one
+already on the page. Hovering a section Kiln added also offers **✕ Remove section**.
+
+Because editors can only insert what's in `_blocks/`, the library is how you keep
+pages on-brand: have whoever built the site (or an AI given
+[KILN_PROMPT.md](../KILN_PROMPT.md)) write a handful of approved sections once, and
+everyone composes from those. With no `_blocks/` folder yet, the picker explains the
+convention and offers to commit a starter block for you.
+
+Two things to know:
+
+- **The feature grant** — admins always have the block chrome. Invited editors need
+  the **Add sections (blocks)** tool ticked in People & access (off by default).
+- **Blocks are content-only** — `<script>` tags and event handler attributes are
+  stripped when a block is inserted (and the worker refuses them server-side on
+  editor publishes). Style blocks with your site's stylesheet; keep behavior in your
+  site's own JS, keyed off classes.
 
 ## The members area
 
