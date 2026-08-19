@@ -6,6 +6,69 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-19
+
+The review-loop release: the comforts of the walled-garden site builders —
+sections, brand controls, comments, suggestions, previews, AI — on a site you
+own in git.
+
+### Added
+
+- **Comment pins** (`💬 Comments`) — Figma-style review on the live page: pin a
+  comment to any element, threads with @who-said-what, resolve/reopen, a
+  sidebar per page, and open-count badges. A **Reviewer preset** in People &
+  access creates a true comment-only seat (`mode: review`) — the worker refuses
+  every write for those sessions.
+- **Suggest mode** — tick *Suggest-only publishing* on an editor and their
+  Publish becomes **Suggest changes**: field-level suggestions land in an admin
+  review queue with per-field before/after, Approve (conflict-safe re-apply onto
+  the current page, suggester keeps authorship) or Decline. Enforced server-side:
+  suggest-mode sessions cannot write to the live branch, schedule, or bypass via
+  the proxy.
+- **Preview links** — one `preview: 'https://{branch}.<project>.pages.dev'`
+  config line turns drafts and suggestions into real, shareable branch-preview
+  URLs built by your host.
+- **Named versions & visual restore** — name any publish (git tags under
+  `kiln/`), and every restore now shows a sandboxed side-by-side "Now vs. this
+  version" preview before anything is staged.
+- **Deploy-aware publish status** — "Live ✓ — view site" driven by your host's
+  real deployment status (with content-probe confirmation), and "Build failed —
+  open commit" when it isn't.
+- **⌘K palette** — jump to any page, field, or tool; site-wide text search with
+  in-context snippets, scope-aware for invited editors.
+- **Block library + section chrome** — "+ Add section" between sections, fed by
+  dev/AI-authored `_blocks/*.html` snippets; editors compose pages only from
+  approved, brand-safe sections. Sections with a repeat key get a ✕ remove.
+- **Theme panel** — the site's `:root` CSS custom properties become a brand kit:
+  color pickers, font menus, size inputs, live preview, byte-exact stylesheet
+  commits. No schema; the CSS is the source of truth.
+- **AI assist** (BYO key) — Improve / Shorten / Tone / Translate / Custom on any
+  field with a before/after preview, one-tap **alt text** for images, and
+  "draft the content" on new posts — via a new `/ai/assist` worker endpoint
+  (`wrangler secret put AI_API_KEY`). Same sanitizer and commit pipeline as
+  human edits; grant-gated per editor.
+- **REST API + scoped tokens** — `GET /api/v1/pages`, `GET /api/v1/fields`,
+  `PATCH /api/v1/edits` behind owner-minted tokens scoped by path, section
+  keys, read-only, and expiry. Every write is sanitized and committed with
+  attribution.
+- **kiln-mcp** (`mcp/`) — an MCP server over that API: give Claude or any MCP
+  client safe, scoped write access to your site; every edit returns its commit.
+- **`kiln rescue <url>`** — the escape hatch: crawl your Squarespace / Wix /
+  WordPress site into a clean, self-contained static copy (assets localized,
+  builder runtime stripped, lazy images fixed) and auto-tag it for Kiln.
+- **`kiln new [dir]`** — scaffold a fresh site from a template repo
+  (`--from owner/repo`), de-personalized, git-initialized, wizard-ready.
+- **Phone-first editing** — the editor reshapes into bottom sheets with
+  thumb-sized targets and a keyboard-aware toolbar on phones; desktop unchanged.
+
+### Changed
+
+- Editor bundle grows to ~426 KB raw / ~128 KB gzip (still loaded only after
+  sign-in; the visitor shim is unchanged at ~3 KB gzip).
+- Suggestion and API commits are authored with the person's or token's name and
+  the `kiln-editor`/`kiln-api` noreply address — real emails never enter git
+  history.
+
 ## [0.3.0] - 2026-07-12
 
 ### Added

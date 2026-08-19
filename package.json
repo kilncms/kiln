@@ -1,6 +1,6 @@
 {
   "name": "kiln",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Click-to-edit CMS for static sites. GitHub as the backend. Free hosting as the host.",
   "license": "AGPL-3.0-only",
   "type": "module",

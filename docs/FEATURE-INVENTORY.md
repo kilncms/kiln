@@ -93,7 +93,40 @@ Toolbar / menu features (each grantable per-editor to invited editors):
 Pages: index, pricing, docs, get-started, marketplace, privacy, terms, refund.
 Redirects map legacy `/self-hosted`, `/kiln-cloud`, `/fully-managed` → product anchors.
 
-## 9. Demo (`demo.kilncms.com`, `kiln-demo` repo)
+## 9. Added 2026-08-19 (v0.4.0 — the review-loop release)
+
+- **Comments** — pin→thread→resolve on the live page (worker KV `cmt:*`), open-count
+  badges, per-page sidebar; `comments` feature grant; **Reviewer preset** = `mode:
+  'review'`, enforced worker-side (all proxy writes refused).
+- **Suggest mode** — `mode:'suggest'` people; field-level suggestions in KV `sug:*`;
+  admin queue w/ per-field diff; approve = conflict-safe server-side re-apply (same
+  path as the API), suggester keeps name authorship (noreply email); proxy +
+  schedule + suggestions guards enforce the mode.
+- **Preview links** — `preview:'https://{branch}.…'` config template; Share-preview
+  (kiln-drafts) + per-suggestion `kiln/suggest-*` branch previews.
+- **Named versions** — git tags `kiln/<ts>-<slug>` via the proxy; History panel
+  section; sandboxed side-by-side visual restore for every restore path.
+- **Deploy-aware publish status** — `deployState()` wired into the journal; "Live ✓ —
+  view site" / "Build failed — open commit".
+- **⌘K palette** — pages/fields/actions + site-wide text search, scope-aware.
+- **Block library** — `_blocks/*.html` + section chrome ("+ Add section", ✕ remove);
+  `blocks` grant; BLOCK_SANITIZE; shared `stageSectionInsert` with gallery/events.
+- **Theme panel** — `:root` custom-property discovery, live preview, byte-exact
+  stylesheet commits; `theme` grant.
+- **AI assist** — `POST /ai/assist` (BYO `AI_API_KEY` secret, Anthropic, SSRF-guarded
+  image fetch); editor ✨ improve/shorten/tone/translate/custom + alt-text +
+  new-post template-fill; `ai` grant (never default).
+- **REST API Phase 0** — `atok:*` scoped tokens (SHA-256-stored), `/admin/api-tokens`
+  mint/list/revoke; `GET /api/v1/pages|fields`, `PATCH /api/v1/edits` with the full
+  guard stack + sha-retry.
+- **kiln-mcp** (`mcp/`) — stdio MCP server over the REST API (list_pages, get_fields,
+  edit_fields, site_info).
+- **CLI**: `kiln rescue <url>` (crawl/clean/localize/tag a builder-hosted site) ·
+  `kiln new [dir]` (scaffold from a template repo).
+- **Phone-first editing** — bottom-sheet chrome, ≥40px targets, visualViewport
+  keyboard-aware toolbar; desktop unchanged.
+
+## 10. Demo (`demo.kilncms.com`, `kiln-demo` repo)
 
 - Sandbox mode (`sandbox: true` in kiln-config): every visitor edits a private,
   local-only, auto-resetting copy — no real commits.

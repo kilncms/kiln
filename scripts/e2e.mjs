@@ -130,4 +130,24 @@ check('gated PDF also redirects', pdfGate.status === 302);
 const tampered = await fetch(`${SITE}/members/`, { headers: { Cookie: 'kiln_member=eyJmYWtlIjoxfQ.deadbeef' }, redirect: 'manual' });
 check('tampered cookie is rejected', tampered.status === 302);
 
+// ── 6. New-surface security: every 0.4 endpoint refuses anonymous callers ────
+const apiAnon = await fetch(`${WORKER}/api/v1/pages`);
+check('api refuses missing token', apiAnon.status === 401);
+const apiBad = await fetch(`${WORKER}/api/v1/pages`, { headers: { Authorization: `Bearer ${'f'.repeat(64)}` } });
+check('api refuses an unknown token', apiBad.status === 401);
+const cmtAnon = await fetch(`${WORKER}/comments?repo=${REPO}&path=index.html`);
+check('comments refuse anonymous callers', cmtAnon.status === 401);
+const sugAnon = await fetch(`${WORKER}/suggestions?repo=${REPO}`);
+check('suggestions refuse anonymous callers', sugAnon.status === 401);
+const aiAnon = await fetch(`${WORKER}/ai/assist`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ repo: REPO, kind: 'improve', text: 'hi' }),
+});
+check('ai assist refuses anonymous callers', [401, 403].includes(aiAnon.status));
+const mintAnon = await fetch(`${WORKER}/admin/api-tokens`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ repo: REPO, name: 'nope' }),
+});
+check('token mint requires push access', [401, 403].includes(mintAnon.status));
+
 summary();

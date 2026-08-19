@@ -74,7 +74,7 @@ edit layer your client was missing.
 |---|---|---|
 | `kiln.js` | boot shim every visitor loads | ~7 KB raw / ~3 KB gzip |
 | `kiln-features.js` | visitor runtime for galleries/filters/calendars, loaded only on pages that use them | ~16 KB raw / ~5 KB gzip |
-| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~355 KB raw / ~105 KB gzip, editors only |
+| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~426 KB raw / ~128 KB gzip, editors only |
 | `kiln-auth` worker | sign-in (GitHub App + Google) and the commit pipeline every edit flows through | Cloudflare Workers free tier |
 | your repo | the content database (with full version history) | free |
 | Cloudflare Pages | hosting + members-area functions | free, commercial use allowed |
@@ -137,7 +137,14 @@ npx github:kilncms/kiln doctor     # health-check an install: worker, app, CORS,
 npx github:kilncms/kiln update     # re-copy the latest editor bundles into the site, offer to commit
 npx github:kilncms/kiln add-site   # add this site to Kiln Cloud (opens the dashboard)
 npx github:kilncms/kiln tag        # conservative auto-annotation pass (see above)
+npx github:kilncms/kiln new        # scaffold a fresh site from a template repo, wizard-ready
+npx github:kilncms/kiln rescue URL # crawl your builder-hosted site into a clean static copy
 ```
+
+`kiln rescue` is the escape hatch from Squarespace/Wix/WordPress: it crawls the
+live site you own, localizes the assets, strips the builder's runtime scripts
+(fixing the lazy-loaded images that depend on them), auto-tags the result, and
+writes a report — a folder ready to push, host free, and edit with Kiln.
 
 `kiln update` is the self-host upgrade path: run it from your site's repo and it finds
 where `kiln.js` lives, drops the latest `kiln.js` + `kiln-editor.js` + `kiln-features.js`
@@ -176,7 +183,38 @@ undoes any staged change, blocks and image swaps included.
   title, description, and social image; **+ New** creates posts and pages from your
   `_templates/`.
 - **Together** — editors see who else is online and on which page; conflicting edits
-  to the same field get an explicit warning with both versions kept.
+  to the same field get an explicit warning with both versions kept. **💬 Comments**
+  pin review threads to any element on the live page (resolve, reopen, badges), and a
+  **Reviewer** seat comments without being able to change anything.
+- **Suggest & approve** — suggest-only editors propose; owners see per-field
+  before/after in a **Suggestions** queue and approve (a conflict-safe merge that
+  keeps the suggester's name on the commit) or decline. With one `preview` config
+  line, drafts and suggestions get real branch-preview URLs from your host.
+- **Versions with names** — name any publish ("summer menu"), and every restore
+  shows a side-by-side "now vs. then" preview before it stages.
+- **⌘K** — jump to any page, field, or tool, or search the site's text with
+  in-context results.
+- **Sections & theme** — "+ Add section" composes pages from the repo's `_blocks/`
+  library (dev- or AI-authored, so everything stays on-brand), and the **Theme**
+  panel turns the site's `:root` CSS variables into color pickers and font menus —
+  applied as byte-exact stylesheet commits.
+- **AI assist** (optional, bring your own key) — improve/shorten/retone/translate any
+  field with a before/after preview, generate image alt text, or draft a new post
+  from a one-line brief. Same sanitizer, same commit pipeline, grant-gated.
+- **On a phone** — the whole editor reshapes into bottom sheets with thumb-sized
+  targets and a keyboard-aware toolbar. Update your hours from the parking lot.
+
+## The API — and safe AI write access
+
+The page is the schema: `GET /api/v1/fields?path=/` returns a page's editable
+fields as JSON, `PATCH /api/v1/edits` writes them back as a sanitized, attributed
+git commit. Owners mint tokens scoped by path, section keys, read-only, and expiry
+— a token is a headless, scoped editor session, and it inherits every guard the
+proxy applies to humans. On top of it, [`mcp/`](mcp/README.md) ships **kiln-mcp**:
+point Claude (or any MCP client) at your site and every AI edit is field-scoped,
+script-proof, and one `git revert` from gone. "Every Monday, update the specials
+from the sheet" is now a cron job, not a chore. Details in
+[docs/API-VISION.md](docs/API-VISION.md).
 
 ## Google sign-in
 
@@ -187,7 +225,9 @@ Open **People & access** in the Kiln menu and add someone by their Google email 
 expires). Editors can be scoped to specific pages and even specific sections — the picker
 shows each section with the first words of its content so you know what you're granting —
 and you choose which menu tools they get (drafts, history, new posts, scheduling, the site
-menu, find & replace). Leave it all blank for the whole site. They sign in at `yoursite.com/kiln` with their Google account, with no GitHub account
+menu, find & replace, comments, AI assist, blocks, theme) — plus two publishing modes:
+**suggest-only** (their edits become suggestions you approve) and **review-only** (a
+comment-only seat that cannot write at all). Leave it all blank for the whole site. They sign in at `yoursite.com/kiln` with their Google account, with no GitHub account
 ever and no links to leak. Removing someone revokes their access immediately, including any
 active session. Editor commits are authored with their name and committed by your GitHub App's
 bot, and the worker enforces a strict allowlist: that one repo, only the paths granted to them,
