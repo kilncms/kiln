@@ -122,11 +122,11 @@ developer/AI in code; Kiln edits content, tokens, and dev-defined structure.
 
 ## 4. The plan
 
-### Track 0 — Source Mode (committed, unchanged, still #1)
+### Track 0 — Source Mode (phases 1+2 SHIPPED 2026-08-31 — adapter/worker/editor/wizard, Astro first; phases 3+ per spec)
 Per [SOURCE-MODE-SPEC.md](SOURCE-MODE-SPEC.md). Everything below assumes it:
 the SSG audience it unlocks (Astro/Eleventy/Hugo/Jekyll handoff sites) is
 exactly the audience that needs the review loop and guardrails. Framer's "CMS
-page" is the walled-garden version of this; `data-kiln-src` is the open one.
+page" is the walled-garden version of this; `data-kiln-source` is the open one.
 
 ### Track 1 — The review loop (the wedge; agency/client killer feature)
 The biggest gap vs. every tool surveyed, and the highest-leverage new work.

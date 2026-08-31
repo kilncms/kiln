@@ -79,6 +79,63 @@ edit layer your client was missing.
 | your repo | the content database (with full version history) | free |
 | Cloudflare Pages | hosting + members-area functions | free, commercial use allowed |
 
+## Source mode — editing sites a generator builds
+
+Everything above assumes the HTML in your repo *is* the page. On an Astro site it
+isn't: the repo holds content files and the pages are generated from them at build
+time, so editing the output would just be erased on the next build. **Source mode**
+points Kiln at the sources instead. You still click the text on the live page and
+type; Kiln saves the change to the underlying content file, commits it, and your
+host rebuilds the site.
+
+The generated page says where each value lives, with one attribute:
+
+```html
+<h3 data-kiln-source="src/content/events/service.md#/frontmatter/title">
+  Interfaith Worship Service
+</h3>
+```
+
+The format is `<repo-relative path>#<RFC 6901 JSON pointer>`, plus an optional
+`?type=date`-style hint. On Astro you don't write these by hand — spread the
+[`@kilncms/astro`](integrations/astro/) helper onto each rendered field, one line
+per field:
+
+```astro
+<h3 {...kilnSource(entry, 'title')}>{entry.data.title}</h3>
+<div {...kilnBody(entry)}><Content /></div>
+```
+
+(The package reaches npm this week; until then the helper is used from this repo's
+`integrations/astro/` — the wizard prints the steps.)
+
+The wizard does the rest: run `npx github:kilncms/kiln` in a generator-built repo
+and it detects the generator, shows what it found ("Found astro.config.mjs and 63
+content files"), asks how the site is built in plain language, writes
+`mode: 'source', adapter: 'astro'` into the config, and deploys a worker that can
+commit to content files. An existing install needs `npx github:kilncms/kiln update`
+plus a redeploy of its worker. `kiln doctor` warns when a repo looks generator-built
+but the site is still in HTML mode — the silent-data-loss trap this mode exists to
+close.
+
+Honest scope, today:
+
+- **In:** markdown content files — `.md` frontmatter and body, `.mdx` frontmatter
+  only (MDX bodies are code, and Kiln never edits code). Frontmatter is spliced
+  surgically: comments, quoting, and key order survive byte-identical.
+- **In:** typed values (`date`, `time`, `url`, `boolean`, `number`) validated
+  server-side with plain-language errors; one commit per content file; real publish
+  states — **Saved → Building… → Published ✓ / Build failed ✕** — with a one-click
+  revert when a bad edit breaks the build.
+- **In:** the guard: an HTML-mode site with build tooling and committed build
+  output is blocked from editing `dist/` with an explanation, instead of edits
+  silently vanishing.
+- **Not yet:** date-picker-style controls (typed values are validated but edited
+  as text), Eleventy / Hugo / Jekyll adapters (Astro first), suggest-mode and
+  scheduled source edits.
+
+The full design is [docs/SOURCE-MODE-SPEC.md](docs/SOURCE-MODE-SPEC.md).
+
 ## Setup (self-host, ~10 minutes)
 
 **1. Deploy the auth worker**
@@ -309,7 +366,7 @@ cookie, `KILN_WORKER` points the redeem function at your auth worker.
 
 ```bash
 npm install
-npm test               # splice engine + transport suite — 65 tests (node --test)
+npm test               # engine, transport, worker + source-mode suites — 254 tests (node --test)
 npm run build          # dist/kiln.js + dist/kiln-editor.js + dist/kiln-features.js
 GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   # full live-loop verification (5 legs)
 ```
