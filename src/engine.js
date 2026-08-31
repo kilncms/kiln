@@ -35,7 +35,7 @@ function attrNameAllowed(name) {
  * anchor/query URLs and http:, https:, mailto:, tel: only; everything else
  * (javascript:, data:, vbscript:, obfuscated "java\tscript:") becomes '#'.
  */
-function safeUrl(value) {
+export function safeUrl(value) {
   const v = String(value);
   const stripped = v.replace(/[\u0000-\u001f\u007f ]/g, '');
   if (stripped === '' || /^[\/#.?]/.test(stripped)) return v;
