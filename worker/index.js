@@ -37,6 +37,10 @@
  *   POST /suggestions/decide {id,approve,note?} → approve (server-side merge) / decline (admin only)
  *   POST /ai/assist        scoped BYO-key AI: revise text / alt text / template fill
  *                          (needs the AI_API_KEY secret; editors need the 'ai' feature)
+ *   GET  /healthz          capability handshake: {ok, modes, adapters, version}
+ *   POST /source/commit    source mode: typed edits → one commit on a content file
+ *   POST /source/revert    source mode: restore a file to its content at a given sha
+ *   POST /source/duplicate source mode: copy a content file to a free -copy sibling
  *
  * KV (binding: KILN):
  *   app:creds   {app_id, slug, client_id, client_secret, pk8}
@@ -57,10 +61,15 @@
 
 const GH = 'https://api.github.com';
 const UA = 'kiln-auth-worker';
+// Reported by /healthz for the editor's capability handshake (§13). Keep in
+// step with package.json "version" when cutting a release.
+const WORKER_VERSION = '0.4.0';
 
 import { handleCloud, expireStaleTrials } from './cloud.js';
-import { applyEdits, indexHtml, readValues, pageFileCandidates } from '../src/engine.js';
+import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, isHtmlPath } from './sanitize-guard.js';
+import { adapterIds } from '../src/adapters/index.js';
+import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, duplicateCandidates, SOURCE_FILE_GONE } from './source.js';
 
 // UTF-8-safe base64 (GitHub content is base64; edits re-applied at cron time).
 function utf8FromB64(b64) {
@@ -91,7 +100,13 @@ export default {
         if (r) return await cors(env, request, r);
       }
 
-      if (path === '/healthz') return new Response('ok');
+      // Capability handshake (SOURCE-MODE-SPEC §13): the editor reads `modes`
+      // to decide whether this worker can edit generator sources — a healthz
+      // without it means an old worker and source fields render read-only.
+      // Still a 200 that says ok, so status-probing monitors keep working.
+      if (path === '/healthz') {
+        return await cors(env, request, json({ ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION }));
+      }
       if (path === '/setup') return setupPage(url, env);
       if (path === '/setup/callback') return setupCallback(url, env);
       if (path === '/setup/status') return setupStatus(env);
@@ -129,6 +144,9 @@ export default {
       if (path === '/suggestions' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionCreate(request, env));
       if (path === '/suggestions/decide' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionDecide(request, env));
       if (path === '/ai/assist' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await aiAssist(request, env));
+      if (path === '/source/commit' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceCommit(request, env));
+      if (path === '/source/revert' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceRevert(request, env));
+      if (path === '/source/duplicate' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceDuplicate(request, env));
       if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
       if (path === '/google/callback') return googleCallback(url, env);
       if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
@@ -1214,6 +1232,177 @@ async function aiAssist(request, env) {
   }
   if (!Object.keys(fields).length) return json({ error: 'ai returned unusable output' }, 502);
   return json({ fields });
+}
+
+// ─── Source mode (generator-built sites) ─────────────────────────────────────
+// POST /source/commit|revert|duplicate — the editor edits a rendered value and
+// the worker writes the CONTENT FILE it was built from, through a source
+// adapter (SOURCE-MODE-SPEC §5; contracts in docs/SOURCE-MODE-IMPL.md). All
+// decision logic is pure in worker/source.js; this section is fetch glue only.
+// Same actor resolution as /presence, same commit authorship as the /gh proxy,
+// same one-retry sha-conflict merge as PATCH /api/v1/edits — a conflict
+// re-applies the SAME edits against the re-fetched source (§8.2), so
+// concurrent edits to other fields survive.
+
+/** Read one file's contents record at a ref. Returns the JSON, null on 404. */
+async function sourceRead(h, repo, file, ref) {
+  const res = await fetch(`${GH}/repos/${repo}/contents/${encodeURIComponent(file)}?ref=${ref}`, { headers: h });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`read ${res.status}`);
+  const cur = await res.json();
+  if (typeof cur.content !== 'string') throw new Error('unreadable content');
+  return cur;
+}
+
+async function sourceCommit(request, env) {
+  const { repo, branch = 'main', adapter, file, edits, message } = await request.json().catch(() => ({}));
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
+  if (!/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
+  const actor = await authActor(request, env, repo);
+  // Rules 1–3 (actor mode, adapter, path gauntlet, edit shape) — pure.
+  const v = validateSourceRequest({ file, edits, adapter, actor }, { isSensitivePath, pathInScope });
+  if (v.error) return json({ error: v.error, ...(v.detail !== undefined && { detail: v.detail }) }, v.status);
+  // Rule 4: typed validation skips a bad edit, never the batch (§8.1/§9).
+  const typedSkips = typedEditProblems(v.cleanEdits, { safeUrl, checkFragment });
+  const badKeys = new Set(typedSkips.map(s => s.key));
+  const runnable = v.cleanEdits.filter(e => !badKeys.has(e.key));
+
+  const itok = await installationToken(env, repo);
+  if (!itok) return json({ error: 'app not installed on repo', repo }, 503);
+  const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const cur = await sourceRead(h, repo, v.file, branch);
+      if (!cur) return json({ error: SOURCE_FILE_GONE }, 404);
+      const source = utf8FromB64(cur.content);
+      const { content, applied, skipped } = v.adapter.applyEdits(source, runnable, v.file);
+      const allSkipped = [...typedSkips, ...skipped];
+      if (!applied.length) return json({ error: 'no edits could be applied', skipped: allSkipped }, 422);
+      // Cheap pre-commit parse check (§9) — the build is the real judge (§12).
+      const invalid = v.adapter.validate(content, v.file);
+      if (invalid) return json({ error: invalid }, 422);
+      if (content === source) return json({ ok: true, unchanged: true, applied, skipped: allSkipped });
+      const put = await fetch(`${GH}/repos/${repo}/contents/${encodeURIComponent(v.file)}`, {
+        method: 'PUT', headers: h,
+        body: JSON.stringify({
+          message: (typeof message === 'string' && message.trim()) ? message : `Kiln: update ${v.file}`,
+          content: b64FromUtf8(content), branch, sha: cur.sha,
+          author: { name: `${actor.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' },
+        }),
+      });
+      if (put.ok) {
+        const out = await put.json();
+        // `parent` is what /source/revert restores to after a failed build (§12).
+        return json({ ok: true, file: v.file, commit: { sha: out.commit?.sha, parent: out.commit?.parents?.[0]?.sha || null }, applied, skipped: allSkipped });
+      }
+      const err = await put.json().catch(() => ({}));
+      const conflict = put.status === 409 || (put.status === 422 && /sha/i.test(err.message || ''));
+      if (!conflict) return json({ error: 'commit failed', detail: err.message || String(put.status) }, 502);
+    }
+    return json({ error: 'conflict: the file changed while saving — try again' }, 409);
+  } catch {
+    return json({ error: 'could not apply edits safely' }, 502);
+  }
+}
+
+async function sourceRevert(request, env) {
+  const { repo, branch = 'main', file, toSha } = await request.json().catch(() => ({}));
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
+  if (!/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
+  if (!/^[a-f0-9]{40}$/.test(String(toSha || ''))) return json({ error: 'bad toSha' }, 400);
+  const actor = await authActor(request, env, repo);
+  const refuse = sourceModeRefusal(actor);
+  if (refuse) return json({ error: refuse.error }, refuse.status);
+  // A revert restores whatever the failed commit touched — any adapter's
+  // editable file or an HTML page, same denylists as /source/commit.
+  const p = refuseSourcePath(file, actor, { isSensitivePath, pathInScope }, { anyEditable: true });
+  if (p.error) return json({ error: p.error }, p.status);
+
+  const itok = await installationToken(env, repo);
+  if (!itok) return json({ error: 'app not installed on repo', repo }, 503);
+  const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
+  try {
+    const old = await sourceRead(h, repo, p.file, toSha);
+    if (!old) return json({ error: 'that file does not exist at that commit — nothing to revert to' }, 404);
+    // Base64 passed through untouched (whitespace stripped) — exact bytes back.
+    const restore = old.content.replace(/\s/g, '');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const cur = await sourceRead(h, repo, p.file, branch);
+      // Deleted at head → the PUT (no sha) recreates it; that IS the revert.
+      if (cur && cur.content.replace(/\s/g, '') === restore) {
+        return json({ ok: true, file: p.file, unchanged: true });
+      }
+      const put = await fetch(`${GH}/repos/${repo}/contents/${encodeURIComponent(p.file)}`, {
+        method: 'PUT', headers: h,
+        body: JSON.stringify({
+          message: `Kiln: revert ${p.file} to ${toSha.slice(0, 7)}`,
+          content: restore, branch, ...(cur && { sha: cur.sha }),
+          author: { name: `${actor.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' },
+        }),
+      });
+      if (put.ok) {
+        const out = await put.json();
+        return json({ ok: true, file: p.file, commit: { sha: out.commit?.sha, parent: out.commit?.parents?.[0]?.sha || null } });
+      }
+      const err = await put.json().catch(() => ({}));
+      const conflict = put.status === 409 || (put.status === 422 && /sha/i.test(err.message || ''));
+      if (!conflict) return json({ error: 'commit failed', detail: err.message || String(put.status) }, 502);
+    }
+    return json({ error: 'conflict: the file changed while reverting — try again' }, 409);
+  } catch {
+    return json({ error: 'could not revert safely' }, 502);
+  }
+}
+
+async function sourceDuplicate(request, env) {
+  const { repo, branch = 'main', file } = await request.json().catch(() => ({}));
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
+  if (!/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
+  const actor = await authActor(request, env, repo);
+  const refuse = sourceModeRefusal(actor);
+  if (refuse) return json({ error: refuse.error }, refuse.status);
+  const p = refuseSourcePath(file, actor, { isSensitivePath, pathInScope }, { anyEditable: true });
+  if (p.error) return json({ error: p.error }, p.status);
+
+  const itok = await installationToken(env, repo);
+  if (!itok) return json({ error: 'app not installed on repo', repo }, 503);
+  const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
+  try {
+    const src = await sourceRead(h, repo, p.file, branch);
+    if (!src) return json({ error: SOURCE_FILE_GONE }, 404);
+    // Exact byte copy: the base64 goes back out untouched (whitespace stripped).
+    const bytes = src.content.replace(/\s/g, '');
+    let target = null;
+    for (const candidate of duplicateCandidates(p.file)) {
+      // Same dir + extension as a file that just passed, so this re-check can
+      // only trip on something genuinely odd — refuse loudly, never write it.
+      const cp = refuseSourcePath(candidate, actor, { isSensitivePath, pathInScope }, { anyEditable: true });
+      if (cp.error) return json({ error: cp.error }, cp.status);
+      const probe = await fetch(`${GH}/repos/${repo}/contents/${encodeURIComponent(candidate)}?ref=${branch}`, { headers: h });
+      if (probe.status === 404) { target = candidate; break; }
+      if (!probe.ok) return json({ error: 'could not find a free name for the copy' }, 502);
+    }
+    if (!target) return json({ error: 'too many copies of this file — rename or delete one first' }, 409);
+    const put = await fetch(`${GH}/repos/${repo}/contents/${encodeURIComponent(target)}`, {
+      method: 'PUT', headers: h,
+      body: JSON.stringify({
+        message: `Kiln: duplicate ${p.file}`,
+        content: bytes, branch,
+        author: { name: `${actor.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' },
+      }),
+    });
+    if (put.ok) {
+      const out = await put.json();
+      return json({ ok: true, path: target, commit: { sha: out.commit?.sha, parent: out.commit?.parents?.[0]?.sha || null } });
+    }
+    const err = await put.json().catch(() => ({}));
+    // Raced: someone claimed the probed-free name first.
+    const conflict = put.status === 409 || (put.status === 422 && /sha/i.test(err.message || ''));
+    if (conflict) return json({ error: 'conflict: that name was just taken — try again' }, 409);
+    return json({ error: 'commit failed', detail: err.message || String(put.status) }, 502);
+  } catch {
+    return json({ error: 'could not duplicate safely' }, 502);
+  }
 }
 
 // ─── People (Google sign-in allowlist) ───────────────────────────────────────

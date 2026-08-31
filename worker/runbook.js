@@ -281,7 +281,7 @@ export const RUNBOOK_HTML = `<!doctype html>
       <ol class="steps">
         <li><strong>One customer or everyone?</strong> One → probably <em>their</em> repo/host; run <code>doctor</code> on their site. Everyone → it's the Worker or a deploy; continue.</li>
         <li><strong>Did we just deploy?</strong> Yes → <strong>roll back the Worker</strong> (<code>wrangler rollback</code>) and see if it fixes it. Most likely cause, fastest fix.</li>
-        <li><strong>Is the Worker up?</strong> <code>curl https://auth.kilncms.com/healthz</code> should say <code>ok</code>. If not, redeploy the last known-good version.</li>
+        <li><strong>Is the Worker up?</strong> <code>curl https://auth.kilncms.com/healthz</code> should answer <code>{"ok":true,…}</code>. If not, redeploy the last known-good version.</li>
         <li><strong>Is billing the problem?</strong> Check the admin and Lemon Squeezy dashboards. A site stuck "trialing" after payment is usually a delayed webhook — it self-corrects, or re-send it from Lemon Squeezy.</li>
         <li><strong>Still stuck?</strong> Write down exactly what you see (URL, error, screenshot), send it to me, and stop changing things — one change at a time.</li>
       </ol>
