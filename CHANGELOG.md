@@ -6,6 +6,25 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Source-mode worker endpoints** — the worker can now edit the content files
+  a generator-built site is rendered from, not just finished HTML.
+  `POST /source/commit` applies typed, per-field edits to a content file
+  through a source adapter (Astro first): frontmatter values are spliced
+  surgically (comments, quoting, and key order survive byte-identical), each
+  edit is validated for its declared type (date, time, url, boolean, number)
+  plus a markup guard on every text value, bad edits are skipped individually
+  instead of failing the batch, and a concurrent save re-applies your edits
+  once on top — the same merge model HTML publishes use. `POST /source/revert`
+  restores a file to its content at any commit, the one-click release valve
+  when a bad edit breaks the site's build. `POST /source/duplicate` copies an
+  entry to the first free `-copy` sibling ("add another event" in v1).
+- **`GET /healthz` capability handshake** — now answers
+  `{ ok, modes, adapters, version }` so editors can feature-detect source
+  support; an old worker (or old editor) degrades gracefully instead of
+  erroring.
+
 ## [0.4.0] - 2026-08-19
 
 The review-loop release: the comforts of the walled-garden site builders —

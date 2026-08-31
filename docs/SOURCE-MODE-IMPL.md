@@ -87,6 +87,40 @@ Extend the existing response with `"modes": ["html", "source"],
 treats a healthz without `modes` as an old worker and renders source fields
 read-only-with-tooltip instead of erroring.
 
+### Pinned while implementing the worker (shipped in worker/source.js + index.js)
+
+Where the contract above left room, these are the decisions now in code:
+
+- **Rule 2 applies to every actor, admins included.** A source endpoint never
+  writes config/code, whoever asks; an admin who really must can use their own
+  GitHub token. (Precedent split: the /gh proxy exempts admins, /schedule does
+  not — source follows /schedule, fail closed.)
+- **Mode refusals (rule 1) also gate /source/revert and /source/duplicate** —
+  both are direct writes to the live branch; letting a suggest/review session
+  through would sidestep the suggest guard exactly like scheduling would.
+- **`checkFragment` runs on EVERY string value not pinned by a stricter shape**
+  — declared `enum`/`image`/unknown types included, not just
+  string/text/markdown/untyped. `type` rides in from an attacker-controllable
+  attribute, and `type: 'enum'` on a `/body` pointer must not smuggle raw HTML
+  past the §14 markdown check.
+- **Values must be scalars** (string | number | boolean); anything else skips
+  that edit with `unsupported value type` (yaml-splice only addresses scalars).
+- **healthz was plain-text `ok`**, not JSON; it now returns
+  `{ ok: true, modes, adapters, version }` (same 200 — status probes keep
+  working; the runbook's curl line was updated). CORS-wrapped so the editor can
+  actually read it cross-origin. `version` is a worker constant kept in step
+  with package.json.
+- **Revert/duplicate refuse the UNION of every registered adapter's
+  `sensitivePaths()`** (prefix match), since no single adapter is named.
+- **Revert edges:** file missing at `toSha` → 404 with a clear error; file
+  identical at head → `{ ok, unchanged: true }`, no commit; file deleted at
+  head → the PUT (no sha) recreates it.
+- **Default commit messages:** `Kiln: update <file>`,
+  `Kiln: revert <file> to <sha7>`, `Kiln: duplicate <file>`.
+- **For the CLI workstream:** cli/prepack.mjs's vendored worker file list needs
+  `worker/source.js` (new import of worker/index.js — a self-host deploy fails
+  without it, same failure mode sanitize-guard.js had).
+
 ## Editor behaviour (owner: editor workstream)
 
 - Feature-detect: no `[data-kiln-source]` on the page → not one new code path
