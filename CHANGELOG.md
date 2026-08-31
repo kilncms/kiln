@@ -39,6 +39,22 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   generator build but the site is in HTML mode (the silent-data-loss trap),
   and in source mode verifies the worker's `/healthz` advertises source
   support — an older worker warns instead of failing.
+- **Source-mode editing in the editor** — pages carrying `data-kiln-source`
+  provenance are editable in place, exactly like `data-cms` fields: click the
+  text, type, Publish. Edits are grouped by content file and committed one
+  file at a time ("Saving 3 changes across 2 content files."), with the honest
+  §11 publish states — **Saved → Building… → Published ✓ / Build failed ✕** —
+  driven by the commit's real status and deployment polls; a failed build gets
+  a banner with one-click **Undo this change** per committed file (reverts to
+  the commit's parent). Fields show "Where does this come from?"
+  (`events/e.md → title`), a worker without source support renders them
+  read-only with a lock and tooltip, malformed provenance warns once and locks
+  the field, and an element carrying both `data-cms` and `data-kiln-source`
+  edits its source (with a console warning). Undo/redo, the modified markers,
+  the Publish count, sandbox previewing, and suggest/review gating all treat
+  source edits as first-class. HTML-mode sites that resolve a page inside
+  committed build output now get the §7.3 blocking explanation instead of
+  silently-erased edits.
 - **`@kilncms/astro`** (`integrations/astro/`) — provenance helpers for Astro
   sites: `{...kilnSource(entry, 'title')}` / `{...kilnBody(entry)}` stamp
   `data-kiln-source` on rendered fields, one line per field. Helpers never

@@ -153,6 +153,41 @@ Where the contract above left room, these are the decisions now in code:
   dir (or `builtHtml` is true), show the blocking explanation from §7.3 instead
   of decorating fields.
 
+### Pinned while implementing the editor (shipped in src/editor/source-fields.js + main.js)
+
+Where the contract above left room, these are the decisions now in code:
+
+- **Every /source/commit edit carries `key: <full data-kiln-source ref>`** (the
+  `state.pendingSource` key). Worker + adapter already echo `e.key ?? e.pointer`
+  into `applied`/`skipped`, so responses map straight back onto staged fields;
+  the editor also falls back to pointer matching if a hop ever strips keys.
+  Don't repurpose `edit.key` for anything else.
+- **A 404 from page resolution is non-fatal when `cfg.mode === 'source'` or the
+  page carries `[data-kiln-source]`** — source-mode URLs usually have no
+  committed HTML file, so the editor boots with an empty page index instead of
+  dying (HTML-only features degrade; source editing works). Everything else
+  keeps today's fatal handling.
+- **v1 source fields stage the element's textContent** (contenteditable,
+  plaintext-only where supported) — §6's degrade-to-string, until typed
+  controls land. `type=image` refs and `<img>` elements render read-only with
+  a lock rather than staging garbage.
+- **Terminal build signals are ONLY `success` and `failure`/`error`**; an empty
+  combined status (`total_count: 0`) is not a signal, and
+  queued/pending/in_progress/inactive keep polling until the 5-min timeout
+  copy. A failure seen in the same tick as a success wins (a failed deploy
+  means not live).
+- **Suggest-mode Publish with staged source edits POSTs /source/commit anyway**
+  and surfaces the worker's 403 copy verbatim (no client-side pre-block, per
+  §13's server-enforcement rule); staged HTML edits still reroute to
+  suggestions.
+- **The §7.3 guard caches the root-listing verdict in
+  `sessionStorage["kiln_srcguard:<repo>"]`** ({ gen, builtHtml }); the
+  page-path condition re-evaluates per page. A listing failure never blocks.
+- **Client-side path/section scope is not applied to source fields** (their
+  edits target FILES, not the current page) — the worker's
+  `pathInScope`/sensitive-path rules are the enforcement, and skipped-edit
+  reasons surface on the field. Review-mode seats stay read-only client-side.
+
 ## CLI + fixtures + integration (owner: cli workstream)
 
 - Wizard: detection step via `detectGenerators` on the local file listing;

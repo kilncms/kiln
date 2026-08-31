@@ -14,6 +14,12 @@ import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValu
 import {
   makeGh, getFile, resolvePageFile, editFile, putFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
+import { SOURCE_ATTR } from '../adapters/pointer.js';
+import { generatorSignals } from '../adapters/detect.js';
+import {
+  scanSourceRefs, groupSourceEdits, matchAppliedRefs, matchSkippedRefs, resolveBuildState,
+  revertRequest, parseSourceCapabilities, saveSummary, friendlyRef, SOURCE_LOCKED_TIP, STILL_BUILDING_COPY,
+} from './source-fields.js';
 import { initPalette, openPalette } from './palette.js';
 import { initSuggest, suggestChanges, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
 import { initTheme, openThemePanel } from './theme.js';
@@ -77,6 +83,12 @@ const state = {
   // the publish-conflict snapshot set by loadPageSource.)
   undoBase: new Map(),        // key → clean innerHTML
   undoBaseAttrs: new Map(),   // key → { attrName: value }
+  // Source mode (§4.3): fields whose value lives in a content FILE, not this
+  // page's HTML. Keyed by the FULL data-kiln-source ref string. None of this is
+  // touched unless the page actually carries [data-kiln-source] (§13).
+  pendingSource: new Map(),   // ref → { value, type? } staged for /source/commit
+  sourceFields: null,         // ref → { parsed, els: [Element] } from the boot scan
+  sourceBase: new Map(),      // ref → pre-edit text (undo baseline; updated on publish)
 };
 
 // ─── Session undo/redo (⌘Z / ⌘⇧Z) ───────────────────────────────────────────
@@ -170,13 +182,33 @@ async function init() {
     state.user = sess.name;
   }
 
-  await loadPageSource();
+  try {
+    await loadPageSource();
+  } catch (err) {
+    // Source-mode pages are GENERATED — the URL usually has no committed HTML
+    // file, and that must not kill the editor (§13). Boot with an empty page
+    // index instead; HTML-mode editing simply has nothing to decorate, while
+    // [data-kiln-source] fields still work. Everything else stays fatal.
+    const sourcey = cfg.mode === 'source' || document.querySelector(`[${SOURCE_ATTR}]`);
+    if (err.status !== 404 || !sourcey) throw err;
+    state.page = { path: '', text: '', sha: null };
+    state.fields = indexHtml('');
+    state.baseline = {};
+  }
   // Editors: learn our path/section scope BEFORE decorating, so out-of-scope
   // content never grows an edit handle (best-effort — offline means no scope data).
   if (mode === 'editor' && !cfg.sandbox) await presencePing();
   renderAdminBar();
-  decorateFields();
-  offerPendingRestore();
+  // §7.3: an html-mode page that resolved to committed BUILD OUTPUT gets a
+  // blocking explanation instead of edit handles — editing it is silent data
+  // loss (the next build erases the edit). Nothing else is withheld.
+  if (await wrongModeGuard()) {
+    setStatus('Editing is off — this page is build output (see the notice)', 'error');
+  } else {
+    decorateFields();
+    await initSourceFields();
+    offerPendingRestore();
+  }
   if (journalAll().length) runJournal();
   checkForDraft();
   startPresence();
@@ -186,7 +218,8 @@ async function init() {
   if (mode === 'admin' && !cfg.sandbox) checkForUpdate();
 
   window.addEventListener('beforeunload', (e) => {
-    if (state.pending.size || state.pendingBinaries.size || state.pendingStructural.length) { e.preventDefault(); e.returnValue = ''; }
+    if (state.pending.size || state.pendingBinaries.size || state.pendingStructural.length
+      || state.pendingSource.size) { e.preventDefault(); e.returnValue = ''; }
   });
 }
 
@@ -464,6 +497,9 @@ function decorateFields() {
   if (mode === 'editor' && state.scope?.mode === 'review') return;
 
   document.querySelectorAll('[data-cms]').forEach((el) => {
+    // §4.3 precedence: an element carrying BOTH data-cms and data-kiln-source
+    // is a source field — never guess silently (initSourceFields warns once).
+    if (el.hasAttribute(SOURCE_ATTR)) return;
     const key = el.getAttribute('data-cms');
     const source = state.fields.fields.get(key);
     const inRepeat = !!el.closest('[data-cms-repeat]');
@@ -555,6 +591,7 @@ function inlineImgPopover(img) {
 }
 
 function decorateField(el, key) {
+  if (el.hasAttribute(SOURCE_ATTR)) return;   // §4.3: data-kiln-source wins, on every decorate path
   el.classList.add('kiln-field');
   el.title = `Edit: ${key}`;
   // Seed the undo baseline with the pre-edit state (first decoration wins;
@@ -1031,6 +1068,9 @@ function startEditing(el, key) {
   // field's handler stops propagation), so cancelling here silently REVERTED the
   // first field's edit. Click-away semantics are "save"; Esc is the revert.
   if (state.active && state.active !== el) commitEdit(state.active, state.active.getAttribute('data-cms'));
+  // Same rule for an in-progress source-field edit (its own click-away never
+  // fires either — this handler stopped propagation).
+  if (sourceActive) commitSourceEdit();
   state.active = el;
   if (!state.originals.has(key)) state.originals.set(key, el.innerHTML);
   // THIS element's own pre-edit content, for a correct Esc/cancel. The shared
@@ -1119,6 +1159,13 @@ function applyKeyDom(key, html) {
 }
 
 function applyUndoStep(s, dir) {
+  if (s.srcRef) {   // a source-mode field edit (only exists once source fields staged)
+    const entry = dir === 'before' ? s.prevEntry : s.nextEntry;
+    if (entry === undefined) state.pendingSource.delete(s.srcRef);
+    else state.pendingSource.set(s.srcRef, { ...entry });
+    syncSourceDom(s.srcRef);
+    return state.sourceFields?.get(s.srcRef)?.els[0] || null;
+  }
   if (s.structural) {   // a section that was added (gallery/events/blocks) — or removed
     // For an ADD, "before" = section gone; for a REMOVAL it's the mirror image.
     // `unstaged` = a pending insert withdrawn via ✕: node AND its insert op
@@ -1832,15 +1879,31 @@ function retireStaged() {
   editHistory.redo.length = 0;
   updateUndoUi();
   document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
+  // Source edits never ride a schedule/suggestion — any still pending keep
+  // their modified markers (the blanket sweep above just removed them).
+  for (const ref of state.pendingSource.keys()) syncSourceDom(ref);
   refreshPublishButton();
 }
 
 async function publish() {
-  if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length) return;
+  if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length
+    && !state.pendingSource.size) return;
   if (cfg.sandbox) return publishSandbox();
   // Suggest-mode editors don't publish — their Publish proposes. (The worker's
   // proxy guard enforces this server-side; the reroute here is the good UX.)
-  if (isSuggestMode()) return suggestChanges();
+  // Source edits aren't pre-blocked client-side: /source/commit answers suggest
+  // sessions with its own 403 copy, which publishSource surfaces as-is.
+  if (isSuggestMode()) {
+    if (state.pendingSource.size) await publishSource();
+    if (state.pending.size) return suggestChanges();
+    return;
+  }
+  // Only source-file edits staged: skip the HTML flow entirely — there may not
+  // even BE a committed page file to edit (§13), and its journal/status tail
+  // must not claim "Published" for commits whose build hasn't run (§11).
+  if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length) {
+    return publishSource();
+  }
 
   // Edits inside a data-cms-partial (e.g. a shared footer or header) fan out to
   // every page; everything else commits to the current page only.
@@ -1977,8 +2040,11 @@ async function publish() {
       setStatus(`${keptSkipped.length} edit${keptSkipped.length > 1 ? 's' : ''} couldn't be applied — that section no longer exists on the page. Still pending.`, 'error');
       return;
     }
-    if (result && result.unchanged && !partialEdits.length) { setStatus('Nothing changed', 'idle'); return; }
+    if (result && result.unchanged && !partialEdits.length && !state.pendingSource.size) { setStatus('Nothing changed', 'idle'); return; }
     watchDeploy(result?.commit?.sha, result?.text);
+    // A mixed publish (page edits + source-file edits from the same screen):
+    // commit the source half now, sequentially, with its own §11 states.
+    if (state.pendingSource.size) await publishSource();
   } catch (err) {
     console.error('[kiln] publish', err);
     setStatus('Publish failed — see console', 'error');
@@ -2040,6 +2106,419 @@ async function publishPartials(edits) {
   }
 }
 
+// ─── Source mode: [data-kiln-source] fields (SOURCE-MODE-SPEC §4.3–§13) ──────
+// A generated page names each editable value's backing FILE + pointer in one
+// attribute; edits are grouped by file and committed through the worker's
+// /source/commit, then the build is watched (§11/§12). Feature-detected: a page
+// without the attribute runs none of this (§13).
+
+let sourceActive = null;   // { el, ref, parsed, originalText } — the source field being edited
+
+async function initSourceFields() {
+  const els = [...document.querySelectorAll(`[${SOURCE_ATTR}]`)].filter(el => !isKilnChrome(el));
+  if (!els.length) return;   // §13: not one new code path on pages without provenance
+  const scan = scanSourceRefs(els.map(el => ({
+    ref: el.getAttribute(SOURCE_ATTR), cms: el.hasAttribute('data-cms'),
+  })));
+  for (const i of scan.dual) {
+    console.warn('[kiln] element carries both data-cms and data-kiln-source — source wins:', els[i]);
+  }
+  for (const m of scan.malformed) {
+    // §8.1: malformed provenance → field not editable, ONE console warn with the element.
+    console.warn(`[kiln] malformed ${SOURCE_ATTR} — field is not editable:`, els[m.indexes[0]].outerHTML);
+    for (const i of m.indexes) lockSourceField(els[i], 'This text can’t be edited — its source reference is malformed.');
+  }
+  state.sourceFields = new Map();
+  for (const f of scan.fields) {
+    state.sourceFields.set(f.ref, { parsed: f.parsed, els: f.indexes.map(i => els[i]) });
+    if (!state.sourceBase.has(f.ref)) state.sourceBase.set(f.ref, els[f.indexes[0]].textContent);
+  }
+  // Review-mode seats never see edit affordances (matches decorateFields).
+  if (mode === 'editor' && state.scope?.mode === 'review') return;
+  // Capability handshake (§13), once per boot. The sandbox stages locally.
+  if (!cfg.sandbox) {
+    state.sourceCaps = await fetchSourceCaps();
+    if (!state.sourceCaps.source) {
+      for (const f of state.sourceFields.values()) f.els.forEach(el => lockSourceField(el, SOURCE_LOCKED_TIP));
+      return;
+    }
+  }
+  for (const [ref, f] of state.sourceFields) {
+    f.els.forEach(el => decorateSourceField(el, ref, f.parsed));
+  }
+  // Click-away saves, Esc reverts — the same semantics data-cms fields have.
+  // Registered here so pages without source fields add no listeners.
+  document.addEventListener('click', (e) => {
+    if (sourceActive && !sourceActive.el.contains(e.target) && !e.target.closest('#kiln-toolbar')) {
+      commitSourceEdit();
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && sourceActive) cancelSourceEdit();
+  });
+}
+
+/** GET /healthz once per boot; anything that isn't new-style JSON = old worker. */
+async function fetchSourceCaps() {
+  try {
+    const res = await fetch(`${cfg.worker}/healthz`);
+    if (!res.ok) return parseSourceCapabilities(null);
+    return parseSourceCapabilities(await res.json().catch(() => null));   // old workers say plain 'ok'
+  } catch {
+    return parseSourceCapabilities(null);   // unreachable worker — read-only beats a dead Publish
+  }
+}
+
+/** §10 read-only affordance: visibly locked, with the reason a hover away. */
+function lockSourceField(el, tip) {
+  el.classList.add('kiln-source-field', 'kiln-source-locked');
+  el.title = `🔒 ${tip}`;
+}
+
+function decorateSourceField(el, ref, parsed) {
+  // Image-typed provenance needs the picker pipeline (§6) — that control ships
+  // with typed fields; until then the field is honestly read-only, not broken.
+  if (el.tagName === 'IMG' || parsed.type === 'image') {
+    lockSourceField(el, 'Image source fields aren’t editable yet.');
+    return;
+  }
+  el.classList.add('kiln-field', 'kiln-source-field');
+  el.title = `Edit: ${friendlyRef(parsed)}`;
+  el.addEventListener('click', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.target.closest('a')) return;
+    e.preventDefault(); e.stopPropagation();
+    if (!sourceActive || sourceActive.el !== el) startSourceEditing(el, ref, parsed);
+  });
+}
+
+function startSourceEditing(el, ref, parsed) {
+  if (sourceActive && sourceActive.el !== el) commitSourceEdit();
+  // An in-progress data-cms edit commits first (its click-away can't see this
+  // click — decorateSourceField stopped propagation).
+  if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+  sourceActive = { el, ref, parsed, originalText: el.textContent };
+  el.classList.add('kiln-editing');
+  // Source values are text, not markup (§6 degrades every type to string in
+  // v1) — prefer plaintext-only where the browser has it.
+  el.setAttribute('contenteditable', 'plaintext-only');
+  if (!el.isContentEditable) el.setAttribute('contenteditable', 'true');
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  renderSourceToolbar(el, ref, parsed);
+}
+
+/** Click-away/Done for a source field: stage its text if it changed (§10). */
+function commitSourceEdit() {
+  const a = sourceActive;
+  if (!a) return;
+  sourceActive = null;
+  a.el.removeAttribute('contenteditable');
+  a.el.classList.remove('kiln-editing');
+  removeToolbar();
+  const value = a.el.textContent;
+  const base = state.sourceBase.get(a.ref);
+  const prev = state.pendingSource.get(a.ref);
+  if (prev && value === base) {
+    stageSourcePending(a.ref, null);          // back to the original → un-stage (undoable)
+  } else if (value !== (prev ? prev.value : base)) {
+    stageSourcePending(a.ref, value);
+  }
+}
+
+/** Esc: throw the in-progress edit away (staged value, else the pre-edit text). */
+function cancelSourceEdit() {
+  const a = sourceActive;
+  if (!a) return;
+  sourceActive = null;
+  a.el.removeAttribute('contenteditable');
+  a.el.classList.remove('kiln-editing');
+  const pend = state.pendingSource.get(a.ref);
+  a.el.textContent = pend ? pend.value : a.originalText;
+  removeToolbar();
+}
+
+/** The floating control for a source field — label, provenance (§10), Done/Revert. */
+function renderSourceToolbar(el, ref, parsed) {
+  removeToolbar();
+  const tb = document.createElement('div');
+  tb.id = 'kiln-toolbar';
+  tb.innerHTML = `
+    ${TB_GRIP}
+    <span class="kiln-tb-label">${escapeHtml(parsed.pointer[parsed.pointer.length - 1])}</span>
+    <button class="kiln-tb-fmt kiln-src-where" title="${escapeHtml(`${parsed.path}#${parsed.rawPointer}`)}">Where does this come from?</button>
+    <span class="kiln-tb-gap"></span>
+    <button class="kiln-tb-save" title="Keep this edit (staged for Publish)">Done</button>
+    <button class="kiln-tb-cancel" title="Throw away this edit (Esc)">Revert</button>`;
+  document.body.appendChild(tb);
+  positionToolbar(tb, el);
+  makeToolbarDraggable(tb);
+  tb.querySelectorAll('button').forEach(b => b.addEventListener('mousedown', (e) => e.preventDefault()));
+  tb.querySelector('.kiln-src-where').onclick = (e) => {
+    e.stopPropagation(); e.preventDefault();
+    const span = document.createElement('span');
+    span.className = 'kiln-tb-label';
+    span.textContent = friendlyRef(parsed);                    // events/e.md → title
+    span.title = `${parsed.path}#${parsed.rawPointer}`;
+    e.currentTarget.replaceWith(span);
+  };
+  tb.querySelector('.kiln-tb-save').onclick = (e) => { e.stopPropagation(); commitSourceEdit(); };
+  tb.querySelector('.kiln-tb-cancel').onclick = (e) => { e.stopPropagation(); cancelSourceEdit(); };
+}
+
+/**
+ * Stage (value: string) or un-stage (value: null) a source edit, with one undo
+ * entry — the source twin of stagePending.
+ */
+function stageSourcePending(ref, value, opts = {}) {
+  const f = state.sourceFields.get(ref);
+  const prev = state.pendingSource.get(ref);
+  let step = null;
+  if (!opts.noUndo) {
+    step = { srcRef: ref, prevEntry: prev ? { ...prev } : undefined };
+  }
+  if (value === null) {
+    state.pendingSource.delete(ref);
+    if (step) step.nextEntry = undefined;
+  } else {
+    const entry = { value };
+    const type = f?.parsed?.type;
+    if (type) entry.type = type;
+    state.pendingSource.set(ref, entry);
+    if (step) step.nextEntry = { ...entry };
+  }
+  syncSourceDom(ref);
+  if (step) {
+    if (undoBucket) undoBucket.steps.push(step);
+    else pushUndoEntry({ steps: [step] });
+  }
+  refreshPublishButton();
+}
+
+/** Every element sharing `ref` shows the staged (or baseline) text + marker. */
+function syncSourceDom(ref) {
+  const f = state.sourceFields.get(ref);
+  if (!f) return;
+  const pend = state.pendingSource.get(ref);
+  const text = pend ? pend.value : state.sourceBase.get(ref);
+  for (const el of f.els) {
+    if (el === sourceActive?.el) continue;   // never rewrite under the caret
+    if (text !== undefined && el.textContent !== text) el.textContent = text;
+    el.classList.toggle('kiln-modified', !!pend);
+    if (!el.classList.contains('kiln-source-locked')) el.title = `Edit: ${friendlyRef(f.parsed)}`;
+  }
+}
+
+/** Surface a per-field save problem where the user will see it (title + marker stays). */
+function markSourceFieldIssue(ref, reason) {
+  const f = state.sourceFields.get(ref);
+  if (!f) return;
+  for (const el of f.els) el.title = `Not saved: ${reason}`;
+}
+
+/**
+ * Commit staged source edits: group by FILE, POST /source/commit per file
+ * SEQUENTIALLY (§5 — one commit per file, each with its own sha guard), retire
+ * applied refs (only if unchanged since the snapshot — mid-publish re-edits
+ * survive, mirroring publish()), keep skipped refs pending with their reasons
+ * (§8.1), then hand the last commit to the §11/§12 build watcher.
+ */
+async function publishSource() {
+  if (!state.pendingSource.size) return;
+  const groups = groupSourceEdits(state.pendingSource,
+    { repo: cfg.repo, branch: cfg.branch || 'main', adapter: cfg.adapter || 'astro' });
+  if (!groups.length) return;
+  const snapshot = new Map();
+  for (const [ref, v] of state.pendingSource) snapshot.set(ref, JSON.stringify(v));
+  setStatus(saveSummary(state.pendingSource.size, groups.length), 'saving');
+  disablePublish(true);
+  const committed = [];
+  let anyOk = false;
+  let firstError = null;
+  for (const g of groups) {
+    let data = {};
+    let ok = false;
+    try {
+      const res = await fetch(`${cfg.worker}/source/commit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
+        body: JSON.stringify(g.body),
+      });
+      data = await res.json().catch(() => ({}));
+      ok = res.ok;
+    } catch (err) {
+      data = { error: err.message };
+    }
+    if (!ok) {
+      // The whole file's batch stays pending; the worker's own words surface
+      // (suggest-mode 403s, vanished-file 404s, validation 422s — §8.1).
+      firstError = firstError || data.error || 'save failed — see console';
+      console.warn('[kiln] source commit failed:', g.file, data);
+      for (const ref of g.refs) markSourceFieldIssue(ref, data.error || 'save failed');
+      for (const [ref, why] of matchSkippedRefs(g, data.skipped)) {
+        console.warn('[kiln] source edit skipped:', ref, why);
+        markSourceFieldIssue(ref, why);
+      }
+      continue;
+    }
+    anyOk = true;
+    const appliedRefs = new Set(matchAppliedRefs(g, data.applied));
+    for (const ref of g.refs) {
+      if (!appliedRefs.has(ref)) continue;
+      // Retire only if unchanged since the snapshot — same discipline publish()
+      // uses so an edit made DURING the commit round-trip is never dropped.
+      if (state.pendingSource.has(ref) && JSON.stringify(state.pendingSource.get(ref)) === snapshot.get(ref)) {
+        const v = state.pendingSource.get(ref);
+        state.pendingSource.delete(ref);
+        state.sourceBase.set(ref, v.value);   // the committed value is the new baseline
+        syncSourceDom(ref);
+      }
+    }
+    for (const [ref, why] of matchSkippedRefs(g, data.skipped)) {
+      console.warn('[kiln] source edit skipped:', ref, why);
+      markSourceFieldIssue(ref, why);
+    }
+    if (data.commit && !data.unchanged) {
+      committed.push({ file: data.file || g.file, sha: data.commit.sha, parent: data.commit.parent });
+    }
+  }
+  if (anyOk) {
+    // Same publish-boundary rule as the HTML flow: committed edits must not be
+    // ⌘Z-able back into the stage.
+    editHistory.undo.length = 0;
+    editHistory.redo.length = 0;
+    updateUndoUi();
+  }
+  refreshPublishButton();
+  if (!committed.length) {
+    if (firstError) setStatus(firstError, 'error');
+    else if (anyOk) setStatus('Nothing changed', 'idle');
+    return;
+  }
+  if (firstError) console.warn('[kiln] some source files failed to save — they stay pending');
+  watchSourceBuild(committed);
+}
+
+// §11/§12: Saved → Building… → Published ✓ / Build failed ✕ / still-building.
+// Poll through the SAME gh path every other editor read uses (admin: direct
+// API; invited editor: the worker /gh proxy, which already allowlists commit
+// status + deployments). NEVER "Published" on commit success alone.
+const SOURCE_POLL_MS = 10000;
+const SOURCE_POLL_CAP = 5 * 60 * 1000;
+
+function watchSourceBuild(committed) {
+  const sha = committed[committed.length - 1].sha;   // the LAST commit triggers the build that carries them all
+  setStatus('Building…', 'saving');
+  const started = Date.now();
+  const tick = async () => {
+    let status = null;
+    let deployStatuses = null;
+    try { status = await state.gh.request('GET', `/repos/${cfg.repo}/commits/${encodeURIComponent(sha)}/status`); } catch { /* keep polling */ }
+    try {
+      const deployments = await state.gh.request('GET', `/repos/${cfg.repo}/deployments?sha=${encodeURIComponent(sha)}&per_page=1`);
+      if (Array.isArray(deployments) && deployments.length) {
+        deployStatuses = await state.gh.request('GET', `/repos/${cfg.repo}/deployments/${deployments[0].id}/statuses?per_page=1`);
+      }
+    } catch { /* keep polling */ }
+    const verdict = resolveBuildState({
+      status, deployStatuses, elapsedMs: Date.now() - started, timeoutMs: SOURCE_POLL_CAP,
+    });
+    if (verdict === 'published') { setStatus('Published ✓', 'saved'); setStatusIdle(); return; }
+    if (verdict === 'timeout') { setStatus(STILL_BUILDING_COPY, 'saved'); return; }
+    if (verdict === 'failed') { sourceBuildFailedBanner(committed, sha); return; }
+    setStatus('Building…', 'saving');
+    setTimeout(tick, SOURCE_POLL_MS);
+  };
+  setTimeout(tick, SOURCE_POLL_MS);
+}
+
+/**
+ * §12: a failed build blocks EVERYONE's publishes until the bad commit is gone,
+ * so the banner offers one-click revert per committed file (POST /source/revert
+ * back to that commit's parent).
+ */
+function sourceBuildFailedBanner(committed, sha) {
+  setStatus('Build failed ✕ — your change is saved but not live', 'error');
+  document.getElementById('kiln-srcfail')?.remove();
+  const bar = document.createElement('div');
+  bar.id = 'kiln-srcfail';
+  bar.innerHTML = `
+    <div class="kiln-srcfail-head"><strong>Build failed ✕</strong> — the site kept its previous version.
+      <a class="kiln-status-link" href="https://github.com/${escapeHtml(cfg.repo)}/commit/${escapeHtml(sha)}"
+        target="_blank" rel="noopener">what happened</a></div>
+    ${committed.map((c, i) => `<div class="kiln-srcfail-row"><span>${escapeHtml(c.file)}</span>
+      <button class="kiln-btn-ghost" data-i="${i}">${UNDO_ICON} Undo this change</button></div>`).join('')}
+    <button class="kiln-btn-ghost" id="kiln-srcfail-x">Dismiss</button>`;
+  document.body.appendChild(bar);
+  bar.querySelector('#kiln-srcfail-x').onclick = () => bar.remove();
+  bar.querySelectorAll('button[data-i]').forEach(btn => {
+    btn.onclick = async () => {
+      const c = committed[+btn.dataset.i];
+      const body = revertRequest(c, { repo: cfg.repo, branch: cfg.branch || 'main' });
+      if (!body) { setStatus('Nothing safe to revert to for that file', 'error'); return; }
+      btn.disabled = true;
+      btn.textContent = 'Reverting…';
+      try {
+        const res = await fetch(`${cfg.worker}/source/revert`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `failed (${res.status})`);
+        btn.textContent = 'Reverted ✓';
+        setStatus(`Reverted ${c.file} — the site rebuilds without that change`, 'saved');
+      } catch (err) {
+        btn.disabled = false;
+        btn.innerHTML = `${UNDO_ICON} Undo this change`;
+        setStatus(`Revert failed: ${err.message}`, 'error');
+      }
+    };
+  });
+}
+
+// ─── §7.3: the wrong-mode guard ──────────────────────────────────────────────
+// An html-mode site whose page file is committed BUILD OUTPUT: editing it is
+// silent data loss (the next build erases the commit). Detect once per session
+// (root listing → generatorSignals), block with an explanation instead of
+// decorating fields. Source-mode sites and pages with provenance never hit it.
+
+const SRC_GUARD_KEY = () => `kiln_srcguard:${cfg.repo}`;
+
+async function wrongModeGuard() {
+  if (cfg.sandbox || cfg.mode === 'source') return false;
+  if (document.querySelector(`[${SOURCE_ATTR}]`)) return false;
+  if (!state.page?.path) return false;
+  let sig = null;
+  try { sig = JSON.parse(sessionStorage.getItem(SRC_GUARD_KEY())); } catch { /* no cache */ }
+  if (!sig || typeof sig !== 'object') {
+    try {
+      const listing = await state.gh.request('GET', `/repos/${cfg.repo}/contents`);
+      const files = (Array.isArray(listing) ? listing : []).map(f => f.type === 'dir' ? `${f.path}/` : f.path);
+      const s = generatorSignals(files);
+      sig = { gen: s.detected[0]?.displayName || null, builtHtml: s.builtHtml };
+    } catch {
+      sig = { gen: null, builtHtml: false };   // listing unreachable — never block on a blip
+    }
+    try { sessionStorage.setItem(SRC_GUARD_KEY(), JSON.stringify(sig)); } catch { /* private mode */ }
+  }
+  const pageInBuildDir = /^(dist|_site|build|out)\//i.test(state.page.path);
+  if (!sig.gen || !(sig.builtHtml || pageInBuildDir)) return false;
+  modal(`
+    <h3>This page is build output</h3>
+    <p class="kiln-dim">Kiln can see <code>${escapeHtml(state.page.path)}</code>, but this site is built
+    by <strong>${escapeHtml(sig.gen)}</strong> — that file is regenerated on every build, and any edit
+    here would be erased the next time the site publishes.</p>
+    <p class="kiln-dim">Switch this site to <strong>Source Mode</strong> (<code>mode: 'source'</code> in
+    kiln-config.js, with provenance on the templates) to edit the content it’s built from.</p>
+    <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Dismiss</button></div>`);
+  return true;
+}
+
 // ─── Demo sandbox (cfg.sandbox) ───────────────────────────────────────────────
 // A private, local-only editing experience: every visitor is auto-signed-in,
 // edits live only in their own browser (never committed, never shared), and the
@@ -2063,6 +2542,14 @@ function sandboxTTLCheck() {
 function applySandboxEdits(edits) {
   for (const key in edits) {
     const v = edits[key];
+    // Source-mode fields save under their full ref (path#pointer) with a plain-
+    // text value; everything data-cms keyed carries html/attrs as before.
+    if (v.text !== undefined && key.includes('#')) {
+      let sel = null;
+      try { sel = document.querySelector('[data-kiln-source="' + key + '"]'); } catch { sel = null; }
+      if (sel) sel.textContent = v.text;
+      continue;
+    }
     let el = null;
     try { el = document.querySelector('[data-cms="' + key + '"], [data-cms-repeat="' + key + '"], [data-cms-menu="' + key + '"]'); } catch { el = null; }
     if (!el) continue;
@@ -2088,11 +2575,15 @@ function publishSandbox() {
     if (v.attrs) cur.attrs = Object.assign(cur.attrs || {}, v.attrs);
     page[key] = cur;
   }
+  // Source edits stage + preview locally too — never a network commit (§13).
+  for (const [ref, v] of state.pendingSource) page[ref] = { text: v.value };
   s.pages[sandboxPath()] = page;
   if (!sandboxSave(s)) {
     setStatus('This demo ran low on local browser space — click "Start over" to reset, or try smaller images.', 'error');
     return;   // keep pending edits so the visitor can retry
   }
+  for (const [ref, v] of state.pendingSource) state.sourceBase.set(ref, v.value);
+  state.pendingSource.clear();
   state.pending.clear();
   state.originals.clear();
   document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
@@ -2144,6 +2635,7 @@ async function initSandbox() {
   state.fields = indexHtml(state.page.text);
   renderAdminBar();
   decorateFields();
+  await initSourceFields();   // demo source fields stage + preview locally (no worker)
   renderSandboxBanner();
   bootBlocks();   // chrome shows in the demo; inserting explains it needs a real site
 }
@@ -4035,9 +4527,10 @@ function unmakeDialog(el) {
 // ─── Done / exit ─────────────────────────────────────────────────────────────
 
 function doneEditing() {
-  if (state.pending.size || state.pendingBinaries.size || state.pendingStructural.length) {
+  if (state.pending.size || state.pendingBinaries.size || state.pendingStructural.length || state.pendingSource.size) {
+    const nDone = state.pending.size + state.pendingSource.size || state.pendingBinaries.size;
     const m = modal(`
-      <h3>You have ${state.pending.size || state.pendingBinaries.size} unpublished edit${(state.pending.size || state.pendingBinaries.size) > 1 ? 's' : ''}</h3>
+      <h3>You have ${nDone} unpublished edit${nDone > 1 ? 's' : ''}</h3>
       <p class="kiln-dim">Publish them first, or discard and exit?</p>
       <div class="kiln-modal-actions">
         <button class="kiln-btn-ghost" data-close>Keep editing</button>
@@ -4046,6 +4539,7 @@ function doneEditing() {
       </div>`);
     m.querySelector('#kiln-discard').onclick = () => {
       state.pending.clear(); state.pendingBinaries.clear(); state.pendingStructural = [];
+      state.pendingSource.clear();
       editHistory.undo.length = 0; editHistory.redo.length = 0;
       exitEditMode();
     };
@@ -4332,9 +4826,10 @@ function renderTopBar() {
 }
 
 function discardEdits() {
-  if (!state.pending.size) return;
+  const nAll = state.pending.size + state.pendingSource.size;
+  if (!nAll) return;
   const m = modal(`
-    <h3>Discard ${state.pending.size} unpublished edit${state.pending.size > 1 ? 's' : ''}?</h3>
+    <h3>Discard ${nAll} unpublished edit${nAll > 1 ? 's' : ''}?</h3>
     <p class="kiln-dim">The page goes back to what's currently live. This can't be undone.</p>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Keep editing</button>
@@ -4344,6 +4839,7 @@ function discardEdits() {
     state.pending.clear();
     state.pendingBinaries.clear();   // queued uploads were never committed — just drop them
     state.pendingStructural = [];
+    state.pendingSource.clear();
     clearSavedPending();
     location.reload();
   };
@@ -4574,7 +5070,8 @@ function modal(bodyHtml) {
 }
 
 function refreshPublishButton() {
-  const n = state.pending.size;
+  // Source-file edits count like page edits everywhere the number shows…
+  const n = state.pending.size + state.pendingSource.size;
   // A queued upload with no field edit still needs a Publish to commit it.
   const anything = n || state.pendingBinaries.size || state.pendingStructural.length;
   const btn = document.getElementById('kiln-publish');
@@ -4597,20 +5094,22 @@ function refreshPublishButton() {
   if (grp) grp.hidden = !anything;
   const discard = document.getElementById('kiln-discard');
   if (discard) discard.textContent = n ? `Discard ${n} edit${n > 1 ? 's' : ''}` : 'Discard edits';
-  // Draft + Schedule + Share preview need actual field edits (not just an uploaded
-  // binary), and an editor must be granted them (dataset.gated set by applyFeatureGating).
+  // Draft + Schedule + Share preview need actual PAGE edits (not just an uploaded
+  // binary — and not source-file edits, which none of them can carry), and an
+  // editor must be granted them (dataset.gated set by applyFeatureGating).
+  const nHtml = state.pending.size;
   const sched = document.getElementById('kiln-schedule');
-  if (sched) sched.style.display = (n && !sched.dataset.gated) ? '' : 'none';
+  if (sched) sched.style.display = (nHtml && !sched.dataset.gated) ? '' : 'none';
   const draftBtn = document.getElementById('kiln-draft');
-  if (draftBtn) draftBtn.style.display = (n && !draftBtn.dataset.gated) ? '' : 'none';
+  if (draftBtn) draftBtn.style.display = (nHtml && !draftBtn.dataset.gated) ? '' : 'none';
   const shareBtn = document.getElementById('kiln-sharepreview');
-  if (shareBtn) shareBtn.style.display = (n && !shareBtn.dataset.gated) ? '' : 'none';
+  if (shareBtn) shareBtn.style.display = (nHtml && !shareBtn.dataset.gated) ? '' : 'none';
   savePendingToStorage();
 }
 
 function disablePublish(yes) {
   const btn = document.getElementById('kiln-publish');
-  if (btn) btn.disabled = yes || !state.pending.size;
+  if (btn) btn.disabled = yes || !(state.pending.size || state.pendingSource.size);
 }
 
 let statusHideTimer = null;
@@ -4791,6 +5290,20 @@ function injectStyles() {
 .kiln-field.kiln-editing{outline:2px solid var(--kiln-accent);cursor:text;padding:2px 4px;min-width:40px}
 .kiln-field.kiln-modified{outline:2px solid var(--kiln-warn)}
 img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
+/* Source-mode fields (data-kiln-source) ride the kiln-field affordances; a
+   locked one (old worker / malformed ref / image type) reads as untouchable. */
+.kiln-source-locked{cursor:not-allowed;outline:2px dashed transparent;outline-offset:4px;border-radius:4px;transition:outline-color .15s}
+.kiln-source-locked:hover{outline-color:rgba(156,163,175,.85)}
+/* §12 build-failed banner: per-file one-click revert. */
+#kiln-srcfail{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999998;display:flex;
+  flex-direction:column;gap:8px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  color:#d6d8e1;font:13px/1.45 var(--kiln-font);padding:12px 16px;border-radius:13px;
+  border:1px solid rgba(248,113,113,.5);box-shadow:0 12px 40px rgba(0,0,0,.4);max-width:min(560px,92vw)}
+#kiln-srcfail strong{color:var(--kiln-err)}
+.kiln-srcfail-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.kiln-srcfail-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+#kiln-srcfail .kiln-btn-ghost{white-space:nowrap}
+#kiln-srcfail-x{align-self:flex-end}
 .kiln-flash{animation:kilnflash 1.4s ease}
 @keyframes kilnflash{0%{outline:3px solid var(--kiln-ok);outline-offset:6px}100%{outline:3px solid transparent;outline-offset:4px}}
 #kiln-toolbar{position:absolute;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
