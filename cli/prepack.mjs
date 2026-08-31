@@ -23,6 +23,7 @@ const items = [
   ['worker/cloud.js', 'worker/cloud.js'],
   ['worker/runbook.js', 'worker/runbook.js'],
   ['worker/sanitize-guard.js', 'worker/sanitize-guard.js'], // imported by worker/index.js — wizard deploy fails without it
+  ['worker/source.js', 'worker/source.js'],                 // ditto — source-mode endpoints
   ['worker/cloud-schema.sql', 'worker/cloud-schema.sql'],
 ];
 

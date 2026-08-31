@@ -570,7 +570,7 @@ async function wizard() {
   mkdirSync(path.join(workerDir, 'src'), { recursive: true });
   const putIfMissing = (from, to) => { if (existsSync(to)) return 0; cpSync(from, to); return 1; };
   let copied = 0;
-  for (const f of ['index.js', 'cloud.js', 'runbook.js', 'sanitize-guard.js', 'cloud-schema.sql']) {
+  for (const f of ['index.js', 'cloud.js', 'runbook.js', 'sanitize-guard.js', 'source.js', 'cloud-schema.sql']) {
     copied += putIfMissing(path.join(PKG_ROOT, 'worker', f), path.join(workerDir, 'worker', f));
   }
   copied += putIfMissing(path.join(PKG_ROOT, 'src', 'engine.js'), path.join(workerDir, 'src', 'engine.js'));
