@@ -20,8 +20,8 @@ updated as we investigate and ship a fix.
 
 | Version | Supported |
 |---------|-----------|
-| 0.3.x   | yes       |
-| < 0.3   | no        |
+| 0.4.x   | yes       |
+| < 0.4   | no        |
 
 Security fixes land on the latest release line.
 
