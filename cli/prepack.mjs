@@ -21,6 +21,7 @@ const items = [
   ['worker/index.js', 'worker/index.js'],
   ['worker/cloud.js', 'worker/cloud.js'],
   ['worker/runbook.js', 'worker/runbook.js'],
+  ['worker/sanitize-guard.js', 'worker/sanitize-guard.js'], // imported by worker/index.js — wizard deploy fails without it
   ['worker/cloud-schema.sql', 'worker/cloud-schema.sql'],
 ];
 

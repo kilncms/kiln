@@ -18,7 +18,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // Kiln relies on global fetch and crypto.getRandomValues (Node 18+) and is only
 // tested on Node 20+. Fail fast with a clear message instead of a confusing
@@ -134,6 +134,12 @@ async function doctor(args) {
   if (repo) {
     const inst = await fetchJson(`${worker}/setup/install-check?repo=${repo}`).catch(() => ({ json: {} }));
     check(`App installed on ${repo}`, !!inst.json.installed, inst.json.installed ? '' : `install: https://github.com/apps/${status.json.slug}/installations/new`);
+    // Rename/transfer tripwire: editor allowlists + Cloud registration are keyed to the
+    // exact repo string, and they do NOT follow a GitHub rename or transfer.
+    const gh = await fetchJson(`https://api.github.com/repos/${repo}`).catch(() => ({ json: {} }));
+    if (gh.json.full_name && gh.json.full_name !== repo) {
+      warn(`repo answers as ${gh.json.full_name} but config says ${repo} — after a rename/transfer, editor access and Cloud registration stay keyed to the OLD name; update kiln-config.js to the new name, re-invite editors, and re-register the site`);
+    }
   }
 
   if (site) {
@@ -288,7 +294,7 @@ async function offerAutotag() {
   is a one-time decision.`);
   const taggedFiles = [];
   if (await yes('Run the first-pass auto-tagger now? (review with git diff after)', 'n')) {
-    const { autotag } = await import(new URL('../src/autotag.js', import.meta.url));
+    const { autotag } = await import(pathToFileURL(path.join(PKG_ROOT, 'src', 'autotag.js')).href);
     let tagged = 0;
     for (const f of readdirSync('.').filter(x => x.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(x))) {
       const raw = readFileSync(f, 'utf8');
@@ -398,7 +404,7 @@ async function wizard() {
   mkdirSync(path.join(workerDir, 'src'), { recursive: true });
   const putIfMissing = (from, to) => { if (existsSync(to)) return 0; cpSync(from, to); return 1; };
   let copied = 0;
-  for (const f of ['index.js', 'cloud.js', 'runbook.js', 'cloud-schema.sql']) {
+  for (const f of ['index.js', 'cloud.js', 'runbook.js', 'sanitize-guard.js', 'cloud-schema.sql']) {
     copied += putIfMissing(path.join(PKG_ROOT, 'worker', f), path.join(workerDir, 'worker', f));
   }
   copied += putIfMissing(path.join(PKG_ROOT, 'src', 'engine.js'), path.join(workerDir, 'src', 'engine.js'));
@@ -642,7 +648,7 @@ crons = ["*/5 * * * *"]
 // ─── tag: heuristic first-pass auto-tagger ───────────────────────────────────
 
 async function tagCmd(args) {
-  const { autotag } = await import(new URL('../src/autotag.js', import.meta.url));
+  const { autotag } = await import(pathToFileURL(path.join(PKG_ROOT, 'src', 'autotag.js')).href);
   hr(args.dry ? 'Auto-tag (dry run)' : 'Auto-tag');
   const files = [];
   (function walk(dir) {
@@ -718,11 +724,23 @@ async function addSiteCloud() {
 // ─── main ────────────────────────────────────────────────────────────────────
 
 const [, , cmd, ...rest] = process.argv;
-const args = Object.fromEntries(rest.map(a => a.split('=')).map(([k, v]) => [k.replace(/^--/, ''), v ?? true]));
+// Flags accept --flag=value AND --flag value; bare flags become true.
+const VALUE_FLAGS = new Set(['site', 'repo', 'worker', 'from', 'name', 'out', 'delay']);
+const args = {};
+const positional = [];
+for (let i = 0; i < rest.length; i++) {
+  const a = rest[i];
+  if (!a.startsWith('--')) { positional.push(a); continue; }
+  const eq = a.indexOf('=');
+  if (eq !== -1) { args[a.slice(2, eq)] = a.slice(eq + 1); continue; }
+  const k = a.slice(2);
+  if (VALUE_FLAGS.has(k) && i + 1 < rest.length && !rest[i + 1].startsWith('--')) args[k] = rest[++i];
+  else args[k] = true;
+}
 if (cmd === 'doctor') doctor(args);
 else if (cmd === 'tag') tagCmd(args);
 else if (cmd === 'update') update();
 else if (cmd === 'add-site') addSiteCloud();
-else if (cmd === 'rescue') import('./rescue.mjs').then(m => m.rescueCmd(rest.find(a => !a.startsWith('--')), args));
-else if (cmd === 'new') import('./new.mjs').then(m => m.newCmd(rest.find(a => !a.startsWith('--')), args));
+else if (cmd === 'rescue') import('./rescue.mjs').then(m => m.rescueCmd(positional[0], args));
+else if (cmd === 'new') import('./new.mjs').then(m => m.newCmd(positional[0], args));
 else wizard();
