@@ -24,7 +24,8 @@
     "prepack": "node prepack.mjs"
   },
   "dependencies": {
-    "parse5": "^8.0.0"
+    "parse5": "^8.0.0",
+    "yaml": "^2.0.0"
   },
   "repository": {
     "type": "git",

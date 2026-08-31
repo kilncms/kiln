@@ -93,18 +93,143 @@ function kvNamespaceId(workerDir) {
   return kvId;
 }
 
+// ─── source mode: local-tree detection (SOURCE-MODE-SPEC §7) ─────────────────
+
+const OUTPUT_DIRS = ['dist', '_site', 'build', 'out'];
+
+/** Shallow local file listing for generator detection (§7.1): forward-slash
+ *  relative paths, directories at most three levels deep, with dependency/VCS
+ *  dirs skipped. Build-output dirs are skipped in the LISTING but noted
+ *  separately: `builtHtml` is the first committed .html found under a
+ *  root-level output dir — the raw material for the §7.3 guard. */
+function listLocalTree(root = '.', maxDepth = 3) {
+  const files = [];
+  let builtHtml = null;
+  const SKIP = new Set(['node_modules', '.git', '.astro', '.cache', ...OUTPUT_DIRS]);
+  (function walk(dir, rel, depth) {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        if (SKIP.has(e.name)) {
+          if (!rel && OUTPUT_DIRS.includes(e.name) && !builtHtml) {
+            try {
+              const html = readdirSync(path.join(dir, e.name)).find(f => /\.html?$/i.test(f));
+              if (html) builtHtml = `${e.name}/${html}`;
+            } catch { /* unreadable output dir — no signal */ }
+          }
+          continue;
+        }
+        if (depth < maxDepth) walk(path.join(dir, e.name), r, depth + 1);
+      } else files.push(r);
+    }
+  })(root, '', 0);
+  return { files, builtHtml };
+}
+
+/** What the detection saw, in the customer's language: the config file that
+ *  gave the generator away plus a content-file count ("Found astro.config.mjs
+ *  and 63 content files"). */
+function detectionEvidence(files) {
+  const cfg = files.find(f => /^((astro|eleventy)\.config\.[cm]?[jt]s|\.eleventy\.js|(config|hugo)\.(toml|ya?ml|json)|_config\.ya?ml)$/i.test(f));
+  const content = files.filter(f => /\.(md|mdx|markdown)$/i.test(f)).length;
+  const bits = [];
+  if (cfg) bits.push(cfg);
+  if (content) bits.push(`${content} content file${content === 1 ? '' : 's'}`);
+  return bits.join(' and ');
+}
+
+/** Print the §7.3 warning — the guard against editing regenerated output. */
+function warnBuiltOutput(builtHtml, generatorName) {
+  warn(`Kiln can see ${builtHtml}, but this site is built by ${generatorName} — that file is`);
+  console.log(`     regenerated on every build, and any edit to it would be erased the next time`);
+  console.log(`     the site publishes. To let editors change the content this site is built`);
+  console.log(`     from, switch to source mode (re-run this wizard, or set mode: 'source' in`);
+  console.log(`     assets/kiln-config.js).`);
+}
+
+/** Wizard detection step (§7.1–§7.2). Looks at the local tree; when it looks
+ *  generator-built AND Kiln has an adapter for that generator, asks the mode
+ *  question in the customer's language. Returns { mode: 'html' } or
+ *  { mode: 'source', adapter, generator, hints }. */
+async function detectSiteMode() {
+  let detectGenerators;
+  try {
+    ({ detectGenerators } = await import(pathToFileURL(path.join(PKG_ROOT, 'src', 'adapters', 'detect.js')).href));
+  } catch { return { mode: 'html' }; }   // detection is best-effort — never block setup
+  const { files, builtHtml } = listLocalTree();
+  const detected = detectGenerators(files);
+  if (!detected.length) return { mode: 'html' };
+
+  const gen = detected[0];
+  const an = /^[aeiou]/i.test(gen.displayName) ? 'an' : 'a';
+  const evidence = detectionEvidence(files) || `${gen.displayName} tooling`;
+  let adapter = null;
+  try {
+    const reg = await import(pathToFileURL(path.join(PKG_ROOT, 'src', 'adapters', 'index.js')).href);
+    adapter = reg.getAdapter(gen.id);
+  } catch { /* registry needs the yaml package; detection alone works without it */ }
+
+  hr('How is this site built?');
+  info(`Found ${evidence} — this looks like ${an} ${gen.displayName} site.`);
+  if (!adapter) {
+    warn(`Kiln can't edit ${gen.displayName} sources yet (Astro ships first) — continuing in HTML mode.`);
+    if (builtHtml) warnBuiltOutput(builtHtml, gen.displayName);
+    return { mode: 'html' };
+  }
+  console.log(`
+   1. The pages are files in the repository.
+      You edit the page, Kiln saves the page.
+   2. The pages are generated from content files. (we think this one — we found ${gen.displayName})
+      You edit the page, Kiln saves the underlying content and the site rebuilds.
+      Takes about a minute.
+`);
+  let choice = (await ask('Choose 1 or 2', '2')).trim();
+  if (!['1', '2'].includes(choice)) choice = '2';   // unrecognized input → the shown default
+  if (choice === '1') {
+    if (builtHtml) warnBuiltOutput(builtHtml, gen.displayName);
+    return { mode: 'html' };
+  }
+
+  const hints = adapter.buildHints?.() || {};
+  ok(`source mode: edits go to your content files and ${gen.displayName} rebuilds the site`);
+  info('Three source-mode steps the wizard can\'t do for you:');
+  console.log(`
+   1. Install the provenance helper so Kiln knows where each value on a page
+      lives (one line per field — the same mental model as data-cms):
+        npm install @kilncms/astro
+        <h3 {...kilnSource(entry, 'title')}>{entry.data.title}</h3>
+        <div {...kilnBody(entry)}><Content /></div>
+   2. Verify your host builds + deploys this repo on every push (Cloudflare
+      Pages / Netlify / Vercel, Git-connected). In source mode a host that
+      doesn't auto-deploy means nothing you save ever publishes.
+   3. Make sure the host builds with Node ${hints.minNodeVersion || 18}+ (${hints.framework || gen.displayName}'s minimum —
+      set it in the host's build settings or an .nvmrc). A version mismatch
+      fails the build only after your first edit.
+`);
+  warn('source mode is new: the editor bundle AND your worker must both be current —');
+  console.log('     run `npx github:kilncms/kiln update` on the site and redeploy your worker');
+  console.log('     from this kiln version, or source fields will be locked read-only.');
+  return { mode: 'source', adapter: adapter.id, generator: gen.displayName, hints };
+}
+
 // ─── doctor ──────────────────────────────────────────────────────────────────
 
 async function doctor(args) {
   hr('kiln doctor');
   // Pull defaults from the local kiln-config.js when run inside a site.
   let site = args.site, repo = args.repo, worker = args.worker;
+  let mode = 'html', adapterId = null;   // absent mode ⇒ html (SOURCE-MODE-SPEC §13)
   const cfgPath = 'assets/kiln-config.js';
-  if (existsSync(cfgPath)) {
+  const haveCfg = existsSync(cfgPath);
+  if (haveCfg) {
     const src = readFileSync(cfgPath, 'utf8');
     repo ||= src.match(/repo:\s*'([^']+)'/)?.[1];
     worker ||= src.match(/worker:\s*'([^']+)'/)?.[1];
-    ok(`read ${cfgPath} (repo=${repo}, worker=${worker})`);
+    mode = src.match(/\bmode\s*:\s*['"]([^'"]+)['"]/)?.[1] || 'html';
+    adapterId = src.match(/\badapter\s*:\s*['"]([^'"]+)['"]/)?.[1] || null;
+    ok(`read ${cfgPath} (repo=${repo}, worker=${worker}${mode === 'source' ? `, mode=source/${adapterId || '?'}` : ''})`);
   }
   site ||= await ask('Site URL (https://…)');
   repo ||= await ask('GitHub repo (owner/name)');
@@ -121,6 +246,34 @@ async function doctor(args) {
 
   const health = await fetch(`${worker}/healthz`).then(r => r.ok).catch(() => false);
   check('worker reachable (/healthz)', health);
+
+  // Source mode (SOURCE-MODE-SPEC §13): does the local tree match the configured mode?
+  if (haveCfg) {
+    try {
+      const { generatorSignals } = await import(pathToFileURL(path.join(PKG_ROOT, 'src', 'adapters', 'detect.js')).href);
+      const { files, builtHtml } = listLocalTree();
+      const sig = generatorSignals(builtHtml ? [...files, builtHtml] : files);
+      const gen = sig.detected[0];
+      if (mode !== 'source' && gen) {
+        // §7.3 — the highest-value check in the spec: generator build + HTML mode.
+        if (builtHtml) warn(`this repo looks like a generator build (${gen.displayName}), but the site is in HTML mode — Kiln can see ${builtHtml}, and that file is regenerated on every build: any edit to it is erased the next time the site publishes. Switch to source mode (mode: 'source' in kiln-config.js) to edit the content it is built from`);
+        else warn(`this repo looks like a generator build (${gen.displayName}), but the site is in HTML mode — edits to generated pages don't survive a rebuild. Switch to source mode (mode: 'source' in kiln-config.js) to edit the content files it is built from`);
+      }
+      if (mode === 'source') {
+        check('source mode configured', !!adapterId, adapterId ? `adapter: ${adapterId}` : "kiln-config.js sets mode: 'source' but no adapter — add adapter: 'astro'");
+        if (!gen) warn("kiln-config.js says source mode, but this directory doesn't look generator-built — run doctor from the repo root of the generator project");
+      }
+    } catch { /* detection is best-effort — a missing module must never break doctor */ }
+    if (mode === 'source') {
+      // Capability handshake (§13): the worker must advertise source support.
+      const hz = await fetch(`${worker}/healthz`).then(r => r.json()).catch(() => null);
+      const modes = Array.isArray(hz?.modes) ? hz.modes : null;
+      if (modes) {
+        check('worker supports source mode (/healthz modes)', modes.includes('source'),
+          modes.includes('source') ? `modes: ${modes.join(', ')}${Array.isArray(hz.adapters) ? '; adapters: ' + hz.adapters.join(', ') : ''}` : 'worker answers but reports no source support — redeploy it from the latest kiln');
+      } else warn("worker doesn't advertise source mode — an older worker: the editor will lock content-file fields read-only until you redeploy it from the latest kiln");
+    }
+  }
 
   const status = await fetchJson(`${worker}/setup/status`).catch(() => ({ json: {} }));
   check('GitHub App registered', !!status.json.configured, status.json.slug || 'visit /setup');
@@ -227,8 +380,11 @@ function commitAndPush(files, message) {
 
 /** Copy the bundle, write config + entry page, and check the scripts are wired.
  *  Shared by self-host and Cloud modes (they differ only in the worker URL).
+ *  `siteMode` comes from detectSiteMode(); source mode adds mode/adapter lines
+ *  to the generated config (absent mode ⇒ html, SOURCE-MODE-SPEC §13).
  *  Returns the list of files it created/updated (for the scoped commit). */
-function wireSite(repo, workerUrl) {
+function wireSite(repo, workerUrl, siteMode = null) {
+  const isSource = siteMode?.mode === 'source';
   const wrote = [];
   mkdirSync('assets', { recursive: true });
   for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) {
@@ -242,11 +398,17 @@ function wireSite(repo, workerUrl) {
   repo:   '${repo}',
   branch: 'main',
   worker: '${workerUrl}',
-  styles: [],
+${isSource ? `  mode:   'source',\n  adapter: '${siteMode.adapter}',\n` : ''}  styles: [],
 };
 `);
-    ok('wrote assets/kiln-config.js');
-  } else ok('assets/kiln-config.js already present (left untouched)');
+    ok(`wrote assets/kiln-config.js${isSource ? " (mode: 'source')" : ''}`);
+  } else {
+    ok('assets/kiln-config.js already present (left untouched)');
+    if (isSource && !/\bmode\s*:/.test(readFileSync('assets/kiln-config.js', 'utf8'))) {
+      warn('your existing kiln-config.js has no mode — add these two lines inside window.KILN for source mode:');
+      console.log(`      mode:   'source',\n      adapter: '${siteMode.adapter}',`);
+    }
+  }
   if (!existsSync('kiln.html')) {
     wrote.push('kiln.html');
     writeFileSync('kiln.html', `<!doctype html>
@@ -269,7 +431,8 @@ function wireSite(repo, workerUrl) {
   if (!wired) {
     warn('No page loads kiln.js yet. Add to every page before </body>:');
     console.log('     <script src="/assets/kiln-config.js"></script>\n     <script src="/assets/kiln.js" defer></script>');
-    info('Tip: paste KILN_PROMPT.md into your AI tool and it does this + data-cms annotations for you.');
+    if (isSource) info(`${siteMode.generator || 'Generator'} site: put those two tags in your base layout so every generated page loads them (and make sure assets/ is copied into the build output — for Astro, serve them from public/).`);
+    else info('Tip: paste KILN_PROMPT.md into your AI tool and it does this + data-cms annotations for you.');
   } else ok('pages already load kiln.js');
   return wrote;
 }
@@ -310,7 +473,7 @@ async function offerAutotag() {
 /** Kiln Cloud / Managed prep: we run the worker + GitHub App, so this only
  *  points your repo at our infrastructure and wires the files. No Cloudflare
  *  login, no worker deploy, no app registration. */
-async function cloudPrep(repo) {
+async function cloudPrep(repo, siteMode = null) {
   const WORKER = 'https://auth.kilncms.com';
   const APP = 'https://github.com/apps/kiln-cms/installations/new';
   const DASH = 'https://app.kilncms.com';
@@ -318,7 +481,7 @@ async function cloudPrep(repo) {
   info('We run the sign-in & commit worker and the GitHub App. This just points');
   info('your repo at them and wires the editor files. No Cloudflare login needed.\n');
 
-  const kilnFiles = wireSite(repo, WORKER);
+  const kilnFiles = wireSite(repo, WORKER, siteMode);
   kilnFiles.push(...await offerAutotag());
 
   hr('Done — 2 clicks left (in your browser)');
@@ -388,8 +551,11 @@ async function wizard() {
     ok(`created + pushed: ${repo}`);
   }
 
+  // How is this site built? (SOURCE-MODE-SPEC §7 — detection + mode dialogue)
+  const siteMode = await detectSiteMode();
+
   // Cloud/Managed: everything past here (worker, app, Pages) is ours to run.
-  if (isCloud) return cloudPrep(repo);
+  if (isCloud) return cloudPrep(repo, siteMode);
 
   // 2. Worker
   hr('Step 2 · Deploy your Kiln auth worker (free Cloudflare Worker)');
@@ -408,26 +574,44 @@ async function wizard() {
     copied += putIfMissing(path.join(PKG_ROOT, 'worker', f), path.join(workerDir, 'worker', f));
   }
   copied += putIfMissing(path.join(PKG_ROOT, 'src', 'engine.js'), path.join(workerDir, 'src', 'engine.js'));
+  // Source mode: the worker resolves adapters from ../src/adapters/ next to
+  // engine.js — copy all of them so a later mode switch needs no re-wiring.
+  mkdirSync(path.join(workerDir, 'src', 'adapters'), { recursive: true });
+  for (const f of ['astro.js', 'detect.js', 'index.js', 'pointer.js', 'yaml-splice.js']) {
+    copied += putIfMissing(path.join(PKG_ROOT, 'src', 'adapters', f), path.join(workerDir, 'src', 'adapters', f));
+  }
   if (copied) ok(`copied worker source into ${workerDir}/ (yours to keep + redeploy)`);
   if (!existsSync(path.join(workerDir, 'package.json'))) {
     writeFileSync(path.join(workerDir, 'package.json'), JSON.stringify({
       name: 'kiln-worker', private: true, type: 'module',
-      dependencies: { parse5: '^8.0.0' },
+      dependencies: { parse5: '^8.0.0', yaml: '^2.0.0' },
     }, null, 2) + '\n');
+  } else {
+    // RE-RUN: workers generated before source mode predate the yaml dependency.
+    // Add it (merge, never clobber) so the next deploy's bundle resolves.
+    try {
+      const pjPath = path.join(workerDir, 'package.json');
+      const pj = JSON.parse(readFileSync(pjPath, 'utf8'));
+      if (!pj.dependencies?.yaml) {
+        pj.dependencies = { ...pj.dependencies, yaml: '^2.0.0' };
+        writeFileSync(pjPath, JSON.stringify(pj, null, 2) + '\n');
+        info('added the yaml dependency to the worker package.json (source-mode adapters need it)');
+      }
+    } catch { warn(`${workerDir}/package.json is not valid JSON — add "yaml": "^2.0.0" to its dependencies yourself`); }
   }
-  if (!existsSync(path.join(workerDir, 'node_modules', 'parse5'))) {
-    info("installing the worker's one npm dependency (parse5)…");
+  if (!existsSync(path.join(workerDir, 'node_modules', 'parse5')) || !existsSync(path.join(workerDir, 'node_modules', 'yaml'))) {
+    info("installing the worker's npm dependencies (parse5, yaml)…");
     const inst = shTry('npm install --no-audit --no-fund', { cwd: workerDir });
     if (!inst.ok) {
       // Offline / npm-broken fallback: reuse the copies shipped with this kiln checkout.
       let fell = false;
       try {
-        for (const m of ['parse5', 'entities']) {   // entities = parse5's only dependency
+        for (const m of ['parse5', 'entities', 'yaml']) {   // entities = parse5's only dependency
           cpSync(path.join(PKG_ROOT, 'node_modules', m), path.join(workerDir, 'node_modules', m), { recursive: true });
         }
         fell = true;
       } catch { /* handled below */ }
-      if (fell) info('npm install failed — reused parse5 from the kiln package itself');
+      if (fell) info('npm install failed — reused parse5 + yaml from the kiln package itself');
       else { fail(`npm install failed in ${workerDir}/ — run it there manually, then re-run this wizard:\n${inst.out}`); process.exit(1); }
     }
   }
@@ -581,7 +765,7 @@ crons = ["*/5 * * * *"]
 
   // 6. Site wiring
   hr('Step 7 · Wire the site');
-  const kilnFiles = wireSite(repo, workerUrl);
+  const kilnFiles = wireSite(repo, workerUrl, siteMode);
 
   // 7. Making pages editable.
   kilnFiles.push(...await offerAutotag());
