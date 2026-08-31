@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><title>Traversal attempts</title></head>
+<body>
+  <!-- Every ref on this page is hostile and must be rejected by parseSourceRef -->
+  <p data-kiln-source="../../etc/passwd#/x">relative traversal</p>
+  <p data-kiln-source="/etc/passwd#/x">absolute path</p>
+  <p data-kiln-source="src/content/../../secrets.md#/frontmatter/key">embedded dot-dot</p>
+  <p data-kiln-source="file:///etc/passwd#/x">url scheme</p>
+</body>
+</html>

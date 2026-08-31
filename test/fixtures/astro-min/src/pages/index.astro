@@ -1,0 +1,27 @@
+---
+// Static shell standing in for the rendered page: in a real build these
+// attributes come from @kilncms/astro's kilnSource()/kilnBody() helpers.
+---
+<html lang="en">
+<head><title>Week of Remembrance</title></head>
+<body>
+  <main>
+    <article>
+      <h3 data-kiln-source="src/content/events/one.md#/frontmatter/title">Interfaith Worship Service</h3>
+      <p data-kiln-source="src/content/events/one.md#/frontmatter/venue">Big Bethel AME</p>
+      <time data-kiln-source="src/content/events/one.md#/frontmatter/start?type=time">18:00</time>
+      <div data-kiln-source="src/content/events/one.md#/body">The service opens the week of remembrance.</div>
+    </article>
+    <article>
+      <h3 data-kiln-source="src/content/events/two.md#/frontmatter/title">Walking Tour of Brownsville</h3>
+      <p data-kiln-source="src/content/events/two.md#/frontmatter/venue">Downtown Atlanta</p>
+      <time data-kiln-source="src/content/events/two.md#/frontmatter/date?type=date">2026-09-22</time>
+    </article>
+    <article>
+      <h3 data-kiln-source="src/content/events/three.md#/frontmatter/title">Community Remembrance Dinner</h3>
+      <!-- pointer to a key that does not exist in the entry — must skip, not abort -->
+      <p data-kiln-source="src/content/events/three.md#/frontmatter/ghost">no such field</p>
+    </article>
+  </main>
+</body>
+</html>
