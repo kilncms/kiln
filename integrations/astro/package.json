@@ -1,0 +1,32 @@
+{
+  "name": "@kilncms/astro",
+  "version": "0.1.0",
+  "description": "Kiln source-mode provenance helpers for Astro — stamp data-kiln-source on the fields your components render, one line per field.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kilncms/kiln.git",
+    "directory": "integrations/astro"
+  },
+  "homepage": "https://kilncms.com",
+  "bugs": {
+    "url": "https://github.com/kilncms/kiln/issues"
+  },
+  "keywords": [
+    "astro",
+    "astro-integration",
+    "cms",
+    "kiln",
+    "provenance",
+    "static-site"
+  ]
+}
