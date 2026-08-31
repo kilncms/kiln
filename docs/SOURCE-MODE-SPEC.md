@@ -1,6 +1,6 @@
 # Kiln Source Mode — specification
 
-**Status:** proposed, not started
+**Status:** phase 1–2 in implementation (2026-09-01); see SOURCE-MODE-IMPL.md for the binding contracts + the data-kiln-source naming deviation
 **Author:** drafted 2026-08-10 for handoff to an implementation session
 **Scope:** Kiln core (`src/`, `worker/`, `cli/`) — **no customer site work**
 
