@@ -10,7 +10,7 @@ workers_dev = true   # keep kiln-auth.erikkwilder.workers.dev live alongside the
 [vars]
 ALLOWED_ORIGINS = "https://demo.kilncms.com,https://kiln-demo.pages.dev,https://kiln-demo-mr.pages.dev,https://npu-i.pages.dev,https://npu-i-site.pages.dev,https://app.kilncms.com,http://localhost:8788,http://127.0.0.1:8788"
 CLOUD_DASHBOARD = "https://app.kilncms.com"   # where /cloud/callback returns the customer
-CLOUD_ADMIN = "erikkurtu"                      # GitHub login allowed to hit /admin/cloud/*
+CLOUD_ADMIN = "erikkwilder"                      # GitHub login allowed to hit /admin/cloud/*
 
 # AI assist (optional, bring-your-own-key): store your Anthropic API key as a
 # SECRET — never a [vars] entry — with `npx wrangler secret put AI_API_KEY`.
@@ -73,7 +73,7 @@ routes = []
 # Staging site origins (preview deploys + localhost for `npm run dev`).
 ALLOWED_ORIGINS = "https://staging.kilncms.com,https://kiln-demo.pages.dev,http://localhost:8788,http://localhost:8787,http://127.0.0.1:8788"
 CLOUD_DASHBOARD = "https://staging-app.kilncms.com"
-CLOUD_ADMIN = "erikkurtu"
+CLOUD_ADMIN = "erikkwilder"
 
 [[env.staging.kv_namespaces]]
 binding = "KILN"

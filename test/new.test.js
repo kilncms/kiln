@@ -12,7 +12,7 @@ import {
 
 // mirrors the live demo template's config, plus keys `kiln new` knows nothing about
 const CONFIG = `window.KILN = {
-  repo:   'erikkurtu/kiln-demo',
+  repo:   'kilncms/kiln-demo',
   branch: 'main',
   worker: 'https://auth.kilncms.com',
   siteName: 'Big Dill',
