@@ -70,7 +70,7 @@ import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '
 import { checkDocumentWrite, checkFragment, isHtmlPath } from './sanitize-guard.js';
 import { adapterIds } from '../src/adapters/index.js';
 import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, duplicateCandidates, SOURCE_FILE_GONE } from './source.js';
-import { uploadProblem } from '../src/file-policy.js';
+import { uploadProblem, editorFileKind, isUploadKind, base64Bytes, base64Head, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../src/file-policy.js';
 
 // UTF-8-safe base64 (GitHub content is base64; edits re-applied at cron time).
 function utf8FromB64(b64) {
@@ -1990,9 +1990,38 @@ const PROXY_RULES = [
   { methods: ['POST', 'PATCH'], prefix: r => `/repos/${r}/git/refs/` },
 ];
 
+// The largest body the proxy will read from an editor session: one file at the
+// upload ceiling, base64-encoded, plus room for the JSON around it.
+const PROXY_BODY_MAX = Math.ceil(UPLOAD_MAX_BYTES * 4 / 3) + 256 * 1024;
 // Git modes for an ordinary file. Symlinks (120000) and submodules (160000)
 // are never something an editor session commits.
 const REGULAR_FILE_MODES = ['100644', '100755'];
+
+/**
+ * Read a request body as text, giving up once it passes `max` bytes, so an
+ * oversized upload is turned away without being held in memory whole. Decoded
+ * as it streams in — no second full-size copy. Returns { text } or
+ * { tooLarge: true }.
+ */
+async function readBodyCapped(request, max) {
+  if (Number(request.headers.get('Content-Length') || 0) > max) return { tooLarge: true };
+  if (!request.body) return { text: '' };
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      try { await reader.cancel(); } catch { /* already closed */ }
+      return { tooLarge: true };
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return { text: text + decoder.decode() };
+}
 
 function proxyAllowed(method, path, repo) {
   const clean = path.split('?')[0]; // strip querystring before matching
@@ -2066,19 +2095,33 @@ async function ghProxy(request, env, ghPath) {
   // Defense-in-depth + per-editor scope: editors may not write domain/redirect/CI
   // config, nor anything outside the paths granted to them in People & access.
   const cleanPath = ghPath.split('?')[0];
+  const isWrite = !['GET', 'HEAD'].includes(request.method);
+
+  // Review-mode sessions are comment-only: the proxy is read-only for them.
+  if (sess.mode === 'review' && isWrite) {
+    return json({ error: 'review-mode: comment-only access' }, 403);
+  }
+
+  // ONE capped read of the body, shared by every check below and by the
+  // forward to GitHub. The cap is the size ceiling on what an editor session
+  // can send at all: an oversized upload is refused before it is buffered
+  // whole, let alone parsed. `parsedBody` stays null for an absent or non-JSON
+  // body, which every guard below treats as "nothing to vouch for".
+  let rawBody = '';
+  let parsedBody = null;
+  if (isWrite) {
+    const read = await readBodyCapped(request, PROXY_BODY_MAX);
+    if (read.tooLarge) return json({ error: FILE_MESSAGES.size, code: 'file_size' }, 413);
+    rawBody = read.text;
+    try { parsedBody = JSON.parse(rawBody); } catch { /* non-JSON */ }
+  }
 
   // Suggest-mode sessions: direct writes may only touch kiln scratch branches —
   // publishing to the live branch goes through the suggestions queue. Checked
   // FIRST so a misdirected publish gets the intentional 403 before we spend
-  // GitHub calls on content verification.
-  // Review-mode sessions are comment-only: the proxy is read-only for them.
-  if (sess.mode === 'review' && !['GET', 'HEAD'].includes(request.method)) {
-    return json({ error: 'review-mode: comment-only access' }, 403);
-  }
-  if (sess.mode === 'suggest' && !['GET', 'HEAD'].includes(request.method)) {
-    let sbody = null;
-    try { sbody = JSON.parse(await request.clone().text()); } catch { /* non-JSON → treated as branch-less */ }
-    const deny = suggestWriteViolation(request.method, ghPath, sbody);
+  // GitHub calls on content verification. A non-JSON body is branch-less.
+  if (sess.mode === 'suggest' && isWrite) {
+    const deny = suggestWriteViolation(request.method, ghPath, parsedBody);
     if (deny) return json({ error: deny }, 403);
   }
 
@@ -2089,18 +2132,24 @@ async function ghProxy(request, env, ghPath) {
     // File-type gate: an editor writes pages, stylesheets and a short list of
     // inert uploads — never SVG/XML/XSL or anything else a browser or a build
     // would run. The type is judged from the path alone, so it is refused
-    // before the body is even looked at.
+    // before the body is even looked at; then size, then (for uploads) whether
+    // the leading bytes are what the name claims.
+    const refuseFile = (p) => json({ error: p.error, code: p.code, path: filePath }, p.status);
     const wrongType = uploadProblem(filePath);
-    if (wrongType) return json({ error: wrongType.error, code: wrongType.code, path: filePath }, wrongType.status);
+    if (wrongType) return refuseFile(wrongType);
+    if (!parsedBody || typeof parsedBody !== 'object') return json({ error: 'unreadable write body' }, 400);
+    if (typeof parsedBody.content !== 'string') return json({ error: 'write needs content' }, 400);
+    const unfit = uploadProblem(filePath, { size: base64Bytes(parsedBody.content), head: base64Head(parsedBody.content) });
+    if (unfit) return refuseFile(unfit);
     // Content guard (C2): an editor session bypasses the browser's DOMPurify by
     // PUTting raw markup here. For HTML pages, refuse any write that INTRODUCES
     // executable markup (script/handlers/dangerous URLs/framing) not already in
     // the committed version. Fails CLOSED — a guard error blocks the write.
     if (isHtmlPath(filePath)) {
-      let newHtml, curSha;
-      try { const b = JSON.parse(await request.clone().text()); newHtml = utf8FromB64(b.content); curSha = b.sha; }
+      let newHtml;
+      const curSha = parsedBody.sha;
+      try { newHtml = utf8FromB64(parsedBody.content); }
       catch { return json({ error: 'unreadable write body' }, 400); }
-      if (newHtml === undefined) return json({ error: 'write needs content' }, 400);
       let oldHtml = null;
       if (curSha) {
         try {
@@ -2115,33 +2164,36 @@ async function ghProxy(request, env, ghPath) {
       if (bad) return json({ error: 'blocked: editors cannot add scripts or executable markup to a page', detail: bad }, 403);
     }
   }
-  if (request.method === 'POST' && /\/git\/trees$/.test(cleanPath)) {
-    const peek = await request.clone().text();
-    try {
-      const parsed = JSON.parse(peek);
-      if (Array.isArray(parsed.tree)) {
-        // A subtree entry (type:"tree") pulls in a whole subtree we can't see —
-        // editors must submit blob-level entries only, each individually scoped.
-        if (parsed.tree.some(e => e && e.type === 'tree')) {
-          return json({ error: 'editors may not submit subtree entries' }, 403);
-        }
-        if (parsed.tree.some(e => e && isSensitivePath(e.path))) {
-          return json({ error: 'forbidden path for editor' }, 403);
-        }
-        if (parsed.tree.some(e => e && (!e.path || !pathInScope(e.path, sess.paths)))) {
-          return json({ error: 'outside your editing scope' }, 403);
-        }
-        // Same file-type gate as a direct write, as early as the path is known.
-        // (`sha: null` removes a file and carries nothing to judge.) Only regular
-        // files: a symlink would let an allowed name serve another file's bytes.
-        for (const e of parsed.tree) {
-          if (!e || e.sha === null) continue;
-          if (!REGULAR_FILE_MODES.includes(String(e.mode))) return json({ error: 'editors may only commit regular files', path: e.path }, 403);
-          const unfit = uploadProblem(e.path);
-          if (unfit) return json({ error: unfit.error, code: unfit.code, path: e.path }, unfit.status);
-        }
-      }
-    } catch { /* non-JSON body — allowlist already gated the route */ }
+  // A blob is created before anything says where it will live, so the only
+  // thing to hold it to here is the size ceiling. Its type is judged when a
+  // commit gives it a path (commitDiffInScope).
+  if (request.method === 'POST' && /\/git\/blobs$/.test(cleanPath) && parsedBody && typeof parsedBody.content === 'string') {
+    const size = parsedBody.encoding === 'base64' ? base64Bytes(parsedBody.content) : new TextEncoder().encode(parsedBody.content).length;
+    if (size > UPLOAD_MAX_BYTES) return json({ error: FILE_MESSAGES.size, code: 'file_size' }, 413);
+  }
+  // Non-JSON body — the allowlist already gated the route.
+  if (request.method === 'POST' && /\/git\/trees$/.test(cleanPath) && parsedBody && Array.isArray(parsedBody.tree)) {
+    const tree = parsedBody.tree;
+    // A subtree entry (type:"tree") pulls in a whole subtree we can't see —
+    // editors must submit blob-level entries only, each individually scoped.
+    if (tree.some(e => e && e.type === 'tree')) {
+      return json({ error: 'editors may not submit subtree entries' }, 403);
+    }
+    if (tree.some(e => e && isSensitivePath(e.path))) {
+      return json({ error: 'forbidden path for editor' }, 403);
+    }
+    if (tree.some(e => e && (!e.path || !pathInScope(e.path, sess.paths)))) {
+      return json({ error: 'outside your editing scope' }, 403);
+    }
+    // Same file-type gate as a direct write, as early as the path is known.
+    // (`sha: null` removes a file and carries nothing to judge.) Only regular
+    // files: a symlink would let an allowed name serve another file's bytes.
+    for (const e of tree) {
+      if (!e || e.sha === null) continue;
+      if (!REGULAR_FILE_MODES.includes(String(e.mode))) return json({ error: 'editors may only commit regular files', path: e.path }, 403);
+      const unfit = uploadProblem(e.path, typeof e.content === 'string' ? { size: new TextEncoder().encode(e.content).length } : undefined);
+      if (unfit) return json({ error: unfit.error, code: unfit.code, path: e.path }, unfit.status);
+    }
   }
 
   const itok = await installationToken(env, sess.repo);
@@ -2157,11 +2209,11 @@ async function ghProxy(request, env, ghPath) {
   //     every changed path to be in-scope and non-sensitive.
   if (!sess.admin && (request.method === 'POST' || request.method === 'PATCH')
       && /\/git\/refs(\/|$)/.test(cleanPath)) {
-    try { if (JSON.parse(await request.clone().text())?.force) return json({ error: 'editors may not force-update refs' }, 403); }
-    catch { /* non-JSON — allowlist gated the route */ }
+    // Non-JSON — the allowlist gated the route.
+    if (parsedBody?.force) return json({ error: 'editors may not force-update refs' }, 403);
   }
   if (!sess.admin && request.method === 'POST' && /\/git\/commits$/.test(cleanPath)) {
-    const scopeErr = await commitDiffInScope(env, itok, sess, await request.clone().text());
+    const scopeErr = await commitDiffInScope(env, itok, sess, rawBody);
     if (scopeErr) return scopeErr;
   }
 
@@ -2171,16 +2223,14 @@ async function ghProxy(request, env, ghPath) {
     'User-Agent': UA,
   };
   let body;
-  if (!['GET', 'HEAD'].includes(request.method)) {
+  if (isWrite) {
     headers['Content-Type'] = 'application/json';
-    body = await request.text();
+    body = rawBody;
     // Attribute the change to the human editor (committer stays the Kiln bot).
-    if (body && (ghPath.includes('/contents/') || ghPath.includes('/git/commits'))) {
-      try {
-        const parsed = JSON.parse(body);
-        parsed.author = { name: `${sess.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' };
-        body = JSON.stringify(parsed);
-      } catch { /* pass through untouched */ }
+    // Anything that is not a JSON object passes through untouched.
+    if (parsedBody && typeof parsedBody === 'object' && (ghPath.includes('/contents/') || ghPath.includes('/git/commits'))) {
+      parsedBody.author = { name: `${sess.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' };
+      body = JSON.stringify(parsedBody);
     }
   }
   const res = await fetch(`${GH}${ghPath}`, { method: request.method, headers, body });
@@ -2228,8 +2278,25 @@ async function commitDiffInScope(env, itok, sess, bodyText) {
     }
     // File-type gate on the git-data path (staged uploads, new posts, any
     // multi-file commit): every file this commit adds or changes must be a
-    // regular file of a type editors may write. Read from the tree GitHub
-    // built, so it holds however the blobs were made. Fails CLOSED.
+    // regular file of a type editors may write, under the size ceiling, and an
+    // upload's leading bytes must be what its name says. Read from the tree
+    // GitHub built, so it holds however the blobs were made. Fails CLOSED.
+    const blobHead = async (sha) => {
+      const r = await fetch(`${GH}/repos/${sess.repo}/git/blobs/${sha}`, { headers: { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github.raw+json', 'User-Agent': UA } });
+      if (!r.ok) throw new Error(`blob ${sha} ${r.status}`);
+      // Raw media type: the body IS the file, so take the first bytes and hang
+      // up. (If GitHub answers with the JSON envelope instead, read that.)
+      if (!/param=raw/.test(r.headers.get('X-GitHub-Media-Type') || '')) return base64Head((await r.json()).content);
+      const reader = r.body.getReader();
+      let head = new Uint8Array(0);
+      while (head.length < 48) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        head = concatBytes(head, value);
+      }
+      try { await reader.cancel(); } catch { /* already closed */ }
+      return head;
+    };
     for (const p of changed) {
       if (!after.has(p)) continue; // a removal carries nothing to judge
       const e = entry.get(p);
@@ -2237,6 +2304,11 @@ async function commitDiffInScope(env, itok, sess, bodyText) {
       const refuseFile = (problem) => json({ error: problem.error, code: problem.code, path: p }, problem.status);
       const wrongType = uploadProblem(p);
       if (wrongType) return refuseFile(wrongType);
+      if (typeof e.size !== 'number') throw new Error(`no size for ${p}`);
+      // Only an upload's bytes are sniffed, and only once it is known to fit.
+      const sniff = isUploadKind(editorFileKind(p)) && e.size <= UPLOAD_MAX_BYTES;
+      const unfit = uploadProblem(p, { size: e.size, head: sniff ? await blobHead(e.sha) : undefined });
+      if (unfit) return refuseFile(unfit);
     }
     // Content guard on the git-data write path (new post / multi-file commit):
     // for every changed HTML blob, diff its markup against the parent version and

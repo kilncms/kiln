@@ -15,6 +15,7 @@ import {
   makeGh, getFile, resolvePageFile, editFile, putFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
 import { SOURCE_ATTR } from '../adapters/pointer.js';
+import { uploadProblem, fileRefusalText, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../file-policy.js';
 import { generatorSignals } from '../adapters/detect.js';
 import {
   scanSourceRefs, groupSourceEdits, matchAppliedRefs, matchSkippedRefs, resolveBuildState,
@@ -1710,7 +1711,10 @@ async function downscale(file, maxDim = 1600) {
   const buf = new Uint8Array(await blob.arrayBuffer());
   let bin = '';
   for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-  return { blob, base64: btoa(bin), ext: blob.type === 'image/webp' ? 'webp' : (file.name.split('.').pop() || 'img') };
+  // Name the file for what the browser actually produced: one that cannot
+  // encode WebP hands back PNG (or the original type), whatever was asked for.
+  const ext = { 'image/webp': 'webp', 'image/png': 'png', 'image/jpeg': 'jpg' }[blob.type] || 'png';
+  return { blob, base64: btoa(bin), ext };
 }
 
 /** Insert an uploaded image at the cursor inside a rich-text field. */
@@ -1764,7 +1768,14 @@ function uploadAnyFile() {
     input.onchange = async () => {
       const file = input.files[0];
       if (!file) return resolve(null);
-      if (file.size > 15 * 1024 * 1024) { setStatus('Files over 15 MB don’t belong in a Git repo', 'error'); return resolve(null); }
+      if (file.size > UPLOAD_MAX_BYTES) { setStatus(FILE_MESSAGES.size, 'error'); return resolve(null); }
+      // Invited editors commit through the worker, which only takes a short list
+      // of file types. Say so now, not as a failed Publish later. (The owner's
+      // own GitHub token is not limited this way.)
+      if (mode === 'editor' && !cfg.sandbox) {
+        const problem = uploadProblem(file.name, { size: file.size });
+        if (problem) { setStatus(problem.error, 'error'); return resolve(null); }
+      }
       // Demo sandbox: hand back an in-browser blob URL instead of committing to
       // GitHub, so the demo can show a working document chip/card/link.
       if (cfg.sandbox) {
@@ -2047,7 +2058,11 @@ async function publish() {
     if (state.pendingSource.size) await publishSource();
   } catch (err) {
     console.error('[kiln] publish', err);
-    setStatus('Publish failed — see console', 'error');
+    // A file the worker would not take (type, size, or contents that don't match
+    // its name) comes back with a plain sentence — show it, with the file's name.
+    const why = fileRefusalText(err.data);
+    const which = why && err.data.path ? ` (${String(err.data.path).split('/').pop()})` : '';
+    setStatus(why ? why + which : 'Publish failed — see console', 'error');
     // Re-enable Publish so the user can retry. disablePublish(false) would keep
     // the button disabled when only binaries/structural ops are pending (its
     // check is `!state.pending.size`); refreshPublishButton counts those too.

