@@ -45,7 +45,9 @@ function timingSafeEqual(a, b) {
 export function getCookie(request, name) {
   const cookies = request.headers.get('Cookie') || '';
   const match = cookies.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-  return match ? decodeURIComponent(match[1]) : null;
+  if (!match) return null;
+  // A cookie that does not even decode is no cookie, not a server error.
+  try { return decodeURIComponent(match[1]); } catch { return null; }
 }
 
 export function json(obj, status = 200, headers = {}) {
