@@ -288,10 +288,15 @@ async function doctor(args) {
     const inst = await fetchJson(`${worker}/setup/install-check?repo=${repo}`).catch(() => ({ json: {} }));
     check(`App installed on ${repo}`, !!inst.json.installed, inst.json.installed ? '' : `install: https://github.com/apps/${status.json.slug}/installations/new`);
     // Rename/transfer tripwire: editor allowlists + Cloud registration are keyed to the
-    // exact repo string, and they do NOT follow a GitHub rename or transfer.
+    // exact repo string, and they do NOT follow a GitHub rename or transfer. A FAILING
+    // check, not a warning: GitHub keeps answering for the old name, so everything
+    // else here can pass while editors are locked out, and doctor must not call that
+    // healthy. Counted only when GitHub answers (a private repo cannot be read here).
     const gh = await fetchJson(`https://api.github.com/repos/${repo}`).catch(() => ({ json: {} }));
-    if (gh.json.full_name && gh.json.full_name !== repo) {
-      warn(`repo answers as ${gh.json.full_name} but config says ${repo} — after a rename/transfer, editor access and Cloud registration stay keyed to the OLD name; update kiln-config.js to the new name, re-invite editors, and re-register the site`);
+    if (gh.json.full_name) {
+      const same = gh.json.full_name === repo;
+      check('repo name matches GitHub', same, same ? repo
+        : `GitHub answers as ${gh.json.full_name} but the config says ${repo}. After a rename or transfer, editor access and Cloud registration stay tied to the OLD name: set repo to '${gh.json.full_name}' in assets/kiln-config.js, add your editors again in People & access, and register the site again`);
     }
   }
 
