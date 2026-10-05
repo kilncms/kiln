@@ -411,7 +411,7 @@ function normalizePaths(paths) {
 }
 
 // Exported for unit tests (test/worker.test.js); the Workers runtime uses only the default export.
-export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath, validateSuggestionInput, suggestWriteViolation, validateAiAssist };
+export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath, validateSuggestionInput, suggestWriteViolation, validateAiAssist, aiHostBlocked };
 
 // ─── Scheduled publishing ────────────────────────────────────────────────────
 // sched:<id> → { repo, path, branch, content(b64), message, at, desc, by }
@@ -985,6 +985,92 @@ const AI_SYSTEM = 'You revise website copy. Return ONLY the revised text with no
   + ' commentary. Preserve any inline HTML tags present in the input. Never introduce scripts, styles, or'
   + " event handlers. Keep the author's meaning and approximate length unless the instruction asks otherwise.";
 
+/** Parse one WHATWG-style IPv4 part: decimal, 0x hex, or 0-prefixed octal. */
+function ipv4Part(part) {
+  if (/^0x[0-9a-f]*$/i.test(part)) return part.length > 2 ? parseInt(part.slice(2), 16) : 0;
+  if (/^0\d+$/.test(part)) return /^0[0-7]+$/.test(part) ? parseInt(part, 8) : NaN;   // "08" is not a number
+  if (/^\d+$/.test(part)) return parseInt(part, 10);
+  return NaN;
+}
+
+/**
+ * A host as a 32-bit IPv4 number, the way a URL parser reads it: 1–4 parts,
+ * each decimal / hex / octal, the last one filling whatever bytes are left
+ * (so 2130706433, 0x7f000001, 017700000001 and 127.1 are all 127.0.0.1).
+ * Returns null when the host is not an IPv4 address at all, NaN when it looks
+ * like one (its last part is a number) but does not parse.
+ */
+function ipv4Number(host) {
+  const parts = host.split('.');
+  if (Number.isNaN(ipv4Part(parts[parts.length - 1]))) return null;   // a name, not an address
+  if (parts.length > 4) return NaN;
+  const nums = parts.map(ipv4Part);
+  if (nums.some(n => Number.isNaN(n))) return NaN;
+  const last = nums.pop();
+  if (nums.some(n => n > 255) || last >= 256 ** (4 - nums.length)) return NaN;
+  return nums.reduce((acc, n, i) => acc + n * 256 ** (3 - i), last);
+}
+
+/** IPv6 text (no brackets) as eight 16-bit groups, or null if malformed. */
+function ipv6Groups(text) {
+  let s = text;
+  // A dotted IPv4 tail (::ffff:10.0.0.1) is two groups.
+  const tail = /^(.*:)(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  if (tail) {
+    const v4 = ipv4Number(tail[2]);
+    if (v4 === null || Number.isNaN(v4)) return null;
+    s = `${tail[1]}${Math.floor(v4 / 65536).toString(16)}:${(v4 % 65536).toString(16)}`;
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const groups = (half) => (half === '' ? [] : half.split(':'));
+  const head = groups(halves[0]);
+  const rest = halves.length === 2 ? groups(halves[1]) : null;
+  if (rest !== null && head.length + rest.length > 7) return null;   // "::" stands for at least one group
+  const all = rest === null ? head : [...head, ...Array(8 - head.length - rest.length).fill('0'), ...rest];
+  if (all.length !== 8) return null;
+  if (!all.every(g => /^[0-9a-f]{1,4}$/i.test(g))) return null;
+  return all.map(g => parseInt(g, 16));
+}
+
+/**
+ * SSRF screen for the one URL this worker fetches on a caller's say-so (the
+ * alt-text image). True = do NOT fetch. Only public hosts pass:
+ *   • names: never localhost, a single-label name, or a private-use suffix
+ *   • IPv4 literals in ANY spelling (dotted, decimal, hex, octal, short):
+ *     never loopback, RFC 1918, link-local, carrier-grade NAT, or a reserved,
+ *     documentation, multicast or broadcast range
+ *   • IPv6 literals: global unicast only — so loopback, unique-local (fc00::/7),
+ *     link-local (fe80::/10), multicast and every form that wraps an IPv4
+ *     address (mapped, NAT64, 6to4, Teredo) are all out
+ * Applied to the URL the caller sends AND to every redirect hop. A public name
+ * that RESOLVES to a private address is beyond what a URL check can see.
+ */
+function aiHostBlocked(hostname) {
+  let h = String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
+  if (!h) return true;
+  if (h.startsWith('[') || h.includes(':')) {
+    const g = ipv6Groups(h.replace(/^\[|\]$/g, ''));
+    if (!g) return true;                                    // malformed, or carries a zone id
+    if ((g[0] & 0xe000) !== 0x2000) return true;           // outside global unicast 2000::/3
+    if (g[0] === 0x2002) return true;                       // 6to4 wraps an IPv4 address
+    if (g[0] === 0x2001 && (g[1] === 0 || g[1] === 0x0db8 || (g[1] & 0xfff0) === 0x0010)) return true;   // Teredo, documentation, ORCHID
+    return false;
+  }
+  const v4 = ipv4Number(h);
+  if (v4 !== null) {
+    if (Number.isNaN(v4)) return true;
+    const inRange = (base, bits) => Math.floor(v4 / 2 ** (32 - bits)) === Math.floor(base / 2 ** (32 - bits));
+    const ip = (a, b, c, d) => ((a * 256 + b) * 256 + c) * 256 + d;
+    return [[ip(0, 0, 0, 0), 8], [ip(10, 0, 0, 0), 8], [ip(100, 64, 0, 0), 10], [ip(127, 0, 0, 0), 8],
+      [ip(169, 254, 0, 0), 16], [ip(172, 16, 0, 0), 12], [ip(192, 0, 0, 0), 24], [ip(192, 0, 2, 0), 24],
+      [ip(192, 88, 99, 0), 24], [ip(192, 168, 0, 0), 16], [ip(198, 18, 0, 0), 15], [ip(198, 51, 100, 0), 24],
+      [ip(203, 0, 113, 0), 24], [ip(224, 0, 0, 0), 4], [ip(240, 0, 0, 0), 4]].some(([base, bits]) => inRange(base, bits));
+  }
+  if (!h.includes('.')) return true;                        // "intranet", "router"
+  return /(^|\.)(localhost|local|localdomain|internal|intranet|lan|home|corp|home\.arpa)$/.test(h);
+}
+
 /**
  * Validate an /ai/assist body. Pure (no env, no fetch); exported for unit
  * tests. Returns { error } to reject (always a 400), or the normalized
@@ -1013,13 +1099,8 @@ function validateAiAssist(body = {}) {
     try { url = new URL(raw); } catch { return { error: 'bad imageUrl' }; }
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return { error: 'imageUrl must be http(s)' };
     // SSRF hygiene: this worker fetches the URL — never let it aim at loopback,
-    // RFC-1918, or the link-local metadata range. Public image hosts only.
-    const host = url.hostname.toLowerCase();
-    if (host === 'localhost' || host === '0.0.0.0' || host === '[::1]' || host.endsWith('.localhost')
-      || /^127\./.test(host) || /^169\.254\./.test(host) || /^10\./.test(host)
-      || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) {
-      return { error: 'imageUrl host not allowed' };
-    }
+    // a private network, or the link-local metadata range. Public image hosts only.
+    if (aiHostBlocked(url.hostname)) return { error: 'imageUrl host not allowed' };
     return { kind, imageUrl: url.href };
   }
   if (kind === 'fill') {
@@ -1100,8 +1181,10 @@ async function aiMessage(env, payload) {
 /**
  * Fetch an image for the vision call: 10s timeout, 3 MB cap, image/* only, and
  * redirects are followed by hand (max 3) so every hop stays on https — a
- * redirect is not allowed to walk the fetch off to plain http or a data: URL.
- * Returns { mediaType, b64 } or { error: 502|415 }.
+ * redirect is not allowed to walk the fetch off to plain http or a data: URL —
+ * and every hop's host passes the same screen as the URL the caller sent, so a
+ * public address cannot bounce the fetch onto a private one.
+ * Returns { mediaType, b64 } or { error: 502|415|'host' }.
  */
 async function aiFetchImage(imageUrl) {
   const MAX_BYTES = 3 * 1024 * 1024;
@@ -1111,6 +1194,7 @@ async function aiFetchImage(imageUrl) {
     let url = imageUrl;
     let res = null;
     for (let hop = 0; hop < 4; hop++) {
+      if (aiHostBlocked(new URL(url).hostname)) return { error: 'host' };
       res = await fetch(url, { redirect: 'manual', signal: ctl.signal });
       if (res.status >= 300 && res.status < 400) {
         const loc = res.headers.get('Location');
@@ -1185,6 +1269,7 @@ async function aiAssist(request, env) {
 
   if (v.kind === 'alt') {
     const img = await aiFetchImage(v.imageUrl);
+    if (img.error === 'host') return json({ error: 'imageUrl host not allowed' }, 400);
     if (img.error === 415) return json({ error: 'that URL is not a supported image' }, 415);
     if (img.error) return json({ error: 'could not fetch the image' }, 502);
     const r = await aiMessage(env, {
