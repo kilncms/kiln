@@ -1,0 +1,10 @@
+# Security headers for every page and file on this site.
+# Cloudflare Pages and Netlify read this file from the root of what you publish.
+# What each line does, and how to add a Content-Security-Policy of your own:
+# https://github.com/kilncms/kiln/blob/main/docs/for-site-owners.md#security-headers
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: SAMEORIGIN
+  Content-Security-Policy: frame-ancestors 'self'
+  Strict-Transport-Security: max-age=31536000

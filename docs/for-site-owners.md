@@ -36,8 +36,9 @@ npx github:kilncms/kiln
 
 The wizard deploys the worker (or points you at Kiln Cloud), creates the KV
 namespace, registers the GitHub App, copies the editor bundles and the `/kiln` entry
-page into your site, and writes `assets/kiln-config.js`. When it's done, push, visit
-`yoursite.com/kiln`, and sign in with GitHub.
+page into your site, writes `assets/kiln-config.js`, and adds a `_headers` file with
+a few [security headers](#security-headers) if the site has none. When it's done,
+push, visit `yoursite.com/kiln`, and sign in with GitHub.
 
 There is deliberately no edit button on the site itself. `/kiln` is the only door in,
 and visitors never see any of this — they get your plain site plus a ~3 KB script.
@@ -270,6 +271,64 @@ Setup is copying one directory of Cloudflare Pages Functions into your site and
 setting two secrets; the [README section](../README.md#members-area--gated-documents)
 has the exact steps. After that, add members by email in People & access and point
 them at [for-members.md](for-members.md).
+
+## Security headers
+
+New sites get a small `_headers` file from the setup wizard. Cloudflare Pages and
+Netlify read it and send these headers with every page and file:
+
+| Header | What it does |
+|---|---|
+| `X-Content-Type-Options: nosniff` | The browser trusts the file type your host declares and does not guess. |
+| `Referrer-Policy: strict-origin-when-cross-origin` | Other sites learn which site a visitor came from, not which page. |
+| `Content-Security-Policy: frame-ancestors 'self'` and `X-Frame-Options: SAMEORIGIN` | Only your own site can show your pages inside a frame. This stops another site from framing your pages, editor included, to trick a signed-in editor into clicking something. |
+| `Strict-Transport-Security: max-age=31536000` | A browser that has visited once uses HTTPS for the next year. |
+
+The wizard never overwrites a `_headers` file you already have. To add these lines to
+an existing one, copy them from [`templates/_headers`](../templates/_headers). On a
+site a generator builds, put the file in the folder that is published as-is (for
+Astro, `public/`). GitHub Pages does not read `_headers`; there the headers have to
+come from a proxy in front of the site, such as Cloudflare.
+
+Two lines you may need to change:
+
+- If you show your own pages inside a frame on another site of yours, name that site:
+  `frame-ancestors 'self' https://other.example`, and delete the `X-Frame-Options`
+  line (it can only say "same site").
+- If part of your domain still needs plain HTTP, delete the
+  `Strict-Transport-Security` line before you publish. Once a browser has seen it, it
+  holds for the stated time.
+
+### Adding a Content-Security-Policy
+
+Kiln does not ship a policy that limits scripts. Only you know which scripts, fonts
+and embeds your site loads, and a policy that is too tight breaks pages for visitors.
+If you write one, this is what Kiln itself needs allowed:
+
+| Directive | Needs | Why |
+|---|---|---|
+| `script-src` | `'self'` | `kiln-config.js`, `kiln.js` and the editor are files on your own site. Kiln uses no inline script and no `eval`. |
+| `style-src` | `'self' 'unsafe-inline'` | The editor, and the gallery, filter and calendar features, style themselves from script. |
+| `img-src` | `'self' data: blob:` | Previews of images you have picked but not published yet. |
+| `connect-src` | `'self' data: blob:`, your worker's address, `https://api.github.com`, `https://raw.githubusercontent.com` | Sign-in and publishing go to the worker (`worker` in `kiln-config.js`; `https://auth.kilncms.com` on Kiln Cloud). The owner's edits go straight to GitHub, and the editor asks GitHub whether a newer version exists. |
+| `frame-src` | `'self'` | The side-by-side restore preview and the block previews. |
+
+A starting point, with your own worker's address in place of the example:
+
+```
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' data: blob: https://kiln-auth.you.workers.dev https://api.github.com https://raw.githubusercontent.com; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; object-src 'none'
+```
+
+Put it on the one `Content-Security-Policy` line, keeping `frame-ancestors 'self'` in
+it, and add whatever your own pages load (analytics, web fonts, video embeds). Then
+sign in at `/kiln`, edit, publish, and watch the browser console: anything the policy
+blocks is reported there by name.
+
+One thing to know if you use the members area: `members-login.html` carries its
+sign-in script inline, and `script-src 'self'` blocks inline script. Move that script
+into a file of its own (for example `/assets/members-login.js`) before you turn the
+policy on.
 
 ## Keeping the editor up to date
 

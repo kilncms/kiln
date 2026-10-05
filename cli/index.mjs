@@ -423,6 +423,20 @@ ${isSource ? `  mode:   'source',\n  adapter: '${siteMode.adapter}',\n` : ''}  s
 `);
     ok('wrote kiln.html (your /kiln sign-in page)');
   } else ok('kiln.html already present (left untouched)');
+  // Security headers: Cloudflare Pages and Netlify read a _headers file from
+  // the root of what gets published. An existing file is the owner's — never
+  // touched. A generator copies only its own public folder, so there the file
+  // has to be placed by hand.
+  const HEADERS_DOC = 'https://github.com/kilncms/kiln/blob/main/docs/for-site-owners.md#security-headers';
+  if (isSource) {
+    info(`security headers: copy Kiln's _headers file into the folder your build publishes as-is (for Astro, public/). See ${HEADERS_DOC}`);
+  } else if (!existsSync('_headers')) {
+    cpSync(path.join(PKG_ROOT, 'templates', '_headers'), '_headers');
+    wrote.push('_headers');
+    ok('wrote _headers (security headers: other sites cannot frame yours, HTTPS only)');
+  } else {
+    ok(`_headers already present (left untouched). The lines Kiln suggests: ${HEADERS_DOC}`);
+  }
   // Exclude Kiln's own scaffold pages: kiln.html (just written) always references
   // kiln.js, so counting it would falsely report the site as wired when the real
   // content pages still aren't.
