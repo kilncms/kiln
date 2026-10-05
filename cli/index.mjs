@@ -349,8 +349,12 @@ async function doctor(args) {
     else check('members area', gate === 302, gate === 302 ? 'gated ✓' : 'not set up', gate !== 302);
   }
 
+  // 503 = the worker answered and has no Google client. A worker that did not
+  // answer at all (status 0) says nothing either way — never report that as
+  // "configured".
   const google = await fetch(`${worker}/google/login`, { redirect: 'manual' }).then(r => r.status).catch(() => 0);
-  check('Google sign-in', google !== 503, google === 503 ? 'not configured — set GOOGLE_CLIENT_ID/SECRET' : 'configured', true);
+  if (google === 0) warn('Google sign-in — could not check (the worker did not answer)');
+  else check('Google sign-in', google !== 503, google === 503 ? 'not configured — set GOOGLE_CLIENT_ID/SECRET' : 'configured', true);
 
   // OAuth callbacks can't be read back via any API, and they break silently when the worker
   // domain changes (custom domain added, app/repo transferred). Remind the user to verify them.
@@ -905,9 +909,16 @@ async function update() {
   if (await yes('Commit and push now?', 'y')) {
     // Add all three bundles: kiln-features.js is lazy-loaded by kiln.js, so leaving
     // it out ships a stale features runtime (e.g. event calendars) to visitors.
-    const r = shTry(`git add ${dir}/kiln.js ${dir}/kiln-editor.js ${dir}/kiln-features.js && git commit -m "Update Kiln editor to latest" && git push`);
-    if (r.ok) ok('pushed — your host will redeploy');
-    else { fail(`commit/push didn't complete — resolve the git error above, then: git add ${dir}/kiln*.js && git commit && git push`); process.exit(1); }
+    // argv form, no shell: `dir` is read out of the site's own HTML, and a folder
+    // name with a space, a quote or a `$(…)` in it must reach git as a path.
+    const files = ['kiln.js', 'kiln-editor.js', 'kiln-features.js'].map(f => path.join(dir, f));
+    let gitError = null;
+    for (const argv of [['add', '--', ...files], ['commit', '-m', 'Update Kiln editor to latest'], ['push']]) {
+      const r = spawnSync('git', argv, { encoding: 'utf8' });
+      if (r.status !== 0) { gitError = (r.stderr || r.stdout || `git ${argv[0]} failed`).trim(); break; }
+    }
+    if (gitError === null) ok('pushed — your host will redeploy');
+    else { fail(`commit/push didn't complete:\n${gitError}\n  Resolve that, then: git add, git commit and git push the three kiln*.js files in ${dir}/`); process.exit(1); }
   } else info('Commit + push when ready and your host will redeploy.');
   process.exit(0);
 }
