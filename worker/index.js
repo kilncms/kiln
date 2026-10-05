@@ -70,6 +70,7 @@ import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '
 import { checkDocumentWrite, checkFragment, isHtmlPath } from './sanitize-guard.js';
 import { adapterIds } from '../src/adapters/index.js';
 import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, duplicateCandidates, SOURCE_FILE_GONE } from './source.js';
+import { uploadProblem } from '../src/file-policy.js';
 
 // UTF-8-safe base64 (GitHub content is base64; edits re-applied at cron time).
 function utf8FromB64(b64) {
@@ -451,6 +452,9 @@ async function scheduleCreate(request, env) {
   // and refuse full-page `content` snapshots from editors (they can't be diffed
   // safely — editors schedule field-level `edits`, which the UI always sends).
   if (!actor.admin) {
+    // The fragment check below reads markup the way an HTML page is parsed; a
+    // file served as XML (.xhtml, .svg, …) would read the same bytes differently.
+    if (!isHtmlPath(path)) return json({ error: 'editors can only schedule edits to HTML pages' }, 403);
     if (content && !edits) return json({ error: 'editors must schedule field edits, not a full page' }, 403);
     if (Array.isArray(edits)) {
       for (const e of edits) {
@@ -514,7 +518,7 @@ async function runDueSchedules(env) {
       if (v.admin === false) {
         const people = await getPeople(env, v.repo);
         const p = people.find(x => x.email === v.byEmail && x.role === 'editor');
-        if (!p || isSensitivePath(v.path) || !pathInScope(v.path, p.paths)) {
+        if (!p || isSensitivePath(v.path) || !pathInScope(v.path, p.paths) || !isHtmlPath(v.path)) {
           await env.KILN.delete(k.name);
           continue;
         }
@@ -834,6 +838,8 @@ async function suggestionCreate(request, env) {
   if (isSensitivePath(v.page) || !pathInScope(v.page, actor.paths)) {
     return json({ error: 'outside your editing scope' }, 403);
   }
+  // Suggestions are field edits to an HTML page; approval guards them as HTML.
+  if (!isHtmlPath(v.page)) return json({ error: 'suggestions are for HTML pages' }, 400);
   const id = [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, '0')).join('');
   const sug = {
     id, page: v.page, by: actor.name, email: actor.email, ts: Date.now(), note: v.note,
@@ -893,6 +899,9 @@ async function suggestionDecide(request, env) {
   // re-apply the suggestion's edits by key, content-guard fail-closed, PUT with
   // the fresh sha, ONE refetch-and-retry on a sha conflict. On conflict or a
   // guard rejection the suggestion STAYS open so the admin can retry/decline.
+  // (A stored suggestion aimed at anything but an HTML page is never applied:
+  // the content guard below only speaks for HTML.)
+  if (!isHtmlPath(sug.page)) return json({ error: 'suggestions are for HTML pages' }, 422);
   const itok = await installationToken(env, repo);
   if (!itok) return json({ error: 'app not installed on repo', repo }, 503);
   const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
@@ -1972,6 +1981,10 @@ const PROXY_RULES = [
   { methods: ['POST', 'PATCH'], prefix: r => `/repos/${r}/git/refs/` },
 ];
 
+// Git modes for an ordinary file. Symlinks (120000) and submodules (160000)
+// are never something an editor session commits.
+const REGULAR_FILE_MODES = ['100644', '100755'];
+
 function proxyAllowed(method, path, repo) {
   const clean = path.split('?')[0]; // strip querystring before matching
   return PROXY_RULES.some(rule => {
@@ -2064,6 +2077,12 @@ async function ghProxy(request, env, ghPath) {
     const filePath = decodeURIComponent(cleanPath.split('/contents/')[1] || '');
     if (isSensitivePath(filePath)) return json({ error: 'forbidden path for editor' }, 403);
     if (!pathInScope(filePath, sess.paths)) return json({ error: 'outside your editing scope', path: filePath }, 403);
+    // File-type gate: an editor writes pages, stylesheets and a short list of
+    // inert uploads — never SVG/XML/XSL or anything else a browser or a build
+    // would run. The type is judged from the path alone, so it is refused
+    // before the body is even looked at.
+    const wrongType = uploadProblem(filePath);
+    if (wrongType) return json({ error: wrongType.error, code: wrongType.code, path: filePath }, wrongType.status);
     // Content guard (C2): an editor session bypasses the browser's DOMPurify by
     // PUTting raw markup here. For HTML pages, refuse any write that INTRODUCES
     // executable markup (script/handlers/dangerous URLs/framing) not already in
@@ -2102,6 +2121,15 @@ async function ghProxy(request, env, ghPath) {
         }
         if (parsed.tree.some(e => e && (!e.path || !pathInScope(e.path, sess.paths)))) {
           return json({ error: 'outside your editing scope' }, 403);
+        }
+        // Same file-type gate as a direct write, as early as the path is known.
+        // (`sha: null` removes a file and carries nothing to judge.) Only regular
+        // files: a symlink would let an allowed name serve another file's bytes.
+        for (const e of parsed.tree) {
+          if (!e || e.sha === null) continue;
+          if (!REGULAR_FILE_MODES.includes(String(e.mode))) return json({ error: 'editors may only commit regular files', path: e.path }, 403);
+          const unfit = uploadProblem(e.path);
+          if (unfit) return json({ error: unfit.error, code: unfit.code, path: e.path }, unfit.status);
         }
       }
     } catch { /* non-JSON body — allowlist already gated the route */ }
@@ -2179,7 +2207,8 @@ async function commitDiffInScope(env, itok, sess, bodyText) {
     }
     if (newTree.truncated) return json({ error: 'commit too large to verify scope safely' }, 413);
     const after = new Map();
-    for (const e of newTree.tree || []) if (e.type === 'blob') after.set(e.path, e.sha);
+    const entry = new Map();   // path → the new tree's entry (mode + size) for the file-type gate
+    for (const e of newTree.tree || []) if (e.type === 'blob') { after.set(e.path, e.sha); entry.set(e.path, e); }
     // Every path whose blob changed, was added, or was removed must be in scope.
     const changed = new Set();
     for (const [p, sha] of after) if (before.get(p) !== sha) changed.add(p);
@@ -2187,6 +2216,18 @@ async function commitDiffInScope(env, itok, sess, bodyText) {
     for (const p of changed) {
       if (isSensitivePath(p)) return json({ error: 'commit touches a forbidden path', path: p }, 403);
       if (!pathInScope(p, sess.paths)) return json({ error: 'commit touches a path outside your scope', path: p }, 403);
+    }
+    // File-type gate on the git-data path (staged uploads, new posts, any
+    // multi-file commit): every file this commit adds or changes must be a
+    // regular file of a type editors may write. Read from the tree GitHub
+    // built, so it holds however the blobs were made. Fails CLOSED.
+    for (const p of changed) {
+      if (!after.has(p)) continue; // a removal carries nothing to judge
+      const e = entry.get(p);
+      if (!REGULAR_FILE_MODES.includes(String(e.mode))) return json({ error: 'editors may only commit regular files', path: p }, 403);
+      const refuseFile = (problem) => json({ error: problem.error, code: problem.code, path: p }, problem.status);
+      const wrongType = uploadProblem(p);
+      if (wrongType) return refuseFile(wrongType);
     }
     // Content guard on the git-data write path (new post / multi-file commit):
     // for every changed HTML blob, diff its markup against the parent version and

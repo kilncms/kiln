@@ -561,9 +561,9 @@ async function wizard() {
   hr('Step 2 · Deploy your Kiln auth worker (free Cloudflare Worker)');
   const workerDir = 'kiln-worker';
   // The worker is multi-module: worker/index.js imports ./cloud.js (which imports
-  // ./runbook.js) and ../src/engine.js (which imports the npm package parse5).
-  // So the generated directory mirrors the kiln repo layout — kiln-worker/worker/*
-  // + kiln-worker/src/engine.js — keeping every relative import intact, and gets
+  // ./runbook.js), ../src/engine.js (which imports the npm package parse5) and
+  // ../src/file-policy.js. So the generated directory mirrors the kiln repo layout —
+  // kiln-worker/worker/* + kiln-worker/src/* — keeping every relative import intact, and gets
   // its own package.json so wrangler's bundler resolves parse5 from a local
   // node_modules. wrangler.toml points main at worker/index.js.
   mkdirSync(path.join(workerDir, 'worker'), { recursive: true });
@@ -574,6 +574,8 @@ async function wizard() {
     copied += putIfMissing(path.join(PKG_ROOT, 'worker', f), path.join(workerDir, 'worker', f));
   }
   copied += putIfMissing(path.join(PKG_ROOT, 'src', 'engine.js'), path.join(workerDir, 'src', 'engine.js'));
+  // What editor sessions may upload — worker/index.js imports it.
+  copied += putIfMissing(path.join(PKG_ROOT, 'src', 'file-policy.js'), path.join(workerDir, 'src', 'file-policy.js'));
   // Source mode: the worker resolves adapters from ../src/adapters/ next to
   // engine.js — copy all of them so a later mode switch needs no re-wiring.
   mkdirSync(path.join(workerDir, 'src', 'adapters'), { recursive: true });

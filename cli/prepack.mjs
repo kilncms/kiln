@@ -19,6 +19,7 @@ const items = [
   ['src/engine.js', 'src/engine.js'],
   ['src/autotag.js', 'src/autotag.js'],   // rescue.mjs auto-tags via PKG_ROOT/src/autotag.js
   ['src/adapters', 'src/adapters'],       // source mode: wizard detection + doctor + worker copy step
+  ['src/file-policy.js', 'src/file-policy.js'],   // imported by worker/index.js — wizard deploy fails without it
   ['worker/index.js', 'worker/index.js'],
   ['worker/cloud.js', 'worker/cloud.js'],
   ['worker/runbook.js', 'worker/runbook.js'],
