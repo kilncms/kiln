@@ -677,6 +677,15 @@ function validateCommentInput({ path, text, anchor } = {}) {
   return { page, text: t, anchor: a };
 }
 
+/**
+ * Comments follow the same path grants as editing: an editor (a comment-only
+ * reviewer included) reads and writes threads only on pages inside the paths
+ * they were given. The owner sees every page.
+ */
+function commentInScope(actor, page) {
+  return !!actor.admin || pathInScope(page, actor.paths);
+}
+
 async function commentList(request, env, url) {
   const repo = url.searchParams.get('repo') || '';
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'bad repo' }, 400);
@@ -684,6 +693,7 @@ async function commentList(request, env, url) {
   if (!actor) return json({ error: 'unauthorized' }, 401);
   const page = normalizePagePath(url.searchParams.get('path') || '');
   if (!page) return json({ error: 'bad path' }, 400);
+  if (!commentInScope(actor, page)) return json({ error: 'outside your editing scope' }, 403);
   const threads = [];
   let truncated = false, cursor;
   do {
@@ -714,6 +724,8 @@ async function commentCounts(request, env, url) {
       seen++;
       const v = await env.KILN.get(k.name, 'json');
       if (!v || v.status !== 'open') continue;
+      // Out-of-scope pages are left out entirely — not even their names.
+      if (!commentInScope(actor, v.page)) continue;
       counts[v.page] = (counts[v.page] || 0) + 1;
       total++;
     }
@@ -730,6 +742,7 @@ async function commentPost(request, env) {
   // Anchors belong to new threads only; on a reply the field is ignored.
   const v = validateCommentInput({ path, text, anchor: thread == null ? anchor : undefined });
   if (v.error) return json({ error: v.error }, 400);
+  if (!commentInScope(actor, v.page)) return json({ error: 'outside your editing scope' }, 403);
   const msg = { by: actor.name, email: actor.email, ts: Date.now(), text: v.text };
   if (thread != null) {
     if (!/^[a-f0-9]{12}$/.test(String(thread))) return json({ error: 'bad thread' }, 400);
@@ -757,6 +770,7 @@ async function commentResolve(request, env) {
   if (!page || !/^[a-f0-9]{12}$/.test(String(thread || '')) || typeof resolved !== 'boolean') {
     return json({ error: 'bad request' }, 400);
   }
+  if (!commentInScope(actor, page)) return json({ error: 'outside your editing scope' }, 403);
   const key = commentKey(repo, page, thread);
   const t = await env.KILN.get(key, 'json');
   if (!t) return json({ error: 'not found' }, 404);
