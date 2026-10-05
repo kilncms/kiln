@@ -341,6 +341,7 @@ test('KLN-01 suggestions: only HTML pages can be suggested on, and a stored sugg
   });
 });
 
+// /source/revert restores a file to its content at ANY commit the caller names.
 const revertRepo = ({ current, old, file = 'index.html' }) => async (url, init) => {
   if (init.method === 'PUT') return jsonRes({ commit: { sha: 'c9', parents: [{ sha: 'p' }] } }, 201);
   if (url === `${GH}/repos/${REPO}` && init.method === 'GET') return jsonRes({ permissions: { push: true } });
@@ -348,6 +349,45 @@ const revertRepo = ({ current, old, file = 'index.html' }) => async (url, init) 
   if (url.includes(`/contents/${encodeURIComponent(file)}?ref=main`)) return current === null ? undefined : jsonRes({ sha: 'cur', content: b64(current) });
 };
 const revert = (env, file, opts = {}) => call(env, 'POST', '/source/revert', { body: { repo: REPO, file, toSha: 'f'.repeat(40) }, ...opts });
+
+test('KLN-01 /source/revert: an editor cannot restore a version that brings a script with it', async () => {
+  const old = PAGE.replace('</body>', '<script>steal()</script></body>');
+  await withFetch(revertRepo({ current: PAGE, old }), async (calls) => {
+    const r = await revert(editorEnv(), 'index.html');
+    assert.equal(r.status, 403);
+    assert.equal(r.json.error, 'That version would add scripts to the page, so only the site owner can restore it.');
+    assert.equal(githubWrites(calls).length, 0);
+  });
+  // Same for a content file a generator builds into a page.
+  const md = '---\ntitle: Hi\n---\nBody text.\n';
+  await withFetch(revertRepo({ current: md, old: md + '<img src=x onerror="steal()">\n', file: 'src/content/blog/post.md' }), async (calls) => {
+    const r = await revert(editorEnv(), 'src/content/blog/post.md');
+    assert.equal(r.status, 403);
+    assert.equal(githubWrites(calls).length, 0);
+  });
+  // And for a file that was deleted at head: only what a brand-new page may carry.
+  await withFetch(revertRepo({ current: null, old }), async (calls) => {
+    assert.equal((await revert(editorEnv(), 'index.html')).status, 403);
+    assert.equal(githubWrites(calls).length, 0);
+  });
+});
+
+test('KLN-01 /source/revert: undoing a text change still works for an editor; the owner is not held to the guard', async () => {
+  await withFetch(revertRepo({ current: PAGE.replace('Hello', 'Helo wrld'), old: PAGE }), async (calls) => {
+    const r = await revert(editorEnv(), 'index.html');
+    assert.equal(r.status, 200);
+    const w = githubWrites(calls);
+    assert.equal(w.length, 1);
+    assert.equal(Buffer.from(w[0].body.content, 'base64').toString(), PAGE);
+  });
+  const old = PAGE.replace('</body>', '<script>analytics()</script></body>');
+  await withFetch(revertRepo({ current: PAGE, old }), async (calls) => {
+    const env = { ALLOWED_ORIGINS: ORIGIN, KILN: fakeKV({ [`itok:${REPO}`]: 'installation-token' }) };
+    const r = await revert(env, 'index.html', { session: null, headers: { Authorization: 'Bearer owner-token' } });
+    assert.equal(r.status, 200);
+    assert.equal(githubWrites(calls).length, 1);
+  });
+});
 
 test('KLN-01 /source/revert and /source/duplicate: XML documents are not editable files', async () => {
   await withFetch(acceptAll(), async (calls) => {

@@ -1341,6 +1341,15 @@ async function sourceRevert(request, env) {
       if (cur && cur.content.replace(/\s/g, '') === restore) {
         return json({ ok: true, file: p.file, unchanged: true });
       }
+      // `toSha` is whatever the caller names — any commit GitHub can resolve,
+      // not necessarily one this site ever published. So an editor's revert
+      // gets the same content guard as every other editor write: the restored
+      // file may carry no executable markup the current one does not already
+      // have. Undoing a text edit passes untouched. Fails CLOSED.
+      if (!actor.admin) {
+        const bad = checkDocumentWrite(cur ? utf8FromB64(cur.content) : null, utf8FromB64(old.content));
+        if (bad) return json({ error: 'That version would add scripts to the page, so only the site owner can restore it.', detail: bad }, 403);
+      }
       const put = await fetch(`${GH}/repos/${repo}/contents/${encodeURIComponent(p.file)}`, {
         method: 'PUT', headers: h,
         body: JSON.stringify({
