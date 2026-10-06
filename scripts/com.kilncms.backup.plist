@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Nightly backup of Kiln Cloud (scripts/backup-cloud.mjs). A template: check the
+  three paths below for the machine it runs on, then
+
+    mkdir -p ~/Backups/kiln && chmod 700 ~/Backups/kiln
+    cp scripts/com.kilncms.backup.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kilncms.backup.plist
+    launchctl kickstart -p gui/$(id -u)/com.kilncms.backup     (run it once now)
+    tail -3 ~/Backups/kiln/backup.log
+
+  It runs as a login agent so that wrangler finds the Cloudflare sign-in it
+  already has (`npx wrangler whoami`). A failed night writes one line starting
+  with a time and "backup FAILED" to the log and keeps every earlier archive.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kilncms.backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/shmergle/repos/kiln/scripts/backup-cloud.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/shmergle/repos/kiln</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>10</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/shmergle/Backups/kiln/backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/shmergle/Backups/kiln/backup.log</string>
+</dict>
+</plist>

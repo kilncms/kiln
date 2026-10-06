@@ -198,6 +198,93 @@ the same tag.
 
 ---
 
+## Backups and restore
+
+Everything Kiln Cloud knows is in one D1 database and one KV namespace. If the
+KV namespace were emptied, sign-in and publishing would stop for every site,
+every site's people list would be gone, and so would every comment, suggestion
+and scheduled post. `scripts/backup-cloud.mjs` copies both stores off
+Cloudflare every night.
+
+```bash
+node scripts/backup-cloud.mjs                 # production → ~/Backups/kiln/
+node scripts/backup-cloud.mjs --env staging
+node scripts/backup-cloud.mjs --local         # the local database `npm run dev` uses
+```
+
+- **What it writes.** One archive per run, `kiln-<source>-YYYYMMDD-HHMMSS.tar.gz`,
+  mode 0600 in a 0700 directory, holding `d1.sql` (schema, rows and the
+  migration ledger), `kv.json` and `manifest.json` (counts). The 14 newest per
+  source are kept (`--keep`, `KILN_BACKUP_KEEP`). `--out` or `KILN_BACKUP_DIR`
+  moves the directory; a directory inside this repository is refused.
+- **What is in `kv.json`.** Keys starting `app:creds`, `people:`, `atok:`,
+  `cmt:`, `sug:`, `sched:`, `firstseen:`. Sessions, one-time codes and caches
+  are left out: they hold sign-in tokens, and losing them means signing in
+  again.
+- **It only reads.** The wrangler commands it runs are `d1 export`,
+  `kv key list` and `kv bulk get`. A D1 export blocks other queries to the
+  database while it runs; with a database this small that is well under a
+  second, and the schedule puts it at 03:10.
+- **The archive holds the GitHub App's private key.** Treat it like one. To
+  encrypt it as well, put an [age](https://age-encryption.org) public key in
+  `KILN_BACKUP_RECIPIENT` or in `~/.keys/kiln-backup.pub`; the result is then
+  `….tar.gz.age`. With a recipient set, the backup fails if `age` cannot run:
+  it never falls back to an unencrypted file.
+- **A failed run** leaves no archive, removes none of the earlier ones, exits 1
+  and writes one line, `<time> backup FAILED: <why>`.
+- **Nightly.** `scripts/com.kilncms.backup.plist` is a launchd template; the
+  install commands are in its first lines. Check `~/Backups/kiln/backup.log`.
+
+### Restoring
+
+Always into staging first. Unpack the archive somewhere private:
+
+```bash
+mkdir -m 700 /tmp/kiln-restore && tar -xzf ~/Backups/kiln/kiln-production-….tar.gz -C /tmp/kiln-restore
+cat /tmp/kiln-restore/manifest.json
+```
+
+**KV** (people lists, App credentials, comments…). Keys in the file replace
+keys of the same name; keys not in the file are left alone.
+
+```bash
+node scripts/restore-kv.mjs /tmp/kiln-restore/kv.json --env staging --dry-run
+node scripts/restore-kv.mjs /tmp/kiln-restore/kv.json --env staging
+node scripts/restore-kv.mjs /tmp/kiln-restore/kv.json --env production --i-mean-production
+node scripts/restore-kv.mjs /tmp/kiln-restore/kv.json --env production --i-mean-production --prefix people:
+```
+
+Production is refused without `--i-mean-production`. `--prefix` restores only
+part, for example one lost people list (`--prefix people:owner/repo`).
+
+**D1, something went wrong in the last 30 days:** use D1's own history first.
+It is faster and loses nothing after the moment you pick.
+
+```bash
+cd worker
+npx wrangler d1 time-travel info kiln-cloud --env production --timestamp 2026-10-06T02:00:00Z
+npx wrangler d1 time-travel restore kiln-cloud --env production --bookmark <id from info>
+```
+
+**D1, the database is gone or older than that:** load the export into an empty
+database. The export creates the tables, so the target must not have them.
+
+```bash
+npx wrangler d1 create kiln-cloud-restored          # note the id it prints
+#   point [env.production] database_id at it in wrangler.toml, then:
+npx wrangler d1 execute kiln-cloud --env production --remote --file /tmp/kiln-restore/d1.sql
+npx wrangler d1 migrations list kiln-cloud --env production --remote    # "No migrations to apply"
+```
+
+Then release the worker again so it binds the new database, and
+`rm -rf /tmp/kiln-restore`.
+
+This was drilled against a local database with the real wrangler: back up,
+load `d1.sql` and `kv.json` into an empty copy, read the rows and keys back.
+Restoring both took two seconds there. It has not been drilled on staging.
+
+---
+
 ## Database changes
 
 The Kiln Cloud database (D1) changes only through numbered files in
@@ -228,7 +315,8 @@ npx wrangler d1 migrations apply kiln-cloud --local                          # y
   nothing left to apply.
 - **Going back**: D1 keeps 30 days of history. `npx wrangler d1 time-travel
   info kiln-cloud --env production` gives a bookmark for "now" before a
-  migration; `time-travel restore --bookmark <id>` returns to it.
+  migration; `time-travel restore --bookmark <id>` returns to it. See
+  "Backups and restore" above.
 
 ---
 
