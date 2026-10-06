@@ -40,6 +40,11 @@ If you are reviewing or reporting, these are the areas that matter most:
   token and proxies editor commits behind a strict method+path allowlist
   (one repo, content paths only, no deletes). Bypasses of that allowlist are
   high severity.
+- **One repository per session and token** — an editor session, a member's
+  sign-in and an API token carry the id of the repository they were made for,
+  and are refused when the name they reach it by answers as a different
+  repository (a renamed repository whose old name someone else then takes).
+  Any way to use one against another repository is high severity.
 - **What an editor session may write** — pages and stylesheets, plus an
   explicit list of inert upload types (raster images, PDF, Office documents,
   fonts, audio, video), each under 15 MB and checked by its leading bytes
