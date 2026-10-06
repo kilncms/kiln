@@ -53,6 +53,42 @@ If you rename the repo or move it to another account, run it again. Editor acces
 stored under the repo's exact name and does not follow a rename, so `doctor` fails
 that check and tells you what to change.
 
+### If your AI built a React app
+
+Kiln edits HTML files. A site made with Lovable, v0 or Bolt is usually a React
+app: its HTML file is an empty shell and the words are added by script in the
+visitor's browser. To use Kiln on a site like that, freeze it into HTML first:
+
+```bash
+npm install playwright-core
+npx github:kilncms/kiln rescue https://your-site.lovable.app --render --menu-shim --try
+```
+
+This opens each page in a browser you already have (Chrome, Edge, Brave or
+Chromium), lets the app finish, and saves the finished page as plain HTML with
+its pictures and styles. The app's scripts are left out, so the page can no
+longer redraw itself over your edits. `--try` lets you serve the folder and
+click a word at once, with nothing published. When you are happy, delete
+`assets/kiln-config.js`, push the folder to GitHub and run the wizard above.
+
+What you give up, said plainly:
+
+- **Anything that needed the app to keep running.** Forms sent by script,
+  sign-in, search, shopping carts, filters, tabs, carousels, animated counters,
+  and anything loaded from a database. They are still drawn and no longer work.
+  `RESCUE-REPORT.md` in the folder lists each one, page by page.
+- **The phone menu**, unless you pass `--menu-shim`, which adds one small
+  script (`assets/kiln-menu.js`) that opens and closes it.
+- **The way back.** From here on the site is changed in Kiln or by editing the
+  HTML. If you go back to the AI builder and export again, you freeze again and
+  your Kiln edits are not in the new export.
+- **Pages that are different every time** (a random headline, a live number)
+  keep whatever the first visit showed. The report names them.
+
+Good fits: a brochure site, a portfolio, a landing page, a restaurant or a
+trades site. Poor fits: anything with accounts, a cart, a dashboard, or content
+that comes from a database.
+
 ## Making things editable
 
 Kiln only lets people edit elements that carry a `data-cms` annotation. Three ways to

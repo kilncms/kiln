@@ -198,12 +198,41 @@ npx github:kilncms/kiln add-site   # add this site to Kiln Cloud (opens the dash
 npx github:kilncms/kiln tag        # conservative auto-annotation pass (see above)
 npx github:kilncms/kiln new        # scaffold a fresh site from a template repo, wizard-ready
 npx github:kilncms/kiln rescue URL # crawl your builder-hosted site into a clean static copy
+npx github:kilncms/kiln rescue URL --render   # the same for a site drawn by JavaScript (Lovable, v0, Bolt)
 ```
 
 `kiln rescue` is the escape hatch from Squarespace/Wix/WordPress: it crawls the
 live site you own, localizes the assets, strips the builder's runtime scripts
 (fixing the lazy-loaded images that depend on them), auto-tags the result, and
 writes a report — a folder ready to push, host free, and edit with Kiln.
+
+### If your AI built a React app
+
+Lovable, v0 and Bolt usually build a React app. The file the server sends is
+an empty shell and the words are added by script, so there is no HTML for
+Kiln to edit and plain `rescue` copies nothing useful. Freeze it first:
+
+```bash
+npm install playwright-core            # small, downloads no browser
+npx github:kilncms/kiln rescue https://your-site.lovable.app --render --menu-shim
+```
+
+`--render` opens every page in a browser already on your machine (Chrome,
+Edge, Brave or Chromium; `--browser /path` picks one), waits for it to finish,
+scrolls to the end so lazy pictures load, and saves what it sees as plain
+HTML. Pages are found from the links on screen, `sitemap.xml` and the routes
+the app moves to. The app's own scripts are removed, the styles are kept, and
+every page gets Kiln's two script tags. Add `--try` to serve the folder and
+click a word straight away, with nothing published.
+
+What it costs: the copy is a picture of the app at one moment. Anything the
+app did with script afterwards stops: forms that were sent by script, sign-in,
+search, carts, filters, tabs, carousels, counters, anything read from a
+database when the page loads. `RESCUE-REPORT.md` lists every form and control
+that stopped, and every page that came out differently on a second visit.
+`--menu-shim` adds one small script so the phone menu still opens. After
+freezing, the site is edited in Kiln, not in the AI builder: a new export from
+the builder would have to be frozen again.
 
 `kiln update` is the self-host upgrade path: run it from your site's repo and it finds
 where `kiln.js` lives, drops the latest `kiln.js` + `kiln-editor.js` + `kiln-features.js`
