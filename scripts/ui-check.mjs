@@ -17,6 +17,10 @@
  * absent, Publish must send the commit, and a refused upload must say why.
  * Both passes go through the publish sheet (open it, drop one edit, publish)
  * and press Undo; the signed-in pass also has someone else publish in between.
+ * A last pass has the worker end the editor's sign-in: on page load the page
+ * must say so and /kiln must show the sign-in, and at Publish the edit must
+ * stay, come back after signing in again and then be sent; a 500 and a 403
+ * must drop neither the sign-in nor the edit.
  * Exits non-zero if any check fails. `--shots <dir>` also saves a screenshot
  * of each step as <step>-<width>.png.
  *
@@ -826,6 +830,174 @@ async function runSignedIn(browser, size, opts = {}) {
   await context.close();
 }
 
+/**
+ * A signed-in invited editor whose sign-in the worker ends (it answers 401 to
+ * a session it no longer has). The worker, its sign-in included, is played
+ * here: "signing in" hands the page a fresh session and sends it back.
+ */
+async function runSignInEnded(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} sign-in ended`;
+  const WORKER = 'https://worker.invalid';
+  const REPO = 'acme/site';
+  const source = await (await fetch(URL_ARG)).text();
+  const file = new URL(URL_ARG).pathname.replace(/^\/+/, '').replace(/(^|\/)$/, '$1index.html');
+  const hasEntry = (await fetch(`${ORIGIN}/kiln`).catch(() => ({ ok: false }))).ok;
+  const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+  await context.addInitScript(([repo]) => {
+    try {
+      if (sessionStorage.getItem('ui_check_seeded')) return;   // once per tab: a sign-in that is dropped stays dropped
+      sessionStorage.setItem('ui_check_seeded', '1');
+      localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' }));
+      localStorage.setItem('kiln_guide', '1');
+    } catch { /* ignore */ }
+  }, [REPO]);
+  const worker = { known: new Set(), answer: 200, puts: [], signIns: [], current: source, sha: 'sha0' };
+  const blocked = [];
+  await context.route('**/*', async (route) => {
+    const req = route.request();
+    const u = new URL(req.url());
+    const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': ORIGIN }, body: JSON.stringify(body) });
+    if (u.origin === ORIGIN && u.pathname.endsWith('kiln-config.js')) {
+      return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
+    }
+    if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
+    if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+    const p = decodeURIComponent(u.pathname);
+    if (req.method() === 'OPTIONS') {
+      return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
+    }
+    if (p === '/google/login') {
+      const fresh = 'b'.repeat(64);
+      worker.signIns.push(u.searchParams.get('return_to'));
+      worker.known.add(fresh);
+      return route.fulfill({ status: 302, headers: { Location: `${ORIGIN}${u.searchParams.get('return_to') || '/'}#${new URLSearchParams({ 'kiln-esession': fresh, 'kiln-name': 'Sam', 'kiln-repo': REPO })}` } });
+    }
+    if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'] });
+    const signedIn = worker.known.has(req.headers()['x-kiln-session'] || '');
+    if (p === '/presence') return signedIn ? json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: null, mode: null } }) : json({ error: 'forbidden' }, 403);
+    if (!p.startsWith('/gh/')) return json({ error: 'unauthorized' }, 401);
+    if (!signedIn) return json({ error: 'session expired' }, 401);
+    if (worker.answer === 500) return json({ error: 'internal error' }, 500);
+    if (p === `/gh/repos/${REPO}/contents/${file}`) {
+      if (req.method() === 'GET') return json({ sha: worker.sha, content: Buffer.from(worker.current).toString('base64') });
+      if (worker.answer === 403) return json({ error: 'outside your editing scope', path: file }, 403);
+      const body = JSON.parse(req.postData());
+      worker.puts.push(body);
+      worker.current = Buffer.from(body.content, 'base64').toString();
+      worker.sha = `sha${worker.puts.length}`;
+      return json({ commit: { sha: `commit${worker.puts.length}` }, content: {} });
+    }
+    if (p.includes('/deployments')) return json([]);
+    if (p.endsWith('/status')) return json({ total_count: 0 });
+    return json({ message: 'Not Found' }, 404);
+  });
+  const page = await context.newPage();
+  const errors = [], leaving = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  page.on('dialog', (d) => { leaving.push(d.type()); d.accept(); });
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+  const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+  const stored = () => page.evaluate(() => !!localStorage.getItem('kiln_editor'));
+  const words = async (locator) => ((await locator.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+  const notice = page.locator('#kiln-notice');
+  const dialog = page.locator('#kiln-modal .kiln-modal-card');
+  const status = page.locator('#kiln-status');
+  const pencil = page.locator('#kiln-fab');
+  const started = async () => { await pencil.waitFor({ state: 'visible', timeout: 15000 }); await page.waitForTimeout(700); };
+
+  // ── page load: the worker does not know the stored sign-in ─────────────────
+  await page.goto(URL_ARG, { waitUntil: 'load' });
+  await notice.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+  check(scope, 'page load: the page says the sign-in has ended and how to get back in', (await words(notice.locator('p').first())) === 'Your sign-in to edit this site has ended, so please sign in again with Google.', await words(notice));
+  check(scope, 'page load: the sign-in is dropped and the editor draws nothing', !(await stored()) && (await pencil.count()) === 0 && (await page.locator('style[data-kiln]').count()) === 0);
+  if (await notice.count()) {
+    const n = await box(notice);
+    check(scope, 'page load: the sentence is on screen, in the lower half, clear of the top of the page', n.left >= 0 && n.right <= size.width + 0.5 && n.bottom <= size.height + 0.5 && n.top > size.height / 2, `${Math.round(n.left)},${Math.round(n.top)} to ${Math.round(n.right)},${Math.round(n.bottom)}`);
+    const s = await sideways(page);
+    check(scope, 'page load: the page does not scroll sideways', s.sw === s.cw, `scrollWidth ${s.sw}, clientWidth ${s.cw}`);
+    check(scope, 'page load: "Sign in again" can be pressed', ...Object.values(await hit(notice.getByRole('button', { name: 'Sign in again' }))));
+    await shot('sign-in-ended-load');
+    const dismiss = notice.getByRole('button', { name: 'Dismiss' });
+    check(scope, 'page load: the sentence can be put away', ...Object.values(await hit(dismiss)));
+    await press(dismiss);
+    check(scope, 'page load: once put away, nothing of Kiln is left on the page', (await notice.count()) === 0);
+  }
+  if (hasEntry) {
+    const hops = [];
+    const hop = (f) => { if (f === page.mainFrame()) hops.push(new URL(f.url()).pathname); };
+    page.on('framenavigated', hop);
+    for (let i = 0; i < 2; i++) { await page.goto(`${ORIGIN}/kiln`, { waitUntil: 'load' }); await page.waitForTimeout(500); }
+    check(scope, '/kiln shows the sign-in and sends nobody round', hops.every(h => /^\/kiln/.test(h)) && (await page.locator('#kiln-entry').count()) === 1, hops.join(' -> '));
+    page.off('framenavigated', hop);
+  }
+
+  // ── signed in; the worker ends the sign-in while an edit is unpublished ────
+  worker.known.add('a'.repeat(64));
+  await page.goto(URL_ARG, { waitUntil: 'load' });
+  await page.evaluate((repo) => localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' })), REPO);
+  await page.reload({ waitUntil: 'load' });
+  await started();
+  const heading = page.locator('h1.kiln-field, h2.kiln-field, h3.kiln-field').first();
+  const publishNow = async () => {
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+    await page.waitForTimeout(500);
+    if (await page.locator('#kiln-pubsheet-go').count()) await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(1800);
+  };
+  await heading.scrollIntoViewIfNeeded();
+  await press(heading);
+  await page.keyboard.type(' Kept words');
+  await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+  await page.waitForTimeout(300);
+
+  // trouble first: a 500 drops neither the sign-in nor the edit
+  worker.answer = 500;
+  await publishNow();
+  check(scope, 'a 500 at Publish: the status line says nothing was lost and to try again', (await words(status)) === 'Not published: the site had a problem just now. Your edit is still here, so please try again in a moment.', await words(status));
+  check(scope, 'a 500 at Publish: still signed in, the edit still on the page, nothing written', (await stored()) && (await words(heading)).includes('Kept words') && worker.puts.length === 0 && (await dialog.count()) === 0);
+  // a 403: the edit stays and the text can be copied; signing in again is not offered
+  worker.answer = 403;
+  await publishNow();
+  check(scope, 'a 403 at Publish: a dialog says the sign-in does not allow it, with the reason, and the edit is still there',
+    /^✕ This was not published Your sign-in does not allow this change, so nothing was published\. Your edit is still on this page: copy your text to keep it, and ask the site’s owner\. The answer was: outside your editing scope/.test(await words(dialog)), (await words(dialog)).slice(0, 140));
+  check(scope, 'a 403 at Publish: "Copy my text" is offered and "Sign in again" is not', (await dialog.locator('#kiln-stop-copy').count()) === 1 && (await dialog.locator('#kiln-stop-go').count()) === 0 && (await stored()));
+  await shot('publish-not-allowed');
+  if (await dialog.count()) await press(dialog.locator('[data-close]').last());
+  worker.answer = 200;
+
+  // the sign-in ends
+  worker.known.clear();
+  await publishNow();
+  check(scope, 'sign-in ended at Publish: a dialog says nothing was published and that the edit is saved',
+    (await words(dialog)) === '✕ Your sign-in has ended Nothing was published. Your edit is saved in this browser and will be back on this page when you have signed in again with Google. Not now Sign in again', await words(dialog));
+  if (await dialog.count()) {
+    const c = await box(dialog);
+    check(scope, 'sign-in ended at Publish: the dialog fits on screen', c.left >= 0 && c.top >= 0 && c.right <= size.width + 0.5 && c.bottom <= size.height + 0.5);
+  }
+  check(scope, 'sign-in ended at Publish: nothing was written and the words are still on the page', worker.puts.length === 0 && (await words(heading)).includes('Kept words'));
+  await shot('sign-in-ended-publish');
+  if (await dialog.count()) await press(dialog.locator('[data-close]').last());
+  await page.waitForTimeout(300);
+  check(scope, 'sign-in ended at Publish: the dialog can be put away, and the status line keeps a way back to it', (await dialog.count()) === 0
+    && (await words(status)) === 'Not published: your sign-in has ended. Sign in again' && (await page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).count()) === 1);
+  if (await status.locator('.kiln-status-act').count()) await press(status.locator('.kiln-status-act'));
+  await page.waitForTimeout(300);
+  if (await page.locator('#kiln-stop-go').count()) await press(page.locator('#kiln-stop-go'));
+  await page.waitForURL((u) => !u.hash.includes('kiln-esession'), { timeout: 15000 }).catch(() => {});
+  await started();
+  check(scope, 'signing in again comes back to the same page, without the browser asking about leaving', worker.signIns.length === 1 && worker.signIns[0] === new URL(URL_ARG).pathname && leaving.length === 0, `${worker.signIns.join(', ')}; ${leaving.length} prompts`);
+  check(scope, 'the edit is back on the page without a question', (await page.locator('#kiln-rest-yes').count()) === 0 && (await words(heading)).includes('Kept words')
+    && (await words(status)) === 'You are signed in again, and your edit is back on this page. Publish when ready.', await words(status));
+  await shot('signed-in-again');
+  await publishNow();
+  check(scope, 'Publish then sends the same edit', worker.puts.length === 1 && Buffer.from(worker.puts[0]?.content || '', 'base64').toString().includes('Kept words'), `${worker.puts.length} writes`);
+  check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+  check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
+  await context.close();
+}
+
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
   try { await fn(); } catch (err) { check(label, 'ran to the end', false, String(err.message || err).split('\n')[0].slice(0, 220)); }
@@ -839,6 +1011,8 @@ try {
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
   // an invited editor granted "Make things editable" on top of the defaults
   await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
+  // the worker ends an invited editor's sign-in
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} sign-in ended`, () => runSignInEnded(browser, size));
 } finally { await browser.close(); }
 
 console.log(lines.join('\n'));
