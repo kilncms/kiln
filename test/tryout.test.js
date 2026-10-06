@@ -48,7 +48,8 @@ test('try-out: a draft saved in the demo is offered back as the page opens, with
   const offer = main.slice(main.indexOf('function offerDraftSandbox()'), main.indexOf('async function checkForDraft()'));
   assert.match(offer, /draftDialog\(true\)/);
   for (const id of ['kiln-dr-resume', 'kiln-dr-pub', 'kiln-dr-del']) assert.ok(offer.includes(`#${id}`), id);
-  assert.match(main, /renderSandboxBanner\(\);\s*\n\s*offerDraftSandbox\(\);/);
+  const boot = main.slice(main.indexOf('async function initSandbox()'));
+  assert.ok(boot.slice(0, boot.indexOf('\n}\n')).includes('offerDraftSandbox'), 'offered as the demo starts');
   // one dialog for both: the demo shows what a real site shows
   assert.match(main, /const m = draftDialog\(mode === 'admin'\);/);
   assert.equal((main.match(/<h3>There's a saved draft of this page<\/h3>/g) || []).length, 1);

@@ -61,6 +61,11 @@ const MOBILE_MQ = '(max-width: 700px), (pointer: coarse) and (max-width: 820px)'
 function isMobileEditor() { return window.matchMedia(MOBILE_MQ).matches; }
 // True once the pencil and the status line exist (declared up here for the same reason).
 let chromeDrawn = false;
+// Settled once "Pick up where you left off?" has been answered or put away
+// (at once when there is nothing to ask). A saved draft is offered after it,
+// never over it: the second question used to take the first one's place, and
+// the edits it was asking about were then lost with the next change.
+let restoreAsked = Promise.resolve();
 // Fields that already have their click handler. A list that is written again
 // keeps the blocks it had (keep-blocks.js), and those must not get a second one.
 const decorated = new WeakSet();
@@ -3338,7 +3343,16 @@ function sandboxPath() { return (location.pathname.replace(/\/index\.html$/, '/'
 
 function sandboxTTLCheck() {
   const s = sandboxStore();
-  if (s._createdAt && Date.now() - s._createdAt > SANDBOX_TTL) localStorage.removeItem(SANDBOX_KEY);
+  if (s._createdAt && Date.now() - s._createdAt > SANDBOX_TTL) sandboxReset();
+}
+
+/** Start the demo over: its publishes and drafts, and the unpublished edits saved for any of its pages. */
+function sandboxReset() {
+  try {
+    localStorage.removeItem(SANDBOX_KEY);
+    const mine = `kiln_pending:${cfg.repo}:`;
+    for (const key of Object.keys(localStorage)) if (key.startsWith(mine)) localStorage.removeItem(key);
+  } catch { /* storage blocked: there is nothing kept to clear */ }
 }
 
 /** Apply saved field-level edits (small diffs, not whole pages) to the live DOM. */
@@ -3506,7 +3520,7 @@ function renderSandboxBanner() {
   b.id = 'kiln-sandbox-banner';
   b.innerHTML = '<span><b>Your private demo.</b><span class="kiln-sbx-more"> Click any text or image to edit, then hit Publish. Saved only for you; resets in 24h.</span></span><button id="kiln-sandbox-reset">Start over</button>';
   document.body.appendChild(b);
-  b.querySelector('#kiln-sandbox-reset').onclick = () => { localStorage.removeItem(SANDBOX_KEY); location.reload(); };
+  b.querySelector('#kiln-sandbox-reset').onclick = () => { sandboxReset(); location.reload(); };
 }
 
 async function initSandbox() {
@@ -3523,7 +3537,10 @@ async function initSandbox() {
   await initSourceFields();   // demo source fields stage + preview locally (no worker)
   revealFields();
   renderSandboxBanner();
-  offerDraftSandbox();
+  // What was not published on an earlier visit is offered back, as on a real
+  // site ("Pick up where you left off?"), and after that a draft saved here.
+  offerPendingRestore();
+  restoreAsked.then(offerDraftSandbox);
   bootBlocks();   // chrome shows in the demo; inserting explains it needs a real site
   // First visit to the demo: point at a heading, then at Publish, then say what happened.
   initGuide({ cfg, mobileMq: MOBILE_MQ,
@@ -4901,6 +4918,7 @@ async function checkForDraft() {
   let draft;
   try { draft = await getFile(state.gh, cfg.repo, state.page.path, DRAFT_BRANCH); } catch { return; }
   if (!draft || djb2(draft.text) === djb2(state.page.text)) return;
+  await restoreAsked;   // one question at a time, and the unpublished edits first
   const m = draftDialog(mode === 'admin');
   const status = m.querySelector('#kiln-dr-status');
   m.querySelector('#kiln-dr-resume').onclick = () => {
@@ -5508,6 +5526,7 @@ function doneEditing() {
     m.querySelector('#kiln-discard').onclick = () => {
       state.pending.clear(); state.pendingBinaries.clear(); state.pendingStructural = [];
       state.pendingSource.clear();
+      clearSavedPending();   // discarded: not to be offered back when editing is resumed
       editHistory.undo.length = 0; editHistory.redo.length = 0;
       exitEditMode();
     };
@@ -6352,11 +6371,15 @@ function offerPendingRestore() {
     ts = stored?.ts;
   } catch { return; }
   if (!saved) return;
+  // The demo starts over after a day, and what was not published goes with it.
+  if (cfg.sandbox && Date.now() - ts > SANDBOX_TTL) { clearSavedPending(); return; }
   if (back) { restoreSaved(saved, kept, true); return; }
   const names = [...Object.keys(saved.edits), ...Object.keys(saved.source).map(ref => friendlyRef(state.sourceFields.get(ref).parsed))];
   const when = new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   // What was being typed when a sign-in ended (a comment, a note, a time) is offered back with the edits, or on its own.
   const typedName = saved.typed ? TYPED[saved.typed.where] : '';
+  let answered;
+  restoreAsked = new Promise((resolve) => { answered = resolve; });
   const m = modal(`
     <h3>Pick up where you left off?</h3>
     <p class="kiln-dim">${saved.count ? `You have ${saved.count} unpublished edit${saved.count > 1 ? 's' : ''} from
@@ -6365,9 +6388,9 @@ function offerPendingRestore() {
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" id="kiln-rest-no">${saved.count ? 'Discard them' : 'Discard it'}</button>
       <button class="kiln-btn-publish" id="kiln-rest-yes">${saved.count ? 'Restore edits' : 'Bring it back'}</button>
-    </div>`);
-  m.querySelector('#kiln-rest-no').onclick = () => { clearSavedPending(); m.remove(); };
-  m.querySelector('#kiln-rest-yes').onclick = async () => { await restoreSaved(saved, kept, false); m.remove(); };
+    </div>`, { onClose: () => answered() });
+  m.querySelector('#kiln-rest-no').onclick = () => { clearSavedPending(); m.remove(); answered(); };
+  m.querySelector('#kiln-rest-yes').onclick = async () => { await restoreSaved(saved, kept, false); m.remove(); answered(); };
 }
 
 /** Put saved edits (what readDraft gives) back on the page, staged as they were. `kept` resolves to the uploads kept beside them. */
