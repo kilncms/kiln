@@ -129,11 +129,17 @@ export function placeTip(target, tip, view, { gap = 12, margin = 8, prefer = 'be
  * heading's box on screen. Kiln's fixed chrome (the pencil, its buttons, the
  * demo banner) occupies a strip along the bottom of the screen: a tip under a
  * heading that sits low on the screen would land on it.
+ *
+ * `blocked` says whether the tip would lie on something of the page's own to
+ * press (a button, a link) on each side: { below, above }. Right under a
+ * heading is where a page keeps its buttons, so the tip goes above when that
+ * side is free.
  */
-export function sideForHeading(top, height, tipHeight, viewHeight, { gap = 12, strip = 96, head = 64 } = {}) {
+export function sideForHeading(top, height, tipHeight, viewHeight, { gap = 12, strip = 96, head = 64, blocked = {} } = {}) {
   const fitsBelow = top + height + gap + tipHeight <= viewHeight - strip;
   const fitsAbove = top - gap - tipHeight >= head;
-  return fitsBelow || !fitsAbove ? 'below' : 'above';
+  if (fitsBelow && !(blocked.below && fitsAbove && !blocked.above)) return 'below';
+  return fitsAbove ? 'above' : 'below';
 }
 
 // ─── The demo guide (sandbox only) ───────────────────────────────────────────
@@ -170,6 +176,11 @@ export function initGuide(d) {
   // The heading moves when anything above it changes height (images loading,
   // an edit that wraps onto another line): follow it.
   if (typeof ResizeObserver === 'function') new ResizeObserver(placeGuideTip).observe(document.documentElement);
+  // A page's own fade-ins move things without changing its size: a button
+  // that slides up as it appears can end under a tip that was placed while it
+  // was still on its way. The tip is looked at again while the page settles
+  // (settleTip), and whenever one of the page's own transitions ends.
+  document.addEventListener('transitionend', settleTip, true);
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && document.getElementById('kiln-guide-card')) finish();
   });
@@ -231,6 +242,7 @@ function closeCardLater(card, wait = CARD_STAYS) {
 }
 
 function removeTip() {
+  tip?._seen?.disconnect();
   tip?.remove();
   tip = null;
   tipStep = 0;
@@ -272,8 +284,18 @@ function showTip(step, target) {
     if (inSheet) target.closest('#kiln-modal').classList.add('kiln-guided');
     try { localStorage.setItem(GUIDE_KEY, '1'); } catch { /* storage blocked */ }
   }
+  const moved = tip._target !== target;
   tip._target = target;
   placeGuideTip();
+  if (moved) {
+    settleTip();
+    // …and when the heading comes onto the screen, where the things around it start to fade in
+    if (tipStep === 1 && typeof IntersectionObserver === 'function') {
+      tip._seen?.disconnect();
+      tip._seen = new IntersectionObserver((seen) => { if (seen.some(e => e.isIntersecting)) settleTip(); });
+      tip._seen.observe(target);
+    }
+  }
 }
 
 function placeGuideTip() {
@@ -292,13 +314,35 @@ function placeGuideTip() {
   // Step 2 sits above the Publish button. Step 1 goes under the heading unless
   // that would land it in the strip along the bottom of the screen where the
   // pencil, its buttons and the demo banner live; then it goes above instead.
-  const below = fixed ? false : sideForHeading(r.top, r.height, tip.offsetHeight, window.innerHeight) === 'below';
+  const below = fixed ? false : sideForHeading(r.top, r.height, tip.offsetHeight, window.innerHeight, { blocked: pressable(r) }) === 'below';
   const pos = placeTip({ left: r.left + sx, top: r.top + sy, width: r.width, height: r.height },
     { width: tip.offsetWidth, height: tip.offsetHeight }, view, { prefer: below ? 'below' : 'above' });
   tip.style.left = `${Math.round(pos.left)}px`;
   tip.style.top = `${Math.round(pos.top)}px`;
   tip.className = `kiln-guide--${pos.side}`;
   tip.style.setProperty('--kiln-guide-arrow', `${Math.round(pos.arrow)}px`);
+}
+
+/**
+ * Whether the tip, put under or over the heading at `r`, would lie on
+ * something of the page's own that is there to be pressed.
+ */
+function pressable(r, gap = 12) {
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  const centre = r.left + r.width / 2;
+  const left = Math.min(Math.max(centre - w / 2, 8), Math.max(8, document.documentElement.clientWidth - w - 8));
+  const things = [...document.querySelectorAll('a[href], button, [role="button"], input, select, textarea, summary')]
+    .filter(el => !el.closest('[id^="kiln-"], .kiln-item-ctl, .kiln-repeat-add, .kiln-block-gap') && !el.contains(tip._target) && !tip._target.contains(el))
+    .map(el => el.getBoundingClientRect()).filter(b => b.width && b.height);
+  const on = (top) => things.some(b => b.bottom > top && b.top < top + h && b.right > left && b.left < left + w);
+  return { below: on(r.bottom + gap), above: on(r.top - gap - h) };
+}
+
+/** Look at the tip's place again a few times over the next seconds: once is not enough on a page that is still moving. */
+let settling = [];
+function settleTip() {
+  settling.forEach(clearTimeout);
+  settling = [120, 500, 1100, 2200].map(ms => setTimeout(placeGuideTip, ms));
 }
 
 function showCard() {

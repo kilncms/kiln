@@ -1186,6 +1186,11 @@ function attachItemControls(container, key, item) {
     const open = !ctl.classList.contains('kiln-ctl-open');
     closeItemControls();
     ctl.classList.toggle('kiln-ctl-open', open);
+    // A row of its own under the block's words, unless the block lays its
+    // children out side by side on one line: a full-width row would crush them.
+    const cs = getComputedStyle(item);
+    const oneLine = /flex/.test(cs.display) && !cs.flexDirection.startsWith('column') && cs.flexWrap === 'nowrap';
+    ctl.classList.toggle('kiln-ctl-flow', open && item.tagName !== 'TR' && !oneLine);
     more.setAttribute('aria-expanded', String(open));
   };
   ctl.prepend(more);
@@ -1229,7 +1234,7 @@ function attachItemControls(container, key, item) {
 /** Fold every block's control bar back to its "more" button (phones). */
 function closeItemControls() {
   document.querySelectorAll('.kiln-item-ctl.kiln-ctl-open').forEach((c) => {
-    c.classList.remove('kiln-ctl-open');
+    c.classList.remove('kiln-ctl-open', 'kiln-ctl-flow');
     c.querySelector('.kiln-ctl-more')?.setAttribute('aria-expanded', 'false');
   });
 }
@@ -6027,7 +6032,16 @@ function renderTopBar() {
     <button id="kiln-publish" class="kiln-btn-publish" disabled>Publish</button>
     <button id="kiln-done" class="kiln-btn-ghost">Done</button>
     <button id="kiln-signout" class="kiln-btn-link">sign out</button>`;
+  // Making room for the bar moves the page down by the bar's height, and a
+  // browser that keeps what you were reading in place then scrolls by the
+  // same amount: the first lines of the page end up under the bar. A page
+  // that was at its top stays at its top.
+  const atTop = window.scrollY < 2;
   document.body.prepend(bar);
+  if (atTop) {
+    const up = () => { if (window.scrollY <= bar.offsetHeight + 2) window.scrollTo(0, 0); };
+    up(); requestAnimationFrame(up); setTimeout(up, 250);
+  }
   bar.querySelector('#kiln-undo-btn').onclick = undoEdit;
   bar.querySelector('#kiln-redo-btn').onclick = redoEdit;
   bar.querySelector('#kiln-publish').onclick = requestPublish;
@@ -6671,7 +6685,7 @@ function injectStyles() {
   backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.09);border-radius:16px;padding:8px;
   box-shadow:0 18px 50px rgba(0,0,0,.4);display:flex;flex-direction:column;gap:3px;
   /* a full menu is taller than a small laptop's screen: it scrolls inside itself, never off the screen */
-  max-height:calc(100vh - 16px);overflow-y:auto;box-sizing:border-box;overscroll-behavior:contain}
+  max-height:calc(100vh - 16px);overflow-y:auto;box-sizing:border-box;overscroll-behavior:contain;scroll-padding-bottom:48px}
 .kiln-fab-head{display:flex;align-items:center;gap:8px;padding:6px 10px 8px}
 .kiln-brand{font-weight:700;letter-spacing:.02em;font-size:14px;
   background:linear-gradient(135deg,#a5b4fc,#818cf8);-webkit-background-clip:text;background-clip:text;color:transparent}
@@ -6691,7 +6705,7 @@ function injectStyles() {
 .kiln-fab-foot{display:flex;justify-content:space-between;border-top:1px solid rgba(255,255,255,.08);
   margin:4px -8px -8px;padding:6px 8px 8px;
   /* stays in sight while a long menu scrolls: the way out is never below the fold */
-  position:sticky;bottom:-8px;background:rgb(20,20,31);border-radius:0 0 16px 16px}
+  position:sticky;bottom:0;background:rgb(20,20,31);border-radius:0 0 16px 16px}
 .kiln-fab-foot button{background:none;border:none;color:#8b8e9c;font-size:11.5px;cursor:pointer;
   padding:5px 8px;border-radius:7px;font-family:var(--kiln-font)}
 .kiln-fab-foot button:hover{color:#fff;background:rgba(255,255,255,.07)}
@@ -7115,9 +7129,13 @@ body:has(#kiln-topbar){padding-top:46px!important}
   background:rgba(255,255,255,.28);margin:6px auto}
 .kiln-fab-item{display:flex;align-items:center;min-height:44px;font-size:15px;padding:10px 12px}
 .kiln-fab-primary{justify-content:center;min-height:50px;font-size:16px}
-/* The docked FAB rides the sheet's corner as tap-again-to-close — keep the
-   foot's Sign out clear of it. */
-.kiln-fab-foot{padding-right:72px}
+/* The docked pencil rides the sheet's corner as tap-again-to-close. The foot
+   is the strip it sits in: it stays at the bottom of the sheet while the
+   items scroll behind it, as tall as the pencil and clear of it on the right,
+   so the pencil never lies on an item and "Done editing" is never cut off. */
+#kiln-fab-menu{padding-bottom:0;scroll-padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
+.kiln-fab-foot{margin:4px -14px 0;border-radius:0;align-items:center;
+  padding:10px 86px calc(22px + env(safe-area-inset-bottom,0px)) 14px}
 .kiln-fab-foot button{min-height:44px;font-size:13.5px;padding:8px 12px}
 .kiln-pal-kbd{display:none}
 /* Status toasts: top-center, clear of FAB and keyboard. A hint, not a fixture:
@@ -7175,6 +7193,13 @@ body:has(#kiln-topbar){padding-top:56px!important}
 .kiln-item-ctl .kiln-ctl-more{display:inline-block;position:absolute;top:0;right:0;font-size:20px;line-height:1}
 .kiln-item-ctl.kiln-ctl-open{padding-top:48px}
 .kiln-item-ctl.kiln-ctl-open .kiln-ctl-more{background:var(--kiln-accent)}
+/* Opened, the buttons used to lie over the block's own second line and the
+   next block's words. They take a row of their own at the foot of the block
+   instead, which grows to hold them (kiln-ctl-flow: set when the block's
+   layout allows it). The "more" button keeps its corner. */
+.kiln-item-ctl.kiln-ctl-open.kiln-ctl-flow{position:static;flex:0 0 100%;grid-column:1/-1;width:100%;max-width:none;
+  box-sizing:border-box;padding:10px 0 2px;justify-content:flex-end}
+.kiln-item-ctl.kiln-ctl-open.kiln-ctl-flow .kiln-ctl-more{top:8px;right:8px}
 /* In a table row the bar lives in its own cell and must not change the cell's
    size (the whole table would reflow). It stays one button wide; open, its
    buttons spill out along the row to the left of the "more" button. */
