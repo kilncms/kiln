@@ -6687,7 +6687,7 @@ function injectStyles() {
 #kiln-fab-badge[hidden]{display:none!important}
 #kiln-fab-menu[hidden]{display:none!important}
 #kiln-fab-menu{position:absolute;width:230px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(16px);
-  backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.09);border-radius:16px;padding:8px;
+  backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.09);border-radius:16px;padding:8px 8px 0;
   box-shadow:0 18px 50px rgba(0,0,0,.4);display:flex;flex-direction:column;gap:3px;
   /* a full menu is taller than a small laptop's screen: it scrolls inside itself, never off the screen */
   max-height:calc(100vh - 16px);overflow-y:auto;box-sizing:border-box;overscroll-behavior:contain;scroll-padding-bottom:48px}
@@ -6708,8 +6708,10 @@ function injectStyles() {
 .kiln-fab-primary:hover{background:var(--kiln-accent-h);color:#fff}
 .kiln-fab-primary:disabled{opacity:.4;cursor:default;background:rgba(255,255,255,.08);color:#9ca3af;font-weight:500}
 .kiln-fab-foot{display:flex;justify-content:space-between;border-top:1px solid rgba(255,255,255,.08);
-  margin:4px -8px -8px;padding:6px 8px 8px;
-  /* stays in sight while a long menu scrolls: the way out is never below the fold */
+  margin:4px -8px 0;padding:6px 8px 8px;
+  /* stays in sight while a long menu scrolls: the way out is never below the
+     fold. The menu has no padding under it (the foot carries it), so no item
+     shows through a strip beneath the foot. */
   position:sticky;bottom:0;background:rgb(20,20,31);border-radius:0 0 16px 16px}
 .kiln-fab-foot button{background:none;border:none;color:#8b8e9c;font-size:11.5px;cursor:pointer;
   padding:5px 8px;border-radius:7px;font-family:var(--kiln-font)}

@@ -50,6 +50,9 @@ test('phone: the menu\'s foot is a strip as tall as the pencil, kept at the bott
   assert.match(phone, /\.kiln-fab-foot button\{min-height:44px/);
   // and it stays there while the items scroll behind it, on any screen
   assert.match(main, /\.kiln-fab-foot\{[^}]*position:sticky;bottom:0;background:rgb\(20,20,31\)/);
+  // the menu has no padding of its own under the foot, where a scrolled item would show through
+  assert.match(main, /border-radius:16px;padding:8px 8px 0;/);
+  assert.match(main, /\.kiln-fab-foot\{[^}]*margin:4px -8px 0;padding:6px 8px 8px;/);
 });
 
 test('phone: a block\'s buttons open in a row of their own, under the block\'s words', () => {
