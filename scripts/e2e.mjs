@@ -7,6 +7,14 @@
  *
  *   KILN_E2E_REPO=owner/throwaway GH_TOKEN=$(gh auth token) node scripts/e2e.mjs
  *   node scripts/e2e.mjs --smoke                  only the checks that write nothing
+ *   … node scripts/e2e.mjs --rename               the full run, and then: rename the
+ *                                                 test repository, check that what the
+ *                                                 worker stores for it follows, rename
+ *                                                 it back. OFF unless asked for: for a
+ *                                                 minute or two the repository answers
+ *                                                 to another name, so nothing else may
+ *                                                 be using it. GH_TOKEN needs admin
+ *                                                 access to it.
  *
  *   KILN_E2E_WORKER   the worker (default: the staging worker)
  *   KILN_E2E_REPO     the test repository, owner/name. Required. It must have
@@ -55,10 +63,12 @@ const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwA
 export class Stop extends Error {}
 
 export function readConfig(env = process.env, argv = []) {
-  const unknown = argv.filter(a => a !== '--smoke');
-  if (unknown.length) throw new Stop(`Unknown option ${unknown[0]}. Use: node scripts/e2e.mjs [--smoke]`);
+  const unknown = argv.filter(a => a !== '--smoke' && a !== '--rename');
+  if (unknown.length) throw new Stop(`Unknown option ${unknown[0]}. Use: node scripts/e2e.mjs [--smoke] [--rename]`);
   const worker = (env.KILN_E2E_WORKER || STAGING_WORKER).replace(/\/+$/, '');
   const smoke = argv.includes('--smoke');
+  const rename = argv.includes('--rename');
+  if (smoke && rename) throw new Stop('--rename renames the test repository and back; --smoke writes nothing. Use one or the other.');
   const local = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(worker);
   if (!smoke && worker !== STAGING_WORKER && !local) {
     throw new Stop(`This script writes to a repository through the worker, and ${worker} is neither the staging worker nor a local one. Run it against staging (the default), or pass --smoke for the checks that write nothing.`);
@@ -69,7 +79,7 @@ export function readConfig(env = process.env, argv = []) {
   }
   const token = env.GH_TOKEN || env.GITHUB_TOKEN || '';
   if (!smoke && !token) throw new Stop('Set GH_TOKEN to a token with push access to the test repository (for example GH_TOKEN=$(gh auth token)). It is used to read the starting state and to put everything back.');
-  return { worker, repo, branch: env.KILN_E2E_BRANCH || 'main', site: (env.KILN_E2E_SITE || '').replace(/\/+$/, ''), field: env.KILN_E2E_FIELD || '', token, smoke, local };
+  return { worker, repo, branch: env.KILN_E2E_BRANCH || 'main', site: (env.KILN_E2E_SITE || '').replace(/\/+$/, ''), field: env.KILN_E2E_FIELD || '', token, smoke, rename, local };
 }
 
 /**
@@ -255,6 +265,143 @@ export async function putBack({ cfg, io, record, owner, sessions, refsMade = [],
   } catch (err) { record(name, false, err.message); }
 }
 
+/**
+ * --rename: does what the worker stores for a site follow its repository to a
+ * new name, on real GitHub? Stores one of each kind under the name the
+ * repository has, renames it, asks the worker under the new name and under
+ * the old one, and renames it back in a `finally`, whatever happened. Then it
+ * removes what it stored. Never part of a run unless --rename was given.
+ *
+ * `suggest` is the suggest-only editor made earlier in the run (a suggestion
+ * cannot be made with the owner's token); `sessions` is the list of session
+ * keys cleanup will delete, from which the ones the move ended are taken off.
+ */
+export async function followsARename({ cfg, io, owner, step, record, run, field, value, suggest, sessions }) {
+  const W = cfg.worker;
+  const R = cfg.repo;
+  const [, oldName] = R.split('/');
+  const asOwner = { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' };
+  const ask = async (route, body) => {
+    const res = await io.fetch(`${W}${route}`, body === undefined ? { headers: asOwner } : { method: 'POST', headers: asOwner, body: JSON.stringify(body) });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  };
+  const made = {};          // what this step stored: thread, suggestion, schedule, token (id and secret)
+  let tried = false;        // a rename was asked of GitHub (so its name has to be looked at afterwards)
+  let renamed = '';         // what GitHub called it after the rename
+  /** Which of the four the worker does NOT show when asked as `repo`. */
+  const missingUnder = async (repo) => {
+    const missing = [];
+    const c = await ask(`/comments?repo=${repo}&path=index.html`);
+    if (!(c.body.threads || []).some(t => t.id === made.thread)) missing.push(`the comment (${c.status})`);
+    const s = await ask(`/suggestions?repo=${repo}`);
+    if (!(s.body.suggestions || []).some(x => x.id === made.suggestion)) missing.push(`the suggestion (${s.status})`);
+    const d = await ask(`/schedules?repo=${repo}`);
+    if (!(d.body.schedules || []).some(x => x.id === made.schedule)) missing.push(`the scheduled post (${d.status})`);
+    const t = await ask(`/admin/api-tokens?repo=${repo}`);
+    if (!(t.body.tokens || []).some(x => x.id === made.token)) missing.push(`the API token (${t.status})`);
+    return missing;
+  };
+  /** KV may take a moment to show a change at the edge: look a few times before calling something missing. */
+  const allUnder = async (repo) => {
+    for (let i = 0; ; i++) {
+      const missing = await missingUnder(repo);
+      if (!missing.length) return;
+      if (i >= 8) throw new Error(`the worker does not show ${missing.join(', ')}`);
+      await io.sleep(4000);
+    }
+  };
+  try {
+    await step('rename: the token may rename the test repository, and it has the name the run was given', async () => {
+      const r = await owner.request('GET', `/repos/${R}`);
+      if (r.full_name !== R) throw new Error(`GitHub calls it ${r.full_name}, not ${R}: rename it back before running this`);
+      if (!(r.permissions && r.permissions.admin)) throw new Error('GH_TOKEN has no admin access to it, which renaming takes');
+    });
+    await step('rename: a comment, a suggestion, a scheduled post and an API token are stored under the name it has now', async () => {
+      const c = await ask('/comments', { repo: R, path: 'index.html', text: `E2E ${run}: does this follow a rename?` });
+      if (c.status !== 200) throw new Error(`the comment was not stored: ${c.status} ${JSON.stringify(c.body).slice(0, 160)}`);
+      made.thread = c.body.thread.id;
+      const sres = await suggest.post('/suggestions', { repo: R, path: 'index.html', edits: [{ key: field, html: `suggested ${run}` }], note: `E2E ${run}` });
+      const s = await sres.json().catch(() => ({}));
+      if (sres.status !== 200) throw new Error(`the suggestion was not stored: ${sres.status} ${JSON.stringify(s).slice(0, 160)}`);
+      made.suggestion = s.suggestion.id;
+      // A month away, and it would set the field to what it already says: should cleanup ever fail, nothing changes.
+      const d = await ask('/schedule', { repo: R, path: 'index.html', branch: cfg.branch, edits: [{ key: field, html: value }], at: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(), desc: `E2E ${run}` });
+      if (d.status !== 200) throw new Error(`the scheduled post was not stored: ${d.status} ${JSON.stringify(d.body).slice(0, 160)}`);
+      made.schedule = d.body.id;
+      const t = await ask('/admin/api-tokens', { repo: R, name: `E2E ${run}`, readonly: true, days: 1 });
+      if (t.status !== 200) throw new Error(`the API token was not made: ${t.status} ${JSON.stringify(t.body).slice(0, 160)}`);
+      made.token = t.body.record.id;
+      made.secret = t.body.token;
+      await allUnder(R);
+    });
+    await step('rename: the repository is renamed on GitHub', async () => {
+      tried = true;
+      const r = await owner.request('PATCH', `/repos/${R}`, { name: `${oldName}-renamed-${run}` });
+      renamed = r.full_name || '';
+      if (!renamed || renamed === R) throw new Error('GitHub did not rename it');
+      return renamed;
+    });
+    await step('rename: asked under the new name, the worker shows the comment, the suggestion, the scheduled post and the token', () => allUnder(renamed));
+    await step('rename: a page that still has the old name is shown the same four', () => allUnder(R));
+    await step('rename: the API token made before the rename still reads the page', async () => {
+      const res = await io.fetch(`${W}/api/v1/fields?path=/`, { headers: { Authorization: `Bearer ${made.secret}` } });
+      if (res.status !== 200) throw new Error(`answered ${res.status}`);
+    });
+    await step('rename: the editor sessions from before the rename are ended (editors sign in once more)', async () => {
+      for (let i = 0; ; i++) {
+        const res = await suggest.raw('GET', `/repos/${R}`);
+        if (res.status === 401) return;
+        if (i >= 8) throw new Error(`a session made under the old name still answers ${res.status}`);
+        await allUnder(renamed);      // each ask carries the move a step further
+        await io.sleep(4000);
+      }
+    });
+  } finally {
+    if (tried) {
+      const name = 'rename: the repository has its own name back';
+      let now = '';
+      try {
+        // GitHub answers to the old name with the current one, so this finds it whatever it is called.
+        now = (await owner.request('GET', `/repos/${R}`)).full_name || '';
+        if (now && now !== R) await owner.request('PATCH', `/repos/${now}`, { name: oldName });
+        const back = (await owner.request('GET', `/repos/${R}`)).full_name === R;
+        record(name, back, back ? R : `GitHub still calls it ${now}. Rename it back by hand: gh api -X PATCH repos/${now} -f name=${oldName}`);
+      } catch (err) {
+        const guess = now && now !== R ? now : renamed || `${R}-renamed-${run}`;
+        record(name, false, `${err.message}. Look at the repository on GitHub; if it is not called ${R}, rename it back by hand: gh api -X PATCH repos/${guess} -f name=${oldName}`);
+      }
+      // The worker remembers what it last heard about a name for ten minutes.
+      // Dropping that lets the next ask see that the old name is current again.
+      for (const n of new Set([R, renamed].filter(Boolean))) { try { await io.kvDelete(`rsee:${n.toLowerCase()}`); } catch { /* it expires by itself */ } }
+    }
+    // Remove what was stored, under whichever name the worker has it filed.
+    const left = [];
+    const gone = async (what, send) => {
+      try { const r = await send(); if (r.status !== 200 && r.status !== 404) left.push(`${what} (${r.status})`); }
+      catch (err) { left.push(`${what} (${err.message})`); }
+    };
+    if (made.thread) await gone('the comment', () => ask('/comments/delete', { repo: R, path: 'index.html', thread: made.thread }));
+    if (made.schedule) await gone('the scheduled post', () => ask('/schedule/cancel', { repo: R, id: made.schedule }));
+    if (made.token) await gone('the API token', () => ask('/admin/api-tokens/revoke', { repo: R, id: made.token }));
+    if (made.suggestion) {
+      // A suggestion is kept as a record of the review; there is no route that removes one.
+      for (const n of new Set([R, renamed].filter(Boolean))) { try { await io.kvDelete(`sug:${n}:${made.suggestion}`); } catch { /* not under this name */ } }
+    }
+    if (made.thread || made.schedule || made.token) {
+      record('rename: what this step stored in the worker is removed again', left.length === 0, left.length ? `still there: ${left.join(', ')}. They are named "E2E ${run}"` : '');
+    }
+    // Sessions the move ended are not there for cleanup to delete.
+    if (tried && sessions) {
+      for (const key of [...sessions]) {
+        try {
+          const res = await io.fetch(`${W}/gh/repos/${R}`, { headers: { 'X-Kiln-Session': key.slice('esess:'.length) } });
+          if (res.status === 401) sessions.splice(sessions.indexOf(key), 1);
+        } catch { /* cleanup will try it */ }
+      }
+    }
+  }
+}
+
 export async function run(cfg, rawIo) {
   const io = patient(rawIo, cfg);
   const { checks, record, step, refused } = checklist(io);
@@ -421,6 +568,11 @@ export async function run(cfg, rawIo) {
       const cur = await getFile(suggest.gh, R, 'index.html', name);
       await putFile(suggest.gh, R, 'index.html', { text: applyEdits(cur.text, [{ key: field, html: `suggested ${run}` }]).html, sha: cur.sha, branch: name, message: `E2E ${run}: suggestion preview (via Kiln)` });
     });
+
+    // ── Only with --rename: does what the worker stores follow the repository to a new name? ──
+    if (cfg.rename) {
+      await followsARename({ cfg, io, owner, step, record, run, field, value: readValues(original)[field], suggest, sessions: editors.keys });
+    }
   } catch (err) {
     if (!(err instanceof Stop)) record('the run itself', false, err.message);
   } finally {

@@ -21,10 +21,51 @@ const REPO = 'acme/kiln-e2e';
 const PAGE = '<!doctype html>\n<html>\n<head><title>Test site</title></head>\n<body>\n  <h1 data-cms="hero_title">A test site</h1>\n  <p data-cms="hero_tagline">The original line, exactly as it was.</p>\n  <script src="/assets/kiln-config.js"></script>\n  <script src="/assets/kiln.js" defer></script>\n</body>\n</html>\n';
 const FILES = { 'index.html': PAGE, 'assets/site.css': 'h1{color:teal}', '.kiln-e2e': '' };
 
+/** A real RSA key, so the worker can sign its App token for a name it has no cached token for (a renamed repository). */
+const { privateKey } = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
+const PK8 = Buffer.from(await crypto.subtle.exportKey('pkcs8', privateKey)).toString('base64');
+
+/**
+ * GitHub for a repository that can be renamed. Every name it has had answers,
+ * the earlier ones with its current name, as GitHub's redirect does; its id
+ * stays what it was; the App is installed on it under every name.
+ */
+function renameable(gh, { id = 4711, admin = true } = {}) {
+  let current = REPO;
+  const known = new Set([REPO]);
+  const renames = [];
+  let refuse = () => false;
+  const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'Content-Type': 'application/json' } });
+  return {
+    renames,
+    name: () => current,
+    refuseRename: (fn) => { refuse = fn; },
+    handler: async (url, init = {}) => {
+      if (url === 'https://api.github.com/app/installations/77/access_tokens') return json({ token: 'installation-token' }, 201);
+      const m = /^https:\/\/api\.github\.com\/repos\/([^/]+\/[^/?]+)(.*)$/.exec(url);
+      if (!m || !known.has(m[1])) return undefined;
+      const [, asked, rest] = m;
+      const method = (init.method || 'GET').toUpperCase();
+      if (rest === '/installation') return json({ id: 77 });
+      if (rest === '' && method === 'PATCH') {
+        const to = `${current.split('/')[0]}/${JSON.parse(init.body).name}`;
+        if (refuse(asked, to)) return json({ message: 'Server Error' }, 500);
+        renames.push([asked, to]);
+        current = to;
+        known.add(to);
+        return json({ id, full_name: current });
+      }
+      if (rest === '' && method === 'GET') return json({ id, full_name: current, default_branch: 'main', permissions: { push: true, admin } });
+      return gh.handler(`https://api.github.com/repos/${REPO}${rest}`, init);
+    },
+  };
+}
+
 /** Staging, as the script would find it: a worker with its App, installed on a marked test repository. */
-function staging({ files = FILES, token = 'owner-token', smoke = false, env: envOver = {} } = {}) {
+function staging({ files = FILES, token = 'owner-token', smoke = false, rename = null, env: envOver = {} } = {}) {
   const gh = fakeGitHub({ repo: REPO, files });
-  const kv = fakeKV({ 'app:creds': { slug: 'kiln-cms-staging', app_id: 1, client_id: 'cid' }, [`itok:${REPO}`]: 'installation-token' });
+  const ren = rename ? renameable(gh, rename) : null;
+  const kv = fakeKV({ 'app:creds': { slug: 'kiln-cms-staging', app_id: 1, client_id: 'cid', ...(rename ? { pk8: PK8 } : {}) }, [`itok:${REPO}`]: 'installation-token' });
   const env = { KILN: kv, ALLOWED_ORIGINS: '' };
   const lines = [];
   const kvCalls = [];
@@ -43,9 +84,9 @@ function staging({ files = FILES, token = 'owner-token', smoke = false, env: env
     now: () => (tick += 1000),
     hex: (bytes) => (++n).toString(16).padStart(2, '0').repeat(bytes),
   };
-  const cfg = readConfig({ KILN_E2E_REPO: REPO, GH_TOKEN: token, ...envOver }, smoke ? ['--smoke'] : []);
-  const go = () => withFetch(gh.handler, () => run(cfg, io));
-  return { gh, kv, env, io, cfg, lines, kvCalls, intercept, go, out: () => lines.join('\n'), startHead: gh.head(), startRefs: [...gh.refs.keys()].sort() };
+  const cfg = readConfig({ KILN_E2E_REPO: REPO, GH_TOKEN: token, ...envOver }, smoke ? ['--smoke'] : rename ? ['--rename'] : []);
+  const go = () => withFetch(ren ? ren.handler : gh.handler, () => run(cfg, io));
+  return { gh, ren, kv, env, io, cfg, lines, kvCalls, intercept, go, out: () => lines.join('\n'), startHead: gh.head(), startRefs: [...gh.refs.keys()].sort() };
 }
 const names = (r, ok) => r.checks.filter(c => c.ok === ok).map(c => c.name);
 
@@ -192,4 +233,83 @@ test('KLR-22 where it will run: staging by default, a local worker, and nowhere 
   assert.doesNotMatch(src, /auth\.kilncms\.com|kilncms\/kiln-demo|kiln-demo\.pages\.dev/, 'the script names neither production nor the public demo');
   assert.match(src, /'--env', 'staging', '--remote'/, 'sessions are written to the staging KV, never another');
   assert.doesNotMatch(src, /--env', 'production'/);
+});
+
+// ─── --rename: what the worker stores follows the repository, on request only ──
+
+const stored = (s) => [...s.kv.map.keys()].filter(k => /^(cmt|sug|sched|atok|esess):/.test(k));
+
+test('--rename is off unless asked for, and is not a smoke check', () => {
+  const ok = { KILN_E2E_REPO: REPO, GH_TOKEN: 't' };
+  assert.equal(readConfig(ok).rename, false);
+  assert.equal(readConfig(ok, ['--rename']).rename, true);
+  assert.throws(() => readConfig(ok, ['--smoke', '--rename']), /--rename renames the test repository and back; --smoke writes nothing/);
+  assert.throws(() => readConfig(ok, ['--renamed']), /Unknown option --renamed\. Use: node scripts\/e2e\.mjs \[--smoke\] \[--rename\]/);
+});
+
+test('--rename: after the full run the repository is renamed, everything stored for it is found under the new name and the old one, and it is renamed back', async () => {
+  const s = staging({ rename: {} });
+  const r = await s.go();
+  assert.deepEqual(names(r, false), [], s.out());
+  const passed = names(r, true);
+  for (const name of [
+    'rename: the token may rename the test repository, and it has the name the run was given',
+    'rename: a comment, a suggestion, a scheduled post and an API token are stored under the name it has now',
+    'rename: the repository is renamed on GitHub',
+    'rename: asked under the new name, the worker shows the comment, the suggestion, the scheduled post and the token',
+    'rename: a page that still has the old name is shown the same four',
+    'rename: the API token made before the rename still reads the page',
+    'rename: the editor sessions from before the rename are ended (editors sign in once more)',
+    'rename: the repository has its own name back',
+    'rename: what this step stored in the worker is removed again',
+    'cleanup: the repository is as it was found',
+  ]) assert.ok(passed.includes(name), `missing: ${name}`);
+  // Renamed once and renamed back once; GitHub calls it what it was called.
+  assert.equal(s.ren.renames.length, 2);
+  assert.match(s.ren.renames[0][1], /^acme\/kiln-e2e-renamed-\w+$/);
+  assert.deepEqual(s.ren.renames[1], [s.ren.renames[0][1], REPO]);
+  assert.equal(s.ren.name(), REPO);
+  // The repository and the worker are as they were found.
+  assert.equal(s.gh.head(), s.startHead);
+  assert.equal(s.gh.read('index.html'), PAGE);
+  assert.deepEqual(stored(s), [], 'no comment, suggestion, schedule, token or session is left');
+  assert.equal(JSON.parse(s.kv.map.get('rid:4711')).name, REPO, 'and the worker files the repository under its own name again');
+});
+
+test('--rename: when a check fails while the repository has the other name, it still gets its name back and what was stored is removed', async () => {
+  const s = staging({ rename: {} });
+  // The worker shows no comments under the new name.
+  s.intercept.fn = async (url) => (/\/comments\?repo=acme\/kiln-e2e-renamed-/.test(url) ? new Response('{"threads":[]}', { status: 200, headers: { 'Content-Type': 'application/json' } }) : null);
+  const r = await s.go();
+  assert.equal(r.ok, false);
+  assert.deepEqual(names(r, false), ['rename: asked under the new name, the worker shows the comment, the suggestion, the scheduled post and the token']);
+  assert.match(s.out(), /the worker does not show the comment \(200\)/);
+  assert.equal(s.ren.renames.length, 2, 'renamed back all the same');
+  assert.equal(s.ren.name(), REPO);
+  assert.ok(names(r, true).includes('rename: the repository has its own name back'));
+  assert.deepEqual(stored(s), []);
+  assert.equal(s.gh.head(), s.startHead);
+});
+
+test('--rename: if GitHub will not rename it back, the run fails and prints the command that does', async () => {
+  const s = staging({ rename: {} });
+  s.ren.refuseRename((asked, to) => to === REPO);
+  const r = await s.go();
+  assert.equal(r.ok, false);
+  const back = r.checks.find(c => c.name === 'rename: the repository has its own name back');
+  assert.equal(back.ok, false);
+  assert.match(back.detail, /rename it back by hand: gh api -X PATCH repos\/acme\/kiln-e2e-renamed-\w+ -f name=kiln-e2e$/);
+  assert.notEqual(s.ren.name(), REPO);
+  assert.deepEqual(stored(s), [], 'what was stored is removed even so');
+});
+
+test('--rename: a token that may not rename the repository stops the step before anything is stored or renamed', async () => {
+  const s = staging({ rename: { admin: false } });
+  const r = await s.go();
+  assert.equal(r.ok, false);
+  assert.deepEqual(names(r, false), ['rename: the token may rename the test repository, and it has the name the run was given']);
+  assert.match(s.out(), /GH_TOKEN has no admin access to it, which renaming takes/);
+  assert.deepEqual(s.ren.renames, []);
+  assert.equal([...s.kv.map.keys()].some(k => /^(cmt|sug|sched|atok):/.test(k)), false);
+  assert.equal(s.gh.head(), s.startHead, 'and the rest of the run is still put back');
 });
