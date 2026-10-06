@@ -35,6 +35,7 @@ import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
+import { onLoadFailure, signInUrl } from './sign-in-ended.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -52,6 +53,8 @@ const UNDO_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" s
 // const→var, so anything read during boot must already be initialized.
 const MOBILE_MQ = '(max-width: 700px), (pointer: coarse) and (max-width: 820px)';
 function isMobileEditor() { return window.matchMedia(MOBILE_MQ).matches; }
+// True once the pencil and the status line exist (declared up here for the same reason).
+let chromeDrawn = false;
 
 import { SANITIZE, CONTAINER_SANITIZE, BLOCK_SANITIZE } from './sanitize.js';
 
@@ -165,10 +168,10 @@ async function init() {
       // Only a real auth rejection should sign the owner out. A network or worker
       // blip (no HTTP status) must NOT nuke a valid session — that would log them
       // out every time their wifi hiccups. Surface it and let a reload recover.
-      if (err.status === 401 || err.status === 403) {
-        console.warn('[kiln] token rejected, back to login', err);
-        localStorage.removeItem(ADMIN_KEY);
-        location.reload();
+      const over = onLoadFailure(err, { mode, draft: draftWaits() });
+      if (over) {
+        console.warn('[kiln] the sign-in has ended', err);
+        signInEndedOnLoad(over);
         return;
       }
       console.warn('[kiln] could not verify session (offline?)', err);
@@ -177,9 +180,12 @@ async function init() {
     }
   } else {
     const sess = JSON.parse(localStorage.getItem(EDITOR_KEY));
-    if (!sess || sess.repo !== cfg.repo) {
-      localStorage.removeItem(EDITOR_KEY);
-      location.reload();
+    if (!sess) { localStorage.removeItem(EDITOR_KEY); location.reload(); return; }
+    if (sess.repo !== cfg.repo) {
+      // The sign-in was made under another repository name than the one the
+      // site's config has now (the owner corrected it after a rename or a
+      // move). It is of no use here: say so, instead of a silent reload.
+      signInEndedOnLoad(onLoadFailure({ status: 401 }, { mode, draft: draftWaits() }));
       return;
     }
     state.gh = makeGh({ mode: 'proxy', worker: cfg.worker, session: sess.session });
@@ -189,6 +195,15 @@ async function init() {
   try {
     await loadPageSource();
   } catch (err) {
+    // The worker no longer knows this sign-in (any 401, whatever it says).
+    // The editor does not start: the stored sign-in is dropped, so /kiln
+    // shows the sign-in again, and the page says what happened.
+    const over = mode === 'editor' ? onLoadFailure(err, { mode, draft: draftWaits() }) : null;
+    if (over) {
+      console.warn('[kiln] the sign-in has ended', err);
+      signInEndedOnLoad(over);
+      return;
+    }
     // Source-mode pages are GENERATED — the URL usually has no committed HTML
     // file, and that must not kill the editor (§13). Boot with an empty page
     // index instead; HTML-mode editing simply has nothing to decorate, while
@@ -203,6 +218,7 @@ async function init() {
   // content never grows an edit handle (best-effort — offline means no scope data).
   if (mode === 'editor' && !cfg.sandbox) await presencePing();
   renderAdminBar();
+  chromeDrawn = true;
   // §7.3: an html-mode page that resolved to committed BUILD OUTPUT gets a
   // blocking explanation instead of edit handles — editing it is silent data
   // loss (the next build erases the edit). Nothing else is withheld.
@@ -233,6 +249,84 @@ async function init() {
     if (state.pending.size || state.pendingBinaries.size || state.pendingStructural.length
       || state.pendingSource.size) { e.preventDefault(); e.returnValue = ''; }
   });
+}
+
+// ─── A sign-in that has ended ────────────────────────────────────────────────
+// What a failed request means, and every sentence shown, is in
+// sign-in-ended.js. Here: drop the stored sign-in and put the sentence on the
+// page.
+
+/** Unpublished edits to this page are saved in this browser (see "Crash-proof pending edits"). */
+function draftWaits() {
+  try {
+    for (const p of [...pageFileCandidates(location.pathname, cfg.root || ''), location.pathname]) {
+      const saved = JSON.parse(localStorage.getItem(`kiln_pending:${cfg.repo}:${p}`));
+      if (saved && saved.edits && Object.keys(saved.edits).length && Date.now() - saved.ts <= 7 * 24 * 3600 * 1000) return true;
+    }
+  } catch { /* unreadable: nothing is promised */ }
+  return false;
+}
+
+/** The worker's own sign-in, coming back to this page. */
+function signInAgain() {
+  location.href = signInUrl({ worker: cfg.worker, origin: location.origin, path: location.pathname + location.search,
+    repo: cfg.repo, way: mode === 'admin' ? 'github' : 'google' });
+}
+
+/**
+ * The page loaded with a sign-in that is over. The editor has drawn nothing
+ * yet and draws nothing: the page is what a signed-out visitor sees, plus one
+ * sentence at the bottom of the screen (clear of a site's own navigation)
+ * that can be put away.
+ */
+function signInEndedOnLoad(over) {
+  if (over.drop) localStorage.removeItem(mode === 'admin' ? ADMIN_KEY : EDITOR_KEY);
+  document.querySelector('style[data-kiln]')?.remove();
+  showNotice(over.notice, signInAgain);
+}
+
+/** One sentence, at most one button, and a way to put it away. Styled inline: the editor's own styles are not on the page. */
+function showNotice(notice, onButton) {
+  document.getElementById('kiln-notice')?.remove();
+  const box = document.createElement('div');
+  box.id = 'kiln-notice';
+  box.setAttribute('role', 'status');
+  box.style.cssText = 'position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);'
+    + 'z-index:2147483000;box-sizing:border-box;width:max-content;max-width:min(560px,calc(100vw - 24px));'
+    + 'background:#1c1c28;color:#f1f1f6;font:400 14.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
+    + 'padding:14px 44px 14px 16px;border:1px solid rgba(255,255,255,.14);border-radius:14px;'
+    + 'box-shadow:0 12px 40px rgba(0,0,0,.38);text-align:left;letter-spacing:normal;text-transform:none';
+  const text = document.createElement('p');
+  text.textContent = notice.text;
+  text.style.cssText = 'margin:0;color:inherit;font:inherit';
+  box.appendChild(text);
+  if (notice.detail) {
+    const detail = document.createElement('p');
+    detail.textContent = notice.detail;
+    detail.style.cssText = 'margin:10px 0 0;padding-left:10px;border-left:2px solid rgba(255,255,255,.28);color:#c3c5d2;font:inherit;font-size:13px';
+    box.appendChild(detail);
+  }
+  if (notice.button) {
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.textContent = notice.button;
+    go.style.cssText = 'display:block;margin:12px 0 0;background:#fff;color:#1c1c28;border:0;border-radius:9px;'
+      + 'padding:9px 16px;min-height:40px;font-family:inherit;font-size:14px;font-weight:600;line-height:1.2;cursor:pointer';
+    go.onclick = onButton;
+    box.appendChild(go);
+  }
+  const x = document.createElement('button');
+  x.type = 'button';
+  x.setAttribute('aria-label', 'Dismiss');
+  x.textContent = '✕';
+  x.style.cssText = 'position:absolute;top:6px;right:6px;width:36px;height:36px;background:transparent;color:#c3c5d2;'
+    + 'border:0;border-radius:8px;font-family:inherit;font-size:15px;font-weight:400;line-height:1;cursor:pointer';
+  const close = () => { box.remove(); document.removeEventListener('keydown', onKey, true); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  x.onclick = close;
+  document.addEventListener('keydown', onKey, true);
+  box.appendChild(x);
+  document.body.appendChild(box);
 }
 
 // ─── Update check (owner only) ───────────────────────────────────────────────
@@ -300,7 +394,11 @@ function withAutoRefresh(gh, stored) {
           // Sign out ONLY when the worker says the refresh token is dead (401).
           // A transient 5xx/network failure must not destroy a session that will
           // work again once the worker recovers — just fail this one request.
-          if (res.status === 401) { localStorage.removeItem(ADMIN_KEY); location.reload(); }
+          if (res.status === 401) {
+            err.signIn = 'ended';
+            // While the editor is starting, init() says so on the page.
+            if (chromeDrawn) { localStorage.removeItem(ADMIN_KEY); location.reload(); }
+          }
           throw err;
         }
         localStorage.setItem(ADMIN_KEY, JSON.stringify({ ...stored, token: data.token, exp: data.exp }));
