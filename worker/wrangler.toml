@@ -132,7 +132,7 @@ enabled = true
 ALLOWED_ORIGINS = "https://demo.kilncms.com,https://kiln-demo.pages.dev,https://kiln-demo-mr.pages.dev,https://npu-i.pages.dev,https://npu-i-site.pages.dev,https://app.kilncms.com,http://localhost:8788,http://127.0.0.1:8788"
 CLOUD_DASHBOARD = "https://app.kilncms.com"   # where /cloud/callback returns the customer
 CLOUD_ADMIN = "erikkwilder"                      # GitHub login allowed to hit /admin/cloud/*
-# CLOUD_ADMIN_ID = "<number>"   # that account's numeric GitHub id (`gh api user --jq .id`).
+CLOUD_ADMIN_ID = "3237366"     # that account's numeric GitHub id (`gh api user --jq .id`).
 #                               # Once set, the id decides and the login above is ignored,
 #                               # so a renamed or re-registered username cannot become the admin.
 
