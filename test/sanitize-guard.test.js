@@ -55,3 +55,29 @@ test('isHtmlPath', () => {
   assert.equal(isHtmlPath('assets/app.js'), false);
   assert.equal(isHtmlPath('assets/photo.png'), false);
 });
+
+// The control-character class is written with escapes (\x00-\x20) so the file
+// is text to git and its diffs can be read. Same class as before: every
+// character from NUL to space, placed anywhere inside the scheme, is ignored
+// the way a browser ignores it, so the URL is still seen as javascript:.
+test('a javascript: URL hidden behind any control character or space (0x01 to 0x20) → blocked', () => {
+  for (let c = 1; c <= 0x20; c++) {
+    const ch = String.fromCharCode(c);
+    for (const url of [`java${ch}script:alert(1)`, `${ch}javascript:alert(1)`, `j${ch}a${ch}vascript:alert(1)`]) {
+      const html = `<p><a href="${url.replace(/"/g, '&quot;')}">x</a></p>`;
+      assert.ok(checkFragment(html), `0x${c.toString(16)} in ${JSON.stringify(url)}`);
+    }
+  }
+  // 0x21 and up are real characters: "java!script:" is not a javascript: URL.
+  assert.equal(checkFragment('<p><a href="java!script:alert(1)">x</a></p>'), null);
+  // A NUL never reaches the class: the HTML parser turns it into U+FFFD, as a
+  // browser does, and the result is not a javascript: URL in either.
+  assert.equal(checkFragment('<p><a href="java\u0000script:alert(1)">x</a></p>'), checkFragment('<p><a href="java\uFFFDscript:alert(1)">x</a></p>'));
+});
+
+test('worker/sanitize-guard.js holds no raw control characters, so git treats it as text', async () => {
+  const { readFileSync } = await import('node:fs');
+  const bytes = readFileSync(new URL('../worker/sanitize-guard.js', import.meta.url));
+  const raw = [...bytes].filter(b => (b < 0x20 && b !== 0x0a && b !== 0x09) || b === 0x7f);
+  assert.deepEqual(raw, []);
+});
