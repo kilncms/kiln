@@ -29,7 +29,7 @@ import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.j
 import { initBlocks } from './blocks.js';
 import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished } from './firstrun.js';
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
-import { hasGrant, offersMakeEditable } from './grants.js';
+import { hasGrant, offersMakeEditable, helpUrl } from './grants.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
@@ -429,6 +429,14 @@ function isSuggestMode() {
 /** Whether the current editor may use a given menu feature. Admins get everything. */
 function hasFeature(feature) {
   return hasGrant({ mode, sandbox: !!cfg.sandbox, features: state.scope?.features }, feature);
+}
+
+/** The guide for whoever is signed in, and the menu's "Help" that opens it in a new tab. */
+function helpLink() {
+  return helpUrl({ mode, sandbox: !!cfg.sandbox, role: state.scope?.role || null });
+}
+function openHelp() {
+  window.open(helpLink(), '_blank', 'noopener');
 }
 
 /** The two structure tools: granted, on a page this person can write, by someone who publishes. */
@@ -5102,6 +5110,7 @@ function renderAdminBar() {
         ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-fab-item">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}
         ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
         <button id="kiln-settings" class="kiln-fab-item">Settings</button>
+        <button id="kiln-help" class="kiln-fab-item" data-href="${escapeHtml(helpLink())}" title="Opens the guide in a new tab">Help <span class="kiln-pal-kbd" aria-hidden="true">↗</span></button>
       </div>
       <div class="kiln-fab-foot">
         <button id="kiln-done" title="Hide Kiln and browse normally (stays signed in — return via the Resume button or yoursite.com/kiln)">Done editing</button>
@@ -5313,6 +5322,7 @@ function renderAdminBar() {
   fab.querySelector('#kiln-comments').onclick = close(openComments);
   const settingsBtn = fab.querySelector('#kiln-settings');
   if (settingsBtn) settingsBtn.onclick = close(settingsPanel);
+  fab.querySelector('#kiln-help').onclick = close(openHelp);
   fab.querySelector('#kiln-signout').onclick = () => {
     if (state.pending.size && !confirm('Discard your unpublished edits and sign out?')) return;
     clearSavedPending();
@@ -5389,6 +5399,7 @@ function renderTopBar() {
     <button id="kiln-comments" class="kiln-btn-ghost">💬 Comments</button>
     ${canMakeEditable() ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button>' : ''}${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-btn-ghost" title="Review suggested changes">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
     <button id="kiln-settings" class="kiln-btn-ghost">Settings</button>
+    <button id="kiln-help" class="kiln-btn-ghost" data-href="${escapeHtml(helpLink())}" title="Opens the guide in a new tab">Help</button>
     <button id="kiln-draft" class="kiln-btn-ghost" hidden>Draft</button>
     <button id="kiln-sharepreview" class="kiln-btn-ghost" hidden title="Save a draft, get a shareable link">Preview link</button>
     <button id="kiln-schedule" class="kiln-btn-ghost" hidden>Schedule</button>
@@ -5426,6 +5437,7 @@ function renderTopBar() {
   if (makeBtn) makeBtn.onclick = makeEditableMode;
   const addSecBtn = bar.querySelector('#kiln-addsection');
   if (addSecBtn) addSecBtn.onclick = addSectionFlow;
+  bar.querySelector('#kiln-help').onclick = openHelp;
   const settingsBtn = bar.querySelector('#kiln-settings');
   if (settingsBtn) settingsBtn.onclick = settingsPanel;
   applyFeatureGating();

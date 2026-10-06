@@ -12,7 +12,10 @@ const ACTIONS = [
   { id: 'kiln-newpost', label: 'New post or page' },
   { id: 'kiln-menu', label: 'Site menu' },
   { id: 'kiln-pagesettings', label: 'Page settings' },
+  { id: 'kiln-makeblock', label: 'Make text or images editable' },
+  { id: 'kiln-addsection', label: 'Add a gallery or events' },
   { id: 'kiln-settings', label: 'Settings' },
+  { id: 'kiln-help', label: 'Help' },
   { id: 'kiln-online', label: 'Who’s online' },
 ];
 

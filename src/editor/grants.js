@@ -33,3 +33,13 @@ export function offersMakeEditable(who) {
   if (who.scopeMode === 'suggest' || who.scopeMode === 'review') return false;
   return who.pageInScope !== false;
 }
+
+/**
+ * The guide "Help" opens, by who is signed in: the owner's, a member's, or the
+ * editor's (which is also the right one for a visitor trying the demo).
+ */
+export function helpUrl(who) {
+  if (who.mode === 'admin' && !who.sandbox) return 'https://kilncms.com/owners';
+  if (who.role === 'member') return 'https://kilncms.com/members';
+  return 'https://kilncms.com/editors';
+}

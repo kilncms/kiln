@@ -429,6 +429,20 @@ async function run(browser, size, firstVisit) {
     await page.waitForTimeout(700);
     check(scope, 'the guide is not shown a second time', (await guide.count()) === 0 && (await page.locator('#kiln-guide-card').count()) === 0);
   }
+  // ── Help in the menu ───────────────────────────────────────────────────────
+  if (!firstVisit) {
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    if (!(await menu.isVisible())) await press(pencil);
+    await page.waitForTimeout(300);
+    const help = page.locator('#kiln-help');
+    check(scope, 'the menu has Help, and it can be pressed', (await help.isVisible().catch(() => false)) && (await hit(help)).ok);
+    await shot('help-in-menu');
+    const popup = context.waitForEvent('page', { timeout: 3000 }).catch(() => null);
+    if (await help.count()) await press(help);
+    const tab = await popup;
+    check(scope, 'Help opens the editors\' guide in a new tab', !!tab && (await help.getAttribute('data-href')) === 'https://kilncms.com/editors', tab ? tab.url() : 'no new tab');
+    if (tab) { blocked.length = 0; await tab.close().catch(() => {}); }
+  }
   check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
   check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
   await context.close();

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
-import { hasGrant, offersMakeEditable, EDITOR_DEFAULT_FEATURES } from '../src/editor/grants.js';
+import { hasGrant, offersMakeEditable, helpUrl, EDITOR_DEFAULT_FEATURES } from '../src/editor/grants.js';
 
 const editor = (over = {}) => ({ mode: 'editor', sandbox: false, features: null, scopeMode: null, pageInScope: true, ...over });
 
@@ -46,4 +46,17 @@ test('grants: both menus draw the two tools from the grant, not from being the o
   assert.ok(main.includes("'kiln-makeblock': 'makeeditable', 'kiln-addsection': 'makeeditable'"));
   const worker = readFileSync(new URL('../worker/index.js', import.meta.url), 'utf8');
   assert.match(worker, /GRANTABLE_FEATURES = \[[^\]]*'makeeditable'/);
+});
+
+test('help: the menu opens the guide for whoever is signed in, in a new tab', () => {
+  assert.equal(helpUrl({ mode: 'admin', sandbox: false }), 'https://kilncms.com/owners');
+  assert.equal(helpUrl({ mode: 'editor', sandbox: false, role: 'editor' }), 'https://kilncms.com/editors');
+  assert.equal(helpUrl({ mode: 'editor', sandbox: false, role: null }), 'https://kilncms.com/editors');
+  assert.equal(helpUrl({ mode: 'editor', sandbox: false, role: 'member' }), 'https://kilncms.com/members');
+  assert.equal(helpUrl({ mode: 'editor', sandbox: true }), 'https://kilncms.com/editors', 'a visitor trying the demo is editing');
+  const main = readFileSync(new URL('../src/editor/main.js', import.meta.url), 'utf8');
+  assert.equal(main.split('\n').filter(l => l.includes('<button id="kiln-help"')).length, 2, 'in the pencil menu and in the top bar');
+  assert.ok(main.includes("window.open(helpLink(), '_blank', 'noopener')"), 'a new tab that cannot reach back into the editor');
+  const palette = readFileSync(new URL('../src/editor/palette.js', import.meta.url), 'utf8');
+  for (const id of ['kiln-help', 'kiln-makeblock', 'kiln-addsection']) assert.ok(palette.includes(`{ id: '${id}'`), `${id} can be found from Search`);
 });
