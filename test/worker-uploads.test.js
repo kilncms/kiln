@@ -232,8 +232,8 @@ test('KLN-01 git/trees: a refused type or a symlink is turned away before the tr
     // What the editor really sends — pages and images as regular files — passes.
     const fine = await tree([{ path: 'index.html', mode: '100644', type: 'blob', sha: 'b1' }, { path: 'assets/uploads/a.webp', mode: '100644', type: 'blob', sha: 'b2' }]);
     assert.equal(fine.status, 201);
-    // Removing a file (sha: null) carries nothing to judge here.
-    assert.equal((await tree([{ path: 'old.html', mode: '100644', type: 'blob', sha: null }])).status, 201);
+    // Removing a file (sha: null) is not something an editor session does.
+    assert.equal((await tree([{ path: 'old.html', mode: '100644', type: 'blob', sha: null }])).json.code, 'no_delete');
   });
 });
 

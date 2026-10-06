@@ -2284,11 +2284,14 @@ async function ghProxy(request, env, ghPath) {
     if (tree.some(e => e && (!e.path || !pathInScope(e.path, sess.paths)))) {
       return json({ error: 'outside your editing scope' }, 403);
     }
+    // No deletes: a `sha: null` entry removes the file at that path.
+    const gone = tree.find(e => e && e.sha === null);
+    if (gone) return json({ error: NO_DELETE_MESSAGE, code: 'no_delete', path: gone.path }, 403);
     // Same file-type gate as a direct write, as early as the path is known.
-    // (`sha: null` removes a file and carries nothing to judge.) Only regular
-    // files: a symlink would let an allowed name serve another file's bytes.
+    // Only regular files: a symlink would let an allowed name serve another
+    // file's bytes.
     for (const e of tree) {
-      if (!e || e.sha === null) continue;
+      if (!e) continue;
       if (!REGULAR_FILE_MODES.includes(String(e.mode))) return json({ error: 'editors may only commit regular files', path: e.path }, 403);
       const unfit = uploadProblem(e.path, typeof e.content === 'string' ? { size: new TextEncoder().encode(e.content).length } : undefined);
       if (unfit) return json({ error: unfit.error, code: unfit.code, path: e.path }, unfit.status);
@@ -2342,6 +2345,10 @@ async function ghProxy(request, env, ghPath) {
   const res = await fetch(`${GH}${ghPath}`, { method: request.method, headers, body });
   return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'application/json' } });
 }
+
+// An editor session changes and adds files; it never removes one. Removing a
+// page or a picture is the owner's call, made in the repository.
+const NO_DELETE_MESSAGE = 'editors cannot delete files';
 
 // The author every commit made through an editor session carries. The
 // committer stays the Kiln bot.
@@ -2463,6 +2470,11 @@ async function commitDiffInScope(env, itok, sess, bodyText) {
     for (const p of changed) {
       if (isSensitivePath(p)) return json({ error: 'commit touches a forbidden path', path: p }, 403);
       if (!pathInScope(p, sess.paths)) return json({ error: 'commit touches a path outside your scope', path: p }, 403);
+    }
+    // No deletes, however the tree was built: a `sha: null` entry, or a tree
+    // sent without its base so that every file it leaves out is gone.
+    for (const p of before.keys()) {
+      if (!after.has(p)) return json({ error: NO_DELETE_MESSAGE, code: 'no_delete', path: p }, 403);
     }
     // File-type gate on the git-data path (staged uploads, new posts, any
     // multi-file commit): every file this commit adds or changes must be a

@@ -296,3 +296,69 @@ test('S1 new ref: only branches and tags, with a full sha; fails closed when Git
     assert.equal(refWrites(calls).length, 0);
   });
 });
+
+// ─── S2 · no deletes ─────────────────────────────────────────────────────────
+
+const postTree = (env, tree, extra = {}) => call(env, 'POST', `/gh/repos/${REPO}/git/trees`, { body: { tree, ...extra } });
+const postCommit = (env, tree, parent) => call(env, 'POST', `/gh/repos/${REPO}/git/commits`, { body: { message: 'x', tree, parents: [parent] } });
+
+test('S2 git/trees: an entry with sha null (delete this file) is refused for an editor, in scope or not', async () => {
+  const { r } = site();
+  await withFetch(r.handler, async (calls) => {
+    for (const paths of [[''], ['blog/']]) {
+      const res = await postTree(editorEnv({ paths }), [{ path: 'blog/a.html', mode: '100644', type: 'blob', sha: null }], { base_tree: sha('e1') });
+      assert.equal(res.status, 403);
+      assert.equal(res.json.code, 'no_delete');
+      assert.equal(res.json.path, 'blog/a.html');
+    }
+    // Riding along with a real change does not help.
+    const mixed = await postTree(editorEnv(), [
+      { path: 'blog/b.html', mode: '100644', type: 'blob', content: PAGE },
+      { path: 'blog/a.html', mode: '100644', type: 'blob', sha: null },
+    ]);
+    assert.equal(mixed.status, 403);
+    assert.equal(githubWrites(calls).length, 0, 'no tree is created');
+  });
+});
+
+test('S2 git/commits: a commit that removes a file is refused, however its tree was built', async () => {
+  const { r, base, files } = site();
+  // One file removed (what a sha:null entry produces).
+  const { 'blog/a.html': _gone, ...without } = files;
+  const one = r.commit(without, [base]);
+  // A tree sent without base_tree: only the new file is left, everything else is gone.
+  const wipe = r.commit({ 'blog/new.html': PAGE }, [base]);
+  await withFetch(r.handler, async (calls) => {
+    const a = await postCommit(editorEnv(), r.commits.get(one).tree, base);
+    assert.equal(a.status, 403);
+    assert.equal(a.json.code, 'no_delete');
+    assert.equal(a.json.path, 'blog/a.html');
+    const b = await postCommit(editorEnv(), r.commits.get(wipe).tree, base);
+    assert.equal(b.status, 403);
+    assert.equal(b.json.code, 'no_delete');
+    assert.equal(githubWrites(calls).length, 0, 'no commit is made');
+  });
+});
+
+test('S2 ref update: a commit made elsewhere that removes a file cannot be published either', async () => {
+  const { r, base, files } = site();
+  const { 'blog/a.html': _gone, ...without } = files;
+  const next = r.commit(without, [base]);
+  await withFetch(r.handler, async (calls) => {
+    const res = await move(editorEnv(), 'main', { sha: next });
+    assert.equal(res.status, 403);
+    assert.equal(res.json.code, 'no_delete');
+    assert.equal(refWrites(calls).length, 0);
+  });
+});
+
+test('S2: adding and changing files in one commit still works', async () => {
+  const { r, base, files } = site();
+  const next = r.commit({ ...files, 'blog/a.html': PAGE.replace('Hello', 'Hi'), 'blog/new.html': PAGE }, [base]);
+  await withFetch(r.handler, async () => {
+    const env = editorEnv();
+    assert.equal((await postTree(env, [{ path: 'blog/new.html', mode: '100644', type: 'blob', sha: sha('b1') }], { base_tree: sha('e1') })).status, 201);
+    assert.equal((await postCommit(env, r.commits.get(next).tree, base)).status, 201);
+    assert.equal((await move(env, 'main', { sha: next })).status, 200);
+  });
+});
