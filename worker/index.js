@@ -2306,10 +2306,17 @@ async function ghProxy(request, env, ghPath) {
   //     scoped editor can only ADVANCE the branch, never rewrite/rollback it);
   //   • commit creates: diff the proposed tree against its parent and require
   //     every changed path to be in-scope and non-sensitive.
+  //   • ref writes also name the commit that goes live, so that commit is judged
+  //     again there (refWriteCheck): a commit made somewhere else, or one that
+  //     brings another branch's history with it, never passed the check above.
   if (!sess.admin && (request.method === 'POST' || request.method === 'PATCH')
       && /\/git\/refs(\/|$)/.test(cleanPath)) {
-    // Non-JSON — the allowlist gated the route.
     if (parsedBody?.force) return json({ error: 'editors may not force-update refs' }, 403);
+    const checked = await refWriteCheck(env, itok, sess, request.method, cleanPath, parsedBody);
+    if (checked.refuse) return checked.refuse;
+    // Forward only the fields that were judged.
+    rawBody = JSON.stringify(checked.body);
+    parsedBody = checked.body;
   }
   if (!sess.admin && request.method === 'POST' && /\/git\/commits$/.test(cleanPath)) {
     const scopeErr = await commitDiffInScope(env, itok, sess, rawBody);
@@ -2328,12 +2335,94 @@ async function ghProxy(request, env, ghPath) {
     // Attribute the change to the human editor (committer stays the Kiln bot).
     // Anything that is not a JSON object passes through untouched.
     if (parsedBody && typeof parsedBody === 'object' && (ghPath.includes('/contents/') || ghPath.includes('/git/commits'))) {
-      parsedBody.author = { name: `${sess.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' };
+      parsedBody.author = editorStamp(sess);
       body = JSON.stringify(parsedBody);
     }
   }
   const res = await fetch(`${GH}${ghPath}`, { method: request.method, headers, body });
   return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'application/json' } });
+}
+
+// The author every commit made through an editor session carries. The
+// committer stays the Kiln bot.
+const EDITOR_COMMIT_EMAIL = 'kiln-editor@users.noreply.github.com';
+function editorStamp(sess) {
+  return { name: `${sess.name} (via Kiln)`, email: EDITOR_COMMIT_EMAIL };
+}
+// Names are compared by their letters and digits only: git trims punctuation
+// from the ends of a name, and that must not turn a real publish away.
+const nameLetters = (s) => String(s || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
+
+/**
+ * Judge a ref write from an editor session. A ref decides what is live, so
+ * this is where "the worker checked that commit" has to be true.
+ *
+ *   PATCH …/git/refs/heads/<branch>   the new commit must sit directly on the
+ *     branch's current head (one parent, no other history riding along), carry
+ *     the author this worker stamps on the session's commits, and pass the same
+ *     check as a commit created through the proxy: scope, file types, content.
+ *   POST …/git/refs   a new branch or tag may only point at a commit the
+ *     default branch already contains, or at the head of an existing branch.
+ *
+ * Returns { body } (the fields to forward) or { refuse: Response }.
+ * Fails CLOSED: if GitHub cannot be asked, the write does not happen.
+ */
+async function refWriteCheck(env, itok, sess, method, cleanPath, body) {
+  const refuse = (error, status = 403, extra = {}) => ({ refuse: json({ error, ...extra }, status) });
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return refuse('unreadable ref body', 400);
+  const sha = String(body.sha || '').toLowerCase();
+  if (!COMMIT_SHA_RE.test(sha)) return refuse('a ref needs a full commit sha', 400);
+  let decoded = cleanPath;
+  try { decoded = decodeURIComponent(cleanPath); } catch { /* judge raw */ }
+  const repoPath = `/repos/${sess.repo}`;
+  const gh = async (p) => {
+    const r = await fetch(`${GH}${p}`, { headers: { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+    return { ok: r.ok, status: r.status, data: r.ok ? await r.json() : null };
+  };
+  const encRef = (name) => name.split('/').map(encodeURIComponent).join('/');
+  try {
+    if (method === 'PATCH') {
+      const m = /\/git\/refs\/heads\/(.+)$/.exec(decoded);
+      if (!m) return refuse('editors may only move branches');
+      const branch = m[1];
+      const cur = await gh(`${repoPath}/git/ref/heads/${encRef(branch)}`);
+      if (!cur.ok) return cur.status === 404 ? refuse('no such branch', 404) : refuse('could not verify the branch', 502);
+      const head = String(cur.data?.object?.sha || '');
+      if (!COMMIT_SHA_RE.test(head)) return refuse('could not verify the branch', 502);
+      if (sha === head) return { body: { sha } };   // already there: nothing moves
+      const c = await gh(`${repoPath}/git/commits/${sha}`);
+      if (!c.ok) return c.status === 404 ? refuse('no such commit in this repository') : refuse('could not verify the commit', 502);
+      const parents = Array.isArray(c.data.parents) ? c.data.parents : [];
+      if (parents.length !== 1 || parents[0].sha !== head) {
+        return refuse('a branch can only move to a commit made directly on top of its current head', 403, { code: 'ref_not_direct' });
+      }
+      const stamp = editorStamp(sess);
+      if (c.data.author?.email !== stamp.email || nameLetters(c.data.author?.name) !== nameLetters(stamp.name)) {
+        return refuse('that commit was not made through this editing session', 403, { code: 'ref_foreign_commit' });
+      }
+      const bad = await commitDiffInScope(env, itok, sess, JSON.stringify({ tree: c.data.tree?.sha, parents: [head] }));
+      if (bad) return { refuse: bad };
+      return { body: { sha } };
+    }
+    // POST: create a ref.
+    const ref = typeof body.ref === 'string' ? body.ref : '';
+    if (!/^refs\/(heads|tags)\/[^\s~^:?*\[\\]+$/.test(ref)) return refuse('editors may only create branches and tags', 403);
+    const repo = await gh(repoPath);
+    const base = repo.ok && typeof repo.data.default_branch === 'string' ? repo.data.default_branch : '';
+    if (!base) return refuse('could not verify the repository', 502);
+    const cmp = await gh(`${repoPath}/compare/${sha}...${encRef(base)}`);
+    if (cmp.ok && (cmp.data.status === 'identical' || cmp.data.status === 'ahead') && cmp.data.behind_by === 0) return { body: { ref, sha } };
+    if (!cmp.ok && cmp.status !== 404) return refuse('could not verify the commit', 502);
+    // A site published from a branch other than the default one starts its
+    // drafts from that branch's head.
+    const branches = await gh(`${repoPath}/branches?per_page=100`);
+    if (!branches.ok) return refuse('could not verify the commit', 502);
+    if ((branches.data || []).some(b => b?.commit?.sha === sha)) return { body: { ref, sha } };
+    return refuse('a new branch or version must start from a commit the site already has', 403, { code: 'ref_not_ancestor' });
+  } catch (err) {
+    return refuse('could not verify the ref', 502, { detail: String(err.message || err) });
+  }
 }
 
 /**
