@@ -462,9 +462,12 @@ async function runSignedIn(browser, size, opts = {}) {
   const file = new URL(URL_ARG).pathname.replace(/^\/+/, '').replace(/(^|\/)$/, '$1index.html');
   const b64 = (text) => Buffer.from(text).toString('base64');
   const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
-  await context.addInitScript((repo) => {
-    try { localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' })); } catch { /* ignore */ }
-  }, REPO);
+  await context.addInitScript(([repo, seenGuide]) => {
+    try {
+      localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' }));
+      if (seenGuide) localStorage.setItem('kiln_guide', '1');
+    } catch { /* ignore */ }
+  }, [REPO, !!opts.features]);
   const puts = [];
   const blocked = [];
   const gitWrites = [];
@@ -522,8 +525,10 @@ async function runSignedIn(browser, size, opts = {}) {
   await page.waitForTimeout(700);
   check(scope, 'not in sandbox mode', await page.evaluate(() => !window.KILN.sandbox));
   check(scope, 'no demo banner on a real site', (await page.locator('#kiln-sandbox-banner').count()) === 0);
-  check(scope, 'no demo guide on a real site', (await page.locator('#kiln-guide, #kiln-guide-card').count()) === 0
-    && (await page.evaluate(() => localStorage.getItem('kiln_guide'))) === null);
+  const guide = page.locator('#kiln-guide');
+  if (opts.features) check(scope, 'the guide is not shown to an editor who has had it', (await guide.count()) === 0);
+  else check(scope, 'an invited editor\'s first session starts the guide at the first heading', /^(Click|Tap) this and type\.$/.test((await guide.locator('span').first().textContent().catch(() => '')) || '')
+    && (await page.evaluate(() => localStorage.getItem('kiln_guide'))) === '1');
 
   // ── the "Make things editable" grant ───────────────────────────────────────
   if (!opts.features) {
@@ -646,6 +651,17 @@ async function runSignedIn(browser, size, opts = {}) {
     check(scope, 'the commit carries the edit', Buffer.from(puts[0].content, 'base64').toString().includes(' Hello'));
   }
   check(scope, 'Publish goes away once there is nothing unpublished', (await page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).count()) === 0);
+  {
+    const card = page.locator('#kiln-guide-card');
+    const text = (await card.count()) ? (await card.innerText()).replace(/\s+/g, ' ') : '';
+    check(scope, 'the guide ends by saying what happened, in an editor\'s words', /^That is published Your change is saved to the site/.test(text) && !/Git|GitHub|Put Kiln on my site/.test(text), text.slice(0, 90));
+    const link = card.getByRole('link', { name: 'Read the guide' });
+    check(scope, 'it links to the editors\' guide', (await link.count()) === 1 && (await link.getAttribute('href')) === 'https://kilncms.com/editors');
+    await shot('editor-guide-3');
+    if (await card.count()) await press(card.getByRole('button', { name: 'Got it' }));
+    await page.waitForTimeout(200);
+    check(scope, '"Got it" closes the guide', (await card.count()) === 0 && (await guide.count()) === 0);
+  }
 
   // ── Undo after publishing ──────────────────────────────────────────────────
   const undoBtn = status.locator('.kiln-status-act');

@@ -27,7 +27,7 @@ import { initTheme, openThemePanel } from './theme.js';
 import { initComments, openComments, commentsTick } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 import { initBlocks } from './blocks.js';
-import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished } from './firstrun.js';
+import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished, guideWaiting } from './firstrun.js';
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { hasGrant, offersMakeEditable, helpUrl } from './grants.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
@@ -217,6 +217,13 @@ async function init() {
   startPresence();
   initComments(cfg, mode, state, workerAuthHeaders, modal, setStatus, hasFeature, KILN_CHROME);
   bootBlocks();
+  // An invited editor's first session: the same three steps the demo shows,
+  // once per browser. Only for someone who can publish this page themselves.
+  if (mode === 'editor' && !isSuggestMode() && state.scope?.mode !== 'review' && pageInScope()) {
+    initGuide({ cfg, audience: 'editor', mobileMq: MOBILE_MQ, guideUrl: helpLink(),
+      unpublished: () => state.pending.size + state.pendingSource.size + state.pendingBinaries.size + state.pendingStructural.length,
+      publishButton: () => document.getElementById('kiln-pubsheet-go') || document.getElementById('kiln-publish-quick') || document.getElementById('kiln-publish') });
+  }
   // Owner-only: quietly check whether a newer editor build exists.
   if (mode === 'admin' && !cfg.sandbox) checkForUpdate();
 
@@ -2189,6 +2196,9 @@ async function publish(opts = {}) {
   // Empty: every commit keeps the message it has always had.
   const noteMsg = noteMessage(opts.note);
   if (cfg.sandbox) return publishSandbox(noteMsg);
+  // An invited editor's first publish ends the first-session guide: note what
+  // changed now, while the edits are still staged.
+  const told = guideWaiting() ? describePublish() : null;
   // Suggest-mode editors don't publish — their Publish proposes. (The worker's
   // proxy guard enforces this server-side; the reroute here is the good UX.)
   // Source edits aren't pre-blocked client-side: /source/commit answers suggest
@@ -2358,6 +2368,7 @@ async function publish(opts = {}) {
     // files) and source files go through History instead.
     const canUndo = result && !result.unchanged && result.commit?.sha && textBefore !== null && !partialEdits.length && !hadSource;
     if (canUndo) offerUndo({ ...record, before: textBefore, after: result.text, sha: result.commit.sha });
+    if (told && result && !result.unchanged) guidePublished(told);
     watchDeploy(result?.commit?.sha, result?.text);
     // A mixed publish (page edits + source-file edits from the same screen):
     // commit the source half now, sequentially, with its own §11 states.
