@@ -38,6 +38,7 @@ import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessa
 import { draftRecord, readDraft, draftHolds, TYPED } from './saved-edits.js';
 import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
+import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -57,6 +58,9 @@ const MOBILE_MQ = '(max-width: 700px), (pointer: coarse) and (max-width: 820px)'
 function isMobileEditor() { return window.matchMedia(MOBILE_MQ).matches; }
 // True once the pencil and the status line exist (declared up here for the same reason).
 let chromeDrawn = false;
+// Fields that already have their click handler. A list that is written again
+// keeps the blocks it had (keep-blocks.js), and those must not get a second one.
+const decorated = new WeakSet();
 // True once the person has pressed "Sign in again": the page is about to be left on purpose.
 let leavingToSignIn = false;
 // What a request found out about the sign-in, once one has found it ended; null until then.
@@ -134,6 +138,14 @@ function pushUndoEntry(entry) {
   editHistory.undo.push(entry);
   if (editHistory.undo.length > 100) editHistory.undo.shift();
   editHistory.redo.length = 0;
+  updateUndoUi();
+}
+
+/** A publish, a draft, a schedule or a suggestion is a boundary: Undo does not reach back past it. */
+function forgetEditHistory() {
+  editHistory.undo.length = 0;
+  editHistory.redo.length = 0;
+  forgetBlocks();
   updateUndoUi();
 }
 
@@ -963,6 +975,8 @@ function inlineImgPopover(img) {
 
 function decorateField(el, key) {
   if (el.hasAttribute(SOURCE_ATTR)) return;   // §4.3: data-kiln-source wins, on every decorate path
+  if (decorated.has(el)) return;
+  decorated.add(el);
   el.classList.add('kiln-field');
   el.title = `Edit: ${key}`;
   // Seed the undo baseline with the pre-edit state (first decoration wins;
@@ -1126,6 +1140,7 @@ function attachItemControls(container, key, item) {
     if (realSiblings().length <= 1) { setStatus('Keep at least one block (edit it instead)', 'error'); return; }
     if (!confirm('Remove this block? (You can still Cancel by leaving without publishing.)')) return;
     item.remove();
+    keepAside(container, item);   // Undo puts this very block back
     stageContainer(container, key);
   };
   // Phones: five thumb-sized buttons on every card buries the page under
@@ -1432,7 +1447,11 @@ function eventForm(container, key, item) {
 /** A repeat container's content with every Kiln editing artifact stripped —
  *  the exact HTML that staging/publishing would write for it. */
 function containerCleanHtml(container) {
-  const clone = container.cloneNode(true);
+  return cleanBlocks(container.cloneNode(true));
+}
+
+/** The same, on a detached copy, in place. */
+function cleanBlocks(clone) {
   clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, #kiln-toolbar, .kiln-repeat-add').forEach(n => n.remove());
   clone.querySelectorAll('[contenteditable]').forEach(n => n.removeAttribute('contenteditable'));
   clone.querySelectorAll('.kiln-field, .kiln-editing, .kiln-modified, .kiln-repeat-item, .kiln-row-editing, .kiln-flash, .kiln-dragging').forEach(n => {
@@ -1448,6 +1467,12 @@ function containerCleanHtml(container) {
     img.removeAttribute('data-kiln-src');
   });
   return clone;
+}
+
+/** A detached copy of a list, left the way its HTML is staged: cleaned, then sanitized. */
+function tidyBlocks(box) {
+  cleanBlocks(box);
+  DOMPurify.sanitize(box, { ...CONTAINER_SANITIZE, IN_PLACE: true });
 }
 
 function stageContainer(container, key) {
@@ -1560,7 +1585,9 @@ function applyKeyDom(key, html) {
   const esc = CSS.escape(key);
   const rep = document.querySelector(`[data-cms-repeat="${esc}"]`);
   if (rep) {
-    rep.innerHTML = html;
+    // Not innerHTML: the blocks that are already there stay the elements they
+    // are, with what the site's own scripts did to them (keep-blocks.js).
+    writeBlocks(rep, html, tidyBlocks);
     setupRepeat(rep, key);
     rep.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
     return rep;
@@ -2335,9 +2362,7 @@ function flattenPending() {
 function retireStaged() {
   state.pending.clear();
   clearSavedPending();
-  editHistory.undo.length = 0;
-  editHistory.redo.length = 0;
-  updateUndoUi();
+  forgetEditHistory();
   document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
   // Source edits never ride a schedule/suggestion — any still pending keep
   // their modified markers (the blanket sweep above just removed them).
@@ -2703,9 +2728,7 @@ async function publish(opts = {}) {
     // Undo/redo operate on STAGED changes. Once published, those entries would
     // desync the page from the now-live site (⌘Z would revert the DOM but stage
     // nothing), so retire the history at the publish boundary.
-    editHistory.undo.length = 0;
-    editHistory.redo.length = 0;
-    updateUndoUi();
+    forgetEditHistory();
     await loadPageSource();
     refreshPublishButton();
     // Don't let a fully-skipped edit report success silently — tell the user it's
@@ -3166,9 +3189,7 @@ async function publishSource(note = '') {
   if (anyOk) {
     // Same publish-boundary rule as the HTML flow: committed edits must not be
     // ⌘Z-able back into the stage.
-    editHistory.undo.length = 0;
-    editHistory.redo.length = 0;
-    updateUndoUi();
+    forgetEditHistory();
   }
   refreshPublishButton();
   if (!committed.length) {
@@ -3332,7 +3353,10 @@ function applySandboxEdits(edits) {
     let el = null;
     try { el = document.querySelector('[data-cms="' + key + '"], [data-cms-repeat="' + key + '"], [data-cms-menu="' + key + '"]'); } catch { el = null; }
     if (!el) continue;
-    if (v.html !== undefined) el.innerHTML = v.html;
+    if (v.html !== undefined) {
+      if (el.getAttribute('data-cms-repeat') === key) writeBlocks(el, v.html, tidyBlocks);
+      else el.innerHTML = v.html;
+    }
     if (v.attrs) for (const a in v.attrs) el.setAttribute(a, v.attrs[a]);
   }
 }
@@ -3432,9 +3456,7 @@ function publishSandbox(noteMsg = '') {
     if (v.html !== undefined) state.undoBase.set(key, v.html);
     if (v.attrs) state.undoBaseAttrs.set(key, { ...(state.undoBaseAttrs.get(key) || {}), ...v.attrs });
   }
-  editHistory.undo.length = 0;
-  editHistory.redo.length = 0;
-  updateUndoUi();
+  forgetEditHistory();
   document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
   refreshPublishButton();
   offerUndo(record);
@@ -4810,9 +4832,7 @@ async function saveDraft() {
     // Retire undo history at the draft boundary too: the edits now live in the
     // draft branch, so ⌘Z would revert the DOM while the draft still carries them
     // (and redo would re-stage an already-saved edit for a second commit).
-    editHistory.undo.length = 0;
-    editHistory.redo.length = 0;
-    updateUndoUi();
+    forgetEditHistory();
     document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
     refreshPublishButton();
     setStatus('Draft saved ✓ — nothing is live; resume it any time from this page', 'saved');
@@ -4854,7 +4874,7 @@ async function checkForDraft() {
         applied++;
       } else if (liveF?.kind === 'repeat' || el?.hasAttribute('data-cms-repeat')) {
         const cont = document.querySelector(`[data-cms-repeat="${CSS.escape(key)}"]`);
-        if (cont) { cont.innerHTML = value; setupRepeat(cont, key); cont.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms'))); stagePending(key, { html: value }); applied++; }
+        if (cont) { applyKeyDom(key, value); stagePending(key, { html: value }); applied++; }
       }
     }
     refreshPublishButton();

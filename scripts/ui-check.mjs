@@ -4,7 +4,7 @@
  * editing: can a person find what is editable, make an edit, and publish it,
  * with none of Kiln's own interface sitting on top of another part of it.
  *
- *   node scripts/ui-check.mjs http://localhost:8774/ [--shots <dir>]
+ *   node scripts/ui-check.mjs http://localhost:8774/ [--shots <dir>] [--only <pass>]
  *
  * The URL is a locally served site in sandbox mode (`sandbox: true` in its
  * kiln-config.js), with the bundles from dist/ copied into its assets. Nothing
@@ -15,6 +15,9 @@
  * Then once more at 1440 and 390 as a signed-in editor on a real (not sandbox)
  * site, with the worker played by this script: the demo-only parts must be
  * absent, Publish must send the commit, and a refused upload must say why.
+ * In sandbox mode again, the safety net: in each list a block is removed,
+ * added, moved and duplicated, and after each Undo and Redo every block must
+ * be there to be seen, the same elements as before.
  * Both passes go through the publish sheet (open it, drop one edit, publish)
  * and press Undo; the signed-in pass also has someone else publish in between.
  * A last pass has the worker end the editor's sign-in: on page load the page
@@ -29,7 +32,8 @@
  * keep what was typed on screen, and bring back what the saved copy holds.
  * A sign-in that ran out by the browser's own clock must be said once.
  * Exits non-zero if any check fails. `--shots <dir>` also saves a screenshot
- * of each step as <step>-<width>.png.
+ * of each step as <step>-<width>.png. `--only <pass>` runs the passes whose
+ * name has that word in it ("safety net", "signed in", "ended elsewhere"…).
  *
  * Playwright is not a dependency of this repo. Point PLAYWRIGHT_DIR at any
  * installed copy of the `playwright` package (with its Chromium downloaded).
@@ -45,9 +49,11 @@ const PLAYWRIGHT_DIR = process.env.PLAYWRIGHT_DIR || 'playwright';
 const args = process.argv.slice(2);
 const shotsAt = args.indexOf('--shots');
 const SHOTS = shotsAt !== -1 ? args[shotsAt + 1] : null;
-const URL_ARG = args.find((a, i) => !a.startsWith('--') && (shotsAt === -1 || i !== shotsAt + 1));
+const onlyAt = args.indexOf('--only');
+const ONLY = onlyAt !== -1 ? args[onlyAt + 1] : '';
+const URL_ARG = args.find((a, i) => !a.startsWith('--') && (shotsAt === -1 || i !== shotsAt + 1) && (onlyAt === -1 || i !== onlyAt + 1));
 if (!URL_ARG) {
-  console.error('usage: node scripts/ui-check.mjs <url of a locally served sandbox site> [--shots <dir>]');
+  console.error('usage: node scripts/ui-check.mjs <url of a locally served sandbox site> [--shots <dir>] [--only <pass>]');
   process.exit(2);
 }
 let chromium;
@@ -479,6 +485,113 @@ async function run(browser, size, firstVisit) {
     check(scope, 'Help opens the editors\' guide in a new tab', !!tab && (await help.getAttribute('data-href')) === 'https://kilncms.com/editors', tab ? tab.url() : 'no new tab');
     if (tab) { blocked.length = 0; await tab.close().catch(() => {}); }
   }
+  check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+  check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
+  await context.close();
+}
+
+/**
+ * The safety net, in sandbox mode: what a person tries right after a first
+ * edit. Lists first: remove, add, reorder and duplicate a block, and after
+ * each press Undo and then Redo. Every block of the list must be there to be
+ * SEEN each time (a site that fades its blocks in on scroll hides any block
+ * that is written to the page as a new element), and the blocks that were on
+ * the page must still be the same elements.
+ */
+async function runSafetyNet(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} safety net  `;
+  const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone, reducedMotion: 'no-preference' });
+  const blocked = [];
+  await context.route('**/*', (route) => {
+    const u = route.request().url();
+    if (u.startsWith(ORIGIN) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
+    blocked.push(u);
+    return route.abort();
+  });
+  await context.addInitScript(() => { try { localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  const boxes = [];   // the browser's own confirm / alert boxes
+  page.on('dialog', async (d) => { boxes.push(d.message()); await d.accept().catch(() => {}); });
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+  const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+  const undo = page.locator('#kiln-undo-btn'), redo = page.locator('#kiln-redo-btn');
+  const opened = [];   // tabs a click opened
+  context.on('page', (p) => { if (p !== page) { opened.push(p.url()); p.close().catch(() => {}); } });
+  await page.goto(URL_ARG, { waitUntil: 'load' });
+  await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+  await page.waitForTimeout(500);
+
+  // ── lists: Undo and Redo after remove, add, reorder, duplicate ─────────────
+  const keys = await page.evaluate(() => [...document.querySelectorAll('[data-cms-repeat]:not([data-kiln-gallery]):not([data-kiln-events])')]
+    .filter(l => l.querySelectorAll(':scope > .kiln-repeat-item').length >= 3).map(l => l.getAttribute('data-cms-repeat')).slice(0, 2));
+  check(scope, 'the page has a list of three or more blocks to check', keys.length > 0);
+  const blocksOf = (key) => `[data-cms-repeat="${key}"] > .kiln-repeat-item`;
+  /** Bring every block of a list through the screen, then say what a person can see of each. */
+  const look = async (key) => {
+    const n = await page.locator(blocksOf(key)).count();
+    for (let i = 0; i < n; i += 2) {
+      await page.evaluate(([q, at]) => document.querySelectorAll(q)[at]?.scrollIntoView({ block: 'center', behavior: 'instant' }), [blocksOf(key), i]);
+      await page.waitForTimeout(70);
+    }
+    await page.waitForTimeout(950);   // a fade-in has finished
+    return page.evaluate((q) => [...document.querySelectorAll(q)].map((el) => {
+      const cs = getComputedStyle(el);
+      return { seen: cs.opacity === '1' && cs.visibility !== 'hidden' && el.getBoundingClientRect().height > 0,
+        mark: el.__uiCheck ?? null, bars: el.querySelectorAll(':scope > .kiln-item-ctl, :scope > .kiln-ctl-cell').length };
+    }), blocksOf(key));
+  };
+  const allSeen = (list) => list.every(b => b.seen);
+  const told = (list) => `${list.filter(b => b.seen).length} of ${list.length} can be seen`;
+  for (const key of keys) {
+    const list = page.locator(`[data-cms-repeat="${key}"]`);
+    const second = list.locator(':scope > .kiln-repeat-item').nth(1);
+    const start = await look(key);
+    check(scope, `list "${key}": every block can be seen to begin with`, allSeen(start), told(start));
+    const bar = async (title) => {
+      await second.scrollIntoViewIfNeeded();
+      if (phone) { await second.locator('.kiln-ctl-more').tap(); await page.waitForTimeout(250); } else { await second.hover(); await page.waitForTimeout(250); }
+      await press(second.locator(`button[title="${title}"]`));
+      await page.waitForTimeout(400);
+    };
+    const changes = {
+      remove: () => bar('Remove this block'),
+      add: async () => { const add = page.locator(`.kiln-repeat-add[data-kiln-add="${key}"]`).first(); await add.scrollIntoViewIfNeeded(); await press(add); await page.waitForTimeout(500); },
+      reorder: () => bar('Move down'),
+      duplicate: () => bar('Duplicate this block'),
+    };
+    for (const [what, change] of Object.entries(changes)) {
+      // mark the elements that are the list now
+      await page.evaluate((q) => document.querySelectorAll(q).forEach((el, i) => { el.__uiCheck = i; }), blocksOf(key));
+      const order = (l) => l.map(b => b.mark).join(',');
+      const before = await look(key);
+      await change();
+      const changed = await page.locator(blocksOf(key)).count();
+      check(scope, `list "${key}", ${what}: the change is made`, what === 'reorder' ? order(await look(key)) !== order(before) : changed === before.length + (what === 'remove' ? -1 : 1), `${before.length} -> ${changed}`);
+      // Undo: with the button, and the second time round with the keyboard (laptop)
+      await press(undo);
+      await page.waitForTimeout(700);
+      let now = await look(key);
+      check(scope, `list "${key}", ${what}, Undo: the list is as it was and every block can be seen`, now.length === before.length && allSeen(now) && order(now) === order(before), `${told(now)}; ${order(now)}`);
+      check(scope, `list "${key}", ${what}, Undo: every block has its controls, once`, now.every(b => b.bars === 1));
+      if (what === 'remove') await shot(`list-undo-remove-${key}`);
+      await press(redo);
+      await page.waitForTimeout(700);
+      now = await look(key);
+      check(scope, `list "${key}", ${what}, Redo: the change is back and every block can be seen`, now.length === changed && allSeen(now) && now.every(b => b.bars === 1), told(now));
+      if (phone) await press(undo);
+      else { await page.mouse.click(3, size.height / 2); await page.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z'); }
+      await page.waitForTimeout(700);
+      now = await look(key);
+      check(scope, `list "${key}", ${what}, Undo ${phone ? 'again' : 'from the keyboard'}: back as it was, every block seen`, now.length === before.length && allSeen(now) && order(now) === order(before), `${told(now)}; ${order(now)}`);
+    }
+  }
+  check(scope, 'with every change undone, nothing is unpublished', (await page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).count()) === 0);
+  // a block that is itself a link (a card that opens its page) is not followed when one of its buttons is pressed
+  check(scope, 'pressing a block\'s buttons opened no other page', opened.length === 0 && blocked.length === 0 && page.url() === URL_ARG, [...opened, ...blocked].slice(0, 2).join(', '));
+
   check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
   check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
   await context.close();
@@ -1579,6 +1692,7 @@ async function runSignInEverywhere(browser, size) {
 
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
+  if (ONLY && !label.includes(ONLY)) return;
   try { await fn(); } catch (err) { check(label, 'ran to the end', false, String(err.message || err).split('\n')[0].slice(0, 220)); }
 };
 try {
@@ -1587,6 +1701,8 @@ try {
       await guarded(`${size.width}x${size.height} ${firstVisit ? 'first visit ' : 'returning   '}`, () => run(browser, size, firstVisit));
     }
   }
+  // what a person tries after a first edit: Undo in a list, and the rest of the safety net
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} safety net  `, () => runSafetyNet(browser, size));
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
   // an invited editor granted "Make things editable" on top of the defaults
   await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
