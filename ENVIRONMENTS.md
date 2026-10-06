@@ -110,8 +110,28 @@ Wired in `worker/wrangler.toml` under `[env.staging]`:
 
 ```bash
 node scripts/e2e.mjs --smoke          # 12 checks that write nothing; needs no setup
-KILN_E2E_REPO=<owner>/kiln-e2e GH_TOKEN=$(gh auth token) node scripts/e2e.mjs
+KILN_E2E_REPO=<owner>/kiln-e2e GH_TOKEN=$(gh auth token) node scripts/e2e.mjs                # a plain-HTML site
+KILN_E2E_REPO=<owner>/kiln-e2e-astro GH_TOKEN=$(gh auth token) node scripts/e2e-source.mjs   # a site Astro builds (source mode)
 ```
+
+`e2e-source.mjs` is the same idea for source mode: it publishes two fields of
+one content file through `/source/commit`, checks on GitHub that this was one
+commit by the editor touching only that file and that exactly the two edited
+lines changed, tries what must be refused (text in the page template, a file
+outside the editor's folders, the site's configuration, a delete, script
+markup, a value of the wrong type, a suggest-only editor), undoes the change
+with `/source/revert`, and puts the repository back. Its test repository must
+be a source-mode site: content files with `title` and `venue`, and a
+`kiln-config.js` that says `mode: 'source', adapter: 'astro'`.
+
+Both scripts make their editor sessions by writing to the staging KV with
+wrangler. If wrangler's browser sign-in is refused that write ("Authentication
+error [code: 10000]"; it can read the namespace and still not be allowed to
+write it), give wrangler a credential that may: `CLOUDFLARE_API_TOKEN` (a token
+with "Workers KV Storage: Edit") and `CLOUDFLARE_ACCOUNT_ID`, or
+`CLOUDFLARE_API_KEY`, `CLOUDFLARE_EMAIL` and `CLOUDFLARE_ACCOUNT_ID`, in the
+environment of the command. Staging allows 20 requests a minute from one
+address; the scripts wait and retry when told to slow down.
 
 The full run makes three editor sessions that last 15 minutes (default tools;
 New page and Theme granted; suggest-only), by writing them into the staging KV
