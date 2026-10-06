@@ -7,6 +7,7 @@
  *   npx github:kilncms/kiln update     refresh the on-page editor to the latest
  *   npx github:kilncms/kiln add-site   add this site to Kiln Cloud (hosted tier)
  *   npx github:kilncms/kiln rescue <url>  copy your builder-hosted site to clean, Kiln-ready static HTML
+ *   npx github:kilncms/kiln rescue <url> --render   the same for a site drawn by JavaScript (Lovable, v0, Bolt)
  *   npx github:kilncms/kiln new [dir]  start a fresh site from a template repo (default: the Kiln demo)
  *
  * The wizard automates everything that CAN be automated (repo, worker, KV,
@@ -977,7 +978,7 @@ async function addSiteCloud() {
 
 const [, , cmd, ...rest] = process.argv;
 // Flags accept --flag=value AND --flag value; bare flags become true.
-const VALUE_FLAGS = new Set(['site', 'repo', 'worker', 'from', 'name', 'out', 'delay']);
+const VALUE_FLAGS = new Set(['site', 'repo', 'worker', 'from', 'name', 'out', 'delay', 'max-pages', 'browser']);
 const args = {};
 const positional = [];
 for (let i = 0; i < rest.length; i++) {

@@ -1,0 +1,1 @@
+{ "name": "fake-playwright", "private": true, "main": "index.js", "type": "commonjs" }
