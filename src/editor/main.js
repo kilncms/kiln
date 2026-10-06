@@ -41,6 +41,7 @@ import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { plainName, readableName } from './names.js';
+import { linkDialogCopy, LINK_NEEDS_WORDS } from './link-dialog.js';
 import { demoSays, demoShort, DEMO_DRAFT_SAVED, DEMO_HISTORY_EMPTY, DEMO_HISTORY_NOTE,
   historyEntry, withEntry, undoChanges, goBackChanges, partVersions, hasPublished } from './tryout.js';
 
@@ -920,7 +921,7 @@ function decorateFields() {
   // the staged-upload map).
   document.addEventListener('click', (e) => {
     if (state.active && !state.active.contains(e.target)
-      && !e.target.closest('#kiln-toolbar, #kiln-imgpop, #kiln-ai-menu, .kiln-img-handle')) {
+      && !e.target.closest('#kiln-toolbar, #kiln-imgpop, #kiln-ai-menu, .kiln-img-handle, .kiln-keeps-edit')) {
       commitEdit(state.active, state.active.getAttribute('data-cms'));
     }
   });
@@ -6262,8 +6263,8 @@ function renderToolbar(el, key) {
       e.stopPropagation();
       const cmd = btn.dataset.cmd;
       if (cmd === 'link') {
-        const url = window.prompt('Link to (URL or /page):', 'https://');
-        if (url) document.execCommand('createLink', false, url);
+        linkDialog(el);
+        return;   // the dialog hands the cursor back itself, with the selection as it was
       } else if (cmd === 'img') {
         insertInlineImage(el);
       } else if (cmd === 'doc') {
@@ -6325,6 +6326,60 @@ function renderToolbar(el, key) {
   }
   tb.querySelector('.kiln-tb-save').onclick = (e) => { e.stopPropagation(); commitEdit(el, key); };
   tb.querySelector('.kiln-tb-cancel').onclick = (e) => { e.stopPropagation(); cancelEditing(); };
+}
+
+/**
+ * The toolbar's link button: the editor's own dialog, where the browser's
+ * box used to ask (link-dialog.js says what it reads and what an address may
+ * be, which is what it always was). The edit stays open underneath: when the
+ * dialog goes, by any way out, the cursor is back in the field with the
+ * selection as it was, and only then is the link made, changed or taken off.
+ */
+function linkDialog(el) {
+  const sel = window.getSelection();
+  const range = sel.rangeCount && el.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
+  // The link the whole selection is inside, if there is one (never the field itself, when the field is a link).
+  const node = range ? range.commonAncestorContainer : null;
+  const found = (node && node.nodeType === 1 ? node : node?.parentElement)?.closest('a');
+  const link = found && found !== el && el.contains(found) ? found : null;
+  if (!link && (!range || range.collapsed)) {
+    setStatus(LINK_NEEDS_WORDS, 'idle');
+    el.focus();
+    return;
+  }
+  const copy = linkDialogCopy(link ? link.getAttribute('href') || '' : null);
+  let then = null;   // what the chosen button does, once the dialog is away and the selection is back
+  const back = () => {
+    el.focus();
+    const s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(range);
+    then?.();
+  };
+  const m = modal(`
+    <h3>${copy.title}</h3>
+    <label>Link to
+      <input type="text" id="kiln-link-url" value="${escapeHtml(copy.value)}" placeholder="https://… or /page"
+        autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <p class="kiln-dim">A web address, or a page of this site such as /about.</p>
+    <div class="kiln-modal-actions">
+      ${copy.remove ? '<button class="kiln-btn-ghost" id="kiln-link-remove">Remove link</button>' : ''}
+      <button class="kiln-btn-ghost" data-close>Cancel</button>
+      <button class="kiln-btn-publish" id="kiln-link-go">${copy.go}</button>
+    </div>`, { onClose: back });
+  m.classList.add('kiln-keeps-edit');   // a click in here is not a click away from the field
+  const input = m.querySelector('#kiln-link-url');
+  input.select();
+  const finish = (fn) => { then = fn; m._kilnClose(); };
+  const go = () => {
+    const url = input.value;   // as typed: the field's sanitizer decides what stays, when the edit is kept
+    if (!url) { input.focus(); return; }
+    finish(() => { if (link) link.setAttribute('href', url); else document.execCommand('createLink', false, url); });
+  };
+  m.querySelector('#kiln-link-go').onclick = go;
+  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } };
+  const remove = m.querySelector('#kiln-link-remove');
+  if (remove) remove.onclick = () => finish(() => link.replaceWith(...link.childNodes));
 }
 
 function removeToolbar() {

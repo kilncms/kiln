@@ -97,7 +97,7 @@ test('try-out: the ✨ button says what it is and where it works, beside the but
   assert.match(note, /placeBy\(note, anchor\)/);
   assert.match(note, /ok\.textContent = 'Got it';/);
   // a click inside it does not end the edit the person is in the middle of
-  assert.match(main, /closest\('#kiln-toolbar, #kiln-imgpop, #kiln-ai-menu, \.kiln-img-handle'\)/);
+  assert.match(main, /closest\('#kiln-toolbar, #kiln-imgpop, #kiln-ai-menu, \.kiln-img-handle[^']*'\)/);
   // the picture's own ✨ hands over its button, so the note opens beside it
   assert.match(main, /assistAltText\(img, key, altInput, aiAltBtn\)/);
   for (const what of ['ai', 'alt']) {
