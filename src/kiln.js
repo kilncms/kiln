@@ -39,13 +39,18 @@
 
     var admin = read(ADMIN_KEY);
     var editor = read(EDITOR_KEY);
+    // A stored sign-in that ran out by this browser's clock is dropped.
+    // `over` is whose it was, so that the page can say so (below).
+    var over;
     if (admin && admin.exp && admin.exp < Date.now() && !admin.sid) {
       localStorage.removeItem(ADMIN_KEY);
       admin = null;
+      over = 'admin';
     }
     if (editor && editor.exp && editor.exp < Date.now()) {
       localStorage.removeItem(EDITOR_KEY);
       editor = null;
+      over = 'editor';
     }
 
     // Sandbox demo: auto-grant a private, local editor session so every visitor
@@ -68,16 +73,27 @@
         renderResumeButton();
         return;
       }
-      window.__KILN_MODE = admin ? 'admin' : 'editor';
-      var s = document.createElement('script');
-      s.src = scriptSrc.replace(/kiln(\.min)?\.js([?#].*)?$/, 'kiln-editor.js');
-      document.head.appendChild(s);
+      loadEditor(admin ? 'admin' : 'editor');
     } else if (onEntry) {
       // Not signed in, on /kiln → present the sign-in interface.
       renderLoginInterface();
+    } else if (over && cfg.worker) {
+      // The sign-in ran out since this person's last page. The sentence that
+      // says so is in the editor's bundle, so this script stays small: the
+      // editor is loaded to show that one card and nothing else. Once: the
+      // sign-in is no longer stored, so the next page is the plain site.
+      window.__KILN_OVER = 1;
+      loadEditor(over);
     }
     // Normal page, no session: do nothing. No button, no clutter. To edit,
     // a visitor would have to know to go to /kiln and sign in.
+  }
+
+  function loadEditor(mode) {
+    window.__KILN_MODE = mode;
+    var s = document.createElement('script');
+    s.src = scriptSrc.replace(/kiln(\.min)?\.js([?#].*)?$/, 'kiln-editor.js');
+    document.head.appendChild(s);
   }
 
   /**

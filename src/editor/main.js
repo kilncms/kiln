@@ -36,7 +36,7 @@ import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } fro
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
 import { draftRecord, readDraft, draftHolds, TYPED } from './saved-edits.js';
-import { onLoadFailure, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
+import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
 
 const cfg = window.KILN || {};
@@ -165,6 +165,14 @@ async function init() {
   if (cfg.sandbox) return initSandbox();
   if (!cfg.repo || !cfg.worker) {
     console.error('[kiln] window.KILN.repo and .worker are required');
+    return;
+  }
+  // The stored sign-in ran out by this browser's own clock, and the boot shim
+  // dropped it as this page loaded (it loads this bundle to say so, and leaves
+  // this marker). The page gets the card a sign-in the worker has ended gets,
+  // and nothing else of the editor. Once: the next page has no sign-in to drop.
+  if (window.__KILN_OVER) {
+    showNotice(endedNotice({ way: signInWay(), draft: draftWaits() }), signInAgain);
     return;
   }
   injectStyles();
@@ -448,7 +456,7 @@ const ask = makeAsk({
   fetchImpl: (url, init) => fetch(url, init),
 });
 
-const signInWay = () => (mode === 'admin' ? 'github' : 'google');
+function signInWay() { return mode === 'admin' ? 'github' : 'google'; }   // a declaration: init() uses it before this line is reached
 const stagedCounts = () => ({ edits: state.pending.size, source: state.pendingSource.size, structural: state.pendingStructural.length, files: state.pendingBinaries.size });
 
 /**
