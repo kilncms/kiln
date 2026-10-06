@@ -131,6 +131,7 @@ const el = (tag, cls, text) => {
  *   upload()                the existing file-picker upload for this image
  *   choose(image)           the person picked { url, name, ... }
  *   request(method, path)   the GitHub transport, or null when there is no repository (the demo)
+ *   stopped(err)            what a failed read means for the sign-in, as a line to show ('' when nothing)
  *   repo, branch, root, paths
  *   pageImages()            → [{ url, name, size }] pictures on this page
  * }
@@ -214,7 +215,7 @@ export function openImagePicker(deps) {
       all = list;
       draw();
     } catch (err) {
-      note.textContent = 'The list of pictures could not be read. Upload one instead, or try again in a moment.';
+      note.textContent = (deps.stopped && deps.stopped(err)) || 'The list of pictures could not be read. Upload one instead, or try again in a moment.';
     }
   };
 

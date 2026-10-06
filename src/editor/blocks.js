@@ -423,7 +423,7 @@ async function openPicker(anchor) {
   catch (err) {
     console.error('[kiln] blocks', err);
     const list = m.querySelector('#kiln-blk-list');
-    if (list) list.innerHTML = `<p class="kiln-dim">Couldn’t load the block library: ${escapeHtml(err.message)}</p>`;
+    if (list) list.innerHTML = `<p class="kiln-dim">${escapeHtml(deps.stopped(err) || `Couldn’t load the block library: ${err.message}`)}</p>`;
     return;
   }
   if (!m.isConnected) return;    // closed while loading
@@ -555,7 +555,7 @@ function renderEmptyState(m, anchor) {
     } catch (err) {
       console.error('[kiln] example block', err);
       btn.disabled = false;
-      status.textContent = `Failed: ${err.message}`;
+      status.textContent = deps.stopped(err, 'created') || `Failed: ${err.message}`;
     }
   };
 }

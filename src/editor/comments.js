@@ -11,7 +11,7 @@
  */
 
 let ready = false;
-let cfg, state, isAdmin, status, showModal, authHeaders, pagePage, chromeSel;
+let cfg, state, isAdmin, status, showModal, ask, say, stopped, pagePage, chromeSel;
 let threads = [];      // this page's threads (worker order: newest first)
 let siteTotal = null;  // open threads site-wide (null until /counts answers)
 let layer = null;      // fixed overlay holding the pins (pointer-events:none; pins opt back in)
@@ -52,16 +52,15 @@ function numOf(t, open) {
   return i < 0 ? null : open.length - i;
 }
 
-/** POST JSON {repo, …body}, or GET with ?repo&…query. Throws on non-2xx. */
-async function api(route, body, query) {
-  const res = await fetch(cfg.worker + route + (body ? '' : '?' + new URLSearchParams({ repo: cfg.repo, ...query })), {
-    method: body ? 'POST' : 'GET',
-    headers: { ...(body && { 'Content-Type': 'application/json' }), ...authHeaders() },
-    body: body && JSON.stringify({ repo: cfg.repo, ...body }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
+/**
+ * POST JSON {repo, …body}, or GET with ?repo&…query, through the editor's one
+ * way of asking the worker (main.js `ask`). Throws on non-2xx, with the
+ * answer's status and body on the error.
+ */
+function api(route, body, query) {
+  return body
+    ? ask(route, { method: 'POST', body: { repo: cfg.repo, ...body } })
+    : ask(route + '?' + new URLSearchParams({ repo: cfg.repo, ...query }));
 }
 
 function relTime(ts) {
@@ -78,13 +77,15 @@ function relTime(ts) {
 
 // ─── Boot ────────────────────────────────────────────────────────────────────
 
-export function initComments(_cfg, mode, _state, _authHeaders, _modal, _setStatus, hasFeature, kilnChrome) {
+export function initComments(_cfg, mode, _state, door, _modal, _setStatus, hasFeature, kilnChrome) {
   // Demo sandbox has no worker; editors need the grant (admins always pass).
   if (_cfg.sandbox || (mode === 'editor' && !hasFeature('comments'))) return;
   cfg = _cfg;
   state = _state;
   isAdmin = mode === 'admin';
-  authHeaders = _authHeaders;
+  // main.js's seams for a request and for a failed one: `stopped` says what an
+  // answer means (and opens the sign-in dialog), `say` puts that in the status line.
+  ({ ask, say, stopped } = door);
   showModal = _modal;
   status = _setStatus;
   chromeSel = kilnChrome;   // main's KILN_CHROME — a placement click must never pin to editor chrome
@@ -103,12 +104,16 @@ export function commentsTick() {
   if (ready) refreshCounts();
 }
 
-async function refreshThreads() {
+/** `asked`: the person opened the panel, so a failure is theirs to know about and is thrown to the caller. */
+async function refreshThreads(asked = false) {
   try {
     threads = (await api('/comments', null, { path: pagePage })).threads || [];
     renderPins();
     updateBadge();
-  } catch (err) { console.warn('[kiln]', err); }
+  } catch (err) {
+    console.warn('[kiln]', err);
+    if (asked) throw err;
+  }
 }
 
 async function refreshCounts() {
@@ -190,7 +195,11 @@ export function openComments() {
     enterPlaceMode();
   };
   renderPanel(m);
-  refreshThreads().then(() => { if (m.isConnected) renderPanel(m); });
+  refreshThreads(true).then(() => { if (m.isConnected) renderPanel(m); }).catch((err) => {
+    // The comments shown may be out of date: say why, where the count is.
+    const line = stopped(err);
+    if (line && m.isConnected) m.querySelector('#kiln-cmt-tally').textContent = line;
+  });
 }
 
 function renderPanel(m) {
@@ -237,10 +246,10 @@ function threadCard(t, num, rerender) {
   }
 
   // An action's result updates local state, then every surface it touches.
-  const act = async (el, fn) => {
+  const act = async (el, did, fn) => {
     el.disabled = true;
     try { await fn(); renderPins(); updateBadge(); rerender(); }
-    catch (err) { status(`Comment failed: ${err.message}`, 'error'); el.disabled = false; }
+    catch (err) { say(err, did, `Comment failed: ${err.message}`); el.disabled = false; }
   };
   const swap = (nt) => { threads = threads.map(x => (x.id === t.id ? nt : x)); };
 
@@ -251,20 +260,20 @@ function threadCard(t, num, rerender) {
   const send = btn('kiln-btn-ghost', 'Reply', () => {
     const text = input.value.trim();
     if (!text) { input.focus(); return; }
-    act(send, async () => swap((await api('/comments', { path: pagePage, thread: t.id, text })).thread));
+    act(send, 'posted', async () => swap((await api('/comments', { path: pagePage, thread: t.id, text })).thread));
   });
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); send.click(); } });
   reply.append(input, send);
   card.appendChild(reply);
 
   const acts = h('div', 'kiln-cmt-acts');
-  const res = btn('kiln-btn-ghost', t.status === 'open' ? 'Resolve ✓' : 'Reopen', () => act(res, async () =>
+  const res = btn('kiln-btn-ghost', t.status === 'open' ? 'Resolve ✓' : 'Reopen', () => act(res, 'changed', async () =>
     swap((await api('/comments/resolve', { path: pagePage, thread: t.id, resolved: t.status === 'open' })).thread)));
   acts.appendChild(res);
   if (isAdmin) {
     acts.appendChild(btn('kiln-btn-ghost kiln-cmt-del', 'Delete', function () {
       if (!confirm('Delete this comment thread for everyone?')) return;
-      act(this, async () => {
+      act(this, 'deleted', async () => {
         await api('/comments/delete', { path: pagePage, thread: t.id });
         threads = threads.filter(x => x.id !== t.id);
       });
@@ -410,7 +419,7 @@ function openComposer(point, anchor) {
       status('Comment posted ✓', 'saved');
     } catch (err) {
       post.disabled = false;
-      status(`Comment failed: ${err.message}`, 'error');
+      say(err, 'posted', `Comment failed: ${err.message}`);
     }
   });
   const row = h('div', 'kiln-cmt-acts');

@@ -203,6 +203,9 @@ async function loadSheets() {
       sheets.push(entry);
     } catch (err) {
       console.warn('[kiln] theme', p, err);
+      // A stylesheet that is not in the repository is skipped. An ended
+      // sign-in is not about the stylesheet: say so, and stop asking.
+      if (!cfg.sandbox && err.status === 401 && deps.stopped(err)) break;
     }
   }
   return sheets;
@@ -391,6 +394,7 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
     applyBtn.disabled = revertBtn.disabled = true;
     const notices = [];
     const failures = [];
+    let halted = '';   // what stopped() said, when the answer was about the sign-in or the way to the site
     let committed = 0;
     for (const [path, edits] of byFile) {
       status.textContent = `Committing ${path}…`;
@@ -434,6 +438,8 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
         }
       } catch (err) {
         console.error('[kiln] theme', err);
+        halted = deps.stopped(err, 'saved');
+        if (halted) break;                          // the next file would get the same answer
         failures.push(`${path}: ${err.message}`);   // its edits stay staged for a retry
       }
     }
@@ -442,8 +448,9 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
     revertBtn.disabled = false;
     const parts = committed
       ? [`Committed ${committed} token${committed > 1 ? 's' : ''} ✓ — live in about a minute.`]
-      : failures.length ? [] : ['Nothing to change.'];
+      : failures.length || halted ? [] : ['Nothing to change.'];
     parts.push(...notices);
+    if (halted) parts.push(halted);
     if (failures.length) parts.push(`Could not update ${failures.join(' · ')} — still staged.`);
     status.textContent = parts.join(' ');
     // No setStatus on success — journalAdd's first tick already narrates

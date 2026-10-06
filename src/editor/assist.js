@@ -27,22 +27,29 @@ export function initAssist(d) {
   if (!deps) deps = d;
 }
 
-/** POST to the worker; throws with .notConfigured on 501 so callers can explain. */
+/** POST to the worker (main.js `ask`); throws with .notConfigured on 501 so callers can explain. */
 async function aiRequest(body) {
-  const { cfg, workerAuthHeaders } = deps;
-  const res = await fetch(`${cfg.worker}/ai/assist`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
-    body: JSON.stringify({ repo: cfg.repo, ...body }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 501) {
-    const err = new Error('AI is not set up on this site');
-    err.notConfigured = true;
-    throw err;
+  const { cfg, ask } = deps;
+  try {
+    return await ask('/ai/assist', { method: 'POST', body: { repo: cfg.repo, ...body } });
+  } catch (err) {
+    if (err.status !== 501) throw err;
+    const none = new Error('AI is not set up on this site');
+    none.notConfigured = true;
+    throw none;
   }
-  if (!res.ok) throw new Error(data.error || `failed (${res.status})`);
-  return data;
+}
+
+/**
+ * An AI request that did not come back with a suggestion. An ended sign-in, a
+ * refusal and no answer at all are said as everywhere else in the editor. A
+ * 5xx here is the worker passing on what the AI service said (its key, its
+ * limits) in words of its own: those are shown as they are.
+ */
+function failed(err, own) {
+  const { say, setStatus } = deps;
+  if (err.status >= 500 && err.data?.error) setStatus(own, 'error');
+  else say(err, '', own);
 }
 
 /** The 501 explanation: admins get the fix, editors get who to ask. */
@@ -141,7 +148,7 @@ async function runTextAssist(el, key, kind, instruction) {
     previewModal(el, key, kind, instruction, text, data.text);
   } catch (err) {
     if (err.notConfigured) explainNotConfigured();
-    else setStatus(`AI assist failed: ${err.message}`, 'error');
+    else failed(err, `AI assist failed: ${err.message}`);
   }
 }
 
@@ -183,7 +190,7 @@ function previewModal(el, key, kind, instruction, beforeHtml, afterRaw) {
       cleanAfter = DOMPurify.sanitize(data.text, SANITIZE);
       m.querySelector('#kiln-ai-after').innerHTML = cleanAfter;
     } catch (err) {
-      setStatus(`AI assist failed: ${err.message}`, 'error');
+      failed(err, `AI assist failed: ${err.message}`);
     }
     retryBtn.disabled = false;
     retryBtn.textContent = 'Try again';
@@ -216,7 +223,7 @@ export async function assistAltText(img, key, altInput) {
     setStatus('Alt text drafted — confirm it', 'idle');
   } catch (err) {
     if (err.notConfigured) explainNotConfigured();
-    else setStatus(`Alt text failed: ${err.message}`, 'error');
+    else failed(err, `Alt text failed: ${err.message}`);
     return;
   }
   const m = modal(`

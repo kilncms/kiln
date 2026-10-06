@@ -26,8 +26,10 @@ const wayName = (way) => WAYS[way] || WAYS.google;
  * What a failed request says about the sign-in.
  *
  * `err` is what the GitHub transport throws ({ status, data }) or the same two
- * fields read off a worker answer. `err.signIn`, when set, is what the token
- * renewal already found out ('ended' or 'trouble'), and wins over the status.
+ * fields read off a worker answer. `err.signIn`, when set, is what was already
+ * found out, and wins over the status: 'ended' or 'trouble' from the token
+ * renewal, or 'stands' when the sign-in was checked and is good, so that a 401
+ * is a refusal (worker-call.js).
  *
  *   kind 'ended'    the sign-in is over (a 401, whatever its body says)
  *   kind 'refused'  signed in, but this is not allowed (a 403)
@@ -53,7 +55,7 @@ export function readFailure(err) {
     out.kind = 'ended';
     out.ownerMust = data.code === 'repo_changed';
     if (out.ownerMust && typeof data.message === 'string') out.message = data.message.trim();
-  } else if (status === 403 && !rateLimited(data)) {
+  } else if ((status === 403 && !rateLimited(data)) || (status === 401 && err?.signIn === 'stands')) {
     out.kind = 'refused';
     const said = [data.error, data.message].find(v => typeof v === 'string' && v.trim());
     out.reason = said ? said.trim().slice(0, 300) : '';
@@ -184,17 +186,25 @@ export function whatSurvives(counts, { saved = false, filesKept = 0 } = {}) {
  * staged has been touched: this only says where things stand, before the
  * person leaves the page.
  *
+ * `did` names what was being done, as the sentence says it was not: the
+ * word in "Nothing was published" ('saved', 'scheduled', 'posted', 'sent',
+ * 'undone'…). It is '' when nothing was being changed (a list was being
+ * read, or the answer came to something the editor asked on its own), and
+ * then the sentence does not speak of it.
+ *
  * Returns { title, text, detail, status, signIn, copy, copyFirst }: `signIn`
  * offers "Sign in again", `copy` offers "Copy my text", and `copyFirst` says
  * the words would not survive signing in, so copying is the thing to do first.
  */
-export function publishEnded({ way, ownerMust = false, message = '', counts, survives, publishing = true }) {
+export function publishEnded({ way, ownerMust = false, message = '', counts, survives, publishing = true, did = publishing ? 'published' : '' }) {
   const n = counts.edits + counts.source;
   const anything = n + counts.structural + counts.files > 0;
-  const lead = publishing && anything ? 'Nothing was published. ' : '';
+  // A publish with nothing to send published nothing either way; anything else is named whenever it was being done.
+  const said = did && (anything || did !== 'published') ? did : '';
+  const lead = said ? `Nothing was ${said}. ` : '';
   const out = {
     title: 'Your sign-in has ended',
-    status: publishing && anything ? 'Not published: your sign-in has ended.' : 'Your sign-in has ended.',
+    status: said ? `Not ${said}: your sign-in has ended.` : 'Your sign-in has ended.',
     text: '', detail: '', signIn: !ownerMust, copy: false, copyFirst: false,
   };
   if (ownerMust) {
@@ -209,7 +219,7 @@ export function publishEnded({ way, ownerMust = false, message = '', counts, sur
     return out;
   }
   if (!anything) {
-    out.text = `Please sign in again with ${wayName(way)} to carry on.`;
+    out.text = `${lead}Please sign in again with ${wayName(way)} to carry on.`;
     return out;
   }
   if (survives.all) {
@@ -231,15 +241,15 @@ export function publishEnded({ way, ownerMust = false, message = '', counts, sur
  * in, and this change is not theirs to make (taken off this page, a kind of
  * access that does not include it, or a change only the owner may make).
  * Signing in again would not help, so it is not offered; the text can be
- * copied.
+ * copied. `did` is the word for what was being done (see publishEnded).
  */
-export function publishRefused({ way, reason = '', counts }) {
+export function publishRefused({ way, reason = '', counts, did = 'published' }) {
   const n = counts.edits + counts.source;
   const ask = way === 'github' ? 'check that you can still write to the repository on GitHub' : 'ask the site’s owner';
   return {
-    title: 'This was not published',
-    status: 'Not published: your sign-in does not allow this change.',
-    text: 'Your sign-in does not allow this change, so nothing was published. '
+    title: `This was not ${did}`,
+    status: `Not ${did}: your sign-in does not allow this change.`,
+    text: `Your sign-in does not allow this change, so nothing was ${did}. `
       + (n ? `${editsAre(n)} still on this page: copy your text to keep it, and ${ask}.` : `Please ${ask}.`),
     detail: reason ? `The answer was: ${reason}` : '',
     signIn: false,
@@ -249,14 +259,27 @@ export function publishRefused({ way, reason = '', counts }) {
 
 /**
  * The status line when Publish met trouble that has nothing to do with the
- * person (see readFailure): nothing is dropped, and it says so.
+ * person (see readFailure): nothing is dropped, and it says so. `did` is the
+ * word for what was being done (see publishEnded); with '' the line starts at
+ * what happened.
  */
-export function publishTrouble(f, counts) {
+export function publishTrouble(f, counts, did = 'published') {
   const n = counts.edits + counts.source;
   const here = n === 1 ? 'Your edit is still here' : n ? `Your ${n} edits are still here` : 'Nothing was lost';
-  if (f.trouble === 'unreachable') return `Not published: the site could not be reached. ${here}, so please check your connection and try again.`;
-  if (f.trouble === 'busy') return `Not published: too much was asked of the site just now. ${here}, so please try again in a minute.`;
-  return `Not published: the site had a problem just now. ${here}, so please try again in a moment.`;
+  const say = (what) => (did ? `Not ${did}: ${what}` : what.charAt(0).toUpperCase() + what.slice(1));
+  if (f.trouble === 'unreachable') return say(`the site could not be reached. ${here}, so please check your connection and try again.`);
+  if (f.trouble === 'busy') return say(`too much was asked of the site just now. ${here}, so please try again in a minute.`);
+  return say(`the site had a problem just now. ${here}, so please try again in a moment.`);
+}
+
+/**
+ * The line when something that was only being read (a list, an earlier
+ * version) is answered 403: nothing was being changed, so there is nothing to
+ * keep and no dialog, and the person is still signed in.
+ */
+export function readRefused({ way, reason = '' }) {
+  const ask = way === 'github' ? 'check that you can still read the repository on GitHub' : 'ask the site’s owner';
+  return `The site did not allow this. You are still signed in, so please ${ask}.${reason ? ` The answer was: ${reason}` : ''}`;
 }
 
 /** The unpublished text as something to paste elsewhere: each edit's name, then its words. */

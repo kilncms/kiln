@@ -36,7 +36,8 @@ import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } fro
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
 import { draftRecord, readDraft, draftHolds } from './saved-edits.js';
-import { onLoadFailure, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, editsAsText, backAfterSignIn } from './sign-in-ended.js';
+import { onLoadFailure, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
+import { makeAsk } from './worker-call.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -58,6 +59,8 @@ function isMobileEditor() { return window.matchMedia(MOBILE_MQ).matches; }
 let chromeDrawn = false;
 // True once the person has pressed "Sign in again": the page is about to be left on purpose.
 let leavingToSignIn = false;
+// What a request found out about the sign-in, once one has found it ended; null until then.
+let signInOver = null;
 const BACK_KEY = 'kiln_signin_back';   // sessionStorage: this tab left through "Sign in again"
 
 import { SANITIZE, CONTAINER_SANITIZE, BLOCK_SANITIZE } from './sanitize.js';
@@ -164,7 +167,7 @@ async function init() {
 
   if (mode === 'admin') {
     const stored = JSON.parse(localStorage.getItem(ADMIN_KEY));
-    state.gh = withAutoRefresh(makeGh({ mode: 'direct', token: () => JSON.parse(localStorage.getItem(ADMIN_KEY)).token }), stored);
+    state.gh = watched(withAutoRefresh(makeGh({ mode: 'direct', token: () => JSON.parse(localStorage.getItem(ADMIN_KEY)).token }), stored));
     try {
       const user = await state.gh.request('GET', '/user');
       state.user = user.login;
@@ -192,7 +195,7 @@ async function init() {
       notStarted(onLoadFailure({ status: 401 }, { mode, draft: draftWaits() }));
       return;
     }
-    state.gh = makeGh({ mode: 'proxy', worker: cfg.worker, session: sess.session });
+    state.gh = watched(makeGh({ mode: 'proxy', worker: cfg.worker, session: sess.session }));
     state.user = sess.name;
   }
 
@@ -239,7 +242,7 @@ async function init() {
   if (journalAll().length) runJournal();
   checkForDraft();
   startPresence();
-  initComments(cfg, mode, state, workerAuthHeaders, modal, setStatus, hasFeature, KILN_CHROME);
+  initComments(cfg, mode, state, { ask, say, stopped }, modal, setStatus, hasFeature, KILN_CHROME);
   bootBlocks();
   // An invited editor's first session: the same three steps the demo shows,
   // once per browser. Only for someone who can publish this page themselves.
@@ -320,15 +323,26 @@ function unpublishedText() {
   return editsAsText(items);
 }
 
-/** What a request found out, as a dialog: where the edits stand, and what can be done. */
-function stoppedDialog(f, publishing) {
-  const counts = { edits: state.pending.size, source: state.pendingSource.size, structural: state.pendingStructural.length, files: state.pendingBinaries.size };
-  const way = mode === 'admin' ? 'github' : 'google';
+/**
+ * What a request found out, as a dialog: where the edits stand, and what can
+ * be done. `did` is the word for what was being done (see stopped()); true
+ * and false are Publish and "nothing in particular". Returns the status line.
+ */
+function stoppedDialog(f, did) {
+  if (did === true) did = 'published';
+  did = did || '';
+  // Words still being typed into a field are part of what is kept: stage them, as Publish does.
+  if (f.kind === 'ended') {
+    if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+    if (sourceActive) commitSourceEdit();
+  }
+  const counts = stagedCounts();
+  const way = signInWay();
   const d = f.kind === 'refused'
-    ? publishRefused({ way, reason: f.reason, counts })
-    : publishEnded({ way, ownerMust: f.ownerMust, message: f.message, counts, publishing,
+    ? publishRefused({ way, reason: f.reason, counts, did: did || 'changed' })
+    : publishEnded({ way, ownerMust: f.ownerMust, message: f.message, counts, did,
       survives: whatSurvives(counts, { saved: draftSaved(), filesKept: [...state.pendingBinaries.keys()].filter(p => keptHere.has(p)).length }) });
-  const again = () => stoppedDialog(f, publishing);
+  const again = () => stoppedDialog(f, did);
   setStatus(d.status, 'error', { sticky: true, action: { label: d.signIn ? 'Sign in again' : 'What now', title: 'What happened, and what is kept', run: again } });
   const m = modal(`
     <h3>${escapeHtml(d.title)}</h3>
@@ -354,13 +368,91 @@ function stoppedDialog(f, publishing) {
   };
   const go = m.querySelector('#kiln-stop-go');
   if (go) go.onclick = signInAgain;
+  return d.status;
 }
 
-/** The owner's token could not be renewed, found out by something other than Publish. */
-function signInEndedSeen(err) {
+// ─── …on every other path that asks the worker ───────────────────────────────
+// Publish was the first to say it. Everything else the editor asks with the
+// person's sign-in (History, drafts, suggestions, comments, schedules, the
+// picture list, AI assist, People, the site menu…) goes through one of two
+// doors, and both are watched: the GitHub transport (the worker's proxy for an
+// invited editor) and `ask` for the worker's own routes.
+
+/**
+ * A request, whoever made it, was answered that the sign-in has ended. The
+ * first time, the status line says so and offers the way back in: that is all
+ * a request the editor made on its own (who else is editing, comment counts,
+ * whether a publish is live yet) ever shows. Something the person asked for
+ * also opens the dialog, through stopped().
+ */
+function signInGone(err) {
+  if (!chromeDrawn) return;   // while the editor is starting, init() says so on the page
   const f = readFailure(err);
-  setStatus('Your sign-in has ended.', 'error', { sticky: true,
-    action: { label: 'Sign in again', title: 'What happened, and what is kept', run: () => stoppedDialog(f, false) } });
+  if (f.kind !== 'ended') return;
+  const first = !signInOver;
+  signInOver = f;
+  // Asking who else is editing would only be refused again every half minute.
+  clearInterval(presenceTimer);
+  if (first) {
+    setStatus('Your sign-in has ended.', 'error', { sticky: true,
+      action: { label: f.ownerMust ? 'What now' : 'Sign in again', title: 'What happened, and what is kept', run: () => stoppedDialog(f, false) } });
+  }
+}
+
+/** The GitHub transport, with every failed answer looked at for an ended sign-in. */
+function watched(gh) {
+  return {
+    async request(method, path, body) {
+      try { return await gh.request(method, path, body); } catch (err) { signInGone(err); throw err; }
+    },
+  };
+}
+
+/**
+ * Whether the sign-in still stands, asked through the transport: the worker's
+ * proxy answers an ended one with 401 whatever is asked (an invited editor),
+ * and for the owner GitHub is asked, which renews a token that has run out.
+ */
+function signInStands() {
+  return mode === 'admin'
+    ? state.gh.request('GET', '/user')
+    : state.gh.request('GET', `/repos/${cfg.repo}/git/ref/${encodeURIComponent('heads/' + (cfg.branch || 'main'))}`);
+}
+
+/** The worker's own routes, asked with the sign-in (worker-call.js): JSON back, or an error with the answer's status and body. */
+const ask = makeAsk({
+  worker: cfg.worker, headers: workerAuthHeaders, stands: signInStands, renews: mode === 'admin', ended: signInGone,
+  fetchImpl: (url, init) => fetch(url, init),
+});
+
+const signInWay = () => (mode === 'admin' ? 'github' : 'google');
+const stagedCounts = () => ({ edits: state.pending.size, source: state.pendingSource.size, structural: state.pendingStructural.length, files: state.pendingBinaries.size });
+
+/**
+ * Something the person asked for was stopped by the answer it got. `did` is
+ * the word for what they were doing ('saved', 'scheduled', 'posted'…; '' when
+ * something was only being read). As at Publish: an ended sign-in (401) and,
+ * when something was being changed, a change the sign-in does not allow (403)
+ * open the dialog; trouble on the way (no answer, a 5xx, a 429) is one line
+ * that says nothing was lost and to try again.
+ *
+ * Returns that line, for the place the person is looking at, or '' when the
+ * answer is about something else and the caller keeps its own words.
+ */
+function stopped(err, did = '') {
+  const f = readFailure(err);
+  if (f.kind === 'ended' || (f.kind === 'refused' && did)) return stoppedDialog(f, did);
+  if (f.kind === 'refused') return readRefused({ way: signInWay(), reason: f.reason });
+  if (f.kind === 'trouble') return publishTrouble(f, stagedCounts(), did);
+  return '';
+}
+
+/** The same, for a failure that is told in the status line: what stopped() says, or the caller's own words. */
+function say(err, did, own) {
+  const line = stopped(err, did);
+  const kind = readFailure(err).kind;
+  if (kind === 'ended' || (kind === 'refused' && did)) return;   // the dialog has set its own line
+  setStatus(line || own, 'error');
 }
 
 /** One sentence, at most one button, and a way to put it away. Styled inline: the editor's own styles are not on the page. */
@@ -473,13 +565,10 @@ function withAutoRefresh(gh, stored) {
           // A transient 5xx/network failure must not destroy a session that will
           // work again once the worker recovers — just fail this one request.
           if (res.status >= 500 || res.status === 429) err.signIn = 'trouble';   // the renewal could not be had: not a sign-out
-          if (res.status === 401) {
-            err.signIn = 'ended';
-            // While the editor is starting, init() says so on the page. Once it
-            // is running, nothing is reloaded under the person's edits: the
-            // status line says so, and Publish explains what is kept.
-            if (chromeDrawn) signInEndedSeen(err);
-          }
+          // While the editor is starting, init() says so on the page. Once it
+          // is running, nothing is reloaded under the person's edits: the
+          // status line says so (signInGone), and the dialog what is kept.
+          if (res.status === 401) err.signIn = 'ended';
           throw err;
         }
         localStorage.setItem(ADMIN_KEY, JSON.stringify({ ...stored, token: data.token, exp: data.exp }));
@@ -530,15 +619,12 @@ function workerAuthHeaders() {
 
 let presenceTimer = null;
 let presenceTickN = 0;
+let presenceRefused = false;   // signed in, and the worker will not list this person: not asked again
 async function presencePing() {
-  try {
-    const res = await fetch(`${cfg.worker}/presence`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
-      body: JSON.stringify({ repo: cfg.repo, path: location.pathname, name: state.user }),
-    });
-    if (!res.ok) return;
-    const data = await res.json();
+  if (signInOver) return;   // nobody is signed in to be shown
+  if (!presenceRefused) try {
+    // An ended sign-in is answered 403 here; `ask` finds out which it is, and the status line says so.
+    const data = await ask('/presence', { method: 'POST', body: { repo: cfg.repo, path: location.pathname, name: state.user } });
     if (data.scope) state.scope = data.scope;   // editor path/section grants (see decorateFields)
     // A suggest-mode grant can arrive on a later tick (first ping offline) or
     // change mid-session — keep the Publish button and gating honest. Both are
@@ -555,7 +641,11 @@ async function presencePing() {
     // lazily — every 3rd tick (~90s), a review-queue count doesn't need realtime.
     presenceTickN++;
     if (mode === 'admin' && presenceTickN % 3 === 1) refreshSuggestBadge();
-  } catch { /* offline blip — presence is best-effort */ }
+  } catch (err) {
+    // offline blip — presence is best-effort
+    if (readFailure(err).kind === 'refused') presenceRefused = true;
+  }
+  if (signInOver) return;
   commentsTick();   // comment badge/pins ride the same 30s tick (no second timer)
 }
 
@@ -1819,6 +1909,7 @@ function replaceImage(img, key) {
       setStatus(cfg.sandbox ? `“${image.name}” is in place. Publish to save it to your demo` : `“${image.name}” is in place. Publish to put it live`, 'saved');
     },
     request: cfg.sandbox ? null : (method, path) => state.gh.request(method, path),
+    stopped,
     repo: cfg.repo, branch: cfg.branch || 'main', root: cfg.root || '',
     paths: mode === 'editor' ? (state.scope?.paths || null) : null,
     pageImages,
@@ -2363,7 +2454,7 @@ async function sendSuggestionFromSheet(note) {
     setStatus(r.previewSkipped ? 'Sent for review. The preview was skipped.' : 'Sent for review. Nothing is live until an owner approves it.', 'saved');
   } catch (err) {
     console.error('[kiln] suggest', err);
-    setStatus(`That did not send: ${err.message}. Your edits are still here.`, 'error');
+    say(err, 'sent', `That did not send: ${err.message}. Your edits are still here.`);
   }
 }
 
@@ -2624,7 +2715,7 @@ async function undoPublish(rec) {
     guideUndone(n);   // a first-session card still on screen stops saying it is published
   } catch (err) {
     console.error('[kiln] undo publish', err);
-    setStatus('Undo did not go through, so nothing changed. History can take the page back.', 'error');
+    say(err, 'undone', 'Undo did not go through, so nothing changed. History can take the page back.');
   }
 }
 
@@ -2951,16 +3042,11 @@ async function publishSource() {
     let ok = false;
     let failure = null;
     try {
-      const res = await fetch(`${cfg.worker}/source/commit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
-        body: JSON.stringify(g.body),
-      });
-      data = await res.json().catch(() => ({}));
-      ok = res.ok;
-      if (!ok) failure = { status: res.status, data };
+      data = await ask('/source/commit', { method: 'POST', body: g.body });
+      ok = true;
     } catch (err) {
-      data = { error: err.message };
+      // What the worker said, when it answered; else why there was no answer.
+      data = Number.isInteger(err.status) ? err.data : { error: err.message };
       failure = err;
     }
     if (!ok) {
@@ -3081,19 +3167,13 @@ function sourceBuildFailedBanner(committed, sha) {
       btn.disabled = true;
       btn.textContent = 'Reverting…';
       try {
-        const res = await fetch(`${cfg.worker}/source/revert`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
-          body: JSON.stringify(body),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || `failed (${res.status})`);
+        await ask('/source/revert', { method: 'POST', body });
         btn.textContent = 'Reverted ✓';
         setStatus(`Reverted ${c.file} — the site rebuilds without that change`, 'saved');
       } catch (err) {
         btn.disabled = false;
         btn.innerHTML = `${UNDO_ICON} Undo this change`;
-        setStatus(`Revert failed: ${err.message}`, 'error');
+        say(err, 'undone', `Revert failed: ${err.message}`);
       }
     };
   });
@@ -3586,7 +3666,7 @@ function newContent() {
       console.error('[kiln] new', kind, err);
       status.textContent = err.status === 404
         ? `This site has no ${kind} template (_templates/${kind}.html) — see the docs.`
-        : `Failed: ${err.message}`;
+        : stopped(err, 'created') || `Failed: ${err.message}`;
     }
   };
 }
@@ -3727,7 +3807,7 @@ function menuEditor() {
       poll();
     } catch (err) {
       console.error('[kiln] menu', err);
-      status.textContent = `Failed: ${err.message}`;
+      status.textContent = stopped(err, 'saved') || `Failed: ${err.message}`;
     }
   };
 }
@@ -3809,8 +3889,6 @@ async function invitePanel() {
     </div>
     <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
 
-  const admin = () => JSON.parse(localStorage.getItem(ADMIN_KEY));
-
   // Feature checkboxes (which menu tools an editor may use). Defaults on: the
   // low-risk content tools; off: site-wide/structural tools.
   const FEATURES = [
@@ -3882,7 +3960,7 @@ async function invitePanel() {
         }
         if (!pages.includes(state.page.path)) pages.unshift(state.page.path);
       }
-    } catch { pages = [state.page.path]; }
+    } catch (err) { stopped(err); pages = [state.page.path]; }
     pages = pages.slice(0, 25);
 
     // Fetch each page's sections+snippets (current page parses its own source — no round-trip).
@@ -3890,7 +3968,7 @@ async function invitePanel() {
     for (const path of pages) {
       if (path === state.page.path) { groups.push({ path, sections: extractSections(state.page.text) }); continue; }
       try { const f = await getFile(state.gh, cfg.repo, path, cfg.branch || 'main'); groups.push({ path, sections: extractSections(f.text) }); }
-      catch { groups.push({ path, sections: [], err: true }); }
+      catch (err) { groups.push({ path, sections: [], err: true }); if (signInOver) break; }
     }
 
     box.innerHTML = '';
@@ -3949,7 +4027,7 @@ async function invitePanel() {
         box.appendChild(row);
       }
     } catch (err) {
-      box.innerHTML = `<p class="kiln-dim" style="margin:6px 2px">Couldn't load the page list: ${escapeHtml(err.message)}</p>`;
+      box.innerHTML = `<p class="kiln-dim" style="margin:6px 2px">${escapeHtml(stopped(err) || `Couldn't load the page list: ${err.message}`)}</p>`;
     }
   };
   m.querySelectorAll('input[name="kiln-p-role"]').forEach(r => r.addEventListener('change', syncRole));
@@ -3964,10 +4042,7 @@ async function invitePanel() {
     const status = m.querySelector('#kiln-gstatus');
     const form = m.querySelector('#kiln-people-form');
     try {
-      const res = await fetch(`${cfg.worker}/admin/people?repo=${encodeURIComponent(cfg.repo)}`, {
-        headers: { Authorization: `Bearer ${admin().token}` },
-      });
-      const data = await res.json();
+      const data = await ask(`/admin/people?repo=${encodeURIComponent(cfg.repo)}`);
       if (!data.googleConfigured) {
         status.innerHTML = 'To invite editors and members, add Google sign-in to your auth worker: set '
           + '<code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> (see the README). '
@@ -3991,17 +4066,19 @@ async function invitePanel() {
           <small>${escapeHtml(p.email)} · ${escapeHtml(roleLabel)}${scope ? ' · ' + escapeHtml(scope) : ''} · ${p.days ? p.days + 'd' : 'never expires'}</small></span>
           <button class="kiln-btn-ghost">Remove</button>`;
         row.querySelector('button').onclick = async () => {
-          await fetch(`${cfg.worker}/admin/people/remove`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
-            body: JSON.stringify({ repo: cfg.repo, email: p.email }),
-          });
+          try {
+            await ask('/admin/people/remove', { method: 'POST', body: { repo: cfg.repo, email: p.email } });
+          } catch (err) {
+            status.textContent = stopped(err, 'removed') || `That person was not removed: ${err.message}`;
+            return;
+          }
           refreshPeople();
         };
         list.appendChild(row);
       }
-    } catch {
-      status.textContent = 'Could not reach the auth worker.';
+    } catch (err) {
+      // The list could not be read. That says nothing about Google sign-in, so the form is left as it is.
+      status.textContent = stopped(err) || (Number.isInteger(err.status) ? `The list of people could not be read: ${err.message}` : 'Could not reach the auth worker.');
     }
   }
   refreshPeople();
@@ -4016,13 +4093,15 @@ async function invitePanel() {
     const features = [...m.querySelectorAll('.kiln-p-feat:checked')].map(c => c.value);
     const suggestOnly = m.querySelector('#kiln-p-suggest').checked;
     if (!email) return;
-    const res = await fetch(`${cfg.worker}/admin/people`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin().token}` },
-      body: JSON.stringify({ repo: cfg.repo, email, name, role, days, paths, keys, features,
-        ...(suggestOnly ? { mode: 'suggest' } : m.dataset.mode === 'review' ? { mode: 'review' } : {}) }),
-    });
-    const data = await res.json();
+    let data;
+    try {
+      data = await ask('/admin/people', { method: 'POST', body: { repo: cfg.repo, email, name, role, days, paths, keys, features,
+        ...(suggestOnly ? { mode: 'suggest' } : m.dataset.mode === 'review' ? { mode: 'review' } : {}) } });
+    } catch (err) {
+      // What was typed stays in the form.
+      m.querySelector('#kiln-gstatus').textContent = stopped(err, 'added') || `That person was not added: ${err.message}`;
+      return;
+    }
     if (data.ok) {
       m.querySelector('#kiln-p-email').value = '';
       m.querySelector('#kiln-p-name').value = '';
@@ -4297,7 +4376,8 @@ async function historyPanel() {
     try {
       refs = await state.gh.request('GET', `/repos/${cfg.repo}/git/matching-refs/tags/kiln/`);
     } catch (err) {
-      box.innerHTML = `<p class="kiln-dim">Couldn’t load named versions: ${escapeHtml(err.message)}</p>`;
+      // The list of publishes below is read with the same sign-in and says what happened; once is enough.
+      box.innerHTML = `<p class="kiln-dim">${escapeHtml(readFailure(err).kind === 'other' ? `Couldn’t load named versions: ${err.message}` : 'Named versions could not be read.')}</p>`;
       return;
     }
     if (!Array.isArray(refs)) refs = [];
@@ -4314,7 +4394,7 @@ async function historyPanel() {
         <small>${when} · ${escapeHtml(String(v.sha).slice(0, 7))}</small></span>
         <span class="kiln-hist-acts"><button class="kiln-btn-ghost" title="Every section back to how it was in this named version">Go back to this</button></span>`;
       row.querySelector('button').onclick = () =>
-        restoreVersion(v.sha, `“${escapeHtml(v.name)}”`).catch(err => { status.textContent = `Couldn’t read that version: ${err.message}`; });
+        restoreVersion(v.sha, `“${escapeHtml(v.name)}”`).catch(err => { status.textContent = stopped(err) || `Couldn’t read that version: ${err.message}`; });
       box.appendChild(row);
     }
   }
@@ -4348,7 +4428,7 @@ async function historyPanel() {
         btn.disabled = false; btn.textContent = 'Save';
         status.textContent = err.status === 422
           ? 'A version with that name was just created — try a slightly different name.'
-          : `Couldn’t name it: ${err.message}`;
+          : stopped(err, 'saved') || `Couldn’t name it: ${err.message}`;
       }
     };
     form.querySelector('[data-nv="save"]').onclick = save;
@@ -4364,7 +4444,7 @@ async function historyPanel() {
   try {
     commits = await state.gh.request('GET',
       `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=20`);
-  } catch (err) { status.textContent = `Could not load history: ${err.message}`; return; }
+  } catch (err) { list.textContent = ''; status.textContent = stopped(err) || `Could not load history: ${err.message}`; return; }
 
   list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No saved versions yet — they appear after your first publish.</p>';
 
@@ -4379,9 +4459,9 @@ async function historyPanel() {
         ${i === 0 ? '' : '<button class="kiln-btn-ghost" data-act="restore" title="Every section back to how it was at this point">Go back to this</button>'}
         <button class="kiln-btn-ghost" data-act="name" title="Name this version so it’s easy to find and restore later">⭑ Name</button>
       </span>`;
-    div.querySelector('[data-act="undo"]').onclick = () => undoCommit(c).catch(err => { status.textContent = `Couldn’t compare versions: ${err.message}`; });
+    div.querySelector('[data-act="undo"]').onclick = () => undoCommit(c).catch(err => { status.textContent = stopped(err) || `Couldn’t compare versions: ${err.message}`; });
     const rBtn = div.querySelector('[data-act="restore"]');
-    if (rBtn) rBtn.onclick = () => restoreVersion(c.sha, escapeHtml(when)).catch(err => { status.textContent = `Couldn’t read that version: ${err.message}`; });
+    if (rBtn) rBtn.onclick = () => restoreVersion(c.sha, escapeHtml(when)).catch(err => { status.textContent = stopped(err) || `Couldn’t read that version: ${err.message}`; });
     div.querySelector('[data-act="name"]').onclick = () => nameVersionInline(div, c);
     list.appendChild(div);
   });
@@ -4471,7 +4551,7 @@ async function fieldHistoryPanel(key, isRepeat = false) {
       if (btn) btn.onclick = () => previewFieldRevert(key, i === 0 ? rows[1].v : v, m);
       box.appendChild(r);
     });
-  } catch (err) { box.innerHTML = `<p class="kiln-dim">Couldn’t load history: ${escapeHtml(err.message)}</p>`; }
+  } catch (err) { box.innerHTML = `<p class="kiln-dim">${escapeHtml(stopped(err) || `Couldn’t load history: ${err.message}`)}</p>`; }
 }
 
 function histPreview(html) {
@@ -4514,7 +4594,7 @@ function pageSettingsPanel() {
       await loadPageSource();
       journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: 'Page settings', sha: result.commit?.sha });
       status.textContent = 'Committed ✓ — safe to close; Kiln will confirm when live.';
-    } catch (err) { status.textContent = `Failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, 'published') || `Failed: ${err.message}`; }
   };
   const delBtn = m.querySelector('#kiln-ps-del');
   if (delBtn) delBtn.onclick = () => {
@@ -4529,7 +4609,7 @@ function pageSettingsPanel() {
         await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
           { message: `Delete ${state.page.path} (via Kiln)`, sha: file.sha, branch: cfg.branch || 'main' });
         status.innerHTML = 'Deleted ✓ — the page comes off the site on the next deploy. <strong>Open Site menu to remove its link.</strong>';
-      } catch (err) { status.textContent = `Delete failed: ${err.message}`; }
+      } catch (err) { status.textContent = stopped(err, 'deleted') || `Delete failed: ${err.message}`; }
     })();
   };
 }
@@ -4583,9 +4663,9 @@ function findReplacePanel() {
           if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Find & replace', sha: commit.sha });
           status.textContent = 'Committed ✓ — rebuilding. Safe to close; Kiln will confirm when live.';
           act.remove();
-        } catch (err) { status.textContent = `Failed: ${err.message}`; }
+        } catch (err) { status.textContent = stopped(err, 'replaced') || `Failed: ${err.message}`; }
       };
-    } catch (err) { status.textContent = `Scan failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err) || `Scan failed: ${err.message}`; }
   };
 }
 
@@ -4637,7 +4717,7 @@ async function saveDraft() {
     setStatus('Draft saved ✓ — nothing is live; resume it any time from this page', 'saved');
   } catch (err) {
     console.error('[kiln] draft', err);
-    setStatus(`Draft failed: ${err.message}`, 'error');
+    say(err, 'saved', `Draft failed: ${err.message}`);
   }
 }
 
@@ -4688,7 +4768,7 @@ async function checkForDraft() {
       journalAdd({ type: 'compare', target: location.pathname, expect: djb2(draft.text), desc: 'Draft publish', sha: result?.commit?.sha });
       await loadPageSource();
       status.textContent = 'Published ✓ — your site rebuilds now; the change goes live in about a minute.';
-    } catch (err) { status.textContent = `Failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, 'published') || `Failed: ${err.message}`; }
   };
   const del = m.querySelector('#kiln-dr-del');
   if (del) del.onclick = async () => {
@@ -4698,7 +4778,7 @@ async function checkForDraft() {
         { message: `Discard draft: ${state.page.path} (via Kiln)`, sha: draft.sha, branch: DRAFT_BRANCH });
       status.textContent = 'Draft deleted.';
       setTimeout(() => m.remove(), 600);
-    } catch (err) { status.textContent = `Failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, 'deleted') || `Failed: ${err.message}`; }
   };
 }
 
@@ -4725,15 +4805,10 @@ function schedulePanel() {
     <div id="kiln-sc-list" class="kiln-inv-list">Loading…</div>
     <p class="kiln-np-step" id="kiln-sc-status"></p>`);
   const status = m.querySelector('#kiln-sc-status');
-  const authHeaders = () => {
-    if (mode === 'admin') return { Authorization: `Bearer ${JSON.parse(localStorage.getItem(ADMIN_KEY)).token}` };
-    return { 'X-Kiln-Session': JSON.parse(localStorage.getItem(EDITOR_KEY)).session };
-  };
   async function refreshList() {
     const list = m.querySelector('#kiln-sc-list');
     try {
-      const res = await fetch(`${cfg.worker}/schedules?repo=${encodeURIComponent(cfg.repo)}`, { headers: authHeaders() });
-      const data = await res.json();
+      const data = await ask(`/schedules?repo=${encodeURIComponent(cfg.repo)}`);
       list.innerHTML = (data.schedules || []).length ? '' : '<p class="kiln-dim">Nothing scheduled.</p>';
       for (const s of data.schedules || []) {
         const row = document.createElement('div');
@@ -4742,14 +4817,19 @@ function schedulePanel() {
           <small>${new Date(s.at).toLocaleString()} · by ${escapeHtml(s.by)}</small></span>
           <button class="kiln-btn-ghost">Cancel</button>`;
         row.querySelector('button').onclick = async () => {
-          await fetch(`${cfg.worker}/schedule/cancel`, { method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({ repo: cfg.repo, id: s.id }) });
+          try {
+            await ask('/schedule/cancel', { method: 'POST', body: { repo: cfg.repo, id: s.id } });
+          } catch (err) {
+            status.textContent = stopped(err, 'cancelled') || `That was not cancelled: ${err.message}`;
+            return;
+          }
           refreshList();
         };
         list.appendChild(row);
       }
-    } catch { list.innerHTML = '<p class="kiln-dim">Could not load.</p>'; }
+    } catch (err) {
+      list.innerHTML = `<p class="kiln-dim">${escapeHtml(stopped(err) || 'Could not load.')}</p>`;
+    }
   }
   refreshList();
   m.querySelector('#kiln-sc-go').onclick = async () => {
@@ -4761,19 +4841,17 @@ function schedulePanel() {
       // them against the live source at fire time, so edits published in the
       // meantime aren't wiped.
       const edits = flattenPending();
-      const res = await fetch(`${cfg.worker}/schedule`, { method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ repo: cfg.repo, path: state.page.path, branch: cfg.branch || 'main',
+      const data = await ask('/schedule', { method: 'POST',
+        body: { repo: cfg.repo, path: state.page.path, branch: cfg.branch || 'main',
           edits, at: new Date(at).toISOString(),
           message: `Scheduled edit: ${state.page.path} (via Kiln)`,
-          desc: `${state.page.path} (${[...state.pending.keys()].slice(0, 3).join(', ')})` }) });
-      const data = await res.json();
+          desc: `${state.page.path} (${[...state.pending.keys()].slice(0, 3).join(', ')})` } });
       if (!data.ok) throw new Error(data.error || 'failed');
       // The edits now live in the schedule on the worker — retire the stage.
       retireStaged();
       status.textContent = `Scheduled for ${new Date(data.at).toLocaleString()} ✓ — safe to close.`;
       refreshList();
-    } catch (err) { status.textContent = `Failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, 'scheduled') || `Failed: ${err.message}`; }
   };
 }
 
@@ -4830,7 +4908,7 @@ function settingsPanel() {
       journalAdd({ type: 'compare', target: '/assets/kiln-config.js', expect: djb2(result.text), desc: 'Site settings', sha: result.commit?.sha });
       status.textContent = 'Committed ✓ — applies to everyone after the rebuild (~1 min).' + (uiChanged ? ' Reloading…' : '');
       if (uiChanged) setTimeout(() => location.reload(), 1500);
-    } catch (err) { status.textContent = `Failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, 'saved') || `Failed: ${err.message}`; }
   };
 }
 
@@ -4998,7 +5076,7 @@ function stageSectionInsert({ node, html, key, anchor }) {
 
 /** Boot the block library + section chrome (blocks.js gates itself by feature/scope). */
 function bootBlocks() {
-  initBlocks({ state, cfg, mode, hasFeature, pageInScope, keyInScope, modal, setStatus, escapeHtml,
+  initBlocks({ state, cfg, mode, hasFeature, pageInScope, keyInScope, modal, setStatus, escapeHtml, stopped,
     isKilnChrome, decorateField, setupRepeat, pushUndoEntry, refreshPublishButton, stageSectionInsert,
     // The screen space Kiln's fixed controls are using right now: a section
     // divider that scrolls under any of them steps aside.
@@ -5279,15 +5357,15 @@ function exitEditMode() {
  * Position is remembered per-browser.
  */
 function renderAdminBar() {
-  initPalette({ state, cfg, mode, pageInScope, keyInScope, humanizeKey, listSitePages, modal, setStatus, escapeHtml,
+  initPalette({ state, cfg, mode, pageInScope, keyInScope, humanizeKey, listSitePages, modal, setStatus, escapeHtml, stopped,
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main') });
-  initSuggest({ state, cfg, mode, modal, setStatus, escapeHtml, workerAuthHeaders, flattenPending, retireStaged,
+  initSuggest({ state, cfg, mode, modal, setStatus, escapeHtml, ask, stopped, flattenPending, retireStaged,
     saveDraft, journalAdd, humanizeKey,
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
     ghRequest: (method, path, body) => state.gh.request(method, path, body) });
-  initAssist({ state, cfg, mode, modal, setStatus, escapeHtml, workerAuthHeaders,
+  initAssist({ state, cfg, mode, modal, setStatus, escapeHtml, ask, say,
     stagePending, stageContainer, commitEdit, humanizeKey });
-  initTheme({ state, cfg, mode, modal, setStatus, escapeHtml, pageInScope, journalAdd, djb2,
+  initTheme({ state, cfg, mode, modal, setStatus, escapeHtml, pageInScope, journalAdd, djb2, stopped,
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main') });
   if ((localStorage.getItem('kiln_ui_mode') || 'fab') === 'bar') { renderTopBar(); return; }
   const fab = document.createElement('div');

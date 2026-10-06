@@ -73,7 +73,7 @@ function extLink(href, label) {
 // ─── Suggest-mode publishing (the editor's Publish, rerouted) ────────────────
 
 export function suggestChanges() {
-  const { state, cfg, modal, setStatus, flattenPending, workerAuthHeaders, retireStaged } = deps;
+  const { state, cfg, modal, setStatus, stopped } = deps;
   if (cfg.sandbox) {
     setStatus('The demo publishes only to your browser — suggesting needs a real Kiln site', 'idle');
     return;
@@ -109,7 +109,7 @@ export function suggestChanges() {
     } catch (err) {
       console.error('[kiln] suggest', err);
       m.querySelector('#kiln-sug-go').disabled = false;
-      status.textContent = `Failed: ${err.message} — your edits are still staged.`;
+      status.textContent = stopped(err, 'sent') || `Failed: ${err.message} — your edits are still staged.`;
     }
   };
 }
@@ -121,7 +121,7 @@ export function suggestChanges() {
  * Returns { previewSkipped }.
  */
 export async function sendSuggestion(note, onStatus = () => {}) {
-  const { state, cfg, flattenPending, workerAuthHeaders, retireStaged } = deps;
+  const { state, cfg, flattenPending, ask, retireStaged } = deps;
   const edits = flattenPending();
   onStatus('Sending your suggestion…');
   // Best-effort preview branch: the suggestion must go through even when the
@@ -135,13 +135,8 @@ export async function sendSuggestion(note, onStatus = () => {}) {
   }
   const body = { repo: cfg.repo, path: state.page.path, edits, note: String(note || '').slice(0, 200) };
   if (branch) { body.branch = branch; body.baseSha = baseSha; }
-  const res = await fetch(`${cfg.worker}/suggestions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.suggestion) throw new Error(data.error || `failed (${res.status})`);
+  const data = await ask('/suggestions', { method: 'POST', body });
+  if (!data.suggestion) throw new Error(data.error || 'the suggestion was not taken');
   // The edits now live in the suggestion on the worker — retire them here,
   // exactly like a schedule handoff (stage + undo history + markers).
   retireStaged();
@@ -178,13 +173,11 @@ let badgeBusy = false;
 /** Lazily refresh the open-suggestions badge (piggybacked on the presence tick). */
 export async function refreshSuggestBadge() {
   if (!deps || deps.cfg.sandbox) return;
-  const { cfg, workerAuthHeaders } = deps;
+  const { cfg, ask } = deps;
   if (badgeBusy) return;
   badgeBusy = true;
   try {
-    const res = await fetch(`${cfg.worker}/suggestions?repo=${encodeURIComponent(cfg.repo)}`, { headers: workerAuthHeaders() });
-    if (!res.ok) return;
-    const data = await res.json();
+    const data = await ask(`/suggestions?repo=${encodeURIComponent(cfg.repo)}`);
     const n = data.counts?.open || 0;
     const badge = document.getElementById('kiln-sug-badge');
     if (badge) { badge.hidden = !n; badge.textContent = String(n); }
@@ -210,17 +203,16 @@ export async function suggestionsPanel() {
 }
 
 async function renderSuggestions(m) {
-  const { cfg, workerAuthHeaders } = deps;
+  const { cfg, ask, stopped } = deps;
   const list = m.querySelector('#kiln-sug-list');
   const decidedBox = m.querySelector('#kiln-sug-decided');
   if (!list) return;   // panel was closed mid-refresh
   let data;
   try {
-    const res = await fetch(`${cfg.worker}/suggestions?repo=${encodeURIComponent(cfg.repo)}`, { headers: workerAuthHeaders() });
-    data = await res.json();
-    if (!res.ok) throw new Error(data.error || res.status);
-  } catch {
-    list.innerHTML = '<p class="kiln-dim">Could not load suggestions.</p>';
+    data = await ask(`/suggestions?repo=${encodeURIComponent(cfg.repo)}`);
+  } catch (e) {
+    list.textContent = '';
+    list.appendChild(el('p', 'kiln-dim', stopped(e) || 'Could not load suggestions.'));
     return;
   }
   const all = data.suggestions || [];
@@ -251,7 +243,7 @@ async function renderSuggestions(m) {
 
 /** One open suggestion: header row + expandable per-field before/after + actions. */
 function suggestionRow(m, sug) {
-  const { cfg, setStatus, workerAuthHeaders, fetchFile, humanizeKey } = deps;
+  const { cfg, setStatus, ask, stopped, fetchFile, humanizeKey } = deps;
   const wrap = el('div', 'kiln-sug-item');
   const head = el('div', 'kiln-inv-row');
   const label = el('span');
@@ -291,7 +283,11 @@ function suggestionRow(m, sug) {
       const file = await fetchFile(sug.page);
       values = readValues(file.text);
       doc = new DOMParser().parseFromString(file.text, 'text/html');   // inert
-    } catch { /* page unreadable — show the suggested side only */ }
+    } catch (e) {
+      // page unreadable — show the suggested side only, and say why when the answer says something about the sign-in
+      const line = stopped(e);
+      if (line) { err.textContent = line; err.hidden = false; }
+    }
     diff.textContent = '';
     const header = el('div', 'kiln-sug-cols kiln-sug-colhead');
     for (const t of ['Section', 'Now', 'Suggested']) header.appendChild(el('span', '', t));
@@ -328,18 +324,18 @@ function suggestionRow(m, sug) {
     approveBtn.disabled = declineBtn.disabled = true;
     err.hidden = true;
     try {
-      const res = await fetch(`${cfg.worker}/suggestions/decide`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
-        body: JSON.stringify({ repo: cfg.repo, id: sug.id, approve, ...(note && { note }) }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        // 409 (page moved) and 422 (couldn't apply / guard) leave the suggestion
-        // open on the worker — keep the row with an inline explanation.
-        err.textContent = res.status === 409
+      let data;
+      try {
+        data = await ask('/suggestions/decide', { method: 'POST', body: { repo: cfg.repo, id: sug.id, approve, ...(note && { note }) } });
+      } catch (e2) {
+        if (!Number.isInteger(e2.status)) throw e2;
+        // The worker answered. An ended sign-in, a refusal and trouble are said
+        // as everywhere else; 409 (page moved) and 422 (couldn't apply / guard)
+        // leave the suggestion open on the worker — keep the row with an
+        // inline explanation.
+        err.textContent = stopped(e2, approve ? 'approved' : 'declined') || (e2.status === 409
           ? 'The page changed while approving — try again.'
-          : `Could not ${approve ? 'approve' : 'decline'}: ${data.error || res.status}${data.detail ? ` (${data.detail})` : ''}`;
+          : `Could not ${approve ? 'approve' : 'decline'}: ${e2.data.error || e2.status}${e2.data.detail ? ` (${e2.data.detail})` : ''}`);
         err.hidden = false;
         approveBtn.disabled = declineBtn.disabled = false;
         return;
@@ -354,7 +350,7 @@ function suggestionRow(m, sug) {
       await renderSuggestions(m);
       refreshSuggestBadge();
     } catch (e2) {
-      err.textContent = `Failed: ${e2.message}`;
+      err.textContent = stopped(e2, approve ? 'approved' : 'declined') || `Failed: ${e2.message}`;
       err.hidden = false;
       approveBtn.disabled = declineBtn.disabled = false;
     }

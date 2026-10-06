@@ -209,7 +209,7 @@ function sitePages() {
       pages = deps.mode === 'editor' ? all.filter(p => deps.pageInScope(p)) : all;
       if (isOpen() && viewMode === 'list') render();
       return pages;
-    }).catch(() => { pagesPromise = null; pages = pages || []; return pages; });
+    }).catch((err) => { deps.stopped(err); pagesPromise = null; pages = pages || []; return pages; });
   }
   return pagesPromise;
 }
