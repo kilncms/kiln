@@ -54,7 +54,7 @@
  *   rsee:<repo>   {id,name}          GitHub's last answer for a name  (TTL 10 min)
  *   rmove:<id>    {id,to,at,done,cursor?}  how far an unfinished move has got; gone when it is done
  *   msess:<sid>   {repo,email,origin}  a member's sign-in on a site, so removal can end it
- *   esess:<id>  {repo,name,role,email,paths}  (TTL = person.days)
+ *   esess:<id>  {repo,name,role,email,paths,rid?}  (TTL = person.days; rid = the id of the repository it is for)
  *   atok:<sha>  {id,repo,name,paths,keys,readonly,created,exp}  API token, keyed by SHA-256(secret)  (TTL = days)
  *   itok:<repo> cached installation token    (TTL 50 min)
  *   cmt:<repo>:<encodeURIComponent(page)>:<threadId>  comment thread
@@ -531,7 +531,9 @@ async function authActor(request, env, repo) {
     const e = await env.KILN.get(`esess:${sess}`, 'json');
     // A session is on a repository, not on a spelling: a site whose config
     // still has the name from before a rename or a transfer is the same site.
-    if (e && (!e.exp || e.exp >= Date.now()) && e.role === 'editor' && (e.repo === repo || await sameOnRecord(env, e.repo, repo))) return { name: e.name, email: e.email, paths: e.paths || [''], keys: e.keys || [], mode: e.mode || null, features: e.features || null, admin: false };
+    // And not on a name either: if the name asked with now answers as another
+    // repository than the session's, this is no session for it.
+    if (e && (!e.exp || e.exp >= Date.now()) && e.role === 'editor' && (e.repo === repo || await sameOnRecord(env, e.repo, repo)) && !(await answersAsAnother(env, repo, e.rid))) return { name: e.name, email: e.email, paths: e.paths || [''], keys: e.keys || [], mode: e.mode || null, features: e.features || null, admin: false };
   }
   if (await requirePush(request, repo, env)) return { name: 'admin', admin: true };
   return null;
@@ -753,7 +755,7 @@ async function presencePing(request, env) {
   const sess = request.headers.get('X-Kiln-Session');
   if (sess && /^[a-f0-9]{64}$/.test(sess)) {
     const e = await env.KILN.get(`esess:${sess}`, 'json');
-    if (e && (!e.exp || e.exp >= Date.now()) && e.role === 'editor' && (e.repo === repo || await sameOnRecord(env, e.repo, repo))) {
+    if (e && (!e.exp || e.exp >= Date.now()) && e.role === 'editor' && (e.repo === repo || await sameOnRecord(env, e.repo, repo)) && !(await answersAsAnother(env, repo, e.rid))) {
       who = e.name; role = 'editor';
       scope = { paths: e.paths || [''], keys: e.keys || [], features: e.features || null, mode: e.mode || null };  // editor UI uses this to gate handles + menu + suggest-mode publish
     }
@@ -1932,8 +1934,11 @@ async function googleCallback(url, env) {
     // so there is never one that only an old name knows about. The site is
     // told the name it asked with (below): that is what its editor compares.
     const { home } = await shelf(env, state.repo);
+    // And it carries the id of the repository that name's things belong to:
+    // each use checks that the name still answers as that repository.
+    const rid = await idOnRecord(env, home);
     await env.KILN.put(`esess:${session}`,
-      JSON.stringify({ repo: home, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], features: person.features || null, mode: person.mode === 'suggest' || person.mode === 'review' ? person.mode : null, created: Date.now(), exp }),
+      JSON.stringify({ repo: home, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], features: person.features || null, mode: person.mode === 'suggest' || person.mode === 'review' ? person.mode : null, created: Date.now(), exp, ...(rid !== null && { rid }) }),
       person.days ? { expirationTtl: person.days * 24 * 3600 } : undefined);
     const fp = { 'kiln-esession': session, 'kiln-name': displayName, 'kiln-repo': state.repo };
     if (exp) fp['kiln-exp'] = String(exp);
@@ -2460,6 +2465,10 @@ async function ghProxy(request, env, ghPath) {
   // Trust the stored expiry, not only KV's TTL.
   if (sess.exp && sess.exp < Date.now()) return json({ error: 'session expired' }, 401);
   if (sess.role !== 'editor') return json({ error: 'not an editor session' }, 403);
+  // Everything below reaches GitHub by the session's name. If that name now
+  // answers as another repository than the one the session was made for,
+  // nothing is asked of it: the session is refused as an ended one is.
+  if (await answersAsAnother(env, sess.repo, sess.rid)) return sessionRepoChanged();
 
   // A site whose config still has the name from before a rename or a transfer
   // asks for /repos/<that name>/…. When the worker's records say it is the
@@ -3164,6 +3173,65 @@ async function whoAnswers(env, name, madeFor) {
   if (id === null) return { id, seen: null, other: false };
   const seen = await repoIdentity(env, name);
   return { id, seen, other: !!seen && seen.id !== id };
+}
+
+// ─── A session is for one repository ─────────────────────────────────────────
+// An editor session reaches its repository by a name, and a name can change
+// hands: a site that never corrected its config after a rename, whose old
+// name another repository then takes, would send its editors' commits there.
+// So a session carries the id of the repository it was made for (`rid`), and
+// each use asks the question the cron asks before a scheduled publish
+// (whoAnswers): is whoever answers to this name now that repository?
+//
+//   · On the usual path that is one more KV read, of the ten-minute `rsee:`
+//     answer. GitHub is asked once when that has run out, not per request.
+//   · A session made before ids were carried is held to the id on record for
+//     its name, which is the cron's rule exactly, and costs one read more. It
+//     is never rewritten to add the id: a rewrite could bring back a session
+//     that taking someone off the list is ending at that moment. It carries
+//     one from the person's next sign-in.
+//   · A session whose name answers as another repository is refused, not
+//     removed: it is good again once the site says where the repository went.
+
+/**
+ * The id of the repository whose things are filed under `name`, by the
+ * worker's own record of the name: what a new session is made for. Not
+ * whatever GitHub says the name is today: a name can be held for the
+ * repository that had it before (admitRepo), and someone on that
+ * repository's list is signed in to that repository. A name the worker has
+ * never met is looked up once, which puts it on record. null when there is
+ * nothing to go by; never throws.
+ */
+async function idOnRecord(env, name) {
+  try {
+    const key = `rname:${String(name).toLowerCase()}`;
+    let named = await env.KILN.get(key, 'json');
+    if (!named) {
+      await repoIdentity(env, name);
+      named = await env.KILN.get(key, 'json');
+    }
+    return named && Number.isInteger(named.id) ? named.id : null;
+  } catch { return null; }
+}
+
+/**
+ * whoAnswers, for a request about to use a session under `name`: true when
+ * the name is known to answer as another repository than the one the session
+ * was made for. Not being able to read the records, or to ask GitHub, is not
+ * knowing: the request then goes on as it did before ids were carried, so a
+ * storage hiccup signs nobody out.
+ */
+async function answersAsAnother(env, name, madeFor) {
+  try { return (await whoAnswers(env, name, madeFor)).other; }
+  catch { return false; }
+}
+
+// What a refused session is told. The status and `error` are those of a
+// session that has ended, which every editor already knows; the rest is for
+// whoever reads the answer.
+const SESSION_REPO_CHANGED = 'This sign-in was made for a different repository than the one that now answers to the name this site uses, so nothing was read or changed. The site owner can run kiln doctor: it says what to correct.';
+function sessionRepoChanged() {
+  return json({ error: 'session expired', code: 'repo_changed', message: SESSION_REPO_CHANGED }, 401);
 }
 
 /**
