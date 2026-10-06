@@ -3031,6 +3031,13 @@ async function followRepo(env, repo) {
     // name the things are under: they stay where they are filed.
     if (repo.toLowerCase() !== seen.name.toLowerCase() || rec.name.toLowerCase() === repo.toLowerCase()) return rec;
     // Asked by the repository's current name: bring what is stored along.
+    // Not on remembered word, though: what was heard up to ten minutes ago
+    // (or is still read from KV somewhere a minute after it was dropped) may
+    // say "current" of a name the repository has just left. GitHub is asked
+    // again, and unless it says the same the things stay where they are.
+    const token = await installationToken(env, repo);
+    const fresh = token ? await lookUpRepo(env, repo, token) : null;
+    if (!fresh || fresh.id !== seen.id || fresh.name.toLowerCase() !== repo.toLowerCase()) return rec;
     return await beginMove(env, seen.id, rec, repo);
   } catch (err) {
     console.error('repo follow failed', String(err && err.message || err));

@@ -544,7 +544,14 @@ test('old name: what was last heard about the old name does not move everything 
   const w = world({ ...met(OLD), ...stored(OLD, 5), [`rsee:${OLD}`]: { id: ID, name: OLD } });
   await withFetch(github(renamed), async () => {
     await comments(w.env, NEW, 'index.html');              // the corrected site: the move begins
+    assert.equal(w.kv.map.has(`rsee:${OLD}`), false, 'it is dropped when the move begins');
     await comments(w.env, OLD, 'index.html');              // a page still open with the old config
+    assert.equal(w.json(`rid:${ID}`).name, NEW);
+    // KV may go on serving the dropped answer elsewhere for a minute: GitHub is asked again before anything is moved.
+    w.kv.map.set(`rsee:${OLD}`, JSON.stringify({ id: ID, name: OLD }));
+    assert.equal((await counts(w.env, OLD)).json.total, 5);
+    await comments(w.env, OLD, 'index.html');
+    assert.equal(w.json(`rid:${ID}`).name, NEW, 'not moved back on remembered word');
     await comments(w.env, NEW, 'index.html');
     await settle(w);
   });
