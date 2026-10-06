@@ -258,6 +258,21 @@ export async function expireStaleTrials(env) {
   ).bind(cutoff).run();
 }
 
+/**
+ * Is this dashboard session the operator? Identity is GitHub's numeric user
+ * id (CLOUD_ADMIN_ID): a login can be renamed, and the old name is then free
+ * for anyone to register. The login (CLOUD_ADMIN) is compared only when no id
+ * is configured, so a worker set up before this keeps working until it is.
+ * With an id configured, a session that carries none (signed in before the id
+ * was recorded) is not the operator: sign in again.
+ */
+export function isCloudAdmin(sess, env) {
+  if (!sess) return false;
+  const id = String(env.CLOUD_ADMIN_ID || '').trim();
+  if (id) return /^\d+$/.test(id) && sess.uid != null && String(sess.uid) === id;
+  return !!env.CLOUD_ADMIN && sess.login === env.CLOUD_ADMIN;
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 export async function handleCloud(request, env, url, path) {
@@ -289,7 +304,9 @@ export async function handleCloud(request, env, url, path) {
     // Keep the user's OAuth token server-side (never sent to the browser) so
     // /cloud/sites can verify the signer actually has push on the repo they're
     // registering — installation-existence is not authorization.
-    await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: account.id, login: user.login, gh: tok.access_token || null }), { expirationTtl: 30 * 24 * 3600 });
+    // `uid` is GitHub's numeric user id: unlike the login, it cannot be
+    // renamed away or registered by someone else later.
+    await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: account.id, login: user.login, uid: user.id ?? null, gh: tok.access_token || null }), { expirationTtl: 30 * 24 * 3600 });
     return Response.redirect(`${dash}#kc_token=${sid}`, 302);   // dashboard reads + stores this
   }
 
@@ -444,7 +461,7 @@ export async function handleCloud(request, env, url, path) {
 
   // ── Admin (owner only) ──
   if (path.startsWith('/admin/cloud/')) {
-    if (!sess || sess.login !== (env.CLOUD_ADMIN || '')) return json({ error: 'forbidden' }, 403);
+    if (!isCloudAdmin(sess, env)) return json({ error: 'forbidden' }, 403);
     // The operator's playbook — served ONLY to the authenticated super-admin, so
     // the ops details never sit in public HTML. The dashboard opens it in a tab.
     if (path === '/admin/cloud/runbook') {
