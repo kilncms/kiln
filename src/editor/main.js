@@ -29,6 +29,7 @@ import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.j
 import { initBlocks } from './blocks.js';
 import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished, guideUndone, guideWaiting } from './firstrun.js';
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
+import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl } from './grants.js';
 import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
@@ -236,7 +237,8 @@ async function init() {
 
 // ─── Update check (owner only) ───────────────────────────────────────────────
 // Compare this bundle's build stamp (__KILN_VERSION__, injected by build.mjs)
-// against the latest published one on GitHub. If a newer editor exists, show a
+// against the latest released one on GitHub (update-check.js: the `release`
+// branch, not main). If a newer editor exists, show a
 // dismissible notice pointing at `kiln update`. Throttled to once per 6h per
 // browser, dismissal is remembered per-version, and it fails SILENTLY on any
 // network/rate-limit error — a version check must never disrupt editing.
@@ -250,10 +252,10 @@ async function checkForUpdate() {
       if (cached.stale && cached.latest !== readLS('kiln_update_dismissed')) showUpdateNotice(cached.latest);
       return;
     }
-    const res = await fetch('https://raw.githubusercontent.com/kilncms/kiln/main/dist/VERSION', { cache: 'no-store' });
-    if (!res.ok) return;
-    const latest = (await res.text()).trim();
-    const stale = !!latest && /^[\w.-]+$/.test(latest) && latest !== mine;
+    // What was released (the `release` branch), not whatever is on main.
+    const latest = await latestStamp();
+    if (!latest) return;
+    const stale = isStale(mine, latest);
     try { localStorage.setItem('kiln_update_check', JSON.stringify({ at: Date.now(), latest, stale })); } catch { /* private mode */ }
     if (stale && latest !== readLS('kiln_update_dismissed')) showUpdateNotice(latest);
   } catch { /* offline / rate-limited — never bother the user */ }
@@ -271,7 +273,7 @@ function showUpdateNotice(latest) {
   document.head.appendChild(st);
   const el = document.createElement('div');
   el.id = 'kiln-update-note';
-  el.innerHTML = '<span>A newer Kiln editor is available. Update: <code>npx github:kilncms/kiln update</code></span>'
+  el.innerHTML = `<span>A newer Kiln editor is available. Update: <code>${escapeHtml(UPDATE_COMMAND)}</code></span>`
     + '<button id="kiln-update-x" aria-label="Dismiss">✕</button>';
   document.body.appendChild(el);
   el.querySelector('#kiln-update-x').onclick = () => {

@@ -9,7 +9,7 @@
 #   npx wrangler deploy --config wrangler.self.toml
 #
 # Then open https://<name>.<your-subdomain>.workers.dev/setup once to register
-# your GitHub App. Or skip all of this: `npx github:kilncms/kiln` in your
+# your GitHub App. Or skip all of this: `npx github:kilncms/kiln#release` in your
 # site's folder does every step here for you.
 
 name = "kiln-auth"                       # CHANGE if you like: it becomes the hostname

@@ -81,7 +81,7 @@ Toolbar / menu features (each grantable per-editor to invited editors):
 - Owner-only admin: overview (MRR/ARR/insights), grant status, diagnose, runbook
 - **Pricing (backend):** Cloud **$4.99/mo**, Managed **$14.99/mo** (cloud.js:344)
 
-## 7. CLI (`npx github:kilncms/kiln`, `cli/index.mjs`)
+## 7. CLI (`npx github:kilncms/kiln#release`, `cli/index.mjs`)
 
 - `tag` — conservative auto-annotation of an existing site (headings, paragraphs, images, card lists, menu)
 - Worker deploy, KV namespace creation, GitHub App manifest flow, config wiring

@@ -193,7 +193,7 @@ export const RUNBOOK_HTML = `<!doctype html>
         <li><strong>Production deploy</strong> — only after all of the above.</li>
       </ol>
       <p>You don't run this day-to-day — I do, when we change something. Your job is to <strong>decide</strong> what changes and <strong>verify the result</strong>. The one command worth knowing, run inside a site's folder:</p>
-      <p><code>npx github:kilncms/kiln doctor</code> — checks the whole chain (worker reachable, app installed, site live, CORS, members area, Google sign-in) and prints pass/fail.</p>
+      <p><code>npx github:kilncms/kiln#release doctor</code> — checks the whole chain (worker reachable, app installed, site live, CORS, members area, Google sign-in) and prints pass/fail.</p>
     </section>
 
     <section id="s4">
@@ -206,15 +206,15 @@ export const RUNBOOK_HTML = `<!doctype html>
       <div class="tw"><table>
         <thead><tr><th>Customer</th><th>How they get editor updates</th></tr></thead>
         <tbody>
-          <tr><td><strong>Fully Managed</strong></td><td>We update it for them — <code>npx github:kilncms/kiln update</code> in their repo, commit, push.</td></tr>
-          <tr><td><strong>Kiln Cloud</strong></td><td>They run <code>npx github:kilncms/kiln update</code> themselves; we tell them when it matters.</td></tr>
+          <tr><td><strong>Fully Managed</strong></td><td>We update it for them — <code>npx github:kilncms/kiln#release update</code> in their repo, commit, push.</td></tr>
+          <tr><td><strong>Kiln Cloud</strong></td><td>They run <code>npx github:kilncms/kiln#release update</code> themselves; we tell them when it matters.</td></tr>
           <tr><td><strong>Self-hosted</strong></td><td>They run <code>update</code> on their own schedule.</td></tr>
         </tbody>
       </table></div>
       <div class="call rule"><span class="tag">Why Track B is low-stakes</span><p>The visitor boot script (~3 KB) rarely changes and the big editor bundle only loads for signed-in editors. An out-of-date editor still works — it's just missing the newest features — and never breaks a customer's live site for visitors. Batch-notify "there's a new version, run <code>update</code> when convenient" rather than firefighting.</p></div>
       <h3 class="sub">Applying a Track-B upgrade safely (Managed)</h3>
       <ol class="steps">
-        <li>In a clone of their repo: <code>npx github:kilncms/kiln update</code>.</li>
+        <li>In a clone of their repo: <code>npx github:kilncms/kiln#release update</code>.</li>
         <li><code>git diff</code> — should show only <code>assets/kiln*.js</code> changing.</li>
         <li>Commit, push. Their host redeploys; visitors see no change; editors get the new features.</li>
         <li>If anything looks wrong: <code>git revert</code> the commit, push. Instantly back to the old bundle.</li>

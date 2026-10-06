@@ -80,7 +80,7 @@ test('S4 doctor: a site with the old members gate fails, and is told the one com
     const { out, code } = await doctor(s);
     assert.equal(code, 1, out);
     assert.match(out, /members gate ends a removed member's sign-in — this site has the old gate/);
-    assert.match(out, /npx github:kilncms\/kiln update/);
+    assert.match(out, /npx github:kilncms\/kiln#release update/);
   } finally { rmSync(s.root, { recursive: true, force: true }); }
 });
 

@@ -2,13 +2,13 @@
 /**
  * kiln — setup wizard + doctor.
  *
- *   npx github:kilncms/kiln            interactive setup in your site directory
- *   npx github:kilncms/kiln doctor     verify an existing Kiln installation
- *   npx github:kilncms/kiln update     refresh the on-page editor to the latest
- *   npx github:kilncms/kiln add-site   add this site to Kiln Cloud (hosted tier)
- *   npx github:kilncms/kiln rescue <url>  copy your builder-hosted site to clean, Kiln-ready static HTML
- *   npx github:kilncms/kiln rescue <url> --render   the same for a site drawn by JavaScript (Lovable, v0, Bolt)
- *   npx github:kilncms/kiln new [dir]  start a fresh site from a template repo (default: the Kiln demo)
+ *   npx github:kilncms/kiln#release            interactive setup in your site directory
+ *   npx github:kilncms/kiln#release doctor     verify an existing Kiln installation
+ *   npx github:kilncms/kiln#release update     refresh the on-page editor to the latest
+ *   npx github:kilncms/kiln#release add-site   add this site to Kiln Cloud (hosted tier)
+ *   npx github:kilncms/kiln#release rescue <url>  copy your builder-hosted site to clean, Kiln-ready static HTML
+ *   npx github:kilncms/kiln#release rescue <url> --render   the same for a site drawn by JavaScript (Lovable, v0, Bolt)
+ *   npx github:kilncms/kiln#release new [dir]  start a fresh site from a template repo (default: the Kiln demo)
  *
  * The wizard automates everything that CAN be automated (repo, worker, KV,
  * origins, secrets, wiring) and for the three steps platforms require a human
@@ -43,7 +43,7 @@ const rl = createInterface({ input: process.stdin, output: process.stdout });
 let waitingForAnswer = false;
 let inputEnded = false;
 const inputGone = () => {
-  console.error('\n  ❌ Input ended while Kiln was waiting for an answer. Run it in a terminal, or see: npx github:kilncms/kiln --help');
+  console.error('\n  ❌ Input ended while Kiln was waiting for an answer. Run it in a terminal, or see: npx github:kilncms/kiln#release --help');
   process.exit(1);
 };
 rl.on('close', () => { inputEnded = true; if (waitingForAnswer) inputGone(); });
@@ -223,7 +223,7 @@ async function detectSiteMode() {
       fails the build only after your first edit.
 `);
   warn('source mode is new: the editor bundle AND your worker must both be current —');
-  console.log('     run `npx github:kilncms/kiln update` on the site and redeploy your worker');
+  console.log('     run `npx github:kilncms/kiln#release update` on the site and redeploy your worker');
   console.log('     from this kiln version, or source fields will be locked read-only.');
   return { mode: 'source', adapter: adapter.id, generator: gen.displayName, hints, publicDir: generatorPublicDir(hints, files) };
 }
@@ -260,7 +260,7 @@ async function doctor(args) {
     mode = src.match(/\bmode\s*:\s*['"]([^'"]+)['"]/)?.[1] || 'html';
     adapterId = src.match(/\badapter\s*:\s*['"]([^'"]+)['"]/)?.[1] || null;
     ok(`read ${cfgPath} (repo=${repo || 'not set'}, worker=${worker || 'not set'}${mode === 'source' ? `, mode=source/${adapterId || '?'}` : ''})`);
-    if (!worker) info('this site is not connected to a worker yet — run the setup wizard here first: npx github:kilncms/kiln');
+    if (!worker) info('this site is not connected to a worker yet — run the setup wizard here first: npx github:kilncms/kiln#release');
   }
   site ||= await ask('Site URL (https://…)');
   repo ||= await ask('GitHub repo (owner/name)');
@@ -286,7 +286,7 @@ async function doctor(args) {
     const current = /members\/check/.test(readFileSync(gatePath, 'utf8'));
     check('members gate ends a removed member\'s sign-in', current, current
       ? 're-checks the list every 5 minutes'
-      : 'this site has the old gate: a removed member stays signed in until their cookie expires. Run `npx github:kilncms/kiln update`, deploy, and have members sign in once more');
+      : 'this site has the old gate: a removed member stays signed in until their cookie expires. Run `npx github:kilncms/kiln#release update`, deploy, and have members sign in once more');
   }
 
   // Source mode (SOURCE-MODE-SPEC §13): does the local tree match the configured mode?
@@ -375,7 +375,7 @@ async function doctor(args) {
       const latest = await stampOn('release') || await stampOn('main');
       if (mine && latest) {
         check('editor is up to date', mine === latest,
-          mine === latest ? `version ${mine}` : `you have ${mine}, latest is ${latest} — run: npx github:kilncms/kiln update`, true);
+          mine === latest ? `version ${mine}` : `you have ${mine}, latest is ${latest} — run: npx github:kilncms/kiln#release update`, true);
       }
       // The three versions that have to be told apart when something is off,
       // on one line: what this site serves, what its worker runs, what is current.
@@ -696,7 +696,7 @@ async function offerAutotag() {
       if (html !== raw) { writeFileSync(f, html); taggedFiles.push(f); tagged += counts.fields + counts.images + counts.repeats + counts.menu; }
     }
     ok(`auto-tagged ${tagged} things — review with: git diff   (undo: git checkout -- .)`);
-    info('subfolders too? run: npx github:kilncms/kiln tag');
+    info('subfolders too? run: npx github:kilncms/kiln#release tag');
   }
   return taggedFiles;
 }
@@ -725,7 +725,7 @@ async function cloudPrep(repo, siteMode = null) {
 
   Commit & push the changes this made, connect your repo to a host that
   auto-deploys on push (Cloudflare Pages recommended), then edit at
-  yoursite.com/kiln.  Health-check any time:  npx github:kilncms/kiln doctor
+  yoursite.com/kiln.  Health-check any time:  npx github:kilncms/kiln#release doctor
 `);
   if (await yes('Commit and push the Kiln wiring now?', 'y')) {
     commitAndPush(kilnFiles, 'Add Kiln (Cloud)');
@@ -746,7 +746,7 @@ function versionLine() {
 function helpText() {
   return `${versionLine()} — click-to-edit for static sites
 
-  Usage: npx github:kilncms/kiln [command] [options]      Run it in your site's folder.
+  Usage: npx github:kilncms/kiln#release [command] [options]      Run it in your site's folder.
 
   (no command)     Set Kiln up for the site in this folder. Asks a few questions,
                    copies the editor in, adds it to your pages, offers to commit.
@@ -985,7 +985,7 @@ crons = ["*/5 * * * *"]
     openUrl(`${workerUrl}/setup`);
     if (!(await pollUntil('waiting for you to press "Create the Kiln GitHub App"',
       async () => (await fetchJson(`${workerUrl}/setup/status`)).json.configured))) {
-      fail(`Timed out waiting for the GitHub App registration.\n  Finish it at ${workerUrl}/setup, then re-run: npx github:kilncms/kiln`);
+      fail(`Timed out waiting for the GitHub App registration.\n  Finish it at ${workerUrl}/setup, then re-run: npx github:kilncms/kiln#release`);
       process.exit(1);
     }
   } else ok(`App already registered: ${status.json.slug}`);
@@ -1016,7 +1016,7 @@ crons = ["*/5 * * * *"]
     openUrl('https://dash.cloudflare.com/?to=/:account/workers-and-pages/create/pages');
     if (!(await pollUntil(`waiting for ${project}.pages.dev to answer`,
       () => fetch(`https://${project}.pages.dev/`).then(r => r.ok), 6000))) {
-      fail(`Timed out waiting for ${project}.pages.dev.\n  Finish Connect-to-Git in the Cloudflare dashboard, then re-run: npx github:kilncms/kiln`);
+      fail(`Timed out waiting for ${project}.pages.dev.\n  Finish Connect-to-Git in the Cloudflare dashboard, then re-run: npx github:kilncms/kiln#release`);
       process.exit(1);
     }
   }
@@ -1096,7 +1096,7 @@ crons = ["*/5 * * * *"]
       spawnSync('npx', ['wrangler', 'secret', 'put', 'GOOGLE_CLIENT_SECRET'], { input: csec, cwd: workerDir, encoding: 'utf8' });
       const g = await fetch(`${workerUrl}/google/login`, { redirect: 'manual' }).then(r => r.status);
       if (g !== 503) ok('Google sign-in is live');
-      else warn('secrets set but worker still reports unconfigured — rerun: npx github:kilncms/kiln doctor');
+      else warn('secrets set but worker still reports unconfigured — rerun: npx github:kilncms/kiln#release doctor');
     }
   }
 
@@ -1110,7 +1110,7 @@ crons = ["*/5 * * * *"]
   Edit it   ${siteUrl}/kiln   ← sign in here to start editing (no edit button on the site)
   Worker    ${workerUrl}
   People    sign in → People & access → add editors/members by email (Google sign-in)
-  Check up  npx github:kilncms/kiln doctor
+  Check up  npx github:kilncms/kiln#release doctor
   Annotate  sign in → ✨ Make text/images editable (click sections to tag them),
             or paste KILN_PROMPT.md into your AI to bulk-tag every page
 `);
@@ -1163,7 +1163,7 @@ async function update() {
     }
     if (prefix !== null) break;
   }
-  if (prefix === null) { fail('No page here loads kiln.js — run the wizard first (npx github:kilncms/kiln).'); process.exit(1); }
+  if (prefix === null) { fail('No page here loads kiln.js — run the wizard first (npx github:kilncms/kiln#release).'); process.exit(1); }
   const dir = path.join(root, prefix.replace(/^\//, '').replace(/\/$/, '')).split(path.sep).join('/') || '.';
   mkdirSync(dir, { recursive: true });
   for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) cpSync(path.join(PKG_ROOT, 'dist', f), path.join(dir, f));
@@ -1248,7 +1248,7 @@ const KNOWN_FLAGS = { '': [], doctor: ['site', 'repo', 'worker'], tag: ['dry'], 
 const takes = KNOWN_FLAGS[cmd === undefined ? '' : cmd];
 const unknownFlag = takes && Object.keys(args).find(k => !takes.includes(k));
 if (unknownFlag) {
-  console.error(`\n  ❌ ${cmd ? `kiln ${cmd}` : 'The setup wizard'} has no option --${unknownFlag}. ${takes.length ? `It takes: ${takes.map(f => `--${f}`).join(', ')}.` : 'It takes no options.'} See: npx github:kilncms/kiln --help\n`);
+  console.error(`\n  ❌ ${cmd ? `kiln ${cmd}` : 'The setup wizard'} has no option --${unknownFlag}. ${takes.length ? `It takes: ${takes.map(f => `--${f}`).join(', ')}.` : 'It takes no options.'} See: npx github:kilncms/kiln#release --help\n`);
   process.exit(2);
 }
 if (cmd === 'doctor') doctor(args);

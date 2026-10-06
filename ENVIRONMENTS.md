@@ -98,7 +98,7 @@ Wired in `worker/wrangler.toml` under `[env.staging]`:
    `https://kiln-auth-staging.erikkwilder.workers.dev/setup` and click the one
    button: it registers a separate "Kiln CMS (staging)" App and stores its
    credentials in the staging KV.
-2. **Make a throwaway test repository.** `npx github:kilncms/kiln new kiln-e2e`,
+2. **Make a throwaway test repository.** `npx github:kilncms/kiln#release new kiln-e2e`,
    push it to a private repository, install the staging App on it, and add an
    empty file named `.kiln-e2e` at its root. That file is what allows the
    end-to-end script to write to the repository and to reset it afterwards: a
@@ -182,13 +182,16 @@ step fails nothing is left behind; if the check after it fails, the message
 names the command that goes back.
 
 **The `release` branch** always points at what production runs. `kiln doctor`
-compares a site's editor with `release/dist/VERSION`, so work on `main` that
-has not been released is not offered to anyone as an update. The branch does
-not exist until the first release made by the script; until then doctor falls
-back to `main`, quietly. Two things still read `main` and should move to
-`release` once the branch exists: the editor's own "a newer editor exists"
-notice, and the install and update commands in the guides
-(`npx github:kilncms/kiln#release …`).
+and the editor's own "a newer editor exists" notice compare a site's editor
+with `release/dist/VERSION`, and the install and update commands in the guides
+fetch the tool from that branch (`npx github:kilncms/kiln#release …`). So work
+on `main` that has not been released is not offered to anyone as an update,
+and `kiln update` does not hand it out. A repository with no `release` branch
+(a fork that has never run the release script) falls back to `main`, quietly.
+
+Editors built before this notice moved still read `main`. On a site that has
+not updated yet, a `dist/` rebuilt on `main` ahead of a release shows up as "a
+newer editor is available". Keep the `dist/` commit and the release together.
 
 It does not touch any site. Bundles go out separately (`npm run propagate`).
 
@@ -250,7 +253,7 @@ as the first canary is an owner step.
 |---|---|
 | The editor a site serves | `KILN_VERSION` in that site's `kiln.js` (the build stamp, also in `dist/VERSION`) |
 | The worker | `curl -s https://auth.kilncms.com/healthz` → `version` (the release number) and `build` (the commit it was deployed from) |
-| All three side by side | `npx github:kilncms/kiln doctor` in the site: `versions: site bundle … · worker … · latest release …` |
+| All three side by side | `npx github:kilncms/kiln#release doctor` in the site: `versions: site bundle … · worker … · latest release …` |
 | What production ran on a given day | the git tag `prod-YYYY-MM-DD` that the release script makes for every production deploy |
 
 A worker deployed by hand reports no `build`. `v0.4.0` and `prod-2026-08-19`

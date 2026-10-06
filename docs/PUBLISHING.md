@@ -61,7 +61,7 @@ To publish a new version later: raise `version` in that package's
 These were left as they are on purpose, because they would be wrong until the
 package exists:
 
-- The guides and the CLI's own messages say `npx github:kilncms/kiln`. Once
+- The guides and the CLI's own messages say `npx github:kilncms/kiln#release`. Once
   `create-kiln` is on npm, `npx create-kiln` is the shorter command for the
   same thing; change the guides, then the messages in `cli/index.mjs`.
 - `cli/README.md` is the package's page on npm and already says

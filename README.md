@@ -42,7 +42,7 @@ edit layer your client was missing.
    <div data-cms-menu="main"> <!-- nav managed across ALL pages at once --> </div>
    <div data-cms-list="post_list"> <!-- blog cards are prepended here --> </div>
    ```
-   Three ways to get these onto an existing site: run `npx github:kilncms/kiln tag`
+   Three ways to get these onto an existing site: run `npx github:kilncms/kiln#release tag`
    for a conservative first pass (headings, paragraphs, images, card lists, the menu —
    tables are never made repeatable (cell text can still be tagged); review with `git diff`, running it twice adds nothing), click
    elements in the browser with **✨ Make text/images editable** after you sign in, or
@@ -109,14 +109,14 @@ per field:
 (The package reaches npm this week; until then the helper is used from this repo's
 `integrations/astro/` — the wizard prints the steps.)
 
-The wizard does the rest: run `npx github:kilncms/kiln` in a generator-built repo
+The wizard does the rest: run `npx github:kilncms/kiln#release` in a generator-built repo
 and it detects the generator, shows what it found ("Found astro.config.mjs and 63
 content files"), asks how the site is built in plain language, writes
 `mode: 'source', adapter: 'astro'` into the config, and deploys a worker that can
 commit to content files. On an Astro site it puts the editor, the config, the
 sign-in page and the `_headers` file under `public/`, the folder Astro copies into
 the built site as it is, and offers to add the two script tags to the template
-that closes `<body>`. An existing install needs `npx github:kilncms/kiln update`
+that closes `<body>`. An existing install needs `npx github:kilncms/kiln#release update`
 plus a redeploy of its worker. `kiln doctor` warns when a repo looks generator-built
 but the site is still in HTML mode — the silent-data-loss trap this mode exists to
 close.
@@ -158,7 +158,7 @@ with the three values to change marked. (`worker/wrangler.toml` is the
 maintainers' file, with their staging and production environments; its top level
 holds placeholders and cannot be deployed.)
 
-The fastest path skips all of this: `npx github:kilncms/kiln` automates the worker
+The fastest path skips all of this: `npx github:kilncms/kiln#release` automates the worker
 deploy, KV namespace, and config wiring for you. Full walkthrough in
 [docs/self-hosting.md](docs/self-hosting.md).
 
@@ -185,17 +185,19 @@ on the site itself; `/kiln` is the only way in.
 
 ### The CLI
 
-`npx github:kilncms/kiln` with no arguments runs the setup wizard. Six more commands
-cover the rest of the lifecycle (`--help` lists them with their options):
+`npx github:kilncms/kiln#release` with no arguments runs the setup wizard. Six more commands
+cover the rest of the lifecycle (`--help` lists them with their options). `#release`
+fetches the tool as it was last released, which is also what the editor and
+`kiln doctor` mean by "latest":
 
 ```bash
-npx github:kilncms/kiln doctor     # health-check an install: worker, app, CORS, bundles, members gate
-npx github:kilncms/kiln update     # re-copy the latest editor bundles into the site, offer to commit
-npx github:kilncms/kiln add-site   # add this site to Kiln Cloud (opens the dashboard)
-npx github:kilncms/kiln tag        # conservative auto-annotation pass (see above)
-npx github:kilncms/kiln new        # scaffold a fresh site from a template repo, wizard-ready
-npx github:kilncms/kiln rescue URL # crawl your builder-hosted site into a clean static copy
-npx github:kilncms/kiln rescue URL --render   # the same for a site drawn by JavaScript (Lovable, v0, Bolt)
+npx github:kilncms/kiln#release doctor     # health-check an install: worker, app, CORS, bundles, members gate
+npx github:kilncms/kiln#release update     # re-copy the latest editor bundles into the site, offer to commit
+npx github:kilncms/kiln#release add-site   # add this site to Kiln Cloud (opens the dashboard)
+npx github:kilncms/kiln#release tag        # conservative auto-annotation pass (see above)
+npx github:kilncms/kiln#release new        # scaffold a fresh site from a template repo, wizard-ready
+npx github:kilncms/kiln#release rescue URL # crawl your builder-hosted site into a clean static copy
+npx github:kilncms/kiln#release rescue URL --render   # the same for a site drawn by JavaScript (Lovable, v0, Bolt)
 ```
 
 `kiln rescue` is the escape hatch from Squarespace/Wix/WordPress: it crawls the
@@ -211,7 +213,7 @@ Kiln to edit and plain `rescue` copies nothing useful. Freeze it first:
 
 ```bash
 npm install playwright-core            # small, downloads no browser
-npx github:kilncms/kiln rescue https://your-site.lovable.app --render --menu-shim
+npx github:kilncms/kiln#release rescue https://your-site.lovable.app --render --menu-shim
 ```
 
 `--render` opens every page in a browser already on your machine (Chrome,
@@ -458,7 +460,7 @@ a public network service, the AGPL asks you to make your source changes availabl
 
 **Kiln Open Source (self-host):** self-host the small auth engine, your own Cloudflare
 worker plus your own GitHub App. One `wrangler deploy`, one click, and the setup wizard
-(`npx github:kilncms/kiln`) walks you through all of it. The price of free is about 10 minutes
+(`npx github:kilncms/kiln#release`) walks you through all of it. The price of free is about 10 minutes
 of configuration. You trust only yourself. The entire engine, editor, worker, and CLI in this
 repo are open source (AGPL-3.0) and never gated or crippled; Kiln Cloud is optional paid
 hosting of that exact same engine.

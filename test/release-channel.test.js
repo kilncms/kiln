@@ -59,7 +59,7 @@ test('KLR-07 once the release branch exists it decides: work on main that is not
   assert.doesNotMatch(current.out, /main999/);
   assert.equal(current.code, 0, current.out);
   const behind = doctor({ site: 'old0000', release: 'rel1111', main: 'main999' });
-  assert.match(behind.out, /you have old0000, latest is rel1111 — run: npx github:kilncms\/kiln update/);
+  assert.match(behind.out, /you have old0000, latest is rel1111 — run: npx github:kilncms\/kiln#release update/);
   assert.equal(behind.code, 0, 'an available update is a notice, not a failure');
 });
 

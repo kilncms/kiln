@@ -42,7 +42,7 @@ function kiln(cwd, args, { table } = {}) {
   });
   return { code: r.status, out: r.stdout, err: r.stderr, all: r.stdout + r.stderr };
 }
-const isHelp = (text) => /Usage: npx github:kilncms\/kiln \[command\] \[options\]/.test(text);
+const isHelp = (text) => /Usage: npx github:kilncms\/kiln#release \[command\] \[options\]/.test(text);
 
 test('KLR-21 --help, -h and help print the help block, exit 0, ask nothing and change nothing', () => {
   const s = site();

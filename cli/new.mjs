@@ -7,7 +7,7 @@
  * the setup wizard for the parts that need accounts (worker, GitHub App,
  * allowlist, Pages).
  *
- *   npx github:kilncms/kiln new [dir] [--from=owner/repo] [--name="Site title"] [--dry]
+ *   npx github:kilncms/kiln#release new [dir] [--from=owner/repo] [--name="Site title"] [--dry]
  *
  * The pure helpers (depersonalizeConfig, setConfigSiteName, titleOf,
  * siteNameOf, personalizeHtml, checkTargetDir) are exported for tests —
@@ -313,7 +313,7 @@ export async function newCmd(dirArg, args = {}) {
        git push -u origin main
 
   2. Run the setup wizard:
-       cd ${dir} && npx github:kilncms/kiln
+       cd ${dir} && npx github:kilncms/kiln#release
      It first asks how you want to run Kiln. Kiln Cloud (the default, paid):
      we run the sign-in service, and the wizard only wires your site to it.
      Self-hosted (free): the wizard deploys your own sign-in service on

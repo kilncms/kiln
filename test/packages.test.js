@@ -71,7 +71,7 @@ test('KLR-20 the root package cannot be published by mistake, and nothing tells 
   const root = manifest('.');
   assert.equal(root.private, true);
   assert.equal(root.repository.url, 'git+https://github.com/kilncms/kiln.git');
-  assert.deepEqual(root.bin, { kiln: 'cli/index.mjs' }, 'npx github:kilncms/kiln still finds its bin');
+  assert.deepEqual(root.bin, { kiln: 'cli/index.mjs' }, 'npx github:kilncms/kiln#release still finds its bin');
   for (const f of ['cli/index.mjs', 'cli/new.mjs', 'README.md', 'docs/for-site-owners.md', 'docs/self-hosting.md', 'docs/PUBLISHING.md', 'ENVIRONMENTS.md']) {
     const text = readFileSync(path.join(ROOT, f), 'utf8').replace(/may ever say `npx kiln …`/, '');
     assert.doesNotMatch(text, /npx kiln(\s|$|`)/m, `${f} says "npx kiln"`);

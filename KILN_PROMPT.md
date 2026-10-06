@@ -19,7 +19,7 @@ which is what Lovable and Bolt make by default), the annotations below have
 nothing to attach to. Two ways forward:
 
 - **Freeze the published site.** Run
-  `npx github:kilncms/kiln rescue <the site's address> --render --menu-shim`
+  `npx github:kilncms/kiln#release rescue <the site's address> --render --menu-shim`
   (needs `npm install playwright-core` and Chrome, Edge, Brave or Chromium).
   It saves every page as finished HTML, removes the app's scripts, tags the
   content and adds the script tags from step 7. Tell the owner what this

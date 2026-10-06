@@ -31,7 +31,7 @@ your repo.
 
 ```bash
 cd your-site-repo
-npx github:kilncms/kiln
+npx github:kilncms/kiln#release
 ```
 
 The wizard deploys the worker (or points you at Kiln Cloud), creates the KV
@@ -52,7 +52,7 @@ again adds them to any page that lacks them and changes nothing else, and
 `kiln doctor` fails if your home page does not load `kiln.js`. When it's done,
 push, visit `yoursite.com/kiln`, and sign in with GitHub.
 
-`npx github:kilncms/kiln --help` lists every command.
+`npx github:kilncms/kiln#release --help` lists every command.
 
 There is deliberately no edit button on the site itself. `/kiln` is the only door in,
 and visitors never see any of this — they get your plain site plus a ~3 KB script.
@@ -60,7 +60,7 @@ and visitors never see any of this — they get your plain site plus a ~3 KB scr
 Health-check an install any time:
 
 ```bash
-npx github:kilncms/kiln doctor
+npx github:kilncms/kiln#release doctor
 ```
 
 If you rename the repo or move it to another account, run it again. Editor access is
@@ -75,7 +75,7 @@ visitor's browser. To use Kiln on a site like that, freeze it into HTML first:
 
 ```bash
 npm install playwright-core
-npx github:kilncms/kiln rescue https://your-site.lovable.app --render --menu-shim --try
+npx github:kilncms/kiln#release rescue https://your-site.lovable.app --render --menu-shim --try
 ```
 
 This opens each page in a browser you already have (Chrome, Edge, Brave or
@@ -108,7 +108,7 @@ that comes from a database.
 Kiln only lets people edit elements that carry a `data-cms` annotation. Three ways to
 add them, from least to most effort:
 
-1. **Auto-tag**: `npx github:kilncms/kiln tag` takes a conservative first pass —
+1. **Auto-tag**: `npx github:kilncms/kiln#release tag` takes a conservative first pass —
    headings, paragraphs, images, card lists, the nav menu. Review with `git diff`,
    undo with `git checkout -- .`. It never makes tables repeatable and running it
    twice adds nothing.
@@ -186,7 +186,7 @@ within about five minutes: the gate on your site asks Kiln whether each
 signed-in member is still on the list at most once every five minutes. If Kiln
 cannot be reached, the last answer stands for up to an hour, then the members
 area closes until it can be. A members area set up with an earlier version of
-Kiln does not do this until you run `npx github:kilncms/kiln update` and
+Kiln does not do this until you run `npx github:kilncms/kiln#release update` and
 deploy; `kiln doctor` tells you which one a site has.
 
 ### Suggest-mode editors
@@ -440,7 +440,7 @@ Self-hosters update on their own schedule:
 
 ```bash
 cd your-site-repo
-npx github:kilncms/kiln update
+npx github:kilncms/kiln#release update
 ```
 
 It copies the latest `kiln.js`, `kiln-editor.js`, and `kiln-features.js` into your

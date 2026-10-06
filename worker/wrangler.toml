@@ -16,7 +16,7 @@
 # SELF-HOSTERS: the top level is yours. Set `name`, put the id of a KV namespace
 # you created in [[kv_namespaces]], set ALLOWED_ORIGINS, delete the
 # [[d1_databases]] block, then `npx wrangler deploy`. Or run
-# `npx github:kilncms/kiln` and the wizard writes its own file for you.
+# `npx github:kilncms/kiln#release` and the wizard writes its own file for you.
 
 name = "kiln-auth-local"
 main = "index.js"

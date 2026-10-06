@@ -23,7 +23,7 @@ There is no third piece. No database to run, no server to patch.
 
 ```bash
 cd your-site-repo
-npx github:kilncms/kiln
+npx github:kilncms/kiln#release
 ```
 
 The wizard walks the whole setup: it deploys the worker to your Cloudflare account,
@@ -124,7 +124,7 @@ talk to your worker's Google sign-in. That's the whole configuration.
 
 ```bash
 cd your-site-repo
-npx github:kilncms/kiln doctor
+npx github:kilncms/kiln#release doctor
 ```
 
 It reads `assets/kiln-config.js` and checks the chain end to end: worker reachable,
@@ -137,7 +137,7 @@ any time something feels off.
 
 ```bash
 cd your-site-repo
-npx github:kilncms/kiln update
+npx github:kilncms/kiln#release update
 ```
 
 This re-copies the latest three bundles into your site (wherever your current

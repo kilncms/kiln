@@ -13,7 +13,7 @@
  *   <script src="/assets/kiln-config.js"></script>   // sets window.KILN = { repo, worker, ... }
  *   <script src="/assets/kiln.js" defer></script>
  * and add a /kiln entry page (kiln.html at the site root) that loads the same two
- * scripts. `npx github:kilncms/kiln` creates kiln.html for you.
+ * scripts. `npx github:kilncms/kiln#release` creates kiln.html for you.
  */
 (function () {
   'use strict';

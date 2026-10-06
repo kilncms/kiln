@@ -42,7 +42,7 @@ to the underlying content file and your host rebuilds the site.
 Astro builds the site from `src/` and copies `public/` into the result as it
 is. Nothing else in the repository reaches the built site, so Kiln's own files
 live under `public/`, and the template your pages are built from loads them.
-The setup wizard (`npx github:kilncms/kiln`, run in the repository) does both:
+The setup wizard (`npx github:kilncms/kiln#release`, run in the repository) does both:
 
 - `public/assets/kiln.js`, `kiln-editor.js`, `kiln-features.js` and
   `kiln-config.js` (with `mode: 'source', adapter: 'astro'`), `public/kiln.html`

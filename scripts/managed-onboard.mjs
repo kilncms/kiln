@@ -118,8 +118,8 @@ if (args.to) {
 console.log(`
 ━━ Remaining manual steps ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   1. Repo prep (in a clone of ${args.repo || 'their repo'}):
-       npx github:kilncms/kiln          # scripts + config (point worker at ours)
-       npx github:kilncms/kiln tag      # first-pass tagging — review git diff
+       npx github:kilncms/kiln#release          # scripts + config (point worker at ours)
+       npx github:kilncms/kiln#release tag      # first-pass tagging — review git diff
        commit + push
   2. Pages project "${args.project}": connect to the GitHub repo in the CF
      dashboard (Workers & Pages → project → Settings → Builds) if not already.

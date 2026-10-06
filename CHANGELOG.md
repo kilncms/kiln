@@ -167,6 +167,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **"Latest" means released, everywhere.** The editor's "a newer Kiln editor is
+  available" notice now reads the build stamp on the `release` branch, which
+  each production release moves, as `kiln doctor` already did. Work on `main`
+  that has not been released is no longer offered as an update. The guides and
+  every message the tool prints now say `npx github:kilncms/kiln#release`, so
+  the tool that is fetched is the released one too.
+
 - **The "Make things editable" grant now does something** — its two tools were
   drawn for the owner only. An editor granted it in People & access sees them
   (not a suggest-only editor or a reviewer, and not on a page outside their

@@ -438,7 +438,7 @@ export async function run(cfg, rawIo) {
   · Google sign-in as an invited editor and as a member
   · a member is signed out within five minutes of being removed in People & access
   · Kiln Cloud with billing in test mode: cancel keeps editing until the period ends; Remove cancels the subscription
-  · npx github:kilncms/kiln doctor in the test site prints the versions line`);
+  · npx github:kilncms/kiln#release doctor in the test site prints the versions line`);
     }
     return { ok: failed.length === 0, checks };
   }

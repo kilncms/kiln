@@ -6,7 +6,7 @@
  * runtime scripts, and auto-tags it for Kiln editing. Output is a folder ready
  * to `git init` and push to any static host.
  *
- *   npx github:kilncms/kiln rescue <url> [--out=dir] [--max-pages=N]
+ *   npx github:kilncms/kiln#release rescue <url> [--out=dir] [--max-pages=N]
  *        [--delay=ms] [--keep-scripts] [--no-tag] [--dry]
  *        [--render [--browser=path] [--menu-shim]] [--try]
  *
@@ -705,7 +705,7 @@ export async function rescueCmd(startUrl, args = {}) {
 
 const TRY_CONFIG = `// Try-out copy written by "kiln rescue --try": edits stay in this browser and
 // nothing is published. Delete this file before running the setup wizard
-// (npx github:kilncms/kiln), which writes the real one.
+// (npx github:kilncms/kiln#release), which writes the real one.
 window.KILN = {
   repo:   'local/try-out',
   branch: 'main',
@@ -762,8 +762,8 @@ function printReport(r) {
   lines.push('1. Create a GitHub repo and push (`gh repo create my-site --private --source . --push`).');
   lines.push('2. Deploy on Cloudflare Pages: Connect to Git, build command EMPTY, output directory `/`.');
   lines.push(r.wantKiln
-    ? '3. Connect Kiln: `npx github:kilncms/kiln` in this folder. Every page already loads Kiln, so after that you open `/kiln`, sign in and click a word.'
-    : '3. Wire up Kiln editing: `npx github:kilncms/kiln` in this folder.');
+    ? '3. Connect Kiln: `npx github:kilncms/kiln#release` in this folder. Every page already loads Kiln, so after that you open `/kiln`, sign in and click a word.'
+    : '3. Wire up Kiln editing: `npx github:kilncms/kiln#release` in this folder.');
   lines.push('');
   const report = lines.join('\n');
   if (!r.dry) writeFileSync(path.join(r.out, 'RESCUE-REPORT.md'), report + '\n');
