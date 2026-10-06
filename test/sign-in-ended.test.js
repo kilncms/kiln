@@ -11,7 +11,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import vm from 'node:vm';
-import { readFailure, onLoadFailure, endedNotice, signInUrl } from '../src/editor/sign-in-ended.js';
+import {
+  readFailure, onLoadFailure, endedNotice, signInUrl,
+  whatSurvives, publishEnded, publishRefused, editsAsText, backAfterSignIn,
+} from '../src/editor/sign-in-ended.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -189,4 +192,144 @@ test('sign-in ended: trouble reaching the worker leaves the sign-in where it is,
   }
   assert.ok(store.kiln_editor, 'still signed in');
   assert.equal(loadShim('/', store).editorLoaded, true);
+});
+
+// ─── At Publish ──────────────────────────────────────────────────────────────
+
+const staged = (over = {}) => ({ edits: 0, source: 0, structural: 0, files: 0, ...over });
+const ended = (counts, kept, more = {}) => publishEnded({ way: 'google', counts, survives: whatSurvives(counts, kept), ...more });
+
+test('publish, sign-in ended: text edits saved in the browser survive signing in again, and so do the files kept with them', () => {
+  assert.deepEqual(whatSurvives(staged({ edits: 2 }), { saved: true }), { text: 2, textKept: true, structuralLost: 0, filesLost: 0, all: true });
+  assert.equal(whatSurvives(staged({ edits: 1, files: 2 }), { saved: true, filesKept: 2 }).all, true);
+  assert.equal(whatSurvives(staged({ edits: 1, source: 1 }), { saved: true }).all, true);
+});
+
+test('publish, sign-in ended: what a page load loses is counted, never passed over', () => {
+  // the browser could not write the saved copy (storage full, a private window)
+  const unsaved = whatSurvives(staged({ edits: 3 }), { saved: false });
+  assert.equal(unsaved.all, false);
+  assert.equal(unsaved.textKept, false);
+  // changes to what is editable, and added or removed sections, are not in the saved copy
+  const structural = whatSurvives(staged({ edits: 1, structural: 2 }), { saved: true });
+  assert.equal(structural.all, false);
+  assert.equal(structural.textKept, true);
+  assert.equal(structural.structuralLost, 2);
+  // an upload that was not kept
+  assert.equal(whatSurvives(staged({ edits: 1, files: 2 }), { saved: true, filesKept: 1 }).filesLost, 1);
+  // uploads are kept beside the saved edits: without those there is nothing to bring them back with
+  assert.equal(whatSurvives(staged({ files: 1 }), { saved: false, filesKept: 0 }).all, false);
+  assert.equal(whatSurvives(staged({ structural: 1 }), { saved: false }).all, false);
+});
+
+test('publish, sign-in ended: the person is told nothing was published, that the edits are saved, and how to get back in', () => {
+  const one = ended(staged({ edits: 1 }), { saved: true });
+  assert.deepEqual(one, {
+    title: 'Your sign-in has ended',
+    status: 'Not published: your sign-in has ended.',
+    text: 'Nothing was published. Your edit is saved in this browser and will be back on this page when you have signed in again with Google.',
+    detail: '', signIn: true, copy: false, copyFirst: false,
+  });
+  assert.equal(ended(staged({ edits: 2, source: 1 }), { saved: true }).text,
+    'Nothing was published. Your 3 edits are saved in this browser and will be back on this page when you have signed in again with Google.');
+  assert.equal(publishEnded({ way: 'github', counts: staged({ edits: 1 }), survives: whatSurvives(staged({ edits: 1 }), { saved: true }) }).text,
+    'Nothing was published. Your edit is saved in this browser and will be back on this page when you have signed in again with GitHub.');
+});
+
+test('publish, sign-in ended: what cannot be kept is said before the person leaves, and the text can be copied', () => {
+  const unsaved = ended(staged({ edits: 2 }), { saved: false });
+  assert.equal(unsaved.text, 'Nothing was published. Signing in again with Google loads this page afresh. This browser could not save your edits, so they will not be here afterwards. Copy your text first to be sure of it.');
+  assert.equal(unsaved.copy, true);
+  assert.equal(unsaved.copyFirst, true, 'the words would be lost: copying is the button to press first');
+  assert.equal(unsaved.signIn, true);
+  const structural = ended(staged({ edits: 1, structural: 1 }), { saved: true });
+  assert.equal(structural.text, 'Nothing was published. Signing in again with Google loads this page afresh. Your edit is saved in this browser and will be back. Parts you made editable, added or removed cannot be saved and will need doing again. Copy your text first to be sure of it.');
+  assert.equal(structural.copy, true);
+  assert.equal(structural.copyFirst, false, 'the words are saved: signing in again stays the first button');
+  const files = ended(staged({ edits: 1, files: 1 }), { saved: true, filesKept: 0 });
+  assert.match(files.text, /The pictures or files you added could not be saved and will need adding again\./);
+  // nothing with words in it: there is no text to copy, and it still says what is lost
+  const only = ended(staged({ structural: 1 }), { saved: false });
+  assert.equal(only.text, 'Nothing was published. Signing in again with Google loads this page afresh. Parts you made editable, added or removed cannot be saved and will need doing again.');
+  assert.equal(only.copy, false);
+});
+
+test('publish, sign-in ended: when the owner has something to correct, signing in again is not offered and the text can be copied', () => {
+  const d = ended(staged({ edits: 1 }), { saved: true }, { ownerMust: true, message: REPO_CHANGED });
+  assert.equal(d.text, 'Nothing was published. The site’s owner has something to correct before anyone can sign in again, so please ask them. Your edit is saved in this browser for a week: copy your text to keep it longer.');
+  assert.equal(d.detail, `For the owner: ${REPO_CHANGED}`);
+  assert.equal(d.signIn, false);
+  assert.equal(d.copy, true);
+  const unsaved = ended(staged({ edits: 2 }), { saved: false }, { ownerMust: true, message: REPO_CHANGED });
+  assert.equal(unsaved.text, 'Nothing was published. The site’s owner has something to correct before anyone can sign in again, so please ask them. Your 2 edits are still on this page, but only until it is closed: copy your text to keep it.');
+});
+
+test('publish, sign-in ended: found out by something other than Publish, or with nothing unpublished, it does not speak of publishing', () => {
+  const idle = ended(staged(), { saved: false });
+  assert.equal(idle.text, 'Please sign in again with Google to carry on.');
+  assert.equal(idle.status, 'Your sign-in has ended.');
+  assert.equal(idle.signIn, true);
+  const elsewhere = ended(staged({ edits: 1 }), { saved: true }, { publishing: false });
+  assert.equal(elsewhere.status, 'Your sign-in has ended.');
+  assert.equal(elsewhere.text, 'Your edit is saved in this browser and will be back on this page when you have signed in again with Google.');
+});
+
+test('publish refused: a 403 is not a sign-out, and its reason is the answer\'s own', () => {
+  const scope = readFailure({ status: 403, data: { error: 'outside your editing scope', path: 'about.html' } });
+  assert.equal(scope.kind, 'refused');
+  assert.equal(scope.reason, 'outside your editing scope');
+  assert.equal(readFailure({ status: 403, data: { message: 'Resource not accessible by integration' } }).reason, 'Resource not accessible by integration');
+  assert.equal(readFailure({ status: 403, data: {} }).reason, '');
+  assert.equal(readFailure({ status: 403 }).kind, 'refused');
+  // GitHub also answers 403 when it has been asked too often. That is not about the person.
+  assert.notEqual(readFailure({ status: 403, data: { message: 'API rate limit exceeded for user ID 1.' } }).kind, 'refused');
+  assert.notEqual(readFailure({ status: 403, data: { message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.' } }).kind, 'refused');
+  // and on page load a 403 never drops an invited editor's sign-in
+  assert.equal(onLoadFailure({ status: 403, data: { error: 'path not allowed' } }, { mode: 'editor' }), null);
+});
+
+test('publish refused: the person is told the edits are still there, offered a copy, and not sent to sign in', () => {
+  const d = publishRefused({ way: 'google', reason: 'outside your editing scope', counts: staged({ edits: 1 }) });
+  assert.deepEqual(d, {
+    title: 'This was not published',
+    status: 'Not published: your sign-in does not allow this change.',
+    text: 'Your sign-in does not allow this change, so nothing was published. Your edit is still on this page: copy your text to keep it, and ask the site’s owner.',
+    detail: 'The answer was: outside your editing scope',
+    signIn: false, copy: true,
+  });
+  const owner = publishRefused({ way: 'github', reason: '', counts: staged({ edits: 2 }) });
+  assert.equal(owner.text, 'Your sign-in does not allow this change, so nothing was published. Your 2 edits are still on this page: copy your text to keep it, and check that you can still write to the repository on GitHub.');
+  assert.equal(owner.detail, '');
+});
+
+test('publish, sign-in ended: "Copy my text" gives each edit its name and its words', () => {
+  assert.equal(editsAsText([
+    { label: 'hero headline', text: ' Fresh bread\nevery morning ' },
+    { label: 'opening note', text: '' },                // nothing to copy
+    { label: '', text: 'Closed on Mondays' },
+  ]), 'hero headline\nFresh bread\nevery morning\n\nClosed on Mondays');
+  assert.equal(editsAsText([]), '');
+  assert.equal(editsAsText(null), '');
+});
+
+test('publish, sign-in ended: after signing in again the status line says the edits are back', () => {
+  assert.equal(backAfterSignIn(1), 'You are signed in again, and your edit is back on this page. Publish when ready.');
+  assert.equal(backAfterSignIn(3, 2), 'You are signed in again, and your 3 edits are back on this page, with the files they added. Publish when ready.');
+});
+
+test('publish: every sentence about an ended or refused sign-in is plain', () => {
+  const all = [backAfterSignIn(1), backAfterSignIn(2, 1)];
+  for (const way of ['google', 'github']) {
+    for (const counts of [staged(), staged({ edits: 1 }), staged({ edits: 2, source: 1, structural: 1, files: 2 }), staged({ structural: 1 })]) {
+      for (const kept of [{ saved: true, filesKept: 2 }, { saved: false }]) {
+        for (const more of [{}, { ownerMust: true, message: REPO_CHANGED }, { publishing: false }]) {
+          const d = publishEnded({ way, counts, survives: whatSurvives(counts, kept), ...more });
+          all.push(d.title, d.status, d.text);
+        }
+      }
+      const r = publishRefused({ way, reason: 'outside your editing scope', counts });
+      all.push(r.title, r.status, r.text);
+    }
+  }
+  for (const text of all) assertPlain(text);
 });

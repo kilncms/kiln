@@ -35,7 +35,7 @@ import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
-import { onLoadFailure, signInUrl } from './sign-in-ended.js';
+import { onLoadFailure, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -55,6 +55,9 @@ const MOBILE_MQ = '(max-width: 700px), (pointer: coarse) and (max-width: 820px)'
 function isMobileEditor() { return window.matchMedia(MOBILE_MQ).matches; }
 // True once the pencil and the status line exist (declared up here for the same reason).
 let chromeDrawn = false;
+// True once the person has pressed "Sign in again": the page is about to be left on purpose.
+let leavingToSignIn = false;
+const BACK_KEY = 'kiln_signin_back';   // sessionStorage: this tab left through "Sign in again"
 
 import { SANITIZE, CONTAINER_SANITIZE, BLOCK_SANITIZE } from './sanitize.js';
 
@@ -246,6 +249,8 @@ async function init() {
   if (mode === 'admin' && !cfg.sandbox) checkForUpdate();
 
   window.addEventListener('beforeunload', (e) => {
+    // Leaving to sign in again was chosen in a dialog that said what is kept.
+    if (leavingToSignIn) return;
     if (state.pending.size || state.pendingBinaries.size || state.pendingStructural.length
       || state.pendingSource.size) { e.preventDefault(); e.returnValue = ''; }
   });
@@ -267,8 +272,12 @@ function draftWaits() {
   return false;
 }
 
-/** The worker's own sign-in, coming back to this page. */
+/** The worker's own sign-in, coming back to this page, where saved edits are put back without asking. */
 function signInAgain() {
+  leavingToSignIn = true;
+  // Still here in a few seconds (the sign-in could not be reached, or the person came straight back): warn again on leaving.
+  setTimeout(() => { leavingToSignIn = false; }, 5000);
+  try { sessionStorage.setItem(BACK_KEY, '1'); } catch { /* private mode: the edits are offered back instead */ }
   location.href = signInUrl({ worker: cfg.worker, origin: location.origin, path: location.pathname + location.search,
     repo: cfg.repo, way: mode === 'admin' ? 'github' : 'google' });
 }
@@ -283,6 +292,76 @@ function signInEndedOnLoad(over) {
   if (over.drop) localStorage.removeItem(mode === 'admin' ? ADMIN_KEY : EDITOR_KEY);
   document.querySelector('style[data-kiln]')?.remove();
   showNotice(over.notice, signInAgain);
+}
+
+// ─── …found out while editing ────────────────────────────────────────────────
+// Nothing staged is touched and nothing is reloaded. The unpublished edits are
+// already saved in this browser ("Crash-proof pending edits"), and signing in
+// again comes back to this page, where they are put back.
+
+/** The saved copy in this browser holds every text edit staged right now (written, then read back). */
+function draftSaved() {
+  savePendingToStorage();
+  if (state.pendingSource.size) return false;   // edits to content files are not in the saved copy
+  try {
+    const saved = JSON.parse(localStorage.getItem(pendingStorageKey()));
+    return !!saved && JSON.stringify(saved.edits) === JSON.stringify(Object.fromEntries(state.pending));
+  } catch { return false; }
+}
+
+/** The unpublished text, for "Copy my text": each edit as a person reads it on the page. */
+function unpublishedText() {
+  const items = [];
+  for (const [key, v] of state.pending) {
+    if (v.html !== undefined) items.push({ label: humanizeKey(key), text: renderedText(key, v.html) });
+    if (v.attrs && 'alt' in v.attrs) items.push({ label: `${humanizeKey(key)} (picture description)`, text: v.attrs.alt });
+    if (v.attrs && 'href' in v.attrs) items.push({ label: `${humanizeKey(key)} (link goes to)`, text: v.attrs.href });
+  }
+  for (const [ref, v] of state.pendingSource) items.push({ label: humanizeKey(String(ref).split('#').pop().split('/').pop()), text: v.value });
+  return editsAsText(items);
+}
+
+/** What a request found out, as a dialog: where the edits stand, and what can be done. */
+function stoppedDialog(f, publishing) {
+  const counts = { edits: state.pending.size, source: state.pendingSource.size, structural: state.pendingStructural.length, files: state.pendingBinaries.size };
+  const way = mode === 'admin' ? 'github' : 'google';
+  const d = f.kind === 'refused'
+    ? publishRefused({ way, reason: f.reason, counts })
+    : publishEnded({ way, ownerMust: f.ownerMust, message: f.message, counts, publishing,
+      survives: whatSurvives(counts, { saved: draftSaved(), filesKept: [...state.pendingBinaries.keys()].filter(p => keptHere.has(p)).length }) });
+  const again = () => stoppedDialog(f, publishing);
+  setStatus(d.status, 'error', { sticky: true, action: { label: d.signIn ? 'Sign in again' : 'What now', title: 'What happened, and what is kept', run: again } });
+  const m = modal(`
+    <h3>${escapeHtml(d.title)}</h3>
+    <p style="margin:0;font-size:14.5px;line-height:1.55;color:#1c1c28">${escapeHtml(d.text)}</p>
+    ${d.detail ? `<p style="margin:12px 0 0;border-left:2px solid #d5d8e0;padding-left:10px;font-size:13px;line-height:1.5;color:#4b5563">${escapeHtml(d.detail)}</p>` : ''}
+    <textarea id="kiln-stop-text" readonly hidden rows="6" style="width:100%;box-sizing:border-box;font:13px/1.45 ui-monospace,Menlo,monospace;margin-top:4px"></textarea>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>${d.signIn ? 'Not now' : 'Close'}</button>
+      ${d.copy ? `<button class="${d.signIn && !d.copyFirst ? 'kiln-btn-ghost' : 'kiln-btn-publish'}" id="kiln-stop-copy">Copy my text</button>` : ''}
+      ${d.signIn ? `<button class="${d.copyFirst ? 'kiln-btn-ghost' : 'kiln-btn-publish'}" id="kiln-stop-go">Sign in again</button>` : ''}
+    </div>`);
+  const copy = m.querySelector('#kiln-stop-copy');
+  if (copy) copy.onclick = async () => {
+    const text = unpublishedText();
+    try {
+      await navigator.clipboard.writeText(text);
+      copy.textContent = 'Copied';
+    } catch {
+      // No clipboard here: show the text, selected, to copy by hand.
+      const box = m.querySelector('#kiln-stop-text');
+      box.value = text; box.hidden = false; box.focus(); box.select();
+    }
+  };
+  const go = m.querySelector('#kiln-stop-go');
+  if (go) go.onclick = signInAgain;
+}
+
+/** The owner's token could not be renewed, found out by something other than Publish. */
+function signInEndedSeen(err) {
+  const f = readFailure(err);
+  setStatus('Your sign-in has ended.', 'error', { sticky: true,
+    action: { label: 'Sign in again', title: 'What happened, and what is kept', run: () => stoppedDialog(f, false) } });
 }
 
 /** One sentence, at most one button, and a way to put it away. Styled inline: the editor's own styles are not on the page. */
@@ -396,8 +475,10 @@ function withAutoRefresh(gh, stored) {
           // work again once the worker recovers — just fail this one request.
           if (res.status === 401) {
             err.signIn = 'ended';
-            // While the editor is starting, init() says so on the page.
-            if (chromeDrawn) { localStorage.removeItem(ADMIN_KEY); location.reload(); }
+            // While the editor is starting, init() says so on the page. Once it
+            // is running, nothing is reloaded under the person's edits: the
+            // status line says so, and Publish explains what is kept.
+            if (chromeDrawn) signInEndedSeen(err);
           }
           throw err;
         }
@@ -2480,11 +2561,16 @@ async function publish(opts = {}) {
     // its name) comes back with a plain sentence — show it, with the file's name.
     const why = fileRefusalText(err.data);
     const which = why && err.data.path ? ` (${String(err.data.path).split('/').pop()})` : '';
-    setStatus(why ? why + which : 'Publish failed — see console', 'error');
     // Re-enable Publish so the user can retry. disablePublish(false) would keep
     // the button disabled when only binaries/structural ops are pending (its
     // check is `!state.pending.size`); refreshPublishButton counts those too.
+    // It also saves the edits in this browser, before anything is said about them.
     refreshPublishButton();
+    // The sign-in has ended (401), or it does not allow this change (403):
+    // the edits stay as they are, and the person is told where they stand.
+    const f = why ? null : readFailure(err);
+    if (f && (f.kind === 'ended' || f.kind === 'refused')) stoppedDialog(f, true);
+    else setStatus(why ? why + which : 'Publish failed — see console', 'error');
   }
 }
 
@@ -5947,11 +6033,15 @@ function offerPendingRestore() {
   // Read the uploads an earlier visit left before anything here can tidy them away.
   const kept = cfg.sandbox ? Promise.resolve([]) : keptFiles(pendingStorageKey()).catch(() => []);
   keptReady = true;
+  // Back from "Sign in again" in this tab: the edits are put back without asking.
+  let back = false;
+  try { back = sessionStorage.getItem(BACK_KEY) === '1'; sessionStorage.removeItem(BACK_KEY); } catch { /* private mode */ }
   let saved;
   try { saved = JSON.parse(localStorage.getItem(pendingStorageKey())); } catch { return; }
   if (!saved || !saved.edits || Date.now() - saved.ts > 7 * 24 * 3600 * 1000) return;
   const keys = Object.keys(saved.edits);
   if (!keys.length) return;
+  if (back) { restoreSaved(saved, kept, true); return; }
   const m = modal(`
     <h3>Pick up where you left off?</h3>
     <p class="kiln-dim">You have ${keys.length} unpublished edit${keys.length > 1 ? 's' : ''} from
@@ -5962,46 +6052,50 @@ function offerPendingRestore() {
       <button class="kiln-btn-publish" id="kiln-rest-yes">Restore edits</button>
     </div>`);
   m.querySelector('#kiln-rest-no').onclick = () => { clearSavedPending(); m.remove(); };
-  m.querySelector('#kiln-rest-yes').onclick = async () => {
-    // The pictures and files those edits added: queue them again, and show each
-    // picture from the kept bytes (its address on the site does not exist yet).
-    const files = filesToRestore(await kept, saved.edits);
-    for (const f of files) { state.pendingBinaries.set(f.path, f.base64); keptHere.add(f.path); }
-    for (const [key, edit] of Object.entries(saved.edits)) {
-      state.pending.set(key, edit);
-      const esc = CSS.escape(key);
-      // applyKeyDom handles BOTH plain fields and repeat containers (re-wiring the
-      // repeat). The old code skipped repeats, so the DOM showed the un-restored
-      // content while Publish committed the restored html — publishing what wasn't
-      // previewed. Also restore attr edits (href/src/style), which were dropped.
-      if (edit.html !== undefined) applyKeyDom(key, edit.html);
-      if (edit.attrs) {
-        document.querySelectorAll(`[data-cms="${esc}"]`).forEach(n => {
-          for (const [a, v] of Object.entries(edit.attrs)) if (v !== undefined && v !== null) n.setAttribute(a, v);
-        });
-      }
-      document.querySelectorAll(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`)
-        .forEach(n => n.classList.add('kiln-modified'));
+  m.querySelector('#kiln-rest-yes').onclick = async () => { await restoreSaved(saved, kept, false); m.remove(); };
+}
+
+/** Put saved edits back on the page, staged as they were. `kept` resolves to the uploads kept beside them. */
+async function restoreSaved(saved, kept, signedInAgain) {
+  const keys = Object.keys(saved.edits);
+  // The pictures and files those edits added: queue them again, and show each
+  // picture from the kept bytes (its address on the site does not exist yet).
+  const files = filesToRestore(await kept, saved.edits);
+  for (const f of files) { state.pendingBinaries.set(f.path, f.base64); keptHere.add(f.path); }
+  for (const [key, edit] of Object.entries(saved.edits)) {
+    state.pending.set(key, edit);
+    const esc = CSS.escape(key);
+    // applyKeyDom handles BOTH plain fields and repeat containers (re-wiring the
+    // repeat). The old code skipped repeats, so the DOM showed the un-restored
+    // content while Publish committed the restored html — publishing what wasn't
+    // previewed. Also restore attr edits (href/src/style), which were dropped.
+    if (edit.html !== undefined) applyKeyDom(key, edit.html);
+    if (edit.attrs) {
+      document.querySelectorAll(`[data-cms="${esc}"]`).forEach(n => {
+        for (const [a, v] of Object.entries(edit.attrs)) if (v !== undefined && v !== null) n.setAttribute(a, v);
+      });
     }
-    for (const f of files) {
-      const url = siteAddress(f.path, cfg.root || '');
-      const ext = (f.path.split('.').pop() || '').toLowerCase();
-      if (!/^(png|jpe?g|webp|avif|gif)$/.test(ext)) continue;
-      let preview = null;
-      for (const img of document.querySelectorAll('img')) {
-        if (img.closest(KILN_CHROME) || img.getAttribute('src') !== url) continue;
-        if (!preview) {
-          try { preview = URL.createObjectURL(new Blob([Uint8Array.from(atob(f.base64), c => c.charCodeAt(0))], { type: `image/${ext === 'jpg' ? 'jpeg' : ext}` })); }
-          catch { break; }
-        }
-        img.setAttribute('data-kiln-src', url);
-        img.src = preview;
+    document.querySelectorAll(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`)
+      .forEach(n => n.classList.add('kiln-modified'));
+  }
+  for (const f of files) {
+    const url = siteAddress(f.path, cfg.root || '');
+    const ext = (f.path.split('.').pop() || '').toLowerCase();
+    if (!/^(png|jpe?g|webp|avif|gif)$/.test(ext)) continue;
+    let preview = null;
+    for (const img of document.querySelectorAll('img')) {
+      if (img.closest(KILN_CHROME) || img.getAttribute('src') !== url) continue;
+      if (!preview) {
+        try { preview = URL.createObjectURL(new Blob([Uint8Array.from(atob(f.base64), c => c.charCodeAt(0))], { type: `image/${ext === 'jpg' ? 'jpeg' : ext}` })); }
+        catch { break; }
       }
+      img.setAttribute('data-kiln-src', url);
+      img.src = preview;
     }
-    refreshPublishButton();
-    setStatus(`${keys.length} edit${keys.length > 1 ? 's' : ''} restored${files.length ? ', with the files they added' : ''} — Publish when ready`, 'saved');
-    m.remove();
-  };
+  }
+  refreshPublishButton();
+  if (signedInAgain) setStatus(backAfterSignIn(keys.length, files.length), 'saved');
+  else setStatus(`${keys.length} edit${keys.length > 1 ? 's' : ''} restored${files.length ? ', with the files they added' : ''} — Publish when ready`, 'saved');
 }
 
 function escapeHtml(s) {
