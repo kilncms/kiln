@@ -329,16 +329,29 @@ async function doctor(args) {
   if (repo) {
     const inst = await fetchJson(`${worker}/setup/install-check?repo=${repo}`).catch(() => ({ json: {} }));
     check(`App installed on ${repo}`, !!inst.json.installed, inst.json.installed ? '' : status.json.slug ? `install: https://github.com/apps/${status.json.slug}/installations/new` : 'the worker has no GitHub App yet — register it first (visit the worker\'s /setup)');
-    // Rename/transfer tripwire: editor allowlists + Cloud registration are keyed to the
-    // exact repo string, and they do NOT follow a GitHub rename or transfer. A FAILING
-    // check, not a warning: GitHub keeps answering for the old name, so everything
-    // else here can pass while editors are locked out, and doctor must not call that
-    // healthy. Counted only when GitHub answers (a private repo cannot be read here).
+    // Rename/transfer tripwire. What a site stores in the worker is filed under
+    // the repo name in its config, and GitHub keeps answering for an old name
+    // only until someone else takes it. A FAILING check, not a warning:
+    // everything else here can pass while the site rests on that redirect,
+    // and doctor must not call that healthy.
+    //
+    // Two sources. GitHub itself, asked without a sign-in: it names the new
+    // name, but cannot see a private repository. And the worker (one that
+    // keeps repository ids says `renamed` and `reused`): it sees private
+    // repositories through its App, and answers yes or no without the name.
+    const follows = typeof inst.json.renamed === 'boolean';
+    const carried = `Set repo to its current owner/name in ${cfgPath} and deploy. Your worker carries the people list (and a Kiln Cloud registration) over by the repository's id, so nobody has to be added again`;
     const gh = await fetchJson(`https://api.github.com/repos/${repo}`).catch(() => ({ json: {} }));
     if (gh.json.full_name) {
       const same = gh.json.full_name === repo;
       check('repo name matches GitHub', same, same ? repo
+        : follows ? `GitHub answers as ${gh.json.full_name} but the config says ${repo}: the repository was renamed or moved, and the old name works only while GitHub redirects it. ${carried.replace('its current owner/name', `'${gh.json.full_name}'`)}`
         : `GitHub answers as ${gh.json.full_name} but the config says ${repo}. After a rename or transfer, editor access and Cloud registration stay tied to the OLD name: set repo to '${gh.json.full_name}' in ${cfgPath}, add your editors again in People & access, and register the site again`);
+    } else if (inst.json.renamed === true) {
+      check('repo name matches GitHub', false, `your worker reports that GitHub now knows this repository by another name: it was renamed or moved to another account, and the old name works only while GitHub redirects it. ${carried}`);
+    }
+    if (inst.json.reused === true) {
+      check('repo is the repository Kiln was set up for', false, `${repo} now answers as a different repository than the one whose people are stored under this name, so your worker shows and changes that list for no one. If the first repository was renamed or moved, set repo to its current owner/name in ${cfgPath}. If it was deleted and made again, the stored list has to be cleared before a new one can start: self-hosted, run npx wrangler kv key delete "people:${repo}" --binding KILN in your worker's folder; on Kiln Cloud, write to us`);
     }
   }
 

@@ -174,6 +174,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A repository is its GitHub id, not its name.** The worker now records the
+  id of every repository it meets. When a repository is renamed or moved to
+  another account and the site's config is corrected, the people list and a
+  Kiln Cloud registration move to the new name the first time anyone uses it;
+  until then a site that still has the old name keeps working. If the old name
+  later answers as a different repository, that repository gets none of the
+  people stored for the first one: owner requests under the name are refused
+  with the reason. Member sign-in compares repositories by id, so an origin
+  registered under the new name accepts a site whose config has the old one.
+  `kiln doctor` asks the worker and fails on a rename (private repositories
+  included) and on a name that changed hands. Backups include the new records.
+  Not followed: comment threads, suggestions, scheduled posts and API tokens
+  made under the old name stay under it.
 - **"Latest" means released, everywhere.** The editor's "a newer Kiln editor is
   available" notice now reads the build stamp on the `release` branch, which
   each production release moves, as `kiln doctor` already did. Work on `main`

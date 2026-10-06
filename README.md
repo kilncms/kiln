@@ -239,7 +239,8 @@ where `kiln.js` lives, drops the latest `kiln.js` + `kiln-editor.js` + `kiln-fea
 next to it, and offers to commit and push. `kiln doctor` reads `assets/kiln-config.js`
 if present and checks the worker, GitHub App registration and install, site liveness,
 CORS, and the members gate. It also fails when the repo has been renamed or moved on
-GitHub, because editor access is stored under the repo's exact name.
+GitHub and the config still has the old name. Correct the config and the worker
+brings the people list along: it knows a repository by its GitHub id, not its name.
 
 ## What editors can do
 

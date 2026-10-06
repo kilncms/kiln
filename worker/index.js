@@ -48,6 +48,9 @@
  *   state:<n>   OAuth state nonce            (TTL 10 min)
  *   sid:<id>    {refresh_token}              (TTL 180 days, rotated)
  *   people:<repo> [{email,name,role,days,paths?}]  editor/member allowlist
+ *   rid:<id>      {id,name,was?,at}  a repository by its GitHub id: the name its data is filed under
+ *   rname:<repo>  {id,at}            which repository a name is (lowercased); see "Repository identity"
+ *   rsee:<repo>   {id,name}          GitHub's last answer for a name  (TTL 10 min)
  *   msess:<sid>   {repo,email,origin}  a member's sign-in on a site, so removal can end it
  *   esess:<id>  {repo,name,role,email,paths}  (TTL = person.days)
  *   atok:<sha>  {id,repo,name,paths,keys,readonly,created,exp}  API token, keyed by SHA-256(secret)  (TTL = days)
@@ -130,7 +133,11 @@ export default {
         const repo = url.searchParams.get('repo') || '';
         if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'bad repo' }, 400);
         const tok = await installationToken(env, repo);
-        return json({ repo, installed: !!tok });
+        // For `kiln doctor`: does GitHub still know this repository by this
+        // name, and is it the repository the worker has on record for it?
+        // Booleans only: the current name of a private repository is not
+        // handed to whoever asks about an old one.
+        return json({ repo, installed: !!tok, ...(tok ? await repoStanding(env, repo) : {}) });
       }
       if (path === '/auth/login') return authLogin(url, env);
       if (path === '/auth/callback') return authCallback(url, env);
@@ -446,8 +453,16 @@ async function authLogout(request, env) {
 
 // ─── Access control ──────────────────────────────────────────────────────────
 
-/** True if the bearer GitHub token has push access to the repo (the site owner). */
-async function requirePush(request, repo) {
+/**
+ * True if the bearer GitHub token has push access to the repo (the site owner).
+ *
+ * GitHub's answer also carries the repository's id, which never changes. With
+ * `env` given, that id is put on record for the name, and a name that is on
+ * record as a DIFFERENT repository with people stored under it is refused:
+ * push access to whatever now answers to an old name is not ownership of the
+ * site that used to have it (KLR-08). See "Repository identity" below.
+ */
+async function requirePush(request, repo, env) {
   const auth = (request.headers.get('Authorization') || '').replace(/^(token|Bearer)\s+/i, '');
   if (!auth || !repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return false;
   const res = await fetch(`${GH}/repos/${repo}`, {
@@ -455,7 +470,22 @@ async function requirePush(request, repo) {
   });
   if (!res.ok) return false;
   const info = await res.json();
-  return !!info.permissions?.push;
+  if (!info.permissions?.push) return false;
+  if (env && Number.isInteger(info.id)) {
+    const seen = { id: info.id, name: typeof info.full_name === 'string' ? info.full_name : repo };
+    if (!(await admitRepo(env, repo, seen))) { pushRefusal.set(request, REPO_CHANGED); return false; }
+  }
+  return true;
+}
+
+// Why requirePush said no, when the reason is worth telling the person asking.
+const pushRefusal = new WeakMap();
+const REPO_CHANGED = 'This name now belongs to a different repository than the one these people were added to, so their list is not shown or changed here. If the repository was renamed or moved, set repo in kiln-config.js to its current owner/name. If it was deleted and made again, run kiln doctor: it says how to start a new list.';
+
+/** The answer to an owner request that requirePush turned down. */
+function forbidden(request) {
+  const why = pushRefusal.get(request);
+  return json(why ? { error: why, code: 'repo_changed' } : { error: 'forbidden' }, 403);
 }
 
 /** Whether a file path is within an editor's granted paths. Empty / '**' = whole site. */
@@ -493,7 +523,7 @@ async function authActor(request, env, repo) {
     const e = await env.KILN.get(`esess:${sess}`, 'json');
     if (e && (!e.exp || e.exp >= Date.now()) && e.repo === repo && e.role === 'editor') return { name: e.name, email: e.email, paths: e.paths || [''], keys: e.keys || [], mode: e.mode || null, features: e.features || null, admin: false };
   }
-  if (await requirePush(request, repo)) return { name: 'admin', admin: true };
+  if (await requirePush(request, repo, env)) return { name: 'admin', admin: true };
   return null;
 }
 
@@ -642,7 +672,7 @@ async function requirePushCached(request, env, repo) {
   const digest = bufToB64(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${auth}:${repo}`)));
   const cacheKey = `pauth:${digest}`;
   if (await env.KILN.get(cacheKey)) return true;
-  if (!(await requirePush(request, repo))) return false;
+  if (!(await requirePush(request, repo, env))) return false;
   await env.KILN.put(cacheKey, '1', { expirationTtl: 300 });
   return true;
 }
@@ -1620,12 +1650,27 @@ async function sourceDuplicate(request, env) {
 // `paths` (editors only) limits which file prefixes they may write; [''] = whole site.
 
 async function getPeople(env, repo) {
-  return (await env.KILN.get(`people:${repo}`, 'json')) || [];
+  const list = await env.KILN.get(`people:${repo}`, 'json');
+  if (list) return list;
+  // Nothing under this name. The same repository may have people on record
+  // under the name it had before a rename or a transfer (KLR-08).
+  // followRepo answers with the name the list is filed under now: another
+  // name the repository still has data under, or this one after a move.
+  const home = await followRepo(env, repo);
+  return home ? ((await env.KILN.get(`people:${home}`, 'json')) || []) : [];
+}
+
+/** The name a repository's people are filed under: `repo` itself, unless the
+ *  same repository already has a list under another of its names. Writes go
+ *  there too, so one repository never ends up with two lists. */
+async function peopleHome(env, repo) {
+  if (await env.KILN.get(`people:${repo}`)) return repo;
+  return (await followRepo(env, repo)) || repo;
 }
 
 async function peopleList(request, env, url) {
   const repo = url.searchParams.get('repo') || '';
-  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  if (!(await requirePush(request, repo, env))) return forbidden(request);
   return json({ people: await getPeople(env, repo), googleConfigured: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) });
 }
 
@@ -1665,7 +1710,7 @@ function writeGrantNeeded(who, path, { adds = false, branch } = {}) {
 
 async function peopleUpsert(request, env) {
   const { repo, email, name, role, days, paths, keys, features, mode } = await request.json().catch(() => ({}));
-  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  if (!(await requirePush(request, repo, env))) return forbidden(request);
   const addr = String(email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) return json({ error: 'bad email' }, 400);
   if (!['editor', 'member'].includes(role)) return json({ error: 'bad role' }, 400);
@@ -1690,14 +1735,18 @@ async function peopleUpsert(request, env) {
     // are stored; any other value means normal direct publishing.
     if (mode === 'suggest' || mode === 'review') person.mode = mode;
   }
-  const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
+  const home = await peopleHome(env, repo);
+  const people = (await getPeople(env, home)).filter(p => p.email !== addr);
   people.push(person);
-  await env.KILN.put(`people:${repo}`, JSON.stringify(people));
+  await env.KILN.put(`people:${home}`, JSON.stringify(people));
   // Purge this person's live editor sessions so a scope/role/feature change
   // takes effect immediately — the frozen `paths` in an old esess would
   // otherwise keep their previous access until it expired (up to 360 days).
-  await purgeEditorSessions(env, repo, addr);
-  await purgeMemberSessions(env, repo, addr);
+  // (Under each name the repository has sessions for.)
+  for (const r of new Set([repo, home])) {
+    await purgeEditorSessions(env, r, addr);
+    await purgeMemberSessions(env, r, addr);
+  }
   return json({ ok: true, person });
 }
 
@@ -1716,30 +1765,26 @@ async function purgeEditorSessions(env, repo, addr) {
 
 async function peopleRemove(request, env) {
   const { repo, email } = await request.json().catch(() => ({}));
-  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  if (!(await requirePush(request, repo, env))) return forbidden(request);
   const addr = String(email || '').trim().toLowerCase();
-  const people = (await getPeople(env, repo)).filter(p => p.email !== addr);
-  await env.KILN.put(`people:${repo}`, JSON.stringify(people));
+  const home = await peopleHome(env, repo);
+  const people = (await getPeople(env, home)).filter(p => p.email !== addr);
+  await env.KILN.put(`people:${home}`, JSON.stringify(people));
+  // Under each name the repository has sessions for (the one asked with, and
+  // the one its list is filed under when that differs).
+  const names = new Set([repo, home]);
   // Revoke any active editor sessions for this person immediately (not just future sign-ins).
-  let cursor;
-  do {
-    const page = await env.KILN.list({ prefix: 'esess:', cursor });
-    for (const k of page.keys) {
-      const v = await env.KILN.get(k.name, 'json');
-      if (v && v.repo === repo && v.email === addr) await env.KILN.delete(k.name);
-    }
-    cursor = page.list_complete ? null : page.cursor;
-  } while (cursor);
+  for (const r of names) await purgeEditorSessions(env, r, addr);
   // A member's sign-in lives in a cookie their site signed; ending its record
   // here is what makes the site's gate turn them away at its next check.
-  await purgeMemberSessions(env, repo, addr);
+  for (const r of names) await purgeMemberSessions(env, r, addr);
   // Also drop any pending scheduled posts this person created.
   let scur;
   do {
     const page = await env.KILN.list({ prefix: 'sched:', cursor: scur });
     for (const k of page.keys) {
       const v = await env.KILN.get(k.name, 'json');
-      if (v && v.repo === repo && v.byEmail === addr) await env.KILN.delete(k.name);
+      if (v && names.has(v.repo) && v.byEmail === addr) await env.KILN.delete(k.name);
     }
     scur = page.list_complete ? null : page.cursor;
   } while (scur);
@@ -1879,8 +1924,11 @@ async function googleClaim(request, env) {
   // SECONDARY (defense in depth): the code's origin must map to the code's repo
   // where that mapping is known (Cloud/static).
   if (data.repo) {
+    // "The same repo" is the same repository, not the same spelling: a site
+    // whose config still has the name from before a rename or a transfer is
+    // the repository the origin belongs to, by its id (KLR-08).
     const authRepo = await repoForOrigin(env, data.origin);
-    if (authRepo && authRepo !== data.repo) {
+    if (authRepo && authRepo !== data.repo && !(await sameRepository(env, authRepo, data.repo))) {
       return json({ error: 'sign-in not valid for this site' }, 403);
     }
   }
@@ -1943,7 +1991,7 @@ async function sha256Hex(text) {
 
 async function apiTokenCreate(request, env) {
   const { repo, name, paths, keys, readonly, days } = await request.json().catch(() => ({}));
-  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  if (!(await requirePush(request, repo, env))) return forbidden(request);
   const label = String(name || '').trim().slice(0, 60);
   if (!label) return json({ error: 'missing name' }, 400);
   const d = Math.min(Math.max(Number(days) || 0, 0), 3650);   // 0 / absent = never expires
@@ -1966,7 +2014,7 @@ async function apiTokenCreate(request, env) {
 
 async function apiTokenList(request, env, url) {
   const repo = url.searchParams.get('repo') || '';
-  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  if (!(await requirePush(request, repo, env))) return forbidden(request);
   const tokens = [];
   let cursor;
   do {
@@ -1982,7 +2030,7 @@ async function apiTokenList(request, env, url) {
 
 async function apiTokenRevoke(request, env) {
   const { repo, id } = await request.json().catch(() => ({}));
-  if (!(await requirePush(request, repo))) return json({ error: 'forbidden' }, 403);
+  if (!(await requirePush(request, repo, env))) return forbidden(request);
   if (!/^[a-f0-9]{8}$/.test(id || '')) return json({ error: 'bad id' }, 400);
   let cursor;
   do {
@@ -2728,7 +2776,141 @@ async function installationToken(env, repo) {
   const tok = await tokRes.json();
 
   await env.KILN.put(`itok:${repo}`, tok.token, { expirationTtl: 50 * 60 });
+  // Once per fresh token (every 50 minutes for a site in use): put this
+  // repository's id on record, so a later rename can be followed. Never in the
+  // way of the token.
+  try { await lookUpRepo(env, repo, tok.token); } catch { /* best effort */ }
   return tok.token;
+}
+
+// ─── Repository identity (KLR-08) ────────────────────────────────────────────
+// Everything a site stores here is filed under the `owner/name` its
+// kiln-config.js gives. A name is not an identity: a repository can be renamed
+// or moved to another account, and GitHub then answers to the old name only
+// until someone else takes it. A repository's numeric id never changes, so the
+// worker keeps, for every repository it meets:
+//
+//   rid:<id>            → { id, name, at }   the name its data is filed under
+//   rname:<owner/name>  → { id, at }         which repository a name was (lowercased)
+//   rsee:<owner/name>   → { id, name }       GitHub's last answer for a name, 10 minutes
+//
+// With that it can follow a rename: when a site starts using the new name, its
+// people list (and its Kiln Cloud registration) move to it; while a site still
+// uses the old name, the list is read from wherever it is filed. And it can
+// tell a rename from a takeover: an old name that now answers as a different
+// repository gets none of the people stored for the one that had it before.
+
+/** GitHub's answer for a name, read with the App's token: { id, name } or null. Cached for ten minutes. */
+async function repoIdentity(env, repo) {
+  const cached = await env.KILN.get(`rsee:${repo.toLowerCase()}`, 'json');
+  if (cached && Number.isInteger(cached.id)) return cached;
+  const tok = await installationToken(env, repo);   // a fresh token looks the repository up itself
+  if (!tok) return null;
+  return (await env.KILN.get(`rsee:${repo.toLowerCase()}`, 'json')) || lookUpRepo(env, repo, tok);
+}
+
+/** Ask GitHub what `repo` is now (a renamed repository answers to its old name with its current one), and put it on record. */
+async function lookUpRepo(env, repo, token) {
+  const res = await fetch(`${GH}/repos/${repo}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': UA },
+  });
+  if (!res.ok) return null;
+  const info = await res.json();
+  if (!Number.isInteger(info.id) || typeof info.full_name !== 'string') return null;
+  const seen = { id: info.id, name: info.full_name };
+  await admitRepo(env, repo, seen);
+  await env.KILN.put(`rsee:${repo.toLowerCase()}`, JSON.stringify(seen), { expirationTtl: 600 });
+  return seen;
+}
+
+/**
+ * Put a repository's id on record for the name a site uses, and say whether
+ * the name may be used for it. False only when the name is on record as one
+ * repository, with people stored under it, while GitHub now answers to it as
+ * another. That is a takeover of an old name, or a repository deleted and
+ * made again: either way the stored list belongs to the repository that had
+ * the name before, and the record is left as it is. A name with nothing
+ * stored under it is free and becomes the new repository's. Writes only what
+ * is new; never throws.
+ */
+async function admitRepo(env, repo, seen) {
+  try {
+    const nameKey = `rname:${repo.toLowerCase()}`;
+    const had = await env.KILN.get(nameKey, 'json');
+    const other = !!had && Number.isInteger(had.id) && had.id !== seen.id;
+    if (other && await env.KILN.get(`people:${repo}`)) return false;
+    if (!had || other) {
+      await env.KILN.put(nameKey, JSON.stringify({ id: seen.id, at: Date.now() }));
+      // What was last heard about this name may be about the repository that
+      // had it before: forget it, so nothing is followed on stale word.
+      await env.KILN.delete(`rsee:${repo.toLowerCase()}`);
+    }
+    if (!(await env.KILN.get(`rid:${seen.id}`))) await env.KILN.put(`rid:${seen.id}`, JSON.stringify({ id: seen.id, name: repo, at: Date.now() }));
+  } catch { /* storage trouble must not lock an owner out; the record is written next time */ }
+  return true;
+}
+
+/** Read only: is `repo` on record as another repository than `seen`, with people stored under it? */
+async function nameTakenOver(env, repo, seen) {
+  try {
+    const had = await env.KILN.get(`rname:${repo.toLowerCase()}`, 'json');
+    if (!had || !Number.isInteger(had.id) || had.id === seen.id) return false;
+    return !!(await env.KILN.get(`people:${repo}`));
+  } catch { return false; }
+}
+
+/**
+ * `repo` has no people filed under it. If the same repository (by id) has
+ * them under another name, say which name holds them, moving them first when
+ * `repo` is the repository's current name. null when there is nothing to follow.
+ */
+async function followRepo(env, repo) {
+  try {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(String(repo || ''))) return null;
+    const seen = await repoIdentity(env, repo);
+    if (!seen) return null;
+    const rec = await env.KILN.get(`rid:${seen.id}`, 'json');
+    if (!rec || typeof rec.name !== 'string' || rec.name === repo) return null;
+    // Asked by a name GitHub only redirects: the data stays where it is filed.
+    if (repo.toLowerCase() !== seen.name.toLowerCase()) return rec.name;
+    // Asked by the repository's current name: bring what is stored along.
+    const from = rec.name;
+    const list = await env.KILN.get(`people:${from}`, 'json');
+    if (list) {
+      await env.KILN.put(`people:${repo}`, JSON.stringify(list));   // the new copy exists before the old one goes
+      await env.KILN.delete(`people:${from}`);
+    }
+    await env.KILN.put(`rid:${seen.id}`, JSON.stringify({ id: seen.id, name: repo, was: from, at: Date.now() }));
+    await env.KILN.put(`rname:${repo.toLowerCase()}`, JSON.stringify({ id: seen.id, at: Date.now() }));
+    // The old name holds nothing now: whoever has it next starts clean.
+    if (from.toLowerCase() !== repo.toLowerCase()) await env.KILN.delete(`rname:${from.toLowerCase()}`);
+    if (env.kiln_cloud) {
+      try { await env.kiln_cloud.prepare('UPDATE sites SET repo = ? WHERE lower(repo) = lower(?)').bind(repo, from).run(); } catch { /* the registration is corrected by hand */ }
+    }
+    console.log(`repo followed: ${from} is now ${repo} (id ${seen.id}); ${list ? list.length : 0} people moved`);
+    return repo;
+  } catch (err) {
+    console.error('repo follow failed', String(err && err.message || err));
+    return null;
+  }
+}
+
+/** Are two names the same repository? Same spelling, or the same id by the worker's records or GitHub's answer. */
+async function sameRepository(env, a, b) {
+  if (a === b) return true;
+  try {
+    const [x, y] = [await repoIdentity(env, a), await repoIdentity(env, b)];
+    return !!x && !!y && x.id === y.id;
+  } catch { return false; }
+}
+
+/** What `kiln doctor` is told about a name: { renamed, reused }, or {} when GitHub cannot be asked. */
+async function repoStanding(env, repo) {
+  try {
+    const seen = await repoIdentity(env, repo);
+    if (!seen) return {};
+    return { renamed: seen.name.toLowerCase() !== repo.toLowerCase(), reused: await nameTakenOver(env, repo, seen) };
+  } catch { return {}; }
 }
 
 // ─── GitHub App JWT (RS256 via WebCrypto) ────────────────────────────────────

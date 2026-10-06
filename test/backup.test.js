@@ -37,7 +37,10 @@ const KV = () => ({
   'sug:ada/club:1': '{"edits":[]}',
   'sched:1:x': '{"repo":"ada/club"}',
   'firstseen:https://club.example': '1700000000000',
+  'rid:4242': '{"id":4242,"name":"ada/club"}',
+  'rname:ada/club': '{"id":4242}',
   // Never backed up: sessions (they hold tokens), one-time codes, caches.
+  'rsee:ada/club': '{"id":4242,"name":"ada/club"}',
   'csess:tok': '{"gh":"gho_SECRET_TOKEN"}', 'esess:a': '{"email":"e@example.com"}', 'msess:b': '{}', 'sid:c': '{}',
   'itok:ada/club': 'ghs_INSTALLATION_TOKEN', 'gcode:d': '{}', 'cstate:e': '1', 'lsevt:f': '1', 'pres:g': '{}',
 });
@@ -82,15 +85,15 @@ test('KLR-03 backup: one dated archive, readable only by its owner, holding the 
   const u = unpack(r.file);
   assert.deepEqual(u.files, ['d1.sql', 'kv.json', 'manifest.json']);
   assert.equal(u.sql, SQL, 'the export, byte for byte');
-  assert.deepEqual(u.kv.map(e => e.key), ['app:creds', 'people:ada/club', 'people:ada/shop', 'atok:abc', 'cmt:ada/club:%2F:0123456789ab', 'sug:ada/club:1', 'sched:1:x', 'firstseen:https://club.example']);
+  assert.deepEqual(u.kv.map(e => e.key), ['app:creds', 'people:ada/club', 'people:ada/shop', 'atok:abc', 'cmt:ada/club:%2F:0123456789ab', 'sug:ada/club:1', 'sched:1:x', 'firstseen:https://club.example', 'rid:4242', 'rname:ada/club']);
   assert.equal(u.kv.find(e => e.key === 'app:creds').value, KV()['app:creds']);
   assert.equal(u.kv.find(e => e.key === 'atok:abc').expiration, FAR, 'an expiry travels with its key');
   assert.deepEqual(u.manifest.d1, { database: 'kiln-cloud', rows: { accounts: 1, sites: 2 } });
-  assert.equal(u.manifest.kv.keys, 8);
-  assert.deepEqual(u.manifest.kv.byPrefix, { 'app:creds': 1, 'people:': 2, 'atok:': 1, 'cmt:': 1, 'sug:': 1, 'sched:': 1, 'firstseen:': 1 });
+  assert.equal(u.manifest.kv.keys, 10);
+  assert.deepEqual(u.manifest.kv.byPrefix, { 'app:creds': 1, 'people:': 2, 'atok:': 1, 'cmt:': 1, 'sug:': 1, 'sched:': 1, 'firstseen:': 1, 'rid:': 1, 'rname:': 1 });
   assert.equal(u.manifest.source, 'production');
   assert.equal(u.manifest.encrypted, false);
-  assert.match(w.lines[0], /^backup ok: .*kiln-production-20261006-031000\.tar\.gz \(\d+ bytes; 1 accounts, 2 sites, 8 KV keys; not encrypted, owner-only\); kept 1, removed 0$/);
+  assert.match(w.lines[0], /^backup ok: .*kiln-production-20261006-031000\.tar\.gz \(\d+ bytes; 1 accounts, 2 sites, 10 KV keys; not encrypted, owner-only\); kept 1, removed 0$/);
 });
 
 test('KLR-03 backup: sessions, tokens and caches are not in it', async () => {
@@ -98,8 +101,8 @@ test('KLR-03 backup: sessions, tokens and caches are not in it', async () => {
   const u = unpack((await w.run()).file);
   const text = JSON.stringify(u.kv);
   for (const secret of ['gho_SECRET_TOKEN', 'ghs_INSTALLATION_TOKEN']) assert.equal(text.includes(secret), false, secret);
-  for (const p of ['csess:', 'esess:', 'msess:', 'sid:', 'itok:', 'gcode:', 'cstate:', 'lsevt:', 'pres:']) assert.equal(u.kv.some(e => e.key.startsWith(p)), false, p);
-  assert.deepEqual(KV_PREFIXES, ['app:creds', 'people:', 'atok:', 'cmt:', 'sug:', 'sched:', 'firstseen:']);
+  for (const p of ['csess:', 'esess:', 'msess:', 'sid:', 'itok:', 'gcode:', 'cstate:', 'lsevt:', 'pres:', 'rsee:']) assert.equal(u.kv.some(e => e.key.startsWith(p)), false, p);
+  assert.deepEqual(KV_PREFIXES, ['app:creds', 'people:', 'atok:', 'cmt:', 'sug:', 'sched:', 'firstseen:', 'rid:', 'rname:']);
 });
 
 test('KLR-03 backup: it only reads from Cloudflare, and says which environment every time', async () => {
@@ -126,8 +129,8 @@ test('KLR-03 backup: more keys than one request carries are fetched in batches, 
   for (let i = 0; i < 250; i++) kv[`cmt:ada/club:%2Fp${i}:${String(i).padStart(12, '0')}`] = `{"n":${i}}`;
   const w = world({ kv, vanish: ['sched:1:x'] });
   const r = await w.run();
-  assert.equal(r.keys, 8 + 250 - 1);
-  assert.equal(w.calls().filter(c => c[1] === 'bulk').length, 3, '258 keys in batches of 100');
+  assert.equal(r.keys, 10 + 250 - 1);
+  assert.equal(w.calls().filter(c => c[1] === 'bulk').length, 3, '260 keys in batches of 100');
   const u = unpack(r.file);
   assert.equal(u.manifest.kv.expiredDuringBackup, 1);
   assert.equal(u.kv.some(e => e.key === 'sched:1:x'), false);
@@ -231,13 +234,13 @@ test('KLR-03 restore: a backup\'s KV keys go back into an emptied namespace, val
   writeFileSync(w.stateFile, JSON.stringify({ sql: '', kv: { 'esess:new': '{}' } }));
   const lines = [];
   const r = restore({ file: path.join(u.dir, 'kv.json'), target: 'staging', prefixes: [], dryRun: false, persistTo: null }, { env: w.env, log: (l) => lines.push(l) });
-  assert.equal(r.written, 8);
+  assert.equal(r.written, 10);
   const kv = w.state().kv;
   assert.equal(kv['app:creds'], KV()['app:creds']);
   assert.equal(kv['people:ada/club'], KV()['people:ada/club']);
   assert.deepEqual(kv['atok:abc'], { value: '{"repo":"ada/club"}', expiration: FAR });
   assert.equal(kv['esess:new'], '{}', 'keys that are not in the backup are left alone');
-  assert.match(lines[0], /^Wrote 8 keys to staging \(app: 1, people: 2, atok: 1, cmt: 1, sug: 1, sched: 1, firstseen: 1\)\.$/);
+  assert.match(lines[0], /^Wrote 10 keys to staging \(app: 1, people: 2, atok: 1, cmt: 1, sug: 1, sched: 1, firstseen: 1, rid: 1, rname: 1\)\.$/);
   const put = w.calls().at(-1);
   assert.deepEqual(put.slice(0, 3), ['kv', 'bulk', 'put']);
   assert.deepEqual(put.slice(-5), ['--binding', 'KILN', '--env', 'staging', '--remote']);
@@ -257,7 +260,7 @@ test('KLR-03 restore: production is refused without --i-mean-production; a dry r
   const dry = restore({ ...restoreArgs([file, '--env', 'staging', '--dry-run']) }, { env: w.env, log: (l) => lines.push(l) });
   assert.equal(dry.written, 0);
   assert.equal(w.calls().length, before, 'wrangler is not run at all');
-  assert.match(lines[0], /^Dry run: would write 8 keys to staging .*Nothing was written\.$/);
+  assert.match(lines[0], /^Dry run: would write 10 keys to staging .*Nothing was written\.$/);
   writeFileSync(w.stateFile, JSON.stringify({ sql: '', kv: {} }));
   restore(restoreArgs([file, '--local', '--prefix', 'people:']), { env: w.env, log: () => {} });
   assert.deepEqual(Object.keys(w.state().kv).sort(), ['people:ada/club', 'people:ada/shop']);

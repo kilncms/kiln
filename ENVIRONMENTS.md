@@ -329,9 +329,10 @@ node scripts/backup-cloud.mjs --local         # the local database `npm run dev`
   source are kept (`--keep`, `KILN_BACKUP_KEEP`). `--out` or `KILN_BACKUP_DIR`
   moves the directory; a directory inside this repository is refused.
 - **What is in `kv.json`.** Keys starting `app:creds`, `people:`, `atok:`,
-  `cmt:`, `sug:`, `sched:`, `firstseen:`. Sessions, one-time codes and caches
-  are left out: they hold sign-in tokens, and losing them means signing in
-  again.
+  `cmt:`, `sug:`, `sched:`, `firstseen:`, and `rid:` and `rname:` (which
+  repository, by its GitHub id, each stored name is). Sessions, one-time codes
+  and caches are left out: they hold sign-in tokens, and losing them means
+  signing in again.
 - **It only reads.** The wrangler commands it runs are `d1 export`,
   `kv key list` and `kv bulk get`. A D1 export blocks other queries to the
   database while it runs; with a database this small that is well under a

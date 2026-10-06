@@ -63,9 +63,19 @@ Health-check an install any time:
 npx github:kilncms/kiln#release doctor
 ```
 
-If you rename the repo or move it to another account, run it again. Editor access is
-stored under the repo's exact name and does not follow a rename, so `doctor` fails
-that check and tells you what to change.
+If you rename the repo or move it to another account, run it again. GitHub keeps
+answering to the old name only until someone else takes it, so `doctor` fails that
+check and tells you what to change: `repo` in `kiln-config.js`. The worker knows a
+repository by its GitHub id, which never changes. The first time anyone signs in or
+opens People under the new name, the people list (and a Kiln Cloud registration)
+moves to it, so nobody has to be added again. Editors and members sign in once more.
+Comment threads, suggestions waiting for review, scheduled posts and API tokens made
+under the old name stay under it; scheduled posts and tokens keep working while
+GitHub redirects the old name.
+
+If the old name ever answers as a different repository (someone else took it, or
+you deleted the repo and made it again), the worker shows and changes the stored
+people list for no one under that name, and `doctor` says so.
 
 ### If your AI built a React app
 

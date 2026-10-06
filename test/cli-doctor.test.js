@@ -89,6 +89,53 @@ test('KLN-04 doctor: when GitHub cannot be asked, the name check is skipped rath
   assert.equal(code, 0);
 });
 
+// ─── KLR-08: the worker keeps repository ids and says what it sees ───────────
+
+test('KLR-08 doctor: a private repository that was renamed is caught through the worker, which GitHub alone would not show', () => {
+  // GitHub answers nothing without a sign-in (a private repository). The worker sees it through its App.
+  const table = healthy({ [`${WORKER}/setup/install-check`]: { json: { installed: true, renamed: true, reused: false } } });
+  delete table[`https://api.github.com/repos/${REPO}`];
+  const { out, code } = doctor(table);
+  assert.match(out, /❌ repo name matches GitHub — your worker reports that GitHub now knows this repository by another name/);
+  assert.match(out, /the old name works only while GitHub redirects it/);
+  assert.match(out, /Set repo to its current owner\/name in assets\/kiln-config\.js and deploy/);
+  assert.match(out, /carries the people list .* over by the repository's id, so nobody has to be added again/);
+  assert.equal(/Kiln is healthy/.test(out), false);
+  assert.equal(code, 1);
+  const m = /(\d+)\/(\d+) checks passed/.exec(out);
+  assert.ok(m && Number(m[1]) === Number(m[2]) - 1, `exactly one check failed: ${m && m[0]}`);
+});
+
+test('KLR-08 doctor: with a worker that follows a rename, the advice is to correct the config, not to add everyone again', () => {
+  const { out, code } = doctor(healthy({
+    [`${WORKER}/setup/install-check`]: { json: { installed: true, renamed: true, reused: false } },
+    [`https://api.github.com/repos/${REPO}`]: { json: { full_name: 'new-owner/new-name' } },
+  }));
+  assert.match(out, /❌ repo name matches GitHub — GitHub answers as new-owner\/new-name but the config says/);
+  assert.match(out, /Set repo to 'new-owner\/new-name' in assets\/kiln-config\.js and deploy/);
+  assert.match(out, /so nobody has to be added again/);
+  assert.doesNotMatch(out, /add your editors again/);
+  assert.equal(code, 1);
+  const m = /(\d+)\/(\d+) checks passed/.exec(out);
+  assert.ok(m && Number(m[1]) === Number(m[2]) - 1, `reported once, not twice: ${m && m[0]}`);
+});
+
+test('KLR-08 doctor: a name that now answers as a different repository than the one on record fails the run and says what to do', () => {
+  const { out, code } = doctor(healthy({ [`${WORKER}/setup/install-check`]: { json: { installed: true, renamed: false, reused: true } } }));
+  assert.match(out, /❌ repo is the repository Kiln was set up for/);
+  assert.match(out, /now answers as a different repository than the one whose people are stored under this name/);
+  assert.match(out, /wrangler kv key delete "people:kiln-doctor-test-no-such-owner\/site" --binding KILN/);
+  assert.equal(code, 1);
+});
+
+test('KLR-08 doctor: a worker that says the name is current and its own adds nothing and fails nothing', () => {
+  const { out, code } = doctor(healthy({ [`${WORKER}/setup/install-check`]: { json: { installed: true, renamed: false, reused: false } } }));
+  assert.match(out, /✅ repo name matches GitHub/);
+  assert.doesNotMatch(out, /repository Kiln was set up for/);
+  assert.match(out, /Kiln is healthy/);
+  assert.equal(code, 0, out);
+});
+
 // ─── KLN-08 · doctor ─────────────────────────────────────────────────────────
 
 test('KLN-08 doctor: an unreachable worker is never reported as "Google sign-in — configured"', () => {
