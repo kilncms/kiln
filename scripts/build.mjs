@@ -10,8 +10,19 @@ await mkdir('dist', { recursive: true });
 // compare a site's stamped version against raw dist/VERSION on GitHub to tell a
 // self-hoster when a newer editor exists. Stamp-vs-stamp (both come from the
 // same build's HEAD), so a doc-only commit that doesn't rebuild won't false-fire.
+//
+// KILN_BUILD_VERSION, when set, IS the stamp. A release sets it once, so the
+// bundles it deploys are byte for byte the ones it built; and rebuilding with
+// the stamp already in dist/VERSION must reproduce the committed dist/ exactly
+// (CI and scripts/release.mjs check that).
 let VERSION = 'dev';
-try { VERSION = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim() || 'dev'; } catch { /* no git → dev */ }
+const forced = (process.env.KILN_BUILD_VERSION || '').trim();
+if (forced && !/^[\w.-]{1,40}$/.test(forced)) {
+  console.error(`KILN_BUILD_VERSION must be letters, digits, dot, dash or underscore (got ${JSON.stringify(forced)})`);
+  process.exit(1);
+}
+if (forced) VERSION = forced;
+else try { VERSION = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim() || 'dev'; } catch { /* no git → dev */ }
 const define = { __KILN_VERSION__: JSON.stringify(VERSION) };
 
 // Editor bundle (parse5 + dompurify + engine + UI)

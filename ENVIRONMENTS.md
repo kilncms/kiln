@@ -118,6 +118,33 @@ list at the top of `scripts/propagate-bundles.mjs`.
 
 ---
 
+## Which version is running where
+
+| What | Where to read it |
+|---|---|
+| The editor a site serves | `KILN_VERSION` in that site's `kiln.js` (the build stamp, also in `dist/VERSION`) |
+| The worker | `curl -s https://auth.kilncms.com/healthz` → `version` (the release number) and `build` (the commit it was deployed from) |
+| All three side by side | `npx github:kilncms/kiln doctor` in the site: `versions: site bundle … · worker … · latest release …` |
+| What production ran on a given day | the git tag `prod-YYYY-MM-DD` that the release script makes for every production deploy |
+
+A worker deployed by hand reports no `build`. `v0.4.0` and `prod-2026-08-19`
+mark commit `615a436`, the build production has run since 19 August 2026.
+
+## A hotfix, when `main` holds work that is not ready
+
+1. `git fetch --tags && git switch -c hotfix/<what> <the last prod-… tag>`
+2. `git cherry-pick <the fix>` (or write it there), `npm test`.
+3. Staging: deploy that branch to staging and check the fix there.
+4. Production: deploy the same commit, tag it `prod-YYYY-MM-DD`, push the tag.
+5. Merge back: `git switch main && git merge hotfix/<what>`, so the next
+   release from `main` contains the fix and does not undo it.
+
+Steps 3 and 4 are done by hand from the hotfix branch with
+`npx wrangler deploy --env staging` and `--env production` from `worker/`,
+because `scripts/release.mjs` only releases `main`. Say so in the tag message.
+
+---
+
 ## Database changes
 
 The Kiln Cloud database (D1) changes only through numbered files in

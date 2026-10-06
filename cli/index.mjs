@@ -335,6 +335,11 @@ async function doctor(args) {
         check('editor is up to date', mine === latest,
           mine === latest ? `version ${mine}` : `you have ${mine}, latest is ${latest} — run: npx github:kilncms/kiln update`, true);
       }
+      // The three versions that have to be told apart when something is off,
+      // on one line: what this site serves, what its worker runs, what is current.
+      const wh = await fetch(`${worker}/healthz`).then(r => r.json()).catch(() => null);
+      const workerVer = wh ? `${wh.version || 'unknown'}${wh.build ? ` (build ${wh.build})` : ' (build not reported)'}` : 'no answer';
+      info(`versions: site bundle ${mine || 'unknown'} · worker ${workerVer} · latest release ${latest || 'unknown'}`);
     }
 
     // Is the host actually deploying FROM the repo? A direct-upload / stale project commits

@@ -133,3 +133,13 @@ test('S4 update: the gate is left alone when the worker is older than it, or doe
     } finally { rmSync(s.root, { recursive: true, force: true }); }
   }
 });
+
+test('KLR-18 doctor: site bundle, worker and latest release are printed on one line', async () => {
+  const s = site(null);
+  try {
+    const released = await doctor(s, network({ [`${WORKER}/healthz`]: { json: { ok: true, modes: ['html', 'source'], version: '0.4.0', build: 'def5678' } } }));
+    assert.match(released.out, /versions: site bundle abc1234 · worker 0\.4\.0 \(build def5678\) · latest release abc1234/);
+    const byHand = await doctor(s, network({ [`${WORKER}/healthz`]: { json: { ok: true, version: '0.4.0' } } }));
+    assert.match(byHand.out, /worker 0\.4\.0 \(build not reported\)/);
+  } finally { rmSync(s.root, { recursive: true, force: true }); }
+});

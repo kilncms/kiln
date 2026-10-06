@@ -108,7 +108,7 @@ export default {
       // without it means an old worker and source fields render read-only.
       // Still a 200 that says ok, so status-probing monitors keep working.
       if (path === '/healthz') {
-        return await cors(env, request, json({ ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true }));
+        return await cors(env, request, json({ ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, ...deployedBuild(env) }));
       }
       if (path === '/setup') return setupPage(url, env);
       if (path === '/setup/callback') return setupCallback(url, env);
@@ -166,6 +166,20 @@ export default {
     }
   },
 };
+
+/**
+ * Which build is this? `build` is the commit the worker was deployed from,
+ * passed at deploy time (scripts/release.mjs: --var KILN_BUILD:<sha>), and
+ * `deploy` is Cloudflare's own record of the upload when that binding exists.
+ * Both are absent on a worker deployed by hand; neither is a secret.
+ */
+function deployedBuild(env) {
+  const out = {};
+  if (typeof env.KILN_BUILD === 'string' && /^[\w.-]{1,40}$/.test(env.KILN_BUILD)) out.build = env.KILN_BUILD;
+  const meta = env.CF_VERSION_METADATA;
+  if (meta && typeof meta === 'object' && meta.id) out.deploy = { id: String(meta.id), tag: String(meta.tag || ''), at: String(meta.timestamp || '') };
+  return out;
+}
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
 
