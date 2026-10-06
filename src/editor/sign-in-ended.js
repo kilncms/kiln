@@ -192,15 +192,22 @@ export function whatSurvives(counts, { saved = false, filesKept = 0 } = {}) {
  * read, or the answer came to something the editor asked on its own), and
  * then the sentence does not speak of it.
  *
+ * `typed` is what the person had typed into a panel when the answer came (a
+ * comment, a note, a time, a name): { name, kept }. `name` is how a sentence
+ * calls it ("your comment"); `kept` is true when the saved copy holds it, so
+ * it comes back after signing in again. When it is not kept the dialog says
+ * so and copying comes first.
+ *
  * Returns { title, text, detail, status, signIn, copy, copyFirst }: `signIn`
  * offers "Sign in again", `copy` offers "Copy my text", and `copyFirst` says
  * the words would not survive signing in, so copying is the thing to do first.
  */
-export function publishEnded({ way, ownerMust = false, message = '', counts, survives, publishing = true, did = publishing ? 'published' : '' }) {
+export function publishEnded({ way, ownerMust = false, message = '', counts, survives, publishing = true, did = publishing ? 'published' : '', typed = null }) {
   const n = counts.edits + counts.source;
   const anything = n + counts.structural + counts.files > 0;
+  const Typed = typed ? capital(typed.name) : '';
   // A publish with nothing to send published nothing either way; anything else is named whenever it was being done.
-  const said = did && (anything || did !== 'published') ? did : '';
+  const said = did && (anything || typed || did !== 'published') ? did : '';
   const lead = said ? `Nothing was ${said}. ` : '';
   const out = {
     title: 'Your sign-in has ended',
@@ -215,15 +222,23 @@ export function publishEnded({ way, ownerMust = false, message = '', counts, sur
       out.text += survives.textKept
         ? ` ${editsAre(n)} saved in this browser for a week: copy your text to keep it longer.`
         : ` ${editsAre(n)} still on this page, but only until it is closed: copy your text to keep it.`;
+    } else if (typed) {
+      out.copy = true;
+      out.text += ` ${Typed} is still here, but only until this page is closed: copy your text to keep it.`;
     }
     return out;
   }
-  if (!anything) {
+  if (!anything && !typed) {
     out.text = `${lead}Please sign in again with ${wayName(way)} to carry on.`;
     return out;
   }
-  if (survives.all) {
-    out.text = `${lead}${editsAre(n)} saved in this browser and will be back on this page when you have signed in again with ${wayName(way)}.`;
+  const back = `saved in this browser and will be back on this page when you have signed in again with ${wayName(way)}`;
+  if (!anything && typed.kept) {
+    out.text = `${lead}${Typed} is ${back}.`;
+    return out;
+  }
+  if (survives.all && (!typed || typed.kept)) {
+    out.text = `${lead}${editsAre(n)} ${back}${typed ? `, and so will ${typed.name}` : ''}.`;
     return out;
   }
   const parts = [`${lead}Signing in again with ${wayName(way)} loads this page afresh.`];
@@ -231,29 +246,40 @@ export function publishEnded({ way, ownerMust = false, message = '', counts, sur
   if (n && !survives.textKept) parts.push(`This browser could not save ${n === 1 ? 'your edit, so it' : 'your edits, so they'} will not be here afterwards.`);
   if (survives.structuralLost) parts.push('Parts you made editable, added or removed cannot be saved and will need doing again.');
   if (survives.filesLost) parts.push('The pictures or files you added could not be saved and will need adding again.');
-  if (n) { parts.push('Copy your text first to be sure of it.'); out.copy = true; out.copyFirst = !survives.textKept; }
+  if (typed) parts.push(typed.kept ? `${Typed} is saved in this browser and will be back.` : `${Typed} cannot be saved and will need typing again.`);
+  if (n || typed) {
+    out.copy = true;
+    out.copyFirst = (n > 0 && !survives.textKept) || (!!typed && !typed.kept);
+    if (n || !typed.kept) parts.push('Copy your text first to be sure of it.');
+  }
   out.text = parts.join(' ');
   return out;
 }
+
+const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /**
  * What the person is told when a publish is answered 403: they are signed
  * in, and this change is not theirs to make (taken off this page, a kind of
  * access that does not include it, or a change only the owner may make).
  * Signing in again would not help, so it is not offered; the text can be
- * copied. `did` is the word for what was being done (see publishEnded).
+ * copied. `did` is the word for what was being done, and `typed` what had
+ * been typed into a panel (see publishEnded): it is still on screen, and can
+ * be copied.
  */
-export function publishRefused({ way, reason = '', counts, did = 'published' }) {
+export function publishRefused({ way, reason = '', counts, did = 'published', typed = null }) {
   const n = counts.edits + counts.source;
   const ask = way === 'github' ? 'check that you can still write to the repository on GitHub' : 'ask the site’s owner';
   return {
     title: `This was not ${did}`,
     status: `Not ${did}: your sign-in does not allow this change.`,
     text: `Your sign-in does not allow this change, so nothing was ${did}. `
-      + (n ? `${editsAre(n)} still on this page: copy your text to keep it, and ${ask}.` : `Please ${ask}.`),
+      + (n ? `${editsAre(n)} still on this page: copy your text to keep it, and ${ask}.`
+        : typed ? `${capital(typed.name)} is still here: copy your text to keep it, and ${ask}.`
+          : `Please ${ask}.`),
     detail: reason ? `The answer was: ${reason}` : '',
     signIn: false,
-    copy: n > 0,
+    copy: n > 0 || !!typed,
   };
 }
 
@@ -291,7 +317,13 @@ export function editsAsText(items) {
     .join('\n\n');
 }
 
-/** The status line once the edits are back after signing in again. */
-export function backAfterSignIn(n, files = 0) {
-  return `You are signed in again, and ${n === 1 ? 'your edit is' : `your ${n} edits are`} back on this page${files ? ', with the files they added' : ''}. Publish when ready.`;
+/**
+ * The status line once the edits are back after signing in again. `typed` is
+ * how what had been typed into a panel is called ("your comment"), when that
+ * is back too.
+ */
+export function backAfterSignIn(n, files = 0, typed = '') {
+  if (!n) return typed ? `You are signed in again, and ${typed} is back on this page.` : 'You are signed in again.';
+  const withIt = [files ? 'the files they added' : '', typed].filter(Boolean).join(' and ');
+  return `You are signed in again, and ${n === 1 ? 'your edit is' : `your ${n} edits are`} back on this page${withIt ? `, with ${withIt}` : ''}. Publish when ready.`;
 }

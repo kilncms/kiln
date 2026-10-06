@@ -44,12 +44,13 @@ async function aiRequest(body) {
  * An AI request that did not come back with a suggestion. An ended sign-in, a
  * refusal and no answer at all are said as everywhere else in the editor. A
  * 5xx here is the worker passing on what the AI service said (its key, its
- * limits) in words of its own: those are shown as they are.
+ * limits) in words of its own: those are shown as they are. `asked` is what
+ * the person typed for the AI to do, if anything: it is offered as a copy.
  */
-function failed(err, own) {
+function failed(err, own, asked = '') {
   const { say, setStatus } = deps;
   if (err.status >= 500 && err.data?.error) setStatus(own, 'error');
-  else say(err, '', own);
+  else say(err, '', own, asked ? { name: 'what you asked for', text: asked } : null);
 }
 
 /** The 501 explanation: admins get the fix, editors get who to ask. */
@@ -148,7 +149,7 @@ async function runTextAssist(el, key, kind, instruction) {
     previewModal(el, key, kind, instruction, text, data.text);
   } catch (err) {
     if (err.notConfigured) explainNotConfigured();
-    else failed(err, `AI assist failed: ${err.message}`);
+    else failed(err, `AI assist failed: ${err.message}`, instruction);
   }
 }
 
@@ -190,7 +191,7 @@ function previewModal(el, key, kind, instruction, beforeHtml, afterRaw) {
       cleanAfter = DOMPurify.sanitize(data.text, SANITIZE);
       m.querySelector('#kiln-ai-after').innerHTML = cleanAfter;
     } catch (err) {
-      failed(err, `AI assist failed: ${err.message}`);
+      failed(err, `AI assist failed: ${err.message}`, instruction);
     }
     retryBtn.disabled = false;
     retryBtn.textContent = 'Try again';

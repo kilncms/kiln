@@ -10,6 +10,8 @@
  * ONLY — nothing a commenter types is ever parsed as HTML.
  */
 
+import { TYPED } from './saved-edits.js';
+
 let ready = false;
 let cfg, state, isAdmin, status, showModal, ask, say, stopped, pagePage, chromeSel;
 let threads = [];      // this page's threads (worker order: newest first)
@@ -19,6 +21,7 @@ let pins = [];         // [{ el, target, thread }]
 let placing = null;    // teardown fn while pin-placement mode is active
 let popClose = null;   // teardown fn while the pin popover is open
 let rafPending = false;
+let replyBack = null;  // { thread, text }: a reply that was being written when the sign-in ended, back in its box
 
 
 const h = (tag, cls, text) => {
@@ -37,7 +40,8 @@ const listen = (ev, fn) => {
   document.addEventListener(ev, fn, true);
   return () => document.removeEventListener(ev, fn, true);
 };
-const onEsc = (fn) => (e) => { if (e.key === 'Escape') { e.stopPropagation(); fn(); } };
+/** Esc puts a comment box away, unless a dialog is open over it: then Esc is the dialog's, and what was typed stays. */
+const onEsc = (fn) => (e) => { if (e.key === 'Escape' && !document.getElementById('kiln-modal')) { e.stopPropagation(); fn(); } };
 /** Viewport-clamped fixed position. */
 const place = (el, x, y) => {
   el.style.left = `${Math.max(8, Math.min(x, innerWidth - el.offsetWidth - 8))}px`;
@@ -195,7 +199,17 @@ export function openComments() {
     enterPlaceMode();
   };
   renderPanel(m);
-  refreshThreads(true).then(() => { if (m.isConnected) renderPanel(m); }).catch((err) => {
+  refreshThreads(true).then(() => {
+    // A reply that came back after signing in again, to a thread that is no longer there: its words go in a new comment's box.
+    if (replyBack && !threads.some(t => t.id === replyBack.thread)) {
+      const { text } = replyBack;
+      replyBack = null;
+      if (m.isConnected) m.querySelector('.kiln-modal-x').click();
+      openComposer({ x: innerWidth / 2, y: innerHeight / 3 }, null, text);
+      return;
+    }
+    if (m.isConnected) renderPanel(m);
+  }).catch((err) => {
     // The comments shown may be out of date: say why, where the count is.
     const line = stopped(err);
     if (line && m.isConnected) m.querySelector('#kiln-cmt-tally').textContent = line;
@@ -246,22 +260,31 @@ function threadCard(t, num, rerender) {
   }
 
   // An action's result updates local state, then every surface it touches.
-  const act = async (el, did, fn) => {
+  const act = async (el, did, fn, typed) => {
     el.disabled = true;
     try { await fn(); renderPins(); updateBadge(); rerender(); }
-    catch (err) { say(err, did, `Comment failed: ${err.message}`); el.disabled = false; }
+    catch (err) { say(err, did, `Comment failed: ${err.message}`, typed); el.disabled = false; }
   };
   const swap = (nt) => { threads = threads.map(x => (x.id === t.id ? nt : x)); };
 
   const reply = h('div', 'kiln-cmt-reply');
   const input = h('input');
   input.type = 'text';
+  input.dataset.thread = t.id;   // typedComment() reads which thread a reply being written belongs to
   input.placeholder = `Reply as ${state.user}…`;
   const send = btn('kiln-btn-ghost', 'Reply', () => {
     const text = input.value.trim();
     if (!text) { input.focus(); return; }
-    act(send, 'posted', async () => swap((await api('/comments', { path: pagePage, thread: t.id, text })).thread));
+    act(send, 'posted', async () => {
+      swap((await api('/comments', { path: pagePage, thread: t.id, text })).thread);
+      if (replyBack?.thread === t.id) replyBack = null;
+    // what is in the box now, for the dialog: the saved copy holds it, and it comes back to this thread
+    }, () => (input.isConnected && input.value.trim() ? { name: TYPED.reply, text: input.value.trim(), keep: { where: 'reply', thread: t.id } } : null));
   });
+  if (replyBack?.thread === t.id) {
+    input.value = replyBack.text;
+    input.addEventListener('input', () => { if (replyBack?.thread === t.id) replyBack.text = input.value; });
+  }
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); send.click(); } });
   reply.append(input, send);
   card.appendChild(reply);
@@ -302,7 +325,8 @@ function openPopover(id, pinEl) {
   document.body.appendChild(pop);
   const r = pinEl.getBoundingClientRect();
   place(pop, r.right + 10, r.top - 8);
-  const offClick = listen('click', (e) => { if (!pop.contains(e.target)) closePopover(); });
+  // A click in a dialog that is open over the popover is not a click away from it.
+  const offClick = listen('click', (e) => { if (!pop.contains(e.target) && !(e.target instanceof Element && e.target.closest('#kiln-modal'))) closePopover(); });
   const offKey = listen('keydown', onEsc(closePopover));
   popClose = () => { offClick(); offKey(); pop.remove(); };
   pop.querySelector('.kiln-cmt-reply input')?.focus();
@@ -393,8 +417,50 @@ function cssPath(el) {
 
 // ─── Composer (new thread at a pin) ──────────────────────────────────────────
 
-function openComposer(point, anchor) {
+let composerAnchor = null;   // where the comment being written is pinned (null: nowhere in particular)
+
+/**
+ * A comment or a reply that is being written right now, wherever its box is
+ * (the composer, the panel, a pin's popover), as main.js's stopped() takes it:
+ * { name, text, keep }. null when nothing is. For a sign-in that is found to
+ * have ended by something other than Post or Reply.
+ */
+export function typedComment() {
+  const ta = document.querySelector('#kiln-cmt-composer textarea');
+  if (ta && ta.value.trim()) return { name: TYPED.comment, text: ta.value.trim(), keep: { where: 'comment', ...(composerAnchor && { anchor: composerAnchor }) } };
+  for (const input of document.querySelectorAll('.kiln-cmt-reply input')) {
+    if (input.value.trim() && input.dataset.thread) return { name: TYPED.reply, text: input.value.trim(), keep: { where: 'reply', thread: input.dataset.thread } };
+  }
+  return null;
+}
+
+/**
+ * After signing in again: put a comment or a reply that was being written
+ * back where it was (the saved copy's `typed`, through main.js). A comment
+ * opens its box at the place it was pinned to; a reply opens the panel with
+ * the words in that thread's box.
+ */
+export function resumeComment(typed) {
+  if (!ready) return;
+  if (typed.where === 'reply') {
+    replyBack = { thread: typed.thread, text: typed.text };
+    openComments();
+    return;
+  }
+  const target = resolveAnchor(typed.anchor);
+  let point = { x: innerWidth / 2, y: innerHeight / 3 };
+  if (target) {
+    target.scrollIntoView({ block: 'center' });
+    const r = target.getBoundingClientRect();
+    const a = typed.anchor;
+    point = { x: r.left + r.width * ((typeof a.x === 'number' ? a.x : 50) / 100), y: r.top + r.height * ((typeof a.y === 'number' ? a.y : 0) / 100) };
+  }
+  openComposer(point, target ? typed.anchor : null, typed.text);
+}
+
+function openComposer(point, anchor, text = '') {
   document.getElementById('kiln-cmt-composer')?.remove();
+  composerAnchor = anchor || null;
   const ghost = h('div', 'kiln-cmt-pin kiln-cmt-ghost', '＋');
   ghost.style.left = `${point.x}px`;
   ghost.style.top = `${point.y}px`;
@@ -404,6 +470,7 @@ function openComposer(point, anchor) {
   const ta = h('textarea');
   ta.maxLength = 4000;
   ta.placeholder = 'Leave a comment…';
+  ta.value = text;
   const close = () => { box.remove(); ghost.remove(); offKey(); };
   const offKey = listen('keydown', onEsc(close));
   const post = btn('kiln-btn-publish', 'Post', async () => {
@@ -419,7 +486,9 @@ function openComposer(point, anchor) {
       status('Comment posted ✓', 'saved');
     } catch (err) {
       post.disabled = false;
-      say(err, 'posted', `Comment failed: ${err.message}`);
+      // what is in the box now, for the dialog: the saved copy holds it with the place it is pinned to
+      say(err, 'posted', `Comment failed: ${err.message}`, () => (ta.isConnected && ta.value.trim()
+        ? { name: TYPED.comment, text: ta.value.trim(), keep: { where: 'comment', ...(anchor && { anchor }) } } : null));
     }
   });
   const row = h('div', 'kiln-cmt-acts');

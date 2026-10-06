@@ -73,7 +73,7 @@ function extLink(href, label) {
 // ─── Suggest-mode publishing (the editor's Publish, rerouted) ────────────────
 
 export function suggestChanges() {
-  const { state, cfg, modal, setStatus, stopped } = deps;
+  const { state, cfg, modal, setStatus, stopped, noteTyped } = deps;
   if (cfg.sandbox) {
     setStatus('The demo publishes only to your browser — suggesting needs a real Kiln site', 'idle');
     return;
@@ -97,11 +97,14 @@ export function suggestChanges() {
     </div>
     <p class="kiln-np-step" id="kiln-sug-status"></p>`);
   const status = m.querySelector('#kiln-sug-status');
+  // a note typed for a suggestion that was stopped, brought back after signing in again
+  m.querySelector('#kiln-sug-note').value = String(deps.note() || '').slice(0, 200);
   m.querySelector('#kiln-sug-go').onclick = async () => {
     const note = m.querySelector('#kiln-sug-note').value.trim();
     m.querySelector('#kiln-sug-go').disabled = true;
     try {
       const r = await sendSuggestion(note, (text) => { status.textContent = text; });
+      deps.noteDone();
       m.remove();
       setStatus(r.previewSkipped
         ? 'Suggested ✓ — awaiting approval (preview skipped)'
@@ -109,7 +112,8 @@ export function suggestChanges() {
     } catch (err) {
       console.error('[kiln] suggest', err);
       m.querySelector('#kiln-sug-go').disabled = false;
-      status.textContent = stopped(err, 'sent') || `Failed: ${err.message} — your edits are still staged.`;
+      status.textContent = stopped(err, 'sent', () => (m.isConnected ? noteTyped(m.querySelector('#kiln-sug-note').value) : null))
+        || `Failed: ${err.message} — your edits are still staged.`;
     }
   };
 }
@@ -333,7 +337,8 @@ function suggestionRow(m, sug) {
         // as everywhere else; 409 (page moved) and 422 (couldn't apply / guard)
         // leave the suggestion open on the worker — keep the row with an
         // inline explanation.
-        err.textContent = stopped(e2, approve ? 'approved' : 'declined') || (e2.status === 409
+        // a note typed for the editor (in a prompt, now closed) is offered as a copy
+        err.textContent = stopped(e2, approve ? 'approved' : 'declined', note ? { name: 'your note', text: note } : null) || (e2.status === 409
           ? 'The page changed while approving — try again.'
           : `Could not ${approve ? 'approve' : 'decline'}: ${e2.data.error || e2.status}${e2.data.detail ? ` (${e2.data.detail})` : ''}`);
         err.hidden = false;

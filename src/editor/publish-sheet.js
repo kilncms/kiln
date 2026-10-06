@@ -266,6 +266,7 @@ function renderItem(item, deps, rerender) {
  *   publish(note)          do it; the sheet has already closed
  *   onChange()             the sheet opened, closed or lost an edit
  *   suggest                true for a suggest-only editor
+ *   note                   optional: the line already typed under "What changed?" (a publish that was stopped)
  * }
  */
 export function openPublishSheet(deps) {
@@ -283,6 +284,7 @@ export function openPublishSheet(deps) {
   const list = m.querySelector('#kiln-ps-list');
   const go = m.querySelector('#kiln-pubsheet-go');
   const note = m.querySelector('#kiln-ps-note');
+  if (deps.note) note.value = cleanNote(deps.note);
   const late = new Map();   // id → warnings that arrived after the first draw
 
   const render = () => {

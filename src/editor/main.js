@@ -24,7 +24,7 @@ import {
 import { initPalette, openPalette } from './palette.js';
 import { initSuggest, suggestChanges, sendSuggestion, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
 import { initTheme, openThemePanel } from './theme.js';
-import { initComments, openComments, commentsTick } from './comments.js';
+import { initComments, openComments, commentsTick, resumeComment, typedComment } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 import { initBlocks } from './blocks.js';
 import { publishLabel, editCommitMessage, goingLiveLabel, initGuide, guideSync, guidePublished, guideUndone, guideWaiting } from './firstrun.js';
@@ -35,7 +35,7 @@ import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
-import { draftRecord, readDraft, draftHolds } from './saved-edits.js';
+import { draftRecord, readDraft, draftHolds, TYPED } from './saved-edits.js';
 import { onLoadFailure, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
 
@@ -103,6 +103,10 @@ const state = {
   pendingSource: new Map(),   // ref → { value, type? } staged for /source/commit
   sourceFields: null,         // ref → { parsed, els: [Element] } from the boot scan
   sourceBase: new Map(),      // ref → pre-edit text (undo baseline; updated on publish)
+  // What was being typed into a panel when a request found the sign-in ended,
+  // while the person is being told: it goes into the saved copy with the edits
+  // (saved-edits.js `typed`) and is put back after signing in again.
+  typed: null,
 };
 
 // ─── Session undo/redo (⌘Z / ⌘⇧Z) ───────────────────────────────────────────
@@ -253,6 +257,8 @@ async function init() {
   }
   // Owner-only: quietly check whether a newer editor build exists.
   if (mode === 'admin' && !cfg.sandbox) checkForUpdate();
+  startedUp = true;
+  for (const open of onceStarted.splice(0)) open();
 
   window.addEventListener('beforeunload', (e) => {
     // Leaving to sign in again was chosen in a dialog that said what is kept.
@@ -271,7 +277,7 @@ async function init() {
 function draftWaits() {
   try {
     for (const p of [...pageFileCandidates(location.pathname, cfg.root || ''), location.pathname]) {
-      if (readDraft(JSON.parse(localStorage.getItem(`kiln_pending:${cfg.repo}:${p}`)))) return true;
+      if (readDraft(JSON.parse(localStorage.getItem(`kiln_pending:${cfg.repo}:${p}`)))?.count) return true;
     }
   } catch { /* unreadable: nothing is promised */ }
   return false;
@@ -308,7 +314,7 @@ function notStarted(over) {
 /** The saved copy in this browser holds every text edit staged right now (written, then read back). */
 function draftSaved() {
   savePendingToStorage();
-  try { return draftHolds(JSON.parse(localStorage.getItem(pendingStorageKey())), state.pending, state.pendingSource); } catch { return false; }
+  try { return draftHolds(JSON.parse(localStorage.getItem(pendingStorageKey())), state.pending, state.pendingSource, state.typed); } catch { return false; }
 }
 
 /** The unpublished text, for "Copy my text": each edit as a person reads it on the page. */
@@ -326,24 +332,40 @@ function unpublishedText() {
 /**
  * What a request found out, as a dialog: where the edits stand, and what can
  * be done. `did` is the word for what was being done (see stopped()); true
- * and false are Publish and "nothing in particular". Returns the status line.
+ * and false are Publish and "nothing in particular". `typedNow` reads what
+ * the person had typed into the panel they were in (see typedIn). Returns the
+ * status line.
+ *
+ * The dialog goes over that panel and gives it back as it was when it is put
+ * away, so nothing typed there is lost by being told.
  */
-function stoppedDialog(f, did) {
+function stoppedDialog(f, did, typedNow = null) {
   if (did === true) did = 'published';
   did = did || '';
+  const over = f.kind === 'ended';
   // Words still being typed into a field are part of what is kept: stage them, as Publish does.
-  if (f.kind === 'ended') {
+  if (over) {
     if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
     if (sourceActive) commitSourceEdit();
   }
+  // What was typed into the panel, read off the screen now. When the saved
+  // copy can hold it, it is written there with the edits and read back before
+  // anything is promised about it.
+  const typed = (typeof typedNow === 'function' ? typedNow() : typedNow) || typedAnywhere();
+  state.typed = over && typed?.keep ? { ...typed.keep, text: typed.text } : null;
   const counts = stagedCounts();
   const way = signInWay();
-  const d = f.kind === 'refused'
-    ? publishRefused({ way, reason: f.reason, counts, did: did || 'changed' })
-    : publishEnded({ way, ownerMust: f.ownerMust, message: f.message, counts, did,
-      survives: whatSurvives(counts, { saved: draftSaved(), filesKept: [...state.pendingBinaries.keys()].filter(p => keptHere.has(p)).length }) });
-  const again = () => stoppedDialog(f, did);
-  setStatus(d.status, 'error', { sticky: true, action: { label: d.signIn ? 'Sign in again' : 'What now', title: 'What happened, and what is kept', run: again } });
+  const saved = over ? draftSaved() : false;
+  const told = typed ? { name: typed.name, kept: !!state.typed && saved } : null;
+  const d = !over
+    ? publishRefused({ way, reason: f.reason, counts, did: did || 'changed', typed: told })
+    : publishEnded({ way, ownerMust: f.ownerMust, message: f.message, counts, did, typed: told,
+      survives: whatSurvives(counts, { saved, filesKept: [...state.pendingBinaries.keys()].filter(p => keptHere.has(p)).length }) });
+  const again = () => stoppedDialog(f, did, typedNow);
+  setStatus(d.status, 'error', { sticky: true, signIn: over, action: { label: d.signIn ? 'Sign in again' : 'What now', title: 'What happened, and what is kept', run: again } });
+  // Staying on the page: what was typed is on screen again, in its panel, and
+  // is not left in the saved copy to be offered back another day.
+  const stays = () => { if (!leavingToSignIn && state.typed) { state.typed = null; savePendingToStorage(); } };
   const m = modal(`
     <h3>${escapeHtml(d.title)}</h3>
     <p style="margin:0;font-size:14.5px;line-height:1.55;color:#1c1c28">${escapeHtml(d.text)}</p>
@@ -353,10 +375,11 @@ function stoppedDialog(f, did) {
       <button class="kiln-btn-ghost" data-close>${d.signIn ? 'Not now' : 'Close'}</button>
       ${d.copy ? `<button class="${d.signIn && !d.copyFirst ? 'kiln-btn-ghost' : 'kiln-btn-publish'}" id="kiln-stop-copy">Copy my text</button>` : ''}
       ${d.signIn ? `<button class="${d.copyFirst ? 'kiln-btn-ghost' : 'kiln-btn-publish'}" id="kiln-stop-go">Sign in again</button>` : ''}
-    </div>`);
+    </div>`, { over: true, onClose: stays });
   const copy = m.querySelector('#kiln-stop-copy');
   if (copy) copy.onclick = async () => {
-    const text = unpublishedText();
+    // What was typed in the panel first, then the unpublished edits.
+    const text = [typed ? editsAsText([{ label: typed.name.charAt(0).toUpperCase() + typed.name.slice(1), text: typed.text }]) : '', unpublishedText()].filter(Boolean).join('\n\n');
     try {
       await navigator.clipboard.writeText(text);
       copy.textContent = 'Copied';
@@ -394,7 +417,7 @@ function signInGone(err) {
   // Asking who else is editing would only be refused again every half minute.
   clearInterval(presenceTimer);
   if (first) {
-    setStatus('Your sign-in has ended.', 'error', { sticky: true,
+    setStatus('Your sign-in has ended.', 'error', { sticky: true, signIn: true,
       action: { label: f.ownerMust ? 'What now' : 'Sign in again', title: 'What happened, and what is kept', run: () => stoppedDialog(f, false) } });
   }
 }
@@ -439,17 +462,50 @@ const stagedCounts = () => ({ edits: state.pending.size, source: state.pendingSo
  * Returns that line, for the place the person is looking at, or '' when the
  * answer is about something else and the caller keeps its own words.
  */
-function stopped(err, did = '') {
+function stopped(err, did = '', typed = null) {
   const f = readFailure(err);
-  if (f.kind === 'ended' || (f.kind === 'refused' && did)) return stoppedDialog(f, did);
+  if (f.kind === 'ended' || (f.kind === 'refused' && did)) return stoppedDialog(f, did, typed);
   if (f.kind === 'refused') return readRefused({ way: signInWay(), reason: f.reason });
   if (f.kind === 'trouble') return publishTrouble(f, stagedCounts(), did);
   return '';
 }
 
+/**
+ * Everything typed into a panel's boxes, for stopped(): each box's label and
+ * its words, as text to copy. The saved copy does not hold these, so the
+ * dialog says they will need typing again and puts the copy first.
+ * A box still holding what the panel put in it (a page's present title) was
+ * not typed; `all` takes every box, for a panel that redraws its boxes with
+ * what was typed (the site menu's rows).
+ */
+function typedIn(panel, all = false) {
+  return () => {
+    if (!panel.isConnected) return null;
+    const items = [];
+    for (const box of panel.querySelectorAll('input[type="text"], input[type="email"], input:not([type]), textarea')) {
+      if (!box.value.trim() || box.readOnly || box.closest('[hidden]')) continue;
+      if (!all && box.value === box.defaultValue) continue;
+      const label = (box.closest('label')?.textContent || box.getAttribute('aria-label') || box.placeholder || '').replace(/\s+/g, ' ').trim();
+      items.push({ label, text: box.value });
+    }
+    return items.length ? { name: 'what you typed here', text: editsAsText(items) } : null;
+  };
+}
+
+/**
+ * What is being typed somewhere on screen right now, for when the thing that
+ * was stopped had no words of its own (Publish, a list being read, the editor
+ * finding out by itself): a comment or a reply first, then the boxes of
+ * whatever panel is open.
+ */
+function typedAnywhere() {
+  const panel = document.getElementById('kiln-modal');
+  return typedComment() || (panel && !panel.dataset.over ? typedIn(panel)() : null);
+}
+
 /** The same, for a failure that is told in the status line: what stopped() says, or the caller's own words. */
-function say(err, did, own) {
-  const line = stopped(err, did);
+function say(err, did, own, typed = null) {
+  const line = stopped(err, did, typed);
   const kind = readFailure(err).kind;
   if (kind === 'ended' || (kind === 'refused' && did)) return;   // the dialog has set its own line
   setStatus(line || own, 'error');
@@ -2439,7 +2495,15 @@ function requestPublish() {
     },
     publish: (note) => publish({ note }),
     onChange: guideSync,
+    // the line typed for a publish that was stopped, or brought back after signing in again
+    note: keptNote,
   });
+}
+
+/** The line under "What changed?", for stopped(): the saved copy holds it, and it is back in its box afterwards. */
+function noteTyped(text) {
+  const words = String(text || '').trim();
+  return words ? { name: TYPED.note, text: words, keep: { where: 'note' } } : null;
 }
 
 /** A suggest-only editor pressed "Send for review" in the sheet. */
@@ -2451,10 +2515,12 @@ async function sendSuggestionFromSheet(note) {
   setStatus('Sending your suggestion…', 'saving');
   try {
     const r = await sendSuggestion(note, (text) => setStatus(text, 'saving'));
+    keptNote = '';
     setStatus(r.previewSkipped ? 'Sent for review. The preview was skipped.' : 'Sent for review. Nothing is live until an owner approves it.', 'saved');
   } catch (err) {
     console.error('[kiln] suggest', err);
-    say(err, 'sent', `That did not send: ${err.message}. Your edits are still here.`);
+    keptNote = note || '';   // back in its box when the sheet is opened again
+    say(err, 'sent', `That did not send: ${err.message}. Your edits are still here.`, noteTyped(note));
   }
 }
 
@@ -2469,6 +2535,7 @@ async function publish(opts = {}) {
   // Empty: every commit keeps the message it has always had.
   const noteMsg = noteMessage(opts.note);
   if (cfg.sandbox) return publishSandbox(noteMsg);
+  keptNote = '';   // kept again below if this publish is stopped
   // An invited editor's first publish ends the first-session guide: note what
   // changed now, while the edits are still staged.
   const told = guideWaiting() ? describePublish() : null;
@@ -2477,7 +2544,7 @@ async function publish(opts = {}) {
   // Source edits aren't pre-blocked client-side: /source/commit answers suggest
   // sessions with its own 403 copy, which publishSource surfaces as-is.
   if (isSuggestMode()) {
-    if (state.pendingSource.size) await publishSource();
+    if (state.pendingSource.size) await publishSource(opts.note);
     if (state.pending.size) return opts.note !== undefined ? sendSuggestionFromSheet(opts.note) : suggestChanges();
     return;
   }
@@ -2485,7 +2552,7 @@ async function publish(opts = {}) {
   // even BE a committed page file to edit (§13), and its journal/status tail
   // must not claim "Published" for commits whose build hasn't run (§11).
   if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length) {
-    return publishSource();
+    return publishSource(opts.note);
   }
 
   // Edits inside a data-cms-partial (e.g. a shared footer or header) fan out to
@@ -2645,9 +2712,10 @@ async function publish(opts = {}) {
     watchDeploy(result?.commit?.sha, result?.text);
     // A mixed publish (page edits + source-file edits from the same screen):
     // commit the source half now, sequentially, with its own §11 states.
-    if (state.pendingSource.size) await publishSource();
+    if (state.pendingSource.size) await publishSource(opts.note);
   } catch (err) {
     console.error('[kiln] publish', err);
+    keptNote = opts.note || '';   // the line typed under "What changed?" is back in its box when the sheet is opened again
     // A file the worker would not take (type, size, or contents that don't match
     // its name) comes back with a plain sentence — show it, with the file's name.
     const why = fileRefusalText(err.data);
@@ -2661,7 +2729,7 @@ async function publish(opts = {}) {
     // the edits stay as they are, and the person is told where they stand.
     // Trouble on the way (no answer, a 5xx, a 429) is neither: it says so, and to try again.
     const f = why ? null : readFailure(err);
-    if (f && (f.kind === 'ended' || f.kind === 'refused')) stoppedDialog(f, true);
+    if (f && (f.kind === 'ended' || f.kind === 'refused')) stoppedDialog(f, true, noteTyped(opts.note));
     else if (f && f.kind === 'trouble') setStatus(publishTrouble(f, { edits: state.pending.size, source: state.pendingSource.size }), 'error');
     else setStatus(why ? why + which : 'Publish failed — see console', 'error');
   }
@@ -3024,7 +3092,7 @@ function markSourceFieldIssue(ref, reason) {
  * survive, mirroring publish()), keep skipped refs pending with their reasons
  * (§8.1), then hand the last commit to the §11/§12 build watcher.
  */
-async function publishSource() {
+async function publishSource(note = '') {
   if (!state.pendingSource.size) return;
   const groups = groupSourceEdits(state.pendingSource,
     { repo: cfg.repo, branch: cfg.branch || 'main', adapter: cfg.adapter || 'astro' });
@@ -3097,7 +3165,8 @@ async function publishSource() {
     // are told as they are for a page edit: the edits stay staged and saved
     // in this browser. Anything else keeps the worker's own words.
     const f = firstFailure ? readFailure(firstFailure) : null;
-    if (f && (f.kind === 'ended' || f.kind === 'refused')) stoppedDialog(f, true);
+    if (f) keptNote = note || '';
+    if (f && (f.kind === 'ended' || f.kind === 'refused')) stoppedDialog(f, true, noteTyped(note));
     else if (f && f.kind === 'trouble') setStatus(publishTrouble(f, { edits: state.pending.size, source: state.pendingSource.size }), 'error');
     else if (firstError) setStatus(firstError, 'error');
     else if (anyOk) setStatus('Nothing changed', 'idle');
@@ -3560,7 +3629,16 @@ function newContent() {
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
       <button class="kiln-btn-publish" id="kiln-np-go">Create</button>
-    </div>`);
+    </div>
+    <p class="kiln-np-step" id="kiln-np-said" role="status"></p>`);
+  // What is typed here is set aside while the page is being made, not thrown
+  // away: if it does not go through, the form comes back as it was.
+  const form = document.createElement('div');
+  const progress = document.createElement('div');
+  const formBody = m.querySelector('.kiln-modal-body');
+  form.append(...formBody.childNodes);
+  formBody.append(form, progress);
+  form.querySelector('#kiln-np-title').focus();
   m.querySelector('#kiln-np-go').onclick = async () => {
     const title = m.querySelector('#kiln-np-title').value.trim();
     const kind = m.querySelector('input[name="kiln-new-kind"]:checked').value;
@@ -3571,7 +3649,9 @@ function newContent() {
     const root = cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '';
     const branch = cfg.branch || 'main';
     const href = kind === 'post' ? `/blog/${slug}.html` : `/${slug}.html`;
-    const body = m.querySelector('.kiln-modal-body');
+    const body = progress;
+    form.style.display = 'none';
+    body.style.display = '';
     body.innerHTML = `<h3>Publishing “${escapeHtml(title)}”</h3>
       <p class="kiln-np-step" id="kiln-np-status">Committing to GitHub…</p>
       <div class="kiln-modal-actions">
@@ -3664,9 +3744,12 @@ function newContent() {
       poll();
     } catch (err) {
       console.error('[kiln] new', kind, err);
-      status.textContent = err.status === 404
+      // The form again, with what was typed, and why it did not go through.
+      body.style.display = 'none';
+      form.style.display = '';
+      m.querySelector('#kiln-np-said').textContent = err.status === 404
         ? `This site has no ${kind} template (_templates/${kind}.html) — see the docs.`
-        : stopped(err, 'created') || `Failed: ${err.message}`;
+        : stopped(err, 'created', typedIn(form)) || `Failed: ${err.message}`;
     }
   };
 }
@@ -3807,7 +3890,7 @@ function menuEditor() {
       poll();
     } catch (err) {
       console.error('[kiln] menu', err);
-      status.textContent = stopped(err, 'saved') || `Failed: ${err.message}`;
+      status.textContent = stopped(err, 'saved', typedIn(m, true)) || `Failed: ${err.message}`;
     }
   };
 }
@@ -4099,7 +4182,7 @@ async function invitePanel() {
         ...(suggestOnly ? { mode: 'suggest' } : m.dataset.mode === 'review' ? { mode: 'review' } : {}) } });
     } catch (err) {
       // What was typed stays in the form.
-      m.querySelector('#kiln-gstatus').textContent = stopped(err, 'added') || `That person was not added: ${err.message}`;
+      m.querySelector('#kiln-gstatus').textContent = stopped(err, 'added', typedIn(m)) || `That person was not added: ${err.message}`;
       return;
     }
     if (data.ok) {
@@ -4290,7 +4373,8 @@ function confirmRestoreVisual({ title, nowText, thenText, thenLabel = 'This vers
   });
 }
 
-async function historyPanel() {
+/** `resume`: { sha, name } puts a name that was being typed back on that version's row (after signing in again). */
+async function historyPanel(resume = null) {
   const m = modal(`
     <h3>Page history</h3>
     <p class="kiln-dim">Every publish saves a version of this page. <strong>Undo this change</strong> takes
@@ -4428,7 +4512,8 @@ async function historyPanel() {
         btn.disabled = false; btn.textContent = 'Save';
         status.textContent = err.status === 422
           ? 'A version with that name was just created — try a slightly different name.'
-          : stopped(err, 'saved') || `Couldn’t name it: ${err.message}`;
+          : stopped(err, 'saved', () => (input.isConnected && input.value.trim()
+            ? { name: TYPED.version, text: input.value.trim(), keep: { where: 'version', sha: c.sha } } : null)) || `Couldn’t name it: ${err.message}`;
       }
     };
     form.querySelector('[data-nv="save"]').onclick = save;
@@ -4464,6 +4549,10 @@ async function historyPanel() {
     if (rBtn) rBtn.onclick = () => restoreVersion(c.sha, escapeHtml(when)).catch(err => { status.textContent = stopped(err) || `Couldn’t read that version: ${err.message}`; });
     div.querySelector('[data-act="name"]').onclick = () => nameVersionInline(div, c);
     list.appendChild(div);
+    if (resume && typeof resume.name === 'string' && resume.sha === c.sha) {
+      nameVersionInline(div, c);
+      div.querySelector('.kiln-nv-input').value = resume.name.slice(0, 40);
+    }
   });
 }
 
@@ -4594,7 +4683,7 @@ function pageSettingsPanel() {
       await loadPageSource();
       journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: 'Page settings', sha: result.commit?.sha });
       status.textContent = 'Committed ✓ — safe to close; Kiln will confirm when live.';
-    } catch (err) { status.textContent = stopped(err, 'published') || `Failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, 'published', typedIn(m)) || `Failed: ${err.message}`; }
   };
   const delBtn = m.querySelector('#kiln-ps-del');
   if (delBtn) delBtn.onclick = () => {
@@ -4663,9 +4752,9 @@ function findReplacePanel() {
           if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Find & replace', sha: commit.sha });
           status.textContent = 'Committed ✓ — rebuilding. Safe to close; Kiln will confirm when live.';
           act.remove();
-        } catch (err) { status.textContent = stopped(err, 'replaced') || `Failed: ${err.message}`; }
+        } catch (err) { status.textContent = stopped(err, 'replaced', typedIn(m)) || `Failed: ${err.message}`; }
       };
-    } catch (err) { status.textContent = stopped(err) || `Scan failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, '', typedIn(m)) || `Scan failed: ${err.message}`; }
   };
 }
 
@@ -4784,7 +4873,8 @@ async function checkForDraft() {
 
 // ─── Scheduled publishing ────────────────────────────────────────────────────
 
-function schedulePanel() {
+/** `at`: the time that was chosen before (after signing in again), as the time box holds it. */
+function schedulePanel(at) {
   if (!state.pending.size) return;
   // Scheduling re-applies text edits later against the live source; it can't
   // carry queued image uploads or added sections (same reason as drafts).
@@ -4796,7 +4886,7 @@ function schedulePanel() {
   const m = modal(`
     <h3>Schedule these ${state.pending.size} edit${state.pending.size > 1 ? 's' : ''}</h3>
     <p class="kiln-dim">Kiln commits them automatically at the time you pick (checked every 5 minutes), then the site rebuilds.</p>
-    <label>Publish at <input type="datetime-local" id="kiln-sc-at" value="${inOneHour}"></label>
+    <label>Publish at <input type="datetime-local" id="kiln-sc-at" value="${typeof at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(at) ? at : inOneHour}"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
       <button class="kiln-btn-publish" id="kiln-sc-go">Schedule</button>
@@ -4851,7 +4941,12 @@ function schedulePanel() {
       retireStaged();
       status.textContent = `Scheduled for ${new Date(data.at).toLocaleString()} ✓ — safe to close.`;
       refreshList();
-    } catch (err) { status.textContent = stopped(err, 'scheduled') || `Failed: ${err.message}`; }
+    } catch (err) {
+      status.textContent = stopped(err, 'scheduled', () => {
+        const chosen = m.isConnected ? m.querySelector('#kiln-sc-at').value : '';
+        return chosen ? { name: TYPED.schedule, text: new Date(chosen).toLocaleString(), keep: { where: 'schedule', at: chosen } } : null;
+      }) || `Failed: ${err.message}`;
+    }
   };
 }
 
@@ -5360,7 +5455,8 @@ function renderAdminBar() {
   initPalette({ state, cfg, mode, pageInScope, keyInScope, humanizeKey, listSitePages, modal, setStatus, escapeHtml, stopped,
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main') });
   initSuggest({ state, cfg, mode, modal, setStatus, escapeHtml, ask, stopped, flattenPending, retireStaged,
-    saveDraft, journalAdd, humanizeKey,
+    saveDraft, journalAdd, humanizeKey, noteTyped,
+    note: () => keptNote, noteDone: () => { keptNote = ''; },
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
     ghRequest: (method, path, body) => state.gh.request(method, path, body) });
   initAssist({ state, cfg, mode, modal, setStatus, escapeHtml, ask, say,
@@ -5958,20 +6054,55 @@ function removeToolbar() {
   document.querySelectorAll('.kiln-img-handle').forEach(h => h.remove());
 }
 
-function modal(bodyHtml) {
-  document.getElementById('kiln-modal')?.remove();
+// The panel a dialog was opened over (opts.over), set aside until that dialog is put away.
+let modalUnder = null;
+
+/**
+ * The editor's dialog. One at a time: opening one replaces the one that is
+ * open. Except `opts.over`, for a dialog that tells the person something
+ * about the panel they are in (the sign-in has ended): the panel is set aside
+ * with everything typed into it and comes back, as it was, when the dialog is
+ * put away. `opts.onClose` runs when the dialog is put away.
+ */
+function modal(bodyHtml, opts = {}) {
+  let open = document.getElementById('kiln-modal');
+  if (opts.over && open?.dataset.over) { open._kilnClose(); open = document.getElementById('kiln-modal'); }   // a second look at the same thing
+  if (opts.over && open) {
+    modalUnder = open;
+    open.id = 'kiln-modal-under';
+    open.style.display = 'none';
+  } else if (!opts.over) {
+    // Put a dialog that was over a panel away properly first, so that it leaves nothing behind.
+    if (open?.dataset.over) { open._kilnClose(); open = document.getElementById('kiln-modal'); }
+    open?.remove();
+    modalUnder?.remove();
+    modalUnder = null;
+  }
   const wrap = document.createElement('div');
   wrap.id = 'kiln-modal';
+  if (opts.over) wrap.dataset.over = '1';
   wrap.innerHTML = `<div class="kiln-modal-card" role="dialog" aria-modal="true" tabindex="-1">`
     + `<button class="kiln-modal-x" data-close aria-label="Close">✕</button>`
     + `<div class="kiln-modal-body">${bodyHtml}</div></div>`;
-  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey, true); };
+  const close = () => {
+    const shown = wrap.isConnected;
+    wrap.remove();
+    document.removeEventListener('keydown', onKey, true);
+    if (!shown) return;
+    if (opts.over && modalUnder && !document.getElementById('kiln-modal')) {
+      if (modalUnder.isConnected) { modalUnder.id = 'kiln-modal'; modalUnder.style.display = ''; }
+      modalUnder = null;
+    }
+    opts.onClose?.();
+  };
+  wrap._kilnClose = close;
   wrap.addEventListener('click', (e) => {
     if (e.target === wrap || e.target.closest('[data-close]')) close();
   });
   // Esc closes; Tab is trapped inside the dialog so keyboard focus can't wander
   // onto the page behind it.
   const onKey = (e) => {
+    if (wrap.id !== 'kiln-modal') return;   // set aside under another dialog: that one has the keyboard
     if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
     if (e.key !== 'Tab') return;
     const f = [...wrap.querySelectorAll('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])')]
@@ -6044,6 +6175,10 @@ function disablePublish(yes) {
 }
 
 let statusHideTimer = null;
+// The line that says the sign-in has ended, with its way back in, once there
+// is one (opts.signIn). Other news is still shown, and this line comes back
+// after it: it is the one thing the person has to act on.
+let signInLine = null;
 function setStatus(text, kind, opts) {
   const el = document.getElementById('kiln-status');
   if (!el) return;
@@ -6065,6 +6200,8 @@ function setStatus(text, kind, opts) {
   el.className = `kiln-status kiln-status--${kind}${opts?.action ? ' kiln-status--act' : ''}`;
   el.hidden = false;
   clearTimeout(statusHideTimer);
+  if (opts?.signIn) { signInLine = [text, kind, opts]; return; }
+  if (signInLine && !opts?.offer) { statusHideTimer = setTimeout(() => setStatus(...signInLine), 6000); return; }
   if (opts?.sticky) return;
   // Busy/error states stay visible; calm states fade away on their own. On a
   // phone the toast sits over the top of the page, so it leaves sooner.
@@ -6088,7 +6225,7 @@ function savePendingToStorage() {
   syncKeptFiles();
   try {
     // Edits to the page's own fields, and to the content files of a generated page.
-    const record = draftRecord(state.pending, state.pendingSource);
+    const record = draftRecord(state.pending, state.pendingSource, Date.now(), state.typed);
     if (!record) { localStorage.removeItem(pendingStorageKey()); return; }
     localStorage.setItem(pendingStorageKey(), JSON.stringify(record));
   } catch { /* storage full — nonfatal */ }
@@ -6139,14 +6276,17 @@ function offerPendingRestore() {
   if (!saved) return;
   if (back) { restoreSaved(saved, kept, true); return; }
   const names = [...Object.keys(saved.edits), ...Object.keys(saved.source).map(ref => friendlyRef(state.sourceFields.get(ref).parsed))];
+  const when = new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  // What was being typed when a sign-in ended (a comment, a note, a time) is offered back with the edits, or on its own.
+  const typedName = saved.typed ? TYPED[saved.typed.where] : '';
   const m = modal(`
     <h3>Pick up where you left off?</h3>
-    <p class="kiln-dim">You have ${saved.count} unpublished edit${saved.count > 1 ? 's' : ''} from
-    ${new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-    on this page (${names.map(escapeHtml).join(', ')}).</p>
+    <p class="kiln-dim">${saved.count ? `You have ${saved.count} unpublished edit${saved.count > 1 ? 's' : ''} from
+    ${when}
+    on this page (${names.map(escapeHtml).join(', ')})${typedName ? `, and ${typedName}` : ''}.` : `${typedName.charAt(0).toUpperCase() + typedName.slice(1)} from ${when} is saved in this browser.`}</p>
     <div class="kiln-modal-actions">
-      <button class="kiln-btn-ghost" id="kiln-rest-no">Discard them</button>
-      <button class="kiln-btn-publish" id="kiln-rest-yes">Restore edits</button>
+      <button class="kiln-btn-ghost" id="kiln-rest-no">${saved.count ? 'Discard them' : 'Discard it'}</button>
+      <button class="kiln-btn-publish" id="kiln-rest-yes">${saved.count ? 'Restore edits' : 'Bring it back'}</button>
     </div>`);
   m.querySelector('#kiln-rest-no').onclick = () => { clearSavedPending(); m.remove(); };
   m.querySelector('#kiln-rest-yes').onclick = async () => { await restoreSaved(saved, kept, false); m.remove(); };
@@ -6194,10 +6334,31 @@ async function restoreSaved(saved, kept, signedInAgain) {
     state.pendingSource.set(ref, entry);
     syncSourceDom(ref);
   }
-  refreshPublishButton();
-  if (signedInAgain) setStatus(backAfterSignIn(saved.count, files.length), 'saved');
-  else setStatus(`${saved.count} edit${saved.count > 1 ? 's' : ''} restored${files.length ? ', with the files they added' : ''} — Publish when ready`, 'saved');
+  refreshPublishButton();   // also rewrites the saved copy from what is staged: what was typed is taken out of it here
+  const typedName = saved.typed ? resumeTyped(saved.typed) : '';
+  if (signedInAgain) setStatus(backAfterSignIn(saved.count, files.length, typedName), 'saved');
+  else if (saved.count) setStatus(`${saved.count} edit${saved.count > 1 ? 's' : ''} restored${files.length ? ', with the files they added' : ''} — Publish when ready`, 'saved');
 }
+
+// What was typed into a panel is put back where it was typed: the panel is
+// opened again with the words in it. Once the editor has finished starting
+// (comments are set up after the saved edits are read).
+let startedUp = false;
+const onceStarted = [];
+/** Put back what the saved copy held of a panel (saved-edits.js `typed`). Returns how the sentences call it. */
+function resumeTyped(typed) {
+  const open = {
+    comment: () => resumeComment(typed),
+    reply: () => resumeComment(typed),
+    note: () => { keptNote = typed.text; },
+    schedule: () => schedulePanel(typed.at),
+    version: () => historyPanel({ sha: typed.sha, name: typed.text }),
+  }[typed.where];
+  if (startedUp) open(); else onceStarted.push(open);
+  return TYPED[typed.where];
+}
+// The line typed under "What changed?" for a publish or a suggestion that was stopped: back in its box the next time it opens.
+let keptNote = '';
 
 function escapeHtml(s) {
   return String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
