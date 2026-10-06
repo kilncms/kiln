@@ -404,7 +404,12 @@ export async function handleCloud(request, env, url, path) {
   // Lemon Squeezy webhook — the ONLY thing that flips a site to active.
   if (path === '/cloud/webhook/ls' && request.method === 'POST') {
     const bodyText = await request.text();
-    if (!(await verifyLsSignature(request, bodyText, env))) return json({ error: 'bad signature' }, 401);
+    if (!(await verifyLsSignature(request, bodyText, env))) {
+      // A rejected webhook is a paying customer's status not arriving (or
+      // someone probing). Either way it should leave a line.
+      console.warn(JSON.stringify({ evt: 'webhook_rejected', reason: env.LS_WEBHOOK_SECRET ? 'bad signature' : 'no webhook secret configured', bytes: bodyText.length }));
+      return json({ error: 'bad signature' }, 401);
+    }
     const evt = JSON.parse(bodyText);
     // Act ONLY on subscription lifecycle events. Order/invoice events
     // (order_created, subscription_payment_success) carry status "paid", which

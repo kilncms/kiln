@@ -1,0 +1,47 @@
+name: Monitor
+
+# Every 30 minutes: can the production worker do what publishing needs, and are
+# the two demo sites up with the editor on them? A failed scheduled run emails
+# the repository's owner. Needs no secret: every address here is public.
+#
+# GitHub starts scheduled runs late when it is busy, and switches a schedule
+# off after 60 days without a commit to the repository: this is a floor, not a
+# pager. See ENVIRONMENTS.md, "Seeing when it breaks".
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production:
+    name: worker and demo sites
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Worker deep health check
+        run: |
+          # 503 names the part that failed (kv, d1, app). Three tries, so one
+          # dropped connection is not an alert.
+          for attempt in 1 2 3; do
+            status=$(curl -sS -o health.json -w '%{http_code}' --max-time 20 'https://auth.kilncms.com/healthz?deep=1' || echo 000)
+            if [ "$status" = "200" ] && grep -q '"ok":true' health.json; then cat health.json; exit 0; fi
+            echo "attempt $attempt: HTTP $status $(cat health.json 2>/dev/null)"
+            sleep 20
+          done
+          echo "::error::auth.kilncms.com/healthz?deep=1 is not healthy: $(cat health.json 2>/dev/null)"
+          exit 1
+      - name: Demo sites are up and load the editor
+        run: |
+          failed=0
+          for site in https://demo.kilncms.com/ https://kiln-demo.pages.dev/; do
+            ok=0
+            for attempt in 1 2 3; do
+              if curl -fsS --max-time 20 "$site" -o page.html && grep -q 'kiln\.js' page.html; then ok=1; break; fi
+              sleep 20
+            done
+            if [ "$ok" = "1" ]; then echo "ok $site"; else echo "::error::$site did not answer, or its home page does not load kiln.js"; failed=1; fi
+          done
+          exit $failed

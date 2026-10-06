@@ -166,5 +166,15 @@ and it's mostly just configuration:
   one repo and to the paths granted in it.
 
 The worker's rate limiting on sign-in routes is on by default and shared across all
-sites; the free Workers tier comfortably covers editing traffic for many sites,
-since visitors never touch the worker at all.
+sites. Visitors never touch the worker at all, so the free Workers plan covers
+the requests of many sites. The limit to know about is storage writes: the free
+plan allows 1,000 KV writes a day, and when they are used up nobody can sign in
+until midnight UTC. A sign-in is a few writes, a comment or a People change is
+one, and an open editor writes its "who is here" entry once every five minutes
+(about 100 a day for one person editing all day). A handful of editors fits; a
+busy team, or several sites on one worker, should be on the Workers Paid plan,
+which has no daily write limit.
+
+`https://<your worker>/healthz?deep=1` answers 200 when the worker can reach
+its storage and GitHub accepts its App key, and 503 naming the part that failed
+(`kv`, `d1`, `app`) otherwise. Point any uptime monitor at it.

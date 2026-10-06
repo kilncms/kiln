@@ -23,6 +23,12 @@ main = "index.js"
 compatibility_date = "2026-06-01"
 workers_dev = true
 
+# Workers Logs: keeps what the worker prints (cron results, rejected webhooks,
+# errors) so it can be read afterwards in the Cloudflare dashboard, not only by
+# someone running `wrangler tail` at that moment.
+[observability]
+enabled = true
+
 # Site origins allowed to authenticate through this worker (comma-separated).
 [vars]
 ALLOWED_ORIGINS = "http://localhost:8788,http://127.0.0.1:8788,http://localhost:8787"
@@ -75,6 +81,9 @@ workers_dev = true
 # branded production domain.
 routes = []
 
+[env.staging.observability]
+enabled = true
+
 [env.staging.vars]
 # Staging site origins (preview deploys + localhost for `npm run dev`).
 ALLOWED_ORIGINS = "https://staging.kilncms.com,https://kiln-demo.pages.dev,http://localhost:8788,http://localhost:8787,http://127.0.0.1:8788"
@@ -115,6 +124,9 @@ name = "kiln-auth"
 workers_dev = true   # keep kiln-auth.erikkwilder.workers.dev live alongside the custom domain
 # Branded custom domain for the worker (so the Google redirect is auth.kilncms.com).
 routes = [{ pattern = "auth.kilncms.com", custom_domain = true }]
+
+[env.production.observability]
+enabled = true
 
 [env.production.vars]
 ALLOWED_ORIGINS = "https://demo.kilncms.com,https://kiln-demo.pages.dev,https://kiln-demo-mr.pages.dev,https://npu-i.pages.dev,https://npu-i-site.pages.dev,https://app.kilncms.com,http://localhost:8788,http://127.0.0.1:8788"

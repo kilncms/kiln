@@ -238,6 +238,40 @@ the same tag.
 
 ---
 
+## Seeing when it breaks
+
+- **`/healthz`** is a constant 200: it says the worker is running and which
+  build it is. It does not say publishing works.
+- **`/healthz?deep=1`** asks the three things publishing depends on and answers
+  503 naming the part that failed: `kv` (the namespace answers), `d1` (the
+  Kiln Cloud database answers), `app` (the GitHub App's key signs and GitHub
+  accepts it). It returns those words only, never an error text or a
+  credential, and is rate-limited.
+
+  ```bash
+  curl -s 'https://auth.kilncms.com/healthz?deep=1'
+  # {"ok":true,…,"checks":{"kv":"ok","d1":"ok","app":"ok"},"failed":[]}
+  ```
+- **The monitor** (`.github/workflows/monitor.yml`) requests the deep check and
+  the two demo sites every 30 minutes and fails if any is down or a demo's home
+  page does not load `kiln.js`. A failed scheduled workflow emails the
+  repository's owner. It uses no secret. It is a floor, not a pager: GitHub
+  starts scheduled runs late when busy and switches a schedule off after 60
+  days without a commit. A free external monitor pointed at the same address,
+  alerting by push or SMS, is worth the ten minutes.
+- **Logs.** `[observability]` is on in every environment, so what the worker
+  prints is kept and searchable in the Cloudflare dashboard (Workers → kiln-auth
+  → Logs). Each scheduled job prints one line, `{"evt":"cron","job":"schedules"
+  |"trials","ok":true|false,"ms":…}`, and one failing no longer stops the other.
+  A billing webhook that is refused prints `{"evt":"webhook_rejected",…}`.
+- **Storage writes.** An open editor used to write to KV every 30 seconds,
+  which alone could use up a free account's 1,000 writes a day and stop
+  sign-in until midnight UTC. It now writes on arrival, on moving to another
+  page, and every five minutes. Someone who closes the editor is therefore
+  listed as present for up to six and a half minutes.
+
+---
+
 ## Backups and restore
 
 Everything Kiln Cloud knows is in one D1 database and one KV namespace. If the

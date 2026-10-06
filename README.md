@@ -75,7 +75,7 @@ edit layer your client was missing.
 | `kiln.js` | boot shim every visitor loads | ~7 KB raw / ~3 KB gzip |
 | `kiln-features.js` | visitor runtime for galleries/filters/calendars, loaded only on pages that use them | ~16 KB raw / ~5 KB gzip |
 | `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~482 KB raw / ~145 KB gzip, editors only |
-| `kiln-auth` worker | sign-in (GitHub App + Google) and the commit pipeline every edit flows through | Cloudflare Workers free tier |
+| `kiln-auth` worker | sign-in (GitHub App + Google) and the commit pipeline every edit flows through | Cloudflare Workers free plan for a few editors (1,000 storage writes a day; see [self-hosting](docs/self-hosting.md)) |
 | your repo | the content database (with full version history) | free |
 | Cloudflare Pages | hosting + members-area functions | free, commercial use allowed |
 

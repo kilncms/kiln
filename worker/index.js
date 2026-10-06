@@ -90,8 +90,10 @@ function b64FromUtf8(text) {
 
 export default {
   async scheduled(_event, env) {
-    await runDueSchedules(env);
-    await expireStaleTrials(env);
+    // Each job on its own: one failing must not stop the other, and a failure
+    // must leave a line someone can find (Workers Logs, when observability is on).
+    await cronJob('schedules', () => runDueSchedules(env));
+    await cronJob('trials', () => expireStaleTrials(env));
   },
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -108,7 +110,16 @@ export default {
       // without it means an old worker and source fields render read-only.
       // Still a 200 that says ok, so status-probing monitors keep working.
       if (path === '/healthz') {
-        return await cors(env, request, json({ ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, ...deployedBuild(env) }));
+        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, ...deployedBuild(env) };
+        // ?deep=1 asks the things publishing depends on. A plain GET stays a
+        // constant 200 that touches nothing, as every editor and monitor expects.
+        if (url.searchParams.get('deep') === '1') {
+          const limited = await rateLimited(request, env);
+          if (limited) return limited;
+          const deep = await deepHealth(env);
+          return await cors(env, request, json({ ...basic, ok: deep.failed.length === 0, checks: deep.checks, failed: deep.failed }, deep.failed.length ? 503 : 200));
+        }
+        return await cors(env, request, json(basic));
       }
       if (path === '/setup') return setupPage(url, env);
       if (path === '/setup/callback') return setupCallback(url, env);
@@ -166,6 +177,48 @@ export default {
     }
   },
 };
+
+/** Run one scheduled job, and say in one structured line how it went. Never throws. */
+async function cronJob(job, fn) {
+  const t0 = Date.now();
+  try {
+    await fn();
+    console.log(JSON.stringify({ evt: 'cron', job, ok: true, ms: Date.now() - t0 }));
+  } catch (err) {
+    console.error(JSON.stringify({ evt: 'cron', job, ok: false, ms: Date.now() - t0, error: String((err && err.message) || err).slice(0, 300) }));
+  }
+}
+
+/**
+ * The deep health check: can this worker do what publishing needs right now?
+ *   kv    the KV namespace answers
+ *   d1    the Kiln Cloud database answers (only where one is bound)
+ *   app   the GitHub App's credentials are there, its key can sign, and GitHub
+ *         accepts what it signs
+ * Each is 'ok', 'failed' or 'not configured'. Only those words leave here:
+ * never an error message, a key or an id.
+ */
+async function deepHealth(env) {
+  const checks = {};
+  let creds = null;
+  try { creds = await env.KILN.get('app:creds', 'json'); checks.kv = 'ok'; }
+  catch { checks.kv = 'failed'; }
+  if (env.kiln_cloud) {
+    try { await env.kiln_cloud.prepare('SELECT 1 AS up').first(); checks.d1 = 'ok'; }
+    catch { checks.d1 = 'failed'; }
+  } else checks.d1 = 'not configured';
+  if (checks.kv === 'failed') checks.app = 'failed';
+  else if (!creds) checks.app = 'not configured';   // a worker nobody has run /setup on cannot publish
+  else {
+    try {
+      const jwt = await appJwt(creds);
+      const res = await fetch(`${GH}/app`, { headers: { Authorization: `Bearer ${jwt}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+      checks.app = res.ok ? 'ok' : 'failed';
+    } catch { checks.app = 'failed'; }
+  }
+  const failed = Object.keys(checks).filter(k => checks[k] === 'failed' || (k === 'app' && checks[k] === 'not configured'));
+  return { checks, failed };
+}
 
 /**
  * Which build is this? `build` is the commit the worker was deployed from,
@@ -594,6 +647,13 @@ async function requirePushCached(request, env, repo) {
   return true;
 }
 
+// A presence entry is rewritten at most this often while nothing changes, and
+// lives a little longer than that, so a person stays listed between writes.
+// The cost: someone who closes the editor is shown for up to six and a half
+// minutes, not ninety seconds.
+const PRESENCE_REWRITE_MS = 5 * 60 * 1000;
+const PRESENCE_TTL_S = 390;
+
 async function presencePing(request, env) {
   const { repo, path: pagePath, name } = await request.json().catch(() => ({}));
   if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo) || typeof pagePath !== 'string' || !pagePath.startsWith('/')) {
@@ -625,9 +685,17 @@ async function presencePing(request, env) {
   // overwrites the last, so the entry follows them as they navigate instead of
   // leaving a stale "editing /about" row behind for every page they visited.
   const myKey = `pres:${repo}:${nameKey}`;
-  await env.KILN.put(myKey,
-    JSON.stringify({ name: nameKey, role, page: String(pagePath).slice(0, 200), ts: Date.now() }),
-    { expirationTtl: 90 });
+  // The editor pings every 30 seconds. Writing each ping would spend a free
+  // account's whole day of KV writes (1,000) in one person's working day, and
+  // then nobody can sign in. So the entry is written when the person arrives
+  // or moves to another page, and otherwise once every five minutes.
+  const page = String(pagePath).slice(0, 200);
+  const now = Date.now();
+  let mine = null;
+  try { mine = await env.KILN.get(myKey, 'json'); } catch { /* treat as absent */ }
+  if (!(mine && mine.page === page && mine.role === role && now - (mine.ts || 0) < PRESENCE_REWRITE_MS)) {
+    await env.KILN.put(myKey, JSON.stringify({ name: nameKey, role, page, ts: now }), { expirationTtl: PRESENCE_TTL_S });
+  }
 
   // `others` = people on THIS page; `online` = everyone editing the site right
   // now. Dedupe by name (keep the freshest) so entries written under the old
@@ -638,6 +706,7 @@ async function presencePing(request, env) {
     if (k.name === myKey) continue;
     const v = await env.KILN.get(k.name, 'json');
     if (!v || v.name === nameKey) continue;
+    if (now - (v.ts || 0) > PRESENCE_TTL_S * 1000) continue;   // left; the entry has not expired yet
     const prev = byName.get(v.name);
     if (!prev || (v.ts || 0) > (prev.ts || 0)) byName.set(v.name, v);
   }
