@@ -161,7 +161,9 @@ For each person you also set:
   what you're granting. Leave it blank for the whole page.
 - **Feature grants** (editors) — which menu tools they get: drafts, history, new
   posts, scheduling, the site menu, find & replace, AI assist, theme tokens,
-  adding sections from the [block library](#block-library).
+  adding sections from the [block library](#block-library), and **Make things
+  editable** (the two tools "Make text/images editable" and "Add a gallery or
+  events"; a suggest-only editor or a reviewer is never shown them).
 - **Suggest-only publishing** (editors) — see below.
 
 Removing someone ends their access, including a sign-in they already hold. An
@@ -283,8 +285,17 @@ Two things worth knowing:
 
 - **Publish** — edits stage on the page and go out together as one commit. As soon as
   something is staged, a **Publish** button showing the number of edits appears beside
-  the pencil (it is also the first item in the pencil's menu). The live site updates
-  when your host finishes redeploying, typically about a minute.
+  the pencil (it is also the first item in the pencil's menu). It opens a sheet that
+  lists every edit as before and after, lets one edit be dropped, warns about a
+  picture with no description, a link that goes nowhere or an empty heading, and
+  takes a one-line note that becomes the commit message. The live site updates when
+  your host finishes redeploying, typically about a minute. **Settings → Publish
+  without the preview** skips the sheet in that browser.
+- **Undo** — for ten seconds after a publish the confirmation offers Undo. It makes
+  one more ordinary commit that puts the page file back exactly as it was (never a
+  force push) and returns the edits to the page, unpublished. If the file has changed
+  since, it writes nothing and points to History. It covers a publish that changed
+  one page; shared headers and footers, and source-file edits, go through History.
 - **Drafts** — save work privately without publishing; come back to it later.
 - **Scheduling** — publish at a chosen time. The worker re-applies the edits at fire
   time (and re-checks the author still has access).

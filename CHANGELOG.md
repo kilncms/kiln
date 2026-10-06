@@ -8,6 +8,41 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`kiln rescue --render`** — freezes a site that is drawn by JavaScript (what
+  Lovable, v0 and Bolt usually build) into HTML that Kiln can edit. Each page is
+  opened in a browser already on the machine (Chrome, Edge, Brave, Chromium; or
+  `--browser <path>`), left to finish, scrolled to the end so lazy pictures
+  load, and saved as it looks. Pages are found from the links on screen,
+  `sitemap.xml` and the routes the app moves to. The app's scripts are removed,
+  styles that existed only in memory are written into the page, and
+  `RESCUE-REPORT.md` lists what stopped working: every form, every control
+  that needed script, every page that came out differently on a second visit.
+  `--menu-shim` adds one small script so the phone menu still opens, and
+  `--try` writes a try-out config so the copy can be served and edited at
+  once. `playwright-core` is an optional peer, looked up only for `--render`;
+  nothing is downloaded. Rescued pages now also carry Kiln's two script tags.
+- **Publish sheet** — every Publish control first shows what will change: each
+  edit as before and after in the page's own words (text word by word, pictures
+  as two thumbnails, added and removed blocks named), a control to drop one
+  edit, a one-line note that becomes the commit message, and warnings that do
+  not block (a picture with no description, a link that goes nowhere, an empty
+  heading). A bottom sheet on phones; Ctrl/Cmd+Enter publishes. Suggest-only
+  editors get the same sheet ending in **Send for review**. **Settings →
+  Publish without the preview** turns it off in one browser.
+- **Undo after publishing** — the confirmation reads "Published. Undo" for ten
+  seconds. Undo is one more ordinary commit that puts the page file back
+  exactly as it was, written against the file as it stands, and the edits come
+  back as unpublished. If someone else has published to the file since, nothing
+  is written and History is offered instead.
+- **"From this site"** — replacing a picture now offers the pictures the site's
+  repository already holds, beside Upload: names, folders and sizes, a search
+  box, the pictures on the current page first. Choosing one commits no new
+  file. An editor limited to certain folders sees only pictures in them.
+- **Help** in the Kiln menu, the top bar and Search, opening the guide for
+  whoever is signed in.
+- **First-session guide for invited editors** — the demo's three steps (edit a
+  heading, publish it, what happened), shown once to an editor who can publish.
+
 - **Source-mode worker endpoints** — the worker can now edit the content files
   a generator-built site is rendered from, not just finished HTML.
   `POST /source/commit` applies typed, per-field edits to a content file
@@ -109,6 +144,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `worker/migrations/` and is applied with `wrangler d1 migrations apply`.
 
 ### Changed
+
+- **The "Make things editable" grant now does something** — its two tools were
+  drawn for the owner only. An editor granted it in People & access sees them
+  (not a suggest-only editor or a reviewer, and not on a page outside their
+  folders).
+- **"+ Add section" dividers on phones** — only the two around the section
+  last touched are shown, and at every size a divider hides while it is under
+  the Undo, Redo and Publish row, the pencil or the demo banner.
+- **`kiln rescue`** follows the first page to the site's real address (a
+  builder's subdomain that forwards to the owner's domain), names an error
+  page that was answered as a normal one, and `--max-pages 6` (with a space)
+  is now read as 6.
+- A picture's description is part of what Undo restores.
 
 - **Invited editors can upload a fixed list of file types** — pictures (JPG,
   PNG, GIF, WebP, AVIF, ICO), PDF, Word / Excel / PowerPoint and OpenDocument

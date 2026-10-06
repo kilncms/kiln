@@ -249,10 +249,15 @@ underline / lists / links / clear** and a **Style** menu listing the site's own 
 (`window.KILN.styles`), so typography stays designed and editors pick from the palette.
 Everything stages on the page and publishes together as one commit: a **Publish** button
 showing the number of edits appears beside the pencil as soon as there is something to
-publish. **⌘Z / Ctrl+Z** undoes any staged change, blocks and image swaps included.
+publish. It opens a sheet that shows each edit as before and after (changed words marked,
+pictures side by side, added and removed blocks named), where one edit can be dropped and a
+one-line note becomes the commit message. For ten seconds after publishing, **Undo** takes
+that publish back as one more ordinary commit and returns the edits to the page.
+**⌘Z / Ctrl+Z** undoes any staged change, blocks and image swaps included.
 
-- **Images** — click to replace (auto-compressed), write alt text, and drag the corner
-  handle to resize the moment the image is added. Kiln keeps the full-resolution
+- **Images** — click to replace: upload one (auto-compressed), or pick **From this
+  site** from the pictures the repository already holds (no new file is committed).
+  Write alt text, and drag the corner handle to resize the moment the image is added. Kiln keeps the full-resolution
   original and publishes a web-optimized copy at the chosen size, so enlarging later
   never degrades.
 - **Documents** — insert a PDF or file into text as a link, a chip, or a card, and
