@@ -3244,9 +3244,9 @@ async function whoAnswers(env, name, madeFor) {
 
 /**
  * The id of the repository whose things are filed under `name`, by the
- * worker's own record of the name: what a new session is made for. Not
- * whatever GitHub says the name is today: a name can be held for the
- * repository that had it before (admitRepo), and someone on that
+ * worker's own record of the name: what a new session, sign-in or token is
+ * made for. Not whatever GitHub says the name is today: a name can be held
+ * for the repository that had it before (admitRepo), and someone on that
  * repository's list is signed in to that repository. A name the worker has
  * never met is looked up once, which puts it on record. null when there is
  * nothing to go by; never throws.
@@ -3268,7 +3268,7 @@ async function idOnRecord(env, name) {
  * the name is known to answer as another repository than the one the session
  * was made for. Not being able to read the records, or to ask GitHub, is not
  * knowing: the request then goes on as it did before ids were carried, so a
- * storage hiccup signs nobody out.
+ * storage hiccup signs nobody out and stops no token.
  */
 async function answersAsAnother(env, name, madeFor) {
   try { return (await whoAnswers(env, name, madeFor)).other; }

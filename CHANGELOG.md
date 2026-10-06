@@ -360,6 +360,20 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   update.
 - **The Kiln Cloud operator is identified by numeric GitHub id** — set
   `CLOUD_ADMIN_ID`; the login is compared only when no id is configured.
+- **A session or a token works only for the repository it was made for** — a
+  site that never corrected its config after a rename kept reaching GitHub by
+  the old name. If another repository then took that name, with Kiln's App
+  installed, the site's editors and API tokens committed into it. Editor
+  sessions, members' sign-ins and API tokens now carry the repository's id,
+  and every use checks that the name still answers as that repository: one
+  more KV read, from the answer the worker already remembers for ten minutes.
+  If it answers as another, an editor session gets 401 `session expired`, a
+  token gets 403 with `code: "repo_changed"` and a sentence, a member is
+  signed out, and a new sign-in is refused with a page that says why. Nothing
+  is sent to the other repository. They work again once `repo` is corrected.
+  Sessions and tokens from before keep working: tokens and members' sign-ins
+  take the id the first time they are used, editor sessions at the next
+  sign-in.
 
 ## [0.4.0] - 2026-08-19
 

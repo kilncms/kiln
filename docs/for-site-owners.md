@@ -92,6 +92,20 @@ If the old name ever answers as a different repository (someone else took it, or
 you deleted the repository and made it again), the worker shows and changes
 nothing stored under that name, for anyone, and `doctor` says what to do.
 
+That includes the people and scripts already let in. An editor's session, a
+member's sign-in and an API token work only for the repository they were made
+for. While the name answers as a different one, the editor does not start for
+an editor who is signed in, a member is signed out, signing in is refused with
+a page that says why, and a script's token is refused with a sentence that says
+why. Nothing they send reaches the other repository. The worker notices within
+about ten minutes of the name changing hands: it remembers GitHub's last answer
+for that long. Once `repo` is corrected, tokens and members' sign-ins work again
+and editors sign in once more, as above.
+After a repository that was deleted and made again, sign-ins and tokens made for
+the first one stay refused: members sign in again, tokens are made again, and an
+editor whose browser still holds the old sign-in clears this site's data in the
+browser first (the editor has no button for that when it cannot start).
+
 ### If your AI built a React app
 
 Kiln edits HTML files. A site made with Lovable, v0 or Bolt is usually a React
