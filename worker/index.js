@@ -53,7 +53,7 @@
  *   rname:<repo>  {id,at}            which repository a name is (lowercased); see "Repository identity"
  *   rsee:<repo>   {id,name}          GitHub's last answer for a name  (TTL 10 min)
  *   rmove:<id>    {id,to,at,done,cursor?}  how far an unfinished move has got; gone when it is done
- *   msess:<sid>   {repo,email,origin}  a member's sign-in on a site, so removal can end it
+ *   msess:<sid>   {repo,email,origin,rid?}  a member's sign-in on a site, so removal can end it
  *   esess:<id>  {repo,name,role,email,paths,rid?}  (TTL = person.days; rid = the id of the repository it is for)
  *   atok:<sha>  {id,repo,name,paths,keys,readonly,created,exp}  API token, keyed by SHA-256(secret)  (TTL = days)
  *   itok:<repo> cached installation token    (TTL 50 min)
@@ -2011,7 +2011,11 @@ async function googleClaim(request, env) {
   if (session && data.repo && data.email) {
     sid = crypto.randomUUID().replaceAll('-', '');
     const days = Number(data.days) === 0 ? 0 : Math.min(Math.max(Number(data.days) || 30, 1), 360);
-    await env.KILN.put(`msess:${sid}`, JSON.stringify({ repo: (await shelf(env, data.repo)).home, email: data.email, origin: data.origin }),
+    // Filed under the name the repository's things are under, with the id of
+    // that repository: each check asks whether the name still answers as it.
+    const { home } = await shelf(env, data.repo);
+    const rid = await idOnRecord(env, home);
+    await env.KILN.put(`msess:${sid}`, JSON.stringify({ repo: home, email: data.email, origin: data.origin, ...(rid !== null && { rid }) }),
       days ? { expirationTtl: days * 24 * 3600 } : undefined);
   }
   return json({ ok: true, name: data.name, days: data.days, ...(sid ? { sid } : {}) });
@@ -2031,6 +2035,10 @@ async function memberCheck(request, env) {
   if (!/^[a-f0-9]{32}$/.test(sid || '')) return json({ error: 'bad session' }, 400);
   const sess = await env.KILN.get(`msess:${sid}`, 'json');
   if (!sess || !origin || sess.origin !== origin) return json({ ok: false });
+  // The list that is about to be read is found by the sign-in's name. If that
+  // name now answers as another repository than the one the sign-in was made
+  // for, it is not read: the sign-in is no longer good.
+  if (!(await stillItsRepo(env, `msess:${sid}`, sess))) return json({ ok: false });
   const listed = (await getPeople(env, sess.repo)).some(p => p.email === sess.email && p.role === 'member');
   return json({ ok: listed });
 }
@@ -3179,19 +3187,23 @@ async function whoAnswers(env, name, madeFor) {
 // An editor session reaches its repository by a name, and a name can change
 // hands: a site that never corrected its config after a rename, whose old
 // name another repository then takes, would send its editors' commits there.
-// So a session carries the id of the repository it was made for (`rid`), and
-// each use asks the question the cron asks before a scheduled publish
-// (whoAnswers): is whoever answers to this name now that repository?
+// So an editor session and a member's sign-in carry the id of the repository
+// they were made for (`rid`), and each use asks the question the cron asks
+// before a scheduled publish (whoAnswers): is whoever answers to this name
+// now that repository?
 //
 //   · On the usual path that is one more KV read, of the ten-minute `rsee:`
 //     answer. GitHub is asked once when that has run out, not per request.
-//   · A session made before ids were carried is held to the id on record for
-//     its name, which is the cron's rule exactly, and costs one read more. It
-//     is never rewritten to add the id: a rewrite could bring back a session
-//     that taking someone off the list is ending at that moment. It carries
-//     one from the person's next sign-in.
-//   · A session whose name answers as another repository is refused, not
-//     removed: it is good again once the site says where the repository went.
+//   · An editor session made before ids were carried is held to the id on
+//     record for its name, which is the cron's rule exactly, and costs one
+//     read more. It is never rewritten to add the id: a rewrite could bring
+//     back a session that taking someone off the list is ending at that
+//     moment. It carries one from the person's next sign-in.
+//   · A member's sign-in from before takes that id the first time it is used
+//     (stillItsRepo): rewriting one is harmless, because the people list is
+//     asked again at every check.
+//   · One whose name answers as another repository is refused, not removed:
+//     it is good again once the site says where the repository went.
 
 /**
  * The id of the repository whose things are filed under `name`, by the
@@ -3224,6 +3236,39 @@ async function idOnRecord(env, name) {
 async function answersAsAnother(env, name, madeFor) {
   try { return (await whoAnswers(env, name, madeFor)).other; }
   catch { return false; }
+}
+
+/**
+ * The same question for a record that may take its id here: `record`, stored
+ * under `key`, names its repository in `repo`. False only when that name is
+ * known to answer as another repository. A record from before ids were
+ * carried takes the id on record for its name the first time it is used,
+ * whatever the answer, and carries it from then on.
+ */
+async function stillItsRepo(env, key, record) {
+  let who;
+  try { who = await whoAnswers(env, record.repo, record.rid); } catch { return true; }
+  if (!Number.isInteger(record.rid) && who.id !== null) await takeId(env, key, record.repo, who.id);
+  return !who.other;
+}
+
+/**
+ * Write a repository's id into a stored record that has none, in place and
+ * with the expiry it had (as a move rewrites it). It looks again first: only
+ * a record that is still there, still without an id and still under the same
+ * name is written, so one that was removed or moved a moment ago is left
+ * alone. Never throws: what is not written now is written at the next use.
+ */
+async function takeId(env, key, repo, id) {
+  try {
+    const [listed] = (await env.KILN.list({ prefix: key, limit: 1 })).keys;
+    if (!listed || listed.name !== key) return;
+    const keep = keepExpiry(listed);
+    if (keep === null) return;
+    const now = await env.KILN.get(key, 'json');
+    if (!now || Number.isInteger(now.rid) || now.repo !== repo) return;
+    await env.KILN.put(key, JSON.stringify({ ...now, rid: id }), keep);
+  } catch { /* storage trouble: next time */ }
 }
 
 // What a refused session is told. The status and `error` are those of a

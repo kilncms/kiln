@@ -81,8 +81,9 @@ const PK8 = Buffer.from(await crypto.subtle.exportKey('pkcs8', privateKey)).toSt
 
 /**
  * A worker's storage and environment. `ops` lists every KV operation made
- * through `env` as "get esess:…", in order; `fail` names key prefixes whose
- * reads throw, as KV does when it is in trouble.
+ * through `env` as "get esess:…", in order; `fail` names operations that
+ * throw, as "get rsee:" (every read of a key that starts so), the way KV
+ * does when it is in trouble.
  */
 function world(seed = {}, extra = {}) {
   const kv = fakeKV({ 'app:creds': { app_id: 1, slug: 'kiln-test', client_id: 'c', client_secret: 's', pk8: PK8 }, ...seed });
@@ -93,7 +94,7 @@ function world(seed = {}, extra = {}) {
     KILN[op] = async (...args) => {
       const key = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].prefix) || '';
       ops.push(`${op} ${key}`);
-      if (op === 'get' && fail.some(prefix => key.startsWith(prefix))) throw new Error('KV GET failed: 500 Internal Server Error');
+      if (fail.some(f => `${op} ${key}`.startsWith(f))) throw new Error(`KV ${op.toUpperCase()} failed: 500 Internal Server Error`);
       return kv[op](...args);
     };
   }
@@ -304,7 +305,7 @@ test('editor session from before ids were carried: it is held to the id on recor
 test('editor session, storage trouble: when the worker cannot read its records the request is carried out as before, and nobody is signed out', async () => {
   // The remembered answer cannot be read.
   const w = world({ ...met(OLD), ...heard(OLD), ...TOKEN(OLD), [THREAD]: thread, [`esess:${SESSION}`]: editorSession(OLD, ID) });
-  w.fail.push('rsee:');
+  w.fail.push('get rsee:');
   await withFetch(github(same()), async () => {
     assert.equal((await getPage(w.env)).status, 200);
     assert.equal((await putPage(w.env)).status, 201);
@@ -316,7 +317,7 @@ test('editor session, storage trouble: when the worker cannot read its records t
 
   // The record of the name cannot be read (a session from before, which goes by it).
   const older = world({ ...met(OLD), ...heard(OLD), ...TOKEN(OLD), [`esess:${SESSION}`]: editorSession(OLD) });
-  older.fail.push('rname:');
+  older.fail.push('get rname:');
   await withFetch(github(same()), async () => {
     assert.equal((await getPage(older.env)).status, 200);
     assert.equal((await putPage(older.env)).status, 201);
@@ -330,4 +331,153 @@ test('editor session, storage trouble: when the worker cannot read its records t
     assert.equal((await getPage(deaf.env)).status, 200);
     assert.deepEqual(asks(calls), [`/repos/${OLD}`], 'it was tried');
   });
+});
+
+// ─── Member sign-ins ─────────────────────────────────────────────────────────
+
+const BEA = { email: 'bea@example.com', name: 'Bea', role: 'member', days: 30 };
+const MEMBER = 'b'.repeat(32);
+const FAR = Math.floor(Date.now() / 1000) + 40 * 24 * 3600;   // an expiry, as KV reports one
+/** A member's sign-in as the worker stores it now: with the id of its repository. One from before has none. */
+const memberSignIn = (repo, rid) => ({ repo, email: BEA.email, origin: ORIGIN, ...(rid ? { rid } : {}) });
+/** What a site's members gate asks every few minutes. `{ ok: false }` is what makes it sign the member out. */
+const check = async (env, sid = MEMBER) => { const r = await ask(env, 'POST', '/members/check', { body: { sid, origin: ORIGIN } }); return { status: r.status, json: r.json }; };
+const YES = { status: 200, json: { ok: true } };
+const NO = { status: 200, json: { ok: false } };
+/** One cron run, without its log lines. */
+const cron = (env) => quietly(() => worker.scheduled({}, env));
+/** The site's config is corrected to the repository's current name, and the move that follows runs to its end. */
+async function corrected(w) {
+  assert.equal((await ask(w.env, 'GET', `/comments?repo=${NEW}&path=index.html`, { headers: OWNER })).status, 200);
+  for (let run = 0; run < 10 && [...w.kv.map.keys()].some(k => k.startsWith('rmove:')); run++) await cron(w.env);
+  assert.equal(w.json(`rid:${ID}`).name, NEW);
+}
+
+test('member sign-in: from the moment it is made, it carries the id of the repository whose list the member is on', async () => {
+  const code = 'c'.repeat(32);
+  const claim = (w) => ask(w.env, 'POST', '/google/claim', { body: { code, origin: ORIGIN, session: true } });
+  const plain = world({ ...met(OLD), [`people:${OLD}`]: [BEA], [`gcode:${code}`]: { name: 'Bea', days: 30, repo: OLD, origin: ORIGIN, email: BEA.email } });
+  await withFetch(github(same()), async () => {
+    const r = await claim(plain);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.deepEqual(plain.json(`msess:${r.json.sid}`), memberSignIn(OLD, ID));
+  });
+  // Through a site whose config still has the old name, after everything moved.
+  const after = world({ ...moved(NEW, OLD), [`people:${NEW}`]: [BEA], [`gcode:${code}`]: { name: 'Bea', days: 30, repo: OLD, origin: ORIGIN, email: BEA.email } });
+  await withFetch(github(renamed()), async () => {
+    const r = await claim(after);
+    assert.deepEqual(after.json(`msess:${r.json.sid}`), memberSignIn(NEW, ID));
+    assert.deepEqual(await check(after.env, r.json.sid), YES);
+  });
+});
+
+test('member sign-in, takeover: when the name answers as another repository the gate is told no, the list is not read, and the sign-in is good again once the site says where the repository went', async () => {
+  const w = world({ ...met(OLD), ...heard(OLD, ID, NEW), [`people:${OLD}`]: [BEA], [`msess:${MEMBER}`]: memberSignIn(OLD, ID) });
+  const names = renamed();
+  await quietly(() => withFetch(github(names), async (calls) => {
+    assert.deepEqual(await check(w.env), YES, 'a rename is not a takeover');
+    Object.assign(names, taken());
+    w.kv.map.delete(`rsee:${OLD}`);
+    calls.length = 0;
+    assert.deepEqual(await check(w.env), NO);
+    assert.deepEqual(carriedOut(calls), []);
+    assert.deepEqual(asks(calls), [`/repos/${OLD}`]);
+    assert.deepEqual(w.json(`msess:${MEMBER}`), memberSignIn(OLD, ID), 'refused, not removed');
+    calls.length = 0; w.ops.length = 0;
+    assert.deepEqual(await check(w.env), NO);
+    assert.deepEqual(calls, [], 'with the answer remembered, GitHub is not asked again');
+    assert.deepEqual(w.reads(), [`msess:${MEMBER}`, `rsee:${OLD}`], 'and the list stored for the first repository is not read');
+
+    // The owner corrects the config: the sign-in follows the repository to its name, and is good.
+    await corrected(w);
+    assert.deepEqual(w.json(`msess:${MEMBER}`), memberSignIn(NEW, ID));
+    assert.deepEqual(await check(w.env), YES);
+  }));
+});
+
+test('member sign-in, normal: the check is one more KV read, GitHub is not asked, nobody is turned away', async () => {
+  const w = world({ ...met(OLD), ...heard(OLD), [`people:${OLD}`]: [BEA], [`msess:${MEMBER}`]: memberSignIn(OLD, ID) });
+  await withFetch(github(same()), async (calls) => {
+    assert.deepEqual(await check(w.env), YES);
+    assert.deepEqual(w.reads(), [`msess:${MEMBER}`, `rsee:${OLD}`, `people:${OLD}`], 'two reads before sign-ins carried an id; the remembered answer is the third');
+    assert.deepEqual(w.writes(), []);
+    assert.deepEqual(calls, []);
+    // Someone who is no longer on the list is still turned away by the list, as before.
+    w.kv.map.set(`people:${OLD}`, '[]');
+    assert.deepEqual(await check(w.env), NO);
+  });
+});
+
+test('member sign-in from before ids were carried: it takes the id on record for its name the first time it is used, with the expiry it had', async () => {
+  const w = world({ ...met(OLD), ...heard(OLD), [`people:${OLD}`]: [BEA], [`msess:${'c'.repeat(32)}`]: memberSignIn(OLD), [`msess:${'d'.repeat(32)}`]: memberSignIn('someone/else') });
+  await w.kv.put(`msess:${MEMBER}`, JSON.stringify(memberSignIn(OLD)), { expiration: FAR });
+  const soon = Math.floor(Date.now() / 1000) + 30;
+  await w.kv.put(`msess:${'a'.repeat(32)}`, JSON.stringify(memberSignIn(OLD)), { expiration: soon });
+  await withFetch(github(same()), async (calls) => {
+    assert.deepEqual(await check(w.env), YES, 'same name, same repository: nobody is signed out');
+    assert.deepEqual(w.json(`msess:${MEMBER}`), memberSignIn(OLD, ID));
+    assert.equal(w.kv.expires.get(`msess:${MEMBER}`), FAR, 'it still expires when it was going to');
+    // From then on it is a sign-in like any other: one read more than before, nothing written.
+    w.ops.length = 0;
+    assert.deepEqual(await check(w.env), YES);
+    assert.deepEqual(w.reads(), [`msess:${MEMBER}`, `rsee:${OLD}`, `people:${OLD}`]);
+    assert.deepEqual(w.writes(), []);
+    // One that never expires still never does.
+    assert.deepEqual(await check(w.env, 'c'.repeat(32)), YES);
+    assert.deepEqual(w.json(`msess:${'c'.repeat(32)}`), memberSignIn(OLD, ID));
+    assert.equal(w.kv.expires.has(`msess:${'c'.repeat(32)}`), false);
+    // One with seconds left is left to expire (KV refuses so short a life), and is still good until it does.
+    assert.deepEqual(await check(w.env, 'a'.repeat(32)), YES);
+    assert.deepEqual(w.json(`msess:${'a'.repeat(32)}`), memberSignIn(OLD));
+    assert.equal(w.kv.expires.get(`msess:${'a'.repeat(32)}`), soon);
+    assert.deepEqual(w.json(`msess:${'d'.repeat(32)}`), memberSignIn('someone/else'), 'another site\'s sign-in is not touched');
+    assert.deepEqual(calls, []);
+  });
+
+  // A name the worker has no id on record for: used as it always was, and left as it is.
+  const unmet = world({ [`people:${OLD}`]: [BEA], [`msess:${MEMBER}`]: memberSignIn(OLD) });
+  await withFetch(github(same()), async (calls) => {
+    assert.deepEqual(await check(unmet.env), YES);
+    assert.deepEqual(unmet.json(`msess:${MEMBER}`), memberSignIn(OLD));
+    assert.deepEqual(calls, []);
+  });
+
+  // The name is on record as one repository and answers as another: the sign-in is the first one's, and is not used.
+  const held = world({ ...met(OLD), [`people:${OLD}`]: [BEA], [`msess:${MEMBER}`]: memberSignIn(OLD) });
+  await quietly(() => withFetch(github(taken()), async (calls) => {
+    assert.deepEqual(await check(held.env), NO);
+    assert.deepEqual(held.json(`msess:${MEMBER}`), memberSignIn(OLD, ID), 'it has taken the id of the repository the name is on record as');
+    assert.deepEqual(carriedOut(calls), []);
+    await corrected(held);
+    assert.deepEqual(await check(held.env), YES, 'and is good again under the name that repository has now');
+  }));
+});
+
+test('member sign-in, storage trouble: when the worker cannot read its records the gate is answered as before, never with a no that would sign the member out', async () => {
+  // The remembered answer cannot be read.
+  const w = world({ ...met(OLD), ...heard(OLD), [`people:${OLD}`]: [BEA], [`msess:${MEMBER}`]: memberSignIn(OLD, ID) });
+  w.fail.push('get rsee:');
+  await withFetch(github(same()), async () => { assert.deepEqual(await check(w.env), YES); });
+  assert.ok(w.reads().includes(`rsee:${OLD}`), 'it was tried');
+
+  // The record of the name cannot be read: a sign-in from before stays as it is, and is answered by the list.
+  const older = world({ ...met(OLD), ...heard(OLD), [`people:${OLD}`]: [BEA], [`msess:${MEMBER}`]: memberSignIn(OLD) });
+  older.fail.push('get rname:');
+  await withFetch(github(same()), async () => { assert.deepEqual(await check(older.env), YES); });
+  assert.deepEqual(older.json(`msess:${MEMBER}`), memberSignIn(OLD));
+
+  // The id cannot be written (a free account out of writes for the day): the answer is still yes, and it is taken next time.
+  const full = world({ ...met(OLD), ...heard(OLD), [`people:${OLD}`]: [BEA], [`msess:${MEMBER}`]: memberSignIn(OLD) });
+  full.fail.push('put msess:');
+  await withFetch(github(same()), async () => {
+    assert.deepEqual(await check(full.env), YES);
+    assert.deepEqual(full.json(`msess:${MEMBER}`), memberSignIn(OLD));
+    full.fail.length = 0;
+    assert.deepEqual(await check(full.env), YES);
+    assert.deepEqual(full.json(`msess:${MEMBER}`), memberSignIn(OLD, ID));
+  });
+
+  // GitHub cannot be asked who the name is.
+  const deaf = world({ ...met(OLD), [`people:${OLD}`]: [BEA], [`msess:${MEMBER}`]: memberSignIn(OLD, ID) });
+  await withFetch(async () => { throw new TypeError('fetch failed'); }, async () => { assert.deepEqual(await check(deaf.env), YES); });
 });
