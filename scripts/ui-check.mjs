@@ -28,7 +28,9 @@ import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
-const PLAYWRIGHT_DIR = process.env.PLAYWRIGHT_DIR || '/Users/shmergle/repos/outinglist/node_modules/playwright';
+// Playwright is not a dependency of this repo: point PLAYWRIGHT_DIR at an installed copy,
+// or install it here (npm i --no-save playwright) and the plain name resolves.
+const PLAYWRIGHT_DIR = process.env.PLAYWRIGHT_DIR || 'playwright';
 const args = process.argv.slice(2);
 const shotsAt = args.indexOf('--shots');
 const SHOTS = shotsAt !== -1 ? args[shotsAt + 1] : null;

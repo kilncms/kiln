@@ -21,10 +21,10 @@
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/node</string>
-    <string>/Users/shmergle/repos/kiln/scripts/backup-cloud.mjs</string>
+    <string>/Users/YOU/path/to/kiln/scripts/backup-cloud.mjs</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/shmergle/repos/kiln</string>
+  <string>/Users/YOU/path/to/kiln</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
@@ -38,8 +38,8 @@
     <integer>10</integer>
   </dict>
   <key>StandardOutPath</key>
-  <string>/Users/shmergle/Backups/kiln/backup.log</string>
+  <string>/Users/YOU/Backups/kiln/backup.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/shmergle/Backups/kiln/backup.log</string>
+  <string>/Users/YOU/Backups/kiln/backup.log</string>
 </dict>
 </plist>
