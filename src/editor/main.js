@@ -4632,7 +4632,7 @@ function renderAdminBar() {
         <button id="kiln-signout">Sign out</button>
       </div>
     </div>
-    <button id="kiln-fab" title="Kiln — drag me anywhere" aria-label="Kiln editing menu">
+    <button id="kiln-fab" title="Kiln — drag me anywhere" aria-label="Kiln editing menu" aria-haspopup="true" aria-expanded="false" aria-controls="kiln-fab-menu">
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
       <span id="kiln-fab-badge" hidden></span>
     </button>
@@ -4669,11 +4669,29 @@ function renderAdminBar() {
   const btn = fab.querySelector('#kiln-fab');
   const menu = fab.querySelector('#kiln-fab-menu');
 
+  // The menu is either following the mouse (opened by hovering the pencil: it
+  // closes when the mouse leaves) or PINNED (opened, or kept, by a click, a tap
+  // or the keyboard: it stays until a second click on the pencil, Escape, or a
+  // click somewhere else). One place flips it, so the pencil's aria-expanded
+  // and the page-level "menu is open" class never drift from what is on screen.
+  let pinned = false;
+  const menuOpen = () => !menu.hidden;
+  function setMenu(open, pin = false) {
+    if (open) positionMenu(); else menu.hidden = true;
+    pinned = open && pin;
+    btn.setAttribute('aria-expanded', String(open));
+    document.documentElement.classList.toggle('kiln-menu-open', open);
+  }
+  const menuItems = () => [...menu.querySelectorAll('button')].filter(b => !b.disabled && b.getClientRects().length);
+  const focusItem = (i) => { const items = menuItems(); if (items.length) items[(i + items.length) % items.length].focus(); };
+
   // Drag with a click/drag threshold so taps still open the menu.
   // On phones the FAB is docked by CSS (drag would fight the dock and corrupt
   // the saved desktop position) — a pointer there only ever toggles the menu.
   let drag = null;
+  let touchedAt = 0;   // a tap also fires a late, made-up mouseenter: see the hover handler
   btn.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'mouse') touchedAt = Date.now();
     drag = { x: e.clientX, y: e.clientY, left: fab.offsetLeft, top: fab.offsetTop, moved: false, docked: isMobileEditor() };
     btn.setPointerCapture(e.pointerId);
   });
@@ -4683,7 +4701,7 @@ function renderAdminBar() {
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (Math.abs(dx) + Math.abs(dy) > 6) drag.moved = true;
     if (drag.moved) {
-      menu.hidden = true;
+      setMenu(false);
       const x = Math.min(Math.max(drag.left + dx, 8), window.innerWidth - 56);
       const y = Math.min(Math.max(drag.top + dy, 8), window.innerHeight - 56);
       fab.style.left = x + 'px'; fab.style.top = y + 'px';
@@ -4693,10 +4711,50 @@ function renderAdminBar() {
   btn.addEventListener('pointerup', () => {
     if (drag && drag.moved) {
       localStorage.setItem('kiln_fab_pos', JSON.stringify({ x: fab.offsetLeft, y: fab.offsetTop }));
+    } else if (!menuOpen()) {
+      setMenu(true, true);
+    } else if (!pinned) {
+      // Hovering opened it and this is the click that naturally follows: the
+      // person wants the menu. Keep it.
+      pinned = true;
     } else {
-      if (menu.hidden) positionMenu(); else menu.hidden = true;
+      setMenu(false);
     }
     drag = null;
+  });
+  // Enter / Space on the pencil arrive as a click with no pointer behind it
+  // (pointer clicks were handled above and are skipped here).
+  btn.addEventListener('click', (e) => {
+    if (e.detail !== 0) return;
+    if (menuOpen()) setMenu(false);
+    else { setMenu(true, true); focusItem(0); }
+  });
+  // Arrow keys walk the menu; from the pencil they open it. Escape closes it
+  // and hands focus back to the pencil.
+  fab.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (!menuOpen()) return;
+      e.stopPropagation();
+      setMenu(false);
+      btn.focus();
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    const onPencil = document.activeElement === btn;
+    if (!onPencil && !menu.contains(document.activeElement)) return;
+    e.preventDefault();
+    if (!menuOpen()) setMenu(true, true);
+    const items = menuItems();
+    const at = items.indexOf(document.activeElement);
+    if (e.key === 'Home') focusItem(0);
+    else if (e.key === 'End') focusItem(-1);
+    else if (e.key === 'ArrowDown') focusItem(at + 1);          // from the pencil: the first item
+    else focusItem(at === -1 ? -1 : at - 1);                    // from the pencil: the last item
+  });
+  // Escape closes the menu from anywhere on the page too.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !menuOpen() || fab.contains(e.target)) return;
+    setMenu(false);
   });
 
   function positionMenu() {
@@ -4721,26 +4779,30 @@ function renderAdminBar() {
   }
 
   document.addEventListener('click', (e) => {
-    if (!fab.contains(e.target)) menu.hidden = true;
+    if (!fab.contains(e.target) && menuOpen()) setMenu(false);
   });
 
-  // Hover opens the menu (click still works for touch); leaving the area closes it.
-  // Not on phones: emulated mouseenter from a tap would fight the tap toggle.
+  // Hovering the PENCIL opens the menu; leaving the pencil-and-menu area closes
+  // it again, unless a click pinned it. Only the pencil opens it: the Undo,
+  // Redo and Publish buttons share this wrapper, and reaching for Publish must
+  // not throw a menu over it. Not on phones, and not for the mouseenter a
+  // browser invents after a tap (it would re-open what the tap just closed).
   let hoverTimer = null;
-  fab.addEventListener('mouseenter', () => {
-    if (isMobileEditor()) return;
+  btn.addEventListener('mouseenter', () => {
+    if (isMobileEditor() || Date.now() - touchedAt < 1000) return;
     clearTimeout(hoverTimer);
-    if (menu.hidden) positionMenu();
+    if (!menuOpen()) setMenu(true, false);
   });
+  const leaveSoon = (ms) => () => {
+    clearTimeout(hoverTimer);
+    if (!pinned) hoverTimer = setTimeout(() => { if (!pinned) setMenu(false); }, ms);
+  };
+  fab.addEventListener('mouseenter', () => clearTimeout(hoverTimer));
   menu.addEventListener('mouseenter', () => clearTimeout(hoverTimer));
-  menu.addEventListener('mouseleave', () => {
-    hoverTimer = setTimeout(() => { menu.hidden = true; }, 250);
-  });
-  fab.addEventListener('mouseleave', () => {
-    hoverTimer = setTimeout(() => { menu.hidden = true; }, 350);
-  });
+  menu.addEventListener('mouseleave', leaveSoon(250));
+  fab.addEventListener('mouseleave', leaveSoon(350));
 
-  const close = (fn) => () => { menu.hidden = true; fn(); };
+  const close = (fn) => () => { setMenu(false); fn(); };
   fab.querySelector('#kiln-publish').onclick = close(publish);
   fab.querySelector('#kiln-newpost').onclick = close(newContent);
   fab.querySelector('#kiln-menu').onclick = close(menuEditor);
@@ -5271,6 +5333,7 @@ function injectStyles() {
 .kiln-fab-item{display:block;width:100%;text-align:left;background:none;border:none;color:#d6d8e1;
   padding:9px 10px;border-radius:9px;cursor:pointer;font-size:13px;font-family:var(--kiln-font);transition:background .12s}
 .kiln-fab-item:hover{background:rgba(255,255,255,.08);color:#fff}
+.kiln-fab-item:focus-visible,.kiln-fab-foot button:focus-visible{outline:2px solid var(--kiln-accent);outline-offset:-2px;color:#fff}
 .kiln-fab-group{display:flex;flex-direction:column;gap:2px;border-top:1px solid rgba(255,255,255,.07);margin-top:4px;padding-top:5px}
 .kiln-fab-group[hidden]{display:none}
 .kiln-fab-label{font:600 9.5px var(--kiln-font);letter-spacing:.09em;text-transform:uppercase;color:#6b7280;padding:2px 10px 4px}
