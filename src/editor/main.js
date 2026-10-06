@@ -1410,8 +1410,12 @@ function enableImageDragResize(img, key, stage = true) {
   document.body.appendChild(handle);
   const place = () => {
     const r = img.getBoundingClientRect();
-    handle.style.left = `${r.right + window.scrollX - 11}px`;
-    handle.style.top = `${r.bottom + window.scrollY - 11}px`;
+    // Centred on the image's corner, but never past the edge of the page: on a
+    // full-width image it would hang outside and make the whole page scroll sideways.
+    const size = handle.offsetWidth || 22;
+    const left = Math.min(r.right - size / 2, document.documentElement.clientWidth - size - 2);
+    handle.style.left = `${left + window.scrollX}px`;
+    handle.style.top = `${r.bottom + window.scrollY - size / 2}px`;
   };
   place();
   window.addEventListener('scroll', place, true);
@@ -2616,23 +2620,33 @@ function renderSandboxBanner() {
   const st = document.createElement('style');
   st.textContent = `
   /* Left-anchored (not centered) so it stays clear of the bottom-RIGHT editor
-     status pill and the FAB, which a centered banner overlapped on ~1280px
-     laptops. Mobile (below) overrides this to a full-width bar. */
-  #kiln-sandbox-banner{position:fixed;left:18px;bottom:18px;z-index:2147482000;
+     status pill and the FAB. Stacked just UNDER the pencil and its buttons,
+     toolbars, sheets and dialogs (wherever one of those needs the space, it
+     wins) and just over the chrome that scrolls with the page. */
+  #kiln-sandbox-banner{position:fixed;left:18px;bottom:18px;z-index:999998;
     display:flex;align-items:center;gap:13px;background:#1c1c28;color:#fff;border-radius:999px;
     padding:9px 9px 9px 18px;font:13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
     box-shadow:0 10px 34px rgba(0,0,0,.34);max-width:min(560px,60vw)}
   #kiln-sandbox-banner b{color:#fff}
   #kiln-sandbox-banner button{background:#fff;color:#1c1c28;border:0;border-radius:999px;
     padding:7px 15px;font:600 12px sans-serif;cursor:pointer;white-space:nowrap}
-  /* On narrow screens the pill can't hold the sentence — the rounded shape
-     collapses into a dark blob over the hero. Become a flat, full-width bottom
-     bar instead, sitting above the editor FAB. */
-  @media (max-width:640px){
-    #kiln-sandbox-banner{left:0;right:0;bottom:0;transform:none;max-width:none;width:100%;
-      border-radius:0;padding:10px 14px;gap:10px;box-shadow:0 -4px 20px rgba(0,0,0,.28)}
-    #kiln-sandbox-banner span{flex:1;min-width:0;font-size:12px;line-height:1.3}
-    #kiln-sandbox-banner button{flex:none}
+  /* The full sentence needs a wide window; below that the status pill beside the
+     pencil would run into it. Keep the name and the button, on one line. */
+  @media (max-width:1179px){
+    #kiln-sandbox-banner{white-space:nowrap}
+    #kiln-sandbox-banner .kiln-sbx-more{display:none}
+  }
+  /* Phones: a small pill at the bottom left, level with the docked pencil and
+     never under it (the pencil's column is kept free on the right). It steps
+     aside entirely while a field's toolbar or the menu sheet has the bottom of
+     the screen. */
+  @media ${MOBILE_MQ}{
+    #kiln-sandbox-banner{left:calc(12px + env(safe-area-inset-left,0px));bottom:calc(22px + env(safe-area-inset-bottom,0px));
+      max-width:calc(100vw - 108px);box-sizing:border-box;padding:5px 5px 5px 14px;gap:10px;font-size:13px;
+      box-shadow:0 6px 22px rgba(0,0,0,.3)}
+    #kiln-sandbox-banner span{overflow:hidden;text-overflow:ellipsis}
+    #kiln-sandbox-banner button{flex:none;min-height:34px;padding:6px 13px}
+    .kiln-tb-open #kiln-sandbox-banner,.kiln-menu-open #kiln-sandbox-banner{display:none}
   }
   [data-kiln-sandbox] #kiln-newpost,[data-kiln-sandbox] #kiln-menu,[data-kiln-sandbox] #kiln-pagesettings,
   [data-kiln-sandbox] #kiln-findreplace,[data-kiln-sandbox] #kiln-history,[data-kiln-sandbox] #kiln-comments,
@@ -2640,7 +2654,7 @@ function renderSandboxBanner() {
   document.head.appendChild(st);
   const b = document.createElement('div');
   b.id = 'kiln-sandbox-banner';
-  b.innerHTML = '<span><b>Your private demo.</b> Click any text or image to edit, then hit Publish. Saved only for you; resets in 24h.</span><button id="kiln-sandbox-reset">Start over</button>';
+  b.innerHTML = '<span><b>Your private demo.</b><span class="kiln-sbx-more"> Click any text or image to edit, then hit Publish. Saved only for you; resets in 24h.</span></span><button id="kiln-sandbox-reset">Start over</button>';
   document.body.appendChild(b);
   b.querySelector('#kiln-sandbox-reset').onclick = () => { localStorage.removeItem(SANDBOX_KEY); location.reload(); };
 }
@@ -4819,6 +4833,11 @@ function renderAdminBar() {
   menu.addEventListener('mouseleave', leaveSoon(250));
   fab.addEventListener('mouseleave', leaveSoon(350));
 
+  // An open menu sheet closes when a field's toolbar comes up: a tap on a field
+  // under the sheet never reaches the click-away above, because the field's own
+  // handler stops it.
+  watchToolbar(() => { if (menuOpen()) setMenu(false); });
+
   const close = (fn) => () => { setMenu(false); fn(); };
   fab.querySelector('#kiln-publish').onclick = close(publish);
   fab.querySelector('#kiln-newpost').onclick = close(newContent);
@@ -4873,6 +4892,21 @@ function placeQuickRow() {
   if (!r.width) return;   // nothing in it right now
   if (r.left < 8) fab.classList.add('kiln-flip-x');
   if (r.top < 8) fab.classList.add('kiln-flip-y');
+}
+
+/**
+ * While a field's toolbar is up (phones dock it across the bottom of the
+ * screen), the rest of Kiln's chrome gets out of its way. The stylesheet keys
+ * off one class on <html>; this keeps that class true to the DOM, whichever of
+ * the several code paths added or removed the toolbar.
+ */
+function watchToolbar(onOpen) {
+  new MutationObserver(() => {
+    const open = !!document.getElementById('kiln-toolbar');
+    if (open === document.documentElement.classList.contains('kiln-tb-open')) return;
+    document.documentElement.classList.toggle('kiln-tb-open', open);
+    if (open && onOpen) onOpen();
+  }).observe(document.body, { childList: true });
 }
 
 function renderTopBar() {
@@ -4939,6 +4973,7 @@ function renderTopBar() {
   applyFeatureGating();
   refreshPublishButton();   // suggest-mode label ("Suggest changes") from the first paint
   updateOnlineChip();
+  watchToolbar();
   setStatus(`Signed in as ${state.user}`, 'idle');
 }
 
@@ -5155,6 +5190,10 @@ function removeToolbar() {
   if (!tb) return;
   tb._kilnVvOff?.();   // drop the visualViewport listeners the mobile pin added
   tb.remove();
+  // A resize handle belongs to the toolbar that was just open. Its own
+  // click-away never fires when the next click lands on a field (the field
+  // stops the event), which left the handle stranded on the page.
+  document.querySelectorAll('.kiln-img-handle').forEach(h => h.remove());
 }
 
 function modal(bodyHtml) {
