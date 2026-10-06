@@ -27,6 +27,7 @@ import { initTheme, openThemePanel } from './theme.js';
 import { initComments, openComments, commentsTick } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 import { initBlocks } from './blocks.js';
+import { publishLabel, editCommitMessage } from './firstrun.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -1246,6 +1247,7 @@ function updateUndoUi() {
   const u = wrap.querySelector('#kiln-undo-btn'), r = wrap.querySelector('#kiln-redo-btn');
   if (u) u.disabled = !canUndo;
   if (r) r.disabled = !canRedo;
+  placeQuickRow();
 }
 
 // ⌘Z / ⌘⇧Z (Ctrl+Z / Ctrl+Y on Windows). While TYPING in a field or input the
@@ -1897,6 +1899,10 @@ function retireStaged() {
 }
 
 async function publish() {
+  // Still typing in a field? That text is part of what the person is publishing:
+  // stage it first (the click-away that normally does this runs after us).
+  if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+  if (sourceActive) commitSourceEdit();
   if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length
     && !state.pendingSource.size) return;
   if (cfg.sandbox) return publishSandbox();
@@ -2006,7 +2012,7 @@ async function publish() {
           for (const s of skipped) console.warn('[kiln] skipped:', s);
           return html;
         },
-        `Edit ${state.page.path}: ${[...localEdits.map(e => e.key), ...structDesc].join(', ')} (via Kiln)`
+        editCommitMessage(state.page.path, [...localEdits.map(e => e.key), ...structDesc])
       );
       // Drop only the structural ops we sent (they're appended, so the sent ones are
       // at the front); anything added mid-publish stays queued for the next Publish.
@@ -4636,14 +4642,24 @@ function renderAdminBar() {
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
       <span id="kiln-fab-badge" hidden></span>
     </button>
-    <div id="kiln-undo-wrap" hidden>
-      <button id="kiln-undo-btn" title="Undo last change (⌘Z)">${UNDO_ICON} Undo</button>
-      <button id="kiln-redo-btn" title="Redo (⌘⇧Z)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M21 7v6h-6"/><path d="M20.5 13a9 9 0 1 1-2.6-8.4L21 7"/></svg> Redo</button>
+    <div id="kiln-quick">
+      <div id="kiln-undo-wrap" hidden>
+        <button id="kiln-undo-btn" title="Undo last change (⌘Z)">${UNDO_ICON} Undo</button>
+        <button id="kiln-redo-btn" title="Redo (⌘⇧Z)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M21 7v6h-6"/><path d="M20.5 13a9 9 0 1 1-2.6-8.4L21 7"/></svg> Redo</button>
+      </div>
+      <button id="kiln-publish-quick" type="button" hidden>Publish</button>
     </div>
     <div class="kiln-status" id="kiln-status" role="status" hidden></div>`;
   document.body.appendChild(fab);
   fab.querySelector('#kiln-undo-btn').onclick = (e) => { e.stopPropagation(); undoEdit(); };
   fab.querySelector('#kiln-redo-btn').onclick = (e) => { e.stopPropagation(); redoEdit(); };
+  // Publish, in the open: the same function as the menu's first item, shown
+  // beside the pencil whenever there is something unpublished.
+  fab.querySelector('#kiln-publish-quick').onclick = (e) => { e.stopPropagation(); publish(); };
+  // A toast you have read is in the way: tap it to put it away.
+  fab.querySelector('#kiln-status').addEventListener('click', (e) => {
+    if (!e.target.closest('a')) e.currentTarget.hidden = true;
+  });
 
   // Restore position (default: bottom-right).
   function clampFab() {
@@ -4663,8 +4679,8 @@ function renderAdminBar() {
       fab.style.right = 'auto'; fab.style.bottom = 'auto';
     }
   } catch { /* default position */ }
-  requestAnimationFrame(clampFab);
-  window.addEventListener('resize', clampFab);
+  requestAnimationFrame(() => { clampFab(); placeQuickRow(); });
+  window.addEventListener('resize', () => { clampFab(); placeQuickRow(); });
 
   const btn = fab.querySelector('#kiln-fab');
   const menu = fab.querySelector('#kiln-fab-menu');
@@ -4711,6 +4727,7 @@ function renderAdminBar() {
   btn.addEventListener('pointerup', () => {
     if (drag && drag.moved) {
       localStorage.setItem('kiln_fab_pos', JSON.stringify({ x: fab.offsetLeft, y: fab.offsetTop }));
+      placeQuickRow();
     } else if (!menuOpen()) {
       setMenu(true, true);
     } else if (!pinned) {
@@ -4836,7 +4853,26 @@ function renderAdminBar() {
   applyFeatureGating();
   refreshPublishButton();   // suggest-mode label ("Suggest changes") from the first paint
   updateOnlineChip();
-  setStatus(`Signed in as ${state.user} — click any outlined text to edit`, 'idle');
+  // A phone has no click, and its outlines are always on.
+  const touch = window.matchMedia('(hover: none)').matches;
+  setStatus(`Signed in as ${state.user}. ${touch ? 'Tap' : 'Click'} any outlined text to edit.`, 'idle');
+}
+
+/**
+ * The Undo / Redo / Publish row sits above the pencil, right-aligned to it —
+ * which runs off the screen once the pencil has been dragged to the left or the
+ * top edge. Flip the row to the side that has room. (Phones dock the pencil
+ * bottom-right, so nothing ever flips there.)
+ */
+function placeQuickRow() {
+  const fab = document.getElementById('kiln-fab-wrap');
+  const row = document.getElementById('kiln-quick');
+  if (!fab || !row) return;
+  fab.classList.remove('kiln-flip-x', 'kiln-flip-y');
+  const r = row.getBoundingClientRect();
+  if (!r.width) return;   // nothing in it right now
+  if (r.left < 8) fab.classList.add('kiln-flip-x');
+  if (r.top < 8) fab.classList.add('kiln-flip-y');
 }
 
 function renderTopBar() {
@@ -5156,17 +5192,26 @@ function refreshPublishButton() {
   // A queued upload with no field edit still needs a Publish to commit it.
   const anything = n || state.pendingBinaries.size || state.pendingStructural.length;
   const btn = document.getElementById('kiln-publish');
+  // The same action, always in sight beside the pencil while something is unpublished.
+  const quick = document.getElementById('kiln-publish-quick');
   if (mode === 'editor' && state.scope?.mode === 'review') {
     if (btn) btn.hidden = true;
+    if (quick) quick.hidden = true;
     const d = document.getElementById('kiln-draft');
     if (d) d.hidden = true;
     return;
   }
+  // Suggest-mode editors propose — same button, honest label.
+  const label = publishLabel(n, { suggest: isSuggestMode() });
   if (btn) {
     btn.disabled = !anything;
-    // Suggest-mode editors propose — same button, honest label.
-    btn.textContent = isSuggestMode() ? 'Suggest changes'
-      : n ? `Publish ${n} edit${n > 1 ? 's' : ''}` : 'Publish';
+    btn.textContent = label;
+  }
+  if (quick) {
+    quick.textContent = label;
+    quick.hidden = !anything;
+    quick.disabled = false;
+    placeQuickRow();
   }
   const badge = document.getElementById('kiln-fab-badge');
   if (badge) { badge.hidden = !anything; badge.textContent = n || (state.pendingBinaries.size || state.pendingStructural.length ? '•' : ''); }
@@ -5189,8 +5234,11 @@ function refreshPublishButton() {
 }
 
 function disablePublish(yes) {
-  const btn = document.getElementById('kiln-publish');
-  if (btn) btn.disabled = yes || !(state.pending.size || state.pendingSource.size);
+  const off = yes || !(state.pending.size || state.pendingSource.size);
+  for (const id of ['kiln-publish', 'kiln-publish-quick']) {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = off;
+  }
 }
 
 let statusHideTimer = null;
@@ -5302,13 +5350,31 @@ function injectStyles() {
 :root{--kiln-bg:rgba(16,16,25,.92);--kiln-accent:#6366f1;--kiln-accent-h:#4f46e5;--kiln-ok:#34d399;
   --kiln-warn:#fbbf24;--kiln-err:#f87171;--kiln-font:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif}
 #kiln-fab-wrap{position:fixed;bottom:20px;right:20px;z-index:999999;font-family:var(--kiln-font)}
-#kiln-fab-wrap #kiln-undo-wrap{display:flex;flex-direction:row;gap:6px;position:absolute;right:0;bottom:58px}
+/* Undo / Redo / Publish: one row above the pencil, right-aligned to it. An
+   absolute box inside the 48px wrapper would shrink to its narrowest, so it is
+   sized to its content. placeQuickRow() flips it when the pencil has been
+   dragged to an edge that leaves the row no room. */
+#kiln-quick{position:absolute;right:0;bottom:58px;display:flex;align-items:center;justify-content:flex-end;gap:6px;width:max-content}
+.kiln-flip-x #kiln-quick{right:auto;left:0}
+.kiln-flip-y #kiln-quick{bottom:auto;top:58px}
+/* The open menu has Publish as its first item; the row would only sit on it. */
+.kiln-menu-open #kiln-quick{display:none}
+#kiln-fab-wrap #kiln-undo-wrap{display:flex;flex-direction:row;gap:6px}
 #kiln-fab-wrap #kiln-undo-wrap[hidden]{display:none!important}
+#kiln-publish-quick{height:36px;padding:0 18px;border-radius:999px;border:none;cursor:pointer;background:var(--kiln-accent);
+  color:#fff;box-shadow:0 3px 12px rgba(79,70,229,.45);font:600 13.5px var(--kiln-font);white-space:nowrap;transition:background .13s}
+#kiln-publish-quick:hover:not(:disabled){background:var(--kiln-accent-h)}
+#kiln-publish-quick:disabled{opacity:.55;cursor:default}
+#kiln-publish-quick[hidden]{display:none!important}
+#kiln-fab:focus-visible,#kiln-publish-quick:focus-visible,#kiln-fab-wrap #kiln-undo-wrap button:focus-visible{
+  outline:2px solid #fff;outline-offset:2px;box-shadow:0 0 0 5px var(--kiln-accent)}
 #kiln-fab-wrap #kiln-undo-wrap button{height:32px;padding:0 13px;border-radius:999px;border:none;cursor:pointer;
   background:#fff;color:#374151;box-shadow:0 3px 12px rgba(0,0,0,.18);display:inline-flex;align-items:center;gap:6px;
   font:600 12.5px var(--kiln-font);white-space:nowrap;transition:all .13s}
 #kiln-fab-wrap #kiln-undo-wrap button:hover:not(:disabled){background:#eef2ff;color:var(--kiln-accent)}
-#kiln-fab-wrap #kiln-undo-wrap button:disabled{opacity:.35;cursor:default}
+/* Solid, not see-through: the row floats over the page, and a faded pill let
+   whatever was under it show through the label. */
+#kiln-fab-wrap #kiln-undo-wrap button:disabled{color:#c7c9d4;cursor:default;box-shadow:0 3px 12px rgba(0,0,0,.1)}
 #kiln-topbar #kiln-undo-wrap{display:inline-flex;gap:4px}
 #kiln-topbar #kiln-undo-wrap[hidden]{display:none!important}
 #kiln-topbar #kiln-undo-wrap button:disabled{opacity:.35}
@@ -5726,8 +5792,15 @@ body:has(#kiln-topbar){padding-top:46px!important}
 #kiln-fab-wrap{left:auto!important;top:auto!important;
   right:calc(14px + env(safe-area-inset-right,0px))!important;bottom:calc(16px + env(safe-area-inset-bottom,0px))!important}
 #kiln-fab{width:56px;height:56px}
-#kiln-fab-wrap #kiln-undo-wrap{bottom:66px}
+/* The row never leaves the screen: if Undo, Redo and Publish do not fit side by
+   side, Publish keeps the line next to the pencil and the pills go above it. */
+#kiln-quick{bottom:66px;flex-wrap:wrap;gap:8px;max-width:calc(100vw - 22px - env(safe-area-inset-right,0px))}
+#kiln-fab-wrap #kiln-undo-wrap{gap:8px}
 #kiln-fab-wrap #kiln-undo-wrap button{height:40px;padding:0 16px}
+#kiln-publish-quick{height:44px;padding:0 20px;font-size:15px}
+/* A field's toolbar is docked across the bottom while you type: the pencil and
+   its row step aside until it closes, so nothing sits on the toolbar. */
+.kiln-tb-open #kiln-fab,.kiln-tb-open #kiln-quick{display:none}
 /* FAB menu → bottom sheet; the 100vmax shadow is the scrim (tap = click-away). */
 #kiln-fab-menu{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;
   width:auto;max-height:88dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;
