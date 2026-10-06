@@ -446,6 +446,8 @@ async function scheduleCreate(request, env) {
   if (!actor.admin && (isSensitivePath(path) || !pathInScope(path, actor.paths))) {
     return json({ error: 'outside your editing scope' }, 403);
   }
+  // The Schedule grant, held here as well as in the editor's menu.
+  if (!hasGrant(actor, 'schedule')) return grantRefusal('schedule');
   // Content guard for non-admin editors: scheduled field edits are re-applied
   // raw against live source at fire time (runDueSchedules → applyEdits), so
   // sanitize them at creation. Reject any executable markup in a field's HTML,
@@ -682,6 +684,10 @@ function validateCommentInput({ path, text, anchor } = {}) {
  * reviewer included) reads and writes threads only on pages inside the paths
  * they were given. The owner sees every page.
  */
+/** Writing comments takes the Comments grant; a review seat is comment-only by definition. */
+function canComment(actor) {
+  return actor.mode === 'review' || hasGrant(actor, 'comments');
+}
 function commentInScope(actor, page) {
   return !!actor.admin || pathInScope(page, actor.paths);
 }
@@ -743,6 +749,7 @@ async function commentPost(request, env) {
   const v = validateCommentInput({ path, text, anchor: thread == null ? anchor : undefined });
   if (v.error) return json({ error: v.error }, 400);
   if (!commentInScope(actor, v.page)) return json({ error: 'outside your editing scope' }, 403);
+  if (!canComment(actor)) return grantRefusal('comments');
   const msg = { by: actor.name, email: actor.email, ts: Date.now(), text: v.text };
   if (thread != null) {
     if (!/^[a-f0-9]{12}$/.test(String(thread))) return json({ error: 'bad thread' }, 400);
@@ -770,6 +777,7 @@ async function commentResolve(request, env) {
   if (!page || !/^[a-f0-9]{12}$/.test(String(thread || '')) || typeof resolved !== 'boolean') {
     return json({ error: 'bad request' }, 400);
   }
+  if (!canComment(actor)) return grantRefusal('comments');
   if (!commentInScope(actor, page)) return json({ error: 'outside your editing scope' }, 403);
   const key = commentKey(repo, page, thread);
   const t = await env.KILN.get(key, 'json');
@@ -1538,6 +1546,37 @@ async function peopleList(request, env, url) {
 
 // Menu features an admin can grant an editor. People/settings stay owner-only.
 const GRANTABLE_FEATURES = ['menu', 'findreplace', 'newpost', 'pagesettings', 'history', 'schedule', 'draft', 'makeeditable', 'comments', 'ai', 'blocks', 'theme'];
+// What an editor has when the owner never chose: the same list the editor
+// bundle falls back to (EDITOR_DEFAULT_FEATURES in src/editor/main.js).
+const DEFAULT_FEATURES = ['pagesettings', 'history', 'draft'];
+const GRANT_LABEL = { theme: 'the Theme tool', newpost: 'adding a new page', draft: 'saving drafts', schedule: 'scheduling', comments: 'comments' };
+
+/** Does this editor session (or actor) hold a tool grant? The owner holds all. */
+function hasGrant(who, feature) {
+  if (who.admin) return true;
+  return (Array.isArray(who.features) ? who.features : DEFAULT_FEATURES).includes(feature);
+}
+function grantRefusal(feature, path) {
+  return json({ error: `your access does not include ${GRANT_LABEL[feature]}`, code: 'grant_required', grant: feature, ...(path ? { path } : {}) }, 403);
+}
+/**
+ * The grant a file write needs, or null. Hiding a button in the editor is not
+ * a permission, so the worker holds each write to the grant behind its tool:
+ *   a stylesheet            → Theme
+ *   a page that is new      → New post / page (on a branch that is published;
+ *                             kiln scratch branches hold drafts and previews)
+ *   anything on kiln-drafts → Drafts
+ * Menu, Find & replace, Page settings, History, Blocks and Make editable end
+ * in an ordinary edit of a page the editor may already change, so there is no
+ * separate write to hold back for them. `branch` undefined = not known yet.
+ */
+function writeGrantNeeded(who, path, { adds = false, branch } = {}) {
+  if (branch === 'kiln-drafts' && !hasGrant(who, 'draft')) return 'draft';
+  if (editorFileKind(path) === 'css' && !hasGrant(who, 'theme')) return 'theme';
+  const scratch = typeof branch === 'string' && KILN_BRANCH_RE.test(branch);
+  if (adds && branch !== undefined && !scratch && isHtmlPath(path) && !hasGrant(who, 'newpost')) return 'newpost';
+  return null;
+}
 
 async function peopleUpsert(request, env) {
   const { repo, email, name, role, days, paths, keys, features, mode } = await request.json().catch(() => ({}));
@@ -2238,6 +2277,9 @@ async function ghProxy(request, env, ghPath) {
     if (wrongType) return refuseFile(wrongType);
     if (!parsedBody || typeof parsedBody !== 'object') return json({ error: 'unreadable write body' }, 400);
     if (typeof parsedBody.content !== 'string') return json({ error: 'write needs content' }, 400);
+    // Tool grants: a write no button offers this editor is refused here too.
+    const needs = writeGrantNeeded(sess, filePath, { adds: !parsedBody.sha, branch: typeof parsedBody.branch === 'string' ? parsedBody.branch : '' });
+    if (needs) return grantRefusal(needs, filePath);
     const unfit = uploadProblem(filePath, { size: base64Bytes(parsedBody.content), head: base64Head(parsedBody.content) });
     if (unfit) return refuseFile(unfit);
     // Content guard (C2): an editor session bypasses the browser's DOMPurify by
@@ -2292,6 +2334,8 @@ async function ghProxy(request, env, ghPath) {
     // file's bytes.
     for (const e of tree) {
       if (!e) continue;
+      const needs = writeGrantNeeded(sess, e.path);
+      if (needs) return grantRefusal(needs, e.path);
       if (!REGULAR_FILE_MODES.includes(String(e.mode))) return json({ error: 'editors may only commit regular files', path: e.path }, 403);
       const unfit = uploadProblem(e.path, typeof e.content === 'string' ? { size: new TextEncoder().encode(e.content).length } : undefined);
       if (unfit) return json({ error: unfit.error, code: unfit.code, path: e.path }, unfit.status);
@@ -2408,13 +2452,14 @@ async function refWriteCheck(env, itok, sess, method, cleanPath, body) {
       if (c.data.author?.email !== stamp.email || nameLetters(c.data.author?.name) !== nameLetters(stamp.name)) {
         return refuse('that commit was not made through this editing session', 403, { code: 'ref_foreign_commit' });
       }
-      const bad = await commitDiffInScope(env, itok, sess, JSON.stringify({ tree: c.data.tree?.sha, parents: [head] }));
+      const bad = await commitDiffInScope(env, itok, sess, JSON.stringify({ tree: c.data.tree?.sha, parents: [head] }), { branch });
       if (bad) return { refuse: bad };
       return { body: { sha } };
     }
     // POST: create a ref.
     const ref = typeof body.ref === 'string' ? body.ref : '';
     if (!/^refs\/(heads|tags)\/[^\s~^:?*\[\\]+$/.test(ref)) return refuse('editors may only create branches and tags', 403);
+    if (ref === 'refs/heads/kiln-drafts' && !hasGrant(sess, 'draft')) return { refuse: grantRefusal('draft') };
     const repo = await gh(repoPath);
     const base = repo.ok && typeof repo.data.default_branch === 'string' ? repo.data.default_branch : '';
     if (!base) return refuse('could not verify the repository', 502);
@@ -2437,7 +2482,7 @@ async function refWriteCheck(env, itok, sess, method, cleanPath, body) {
  * outside the editor's scope or any sensitive path. Returns a 403 Response to
  * short-circuit, or null when the commit is in-scope. Fails CLOSED on any error.
  */
-async function commitDiffInScope(env, itok, sess, bodyText) {
+async function commitDiffInScope(env, itok, sess, bodyText, { branch } = {}) {
   let tree, parents;
   try { const b = JSON.parse(bodyText); tree = b.tree; parents = b.parents; }
   catch { return json({ error: 'unreadable commit body' }, 400); }
@@ -2509,6 +2554,12 @@ async function commitDiffInScope(env, itok, sess, bodyText) {
       const sniff = isUploadKind(editorFileKind(p)) && e.size <= UPLOAD_MAX_BYTES;
       const unfit = uploadProblem(p, { size: e.size, head: sniff ? await blobHead(e.sha) : undefined });
       if (unfit) return refuseFile(unfit);
+    }
+    // Tool grants. The branch is only known once a ref is moved to the commit
+    // (refWriteCheck); until then a commit is held to what its paths alone say.
+    for (const p of changed) {
+      const needs = writeGrantNeeded(sess, p, { adds: !before.has(p), branch });
+      if (needs) return grantRefusal(needs, p);
     }
     // Content guard on the git-data write path (new post / multi-file commit):
     // for every changed HTML blob, diff its markup against the parent version and

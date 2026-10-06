@@ -356,7 +356,7 @@ test('S2: adding and changing files in one commit still works', async () => {
   const { r, base, files } = site();
   const next = r.commit({ ...files, 'blog/a.html': PAGE.replace('Hello', 'Hi'), 'blog/new.html': PAGE }, [base]);
   await withFetch(r.handler, async () => {
-    const env = editorEnv();
+    const env = editorEnv({ features: ['newpost'] });
     assert.equal((await postTree(env, [{ path: 'blog/new.html', mode: '100644', type: 'blob', sha: sha('b1') }], { base_tree: sha('e1') })).status, 201);
     assert.equal((await postCommit(env, r.commits.get(next).tree, base)).status, 201);
     assert.equal((await move(env, 'main', { sha: next })).status, 200);

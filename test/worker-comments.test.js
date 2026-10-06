@@ -17,7 +17,7 @@ const SEED = {
   [key('blog/old.html', 'dddddddddddd')]: thread('dddddddddddd', 'blog/old.html', 'done', 'resolved'),
   [key('blogroll.html', 'eeeeeeeeeeee')]: thread('eeeeeeeeeeee', 'blogroll.html', 'not the blog folder'),
 };
-const scoped = (session = {}) => editorEnv({ paths: ['blog'], ...session }, SEED);
+const scoped = (session = {}) => editorEnv({ paths: ['blog'], features: ['comments'], ...session }, SEED);
 const noGitHub = async () => undefined;
 const list = (env, page, opts) => call(env, 'GET', `/comments?repo=${REPO}&path=${encodeURIComponent(page)}`, opts);
 
@@ -90,7 +90,7 @@ test('KLN-05 comments: a comment-only reviewer is held to the same paths', async
 
 test('KLN-05 comments: scope is by folder boundary, and several grants add up', async () => {
   await withFetch(noGitHub, async () => {
-    const env = editorEnv({ paths: ['blog', 'pricing/index.html'] }, SEED);
+    const env = editorEnv({ paths: ['blog', 'pricing/index.html'], features: ['comments'] }, SEED);
     assert.equal((await list(env, 'pricing/index.html')).status, 200);
     assert.equal((await list(env, 'blog/old.html')).status, 200);
     assert.equal((await list(env, 'blogroll.html')).status, 403);     // "blog" is not a prefix of "blogroll.html"

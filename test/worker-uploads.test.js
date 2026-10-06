@@ -132,7 +132,7 @@ test('KLN-01 proxy PUT: the HTML content guard still blocks an injected script',
 
 test('KLN-01 proxy PUT: a stylesheet edit (the Theme panel) still goes through', async () => {
   await withFetch(acceptAll(), async (calls) => {
-    const r = await put(editorEnv(), 'assets/site.css', ':root{--brand:#123456}', { sha: 'css1' });
+    const r = await put(editorEnv({ features: ['theme'] }), 'assets/site.css', ':root{--brand:#123456}', { sha: 'css1' });
     assert.equal(r.status, 201);
     assert.equal(githubWrites(calls).length, 1);
   });
@@ -290,13 +290,13 @@ test('KLN-01 POST /schedule: an editor cannot schedule field edits against anyth
   const sched = (env, path) => call(env, 'POST', '/schedule', { body: { repo: REPO, path, edits: [{ key: 't', html: 'Hi' }], at } });
   await withFetch(acceptAll(), async () => {
     for (const path of ['page.xhtml', 'logo.svg', 'feed.xml', 'src/content/post.md']) {
-      const env = editorEnv();
+      const env = editorEnv({ features: ['schedule'] });
       const r = await sched(env, path);
       assert.equal(r.status, 403, path);
       assert.equal(r.json.error, 'editors can only schedule edits to HTML pages');
       assert.equal((await env.KILN.list({ prefix: 'sched:' })).keys.length, 0, path);
     }
-    const env = editorEnv();
+    const env = editorEnv({ features: ['schedule'] });
     assert.equal((await sched(env, 'index.html')).status, 200);
     assert.equal((await env.KILN.list({ prefix: 'sched:' })).keys.length, 1);
   });
