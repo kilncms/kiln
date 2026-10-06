@@ -29,6 +29,7 @@ import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.j
 import { initBlocks } from './blocks.js';
 import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished } from './firstrun.js';
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
+import { hasGrant, offersMakeEditable } from './grants.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
@@ -42,16 +43,11 @@ const PAUSE_KEY = 'kiln_pause';
 // before init() runs at module load — initSandbox reads them synchronously.
 const SANDBOX_KEY = 'kiln_sandbox';
 const SANDBOX_TTL = 24 * 3600 * 1000;
-// Default menu tools an invited editor gets when the admin hasn't customized them.
-// (Declared up here — used by hasFeature() which runs during the init() call below;
-// esbuild hoists const→var, so a later declaration would read undefined at boot.)
-const EDITOR_DEFAULT_FEATURES = ['pagesettings', 'history', 'draft'];
 const UNDO_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-8.4L3 7"/></svg>';
 // Phone-first chrome: ONE media query decides "phone" — shared verbatim by the
 // CSS in injectStyles() and the few JS behavior forks (menu/toolbar positioning,
 // FAB + toolbar dragging). Declared above the init() call because esbuild hoists
-// const→var, so anything read during boot must already be initialized (same
-// story as EDITOR_DEFAULT_FEATURES above).
+// const→var, so anything read during boot must already be initialized.
 const MOBILE_MQ = '(max-width: 700px), (pointer: coarse) and (max-width: 820px)';
 function isMobileEditor() { return window.matchMedia(MOBILE_MQ).matches; }
 
@@ -432,10 +428,13 @@ function isSuggestMode() {
 
 /** Whether the current editor may use a given menu feature. Admins get everything. */
 function hasFeature(feature) {
-  if (mode === 'admin' || cfg.sandbox) return true;   // sandbox demo showcases everything
-  const granted = state.scope?.features;
-  const list = Array.isArray(granted) ? granted : EDITOR_DEFAULT_FEATURES;
-  return list.includes(feature);
+  return hasGrant({ mode, sandbox: !!cfg.sandbox, features: state.scope?.features }, feature);
+}
+
+/** The two structure tools: granted, on a page this person can write, by someone who publishes. */
+function canMakeEditable() {
+  return offersMakeEditable({ mode, sandbox: !!cfg.sandbox, features: state.scope?.features,
+    scopeMode: state.scope?.mode || null, pageInScope: mode === 'editor' && !cfg.sandbox ? pageInScope() : true });
 }
 
 /** Hide menu items an invited editor hasn't been granted (applied after the bar renders). */
@@ -5091,8 +5090,8 @@ function renderAdminBar() {
         <button id="kiln-pagesettings" class="kiln-fab-item">Page settings</button>
         <button id="kiln-history" class="kiln-fab-item">History &amp; restore</button>
         <button id="kiln-comments" class="kiln-fab-item">💬 Comments</button>
-        ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-addsection" class="kiln-fab-item">＋ Add a gallery or events</button>' : ''}
-      ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-makeblock" class="kiln-fab-item">✨ Make text/images editable</button>' : ''}
+        ${canMakeEditable() ? '<button id="kiln-addsection" class="kiln-fab-item">＋ Add a gallery or events</button>' : ''}
+      ${canMakeEditable() ? '<button id="kiln-makeblock" class="kiln-fab-item">✨ Make text/images editable</button>' : ''}
       </div>
       <div class="kiln-fab-group">
         <div class="kiln-fab-label">Whole site</div>
@@ -5388,7 +5387,7 @@ function renderTopBar() {
     <button id="kiln-findreplace" class="kiln-btn-ghost">Replace</button>
     <button id="kiln-history" class="kiln-btn-ghost">History</button>
     <button id="kiln-comments" class="kiln-btn-ghost">💬 Comments</button>
-    ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button><button id="kiln-suggestions" class="kiln-btn-ghost" title="Review suggested changes">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
+    ${canMakeEditable() ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button>' : ''}${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-btn-ghost" title="Review suggested changes">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
     <button id="kiln-settings" class="kiln-btn-ghost">Settings</button>
     <button id="kiln-draft" class="kiln-btn-ghost" hidden>Draft</button>
     <button id="kiln-sharepreview" class="kiln-btn-ghost" hidden title="Save a draft, get a shareable link">Preview link</button>
