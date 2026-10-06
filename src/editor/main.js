@@ -2746,7 +2746,11 @@ function runJournal() {
 function setStatusIdle() {
   setTimeout(() => {
     // Never let the idle reset paper over a visible failure (e.g. build failed).
-    if (document.getElementById('kiln-status')?.classList.contains('kiln-status--error')) return;
+    const el = document.getElementById('kiln-status');
+    if (!el || el.classList.contains('kiln-status--error')) return;
+    // On a phone the toast covers the page: it returns only with news, and
+    // "you are still signed in" is not news.
+    if (isMobileEditor()) { el.hidden = true; return; }
     setStatus(`Signed in as ${state.user}`, 'idle');
   }, 4000);
 }
@@ -4636,7 +4640,7 @@ function renderAdminBar() {
       <button id="kiln-undo-btn" title="Undo last change (⌘Z)">${UNDO_ICON} Undo</button>
       <button id="kiln-redo-btn" title="Redo (⌘⇧Z)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M21 7v6h-6"/><path d="M20.5 13a9 9 0 1 1-2.6-8.4L21 7"/></svg> Redo</button>
     </div>
-    <div class="kiln-status" id="kiln-status" hidden></div>`;
+    <div class="kiln-status" id="kiln-status" role="status" hidden></div>`;
   document.body.appendChild(fab);
   fab.querySelector('#kiln-undo-btn').onclick = (e) => { e.stopPropagation(); undoEdit(); };
   fab.querySelector('#kiln-redo-btn').onclick = (e) => { e.stopPropagation(); redoEdit(); };
@@ -5141,9 +5145,10 @@ function setStatus(text, kind, opts) {
   el.className = `kiln-status kiln-status--${kind}`;
   el.hidden = false;
   clearTimeout(statusHideTimer);
-  // Busy/error states stay visible; calm states fade away on their own.
+  // Busy/error states stay visible; calm states fade away on their own. On a
+  // phone the toast sits over the top of the page, so it leaves sooner.
   if (kind === 'idle' || kind === 'saved') {
-    statusHideTimer = setTimeout(() => { el.hidden = true; }, 6000);
+    statusHideTimer = setTimeout(() => { el.hidden = true; }, isMobileEditor() ? 4000 : 6000);
   }
 }
 
@@ -5279,11 +5284,15 @@ function injectStyles() {
 .kiln-fab-foot button{background:none;border:none;color:#8b8e9c;font-size:11.5px;cursor:pointer;
   padding:5px 8px;border-radius:7px;font-family:var(--kiln-font)}
 .kiln-fab-foot button:hover{color:#fff;background:rgba(255,255,255,.07)}
-.kiln-status{position:absolute;white-space:nowrap;right:56px;top:50%;transform:translateY(-50%);
+.kiln-status{position:absolute;right:56px;top:50%;transform:translateY(-50%);box-sizing:border-box;
   background:var(--kiln-bg);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
-  color:#d6d8e1;font-size:12px;padding:8px 13px;border-radius:11px;border:1px solid rgba(255,255,255,.09);
-  box-shadow:0 6px 22px rgba(0,0,0,.3);max-width:70vw;overflow:hidden;text-overflow:ellipsis}
+  color:#d6d8e1;font-size:12px;line-height:1.4;padding:8px 13px;border-radius:11px;border:1px solid rgba(255,255,255,.09);
+  box-shadow:0 6px 22px rgba(0,0,0,.3);width:max-content;max-width:min(460px,70vw)}
+.kiln-flip-x .kiln-status{right:auto;left:56px}
 .kiln-status{display:flex;align-items:center;gap:8px}
+/* display:flex above would otherwise beat the hidden attribute, and the pill
+   would never leave on a site whose own CSS does not reset [hidden]. */
+.kiln-status[hidden]{display:none!important}
 .kiln-status--saving{color:var(--kiln-warn)}
 .kiln-spin{flex:none;width:13px;height:13px;border-radius:50%;border:2px solid rgba(251,191,36,.3);
   border-top-color:var(--kiln-warn);animation:kilnspin .7s linear infinite}
@@ -5533,7 +5542,11 @@ td.kiln-editing:empty,th.kiln-editing:empty{display:table-cell}
   -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);color:#e7e7ee;display:flex;
   align-items:center;gap:8px;padding:0 12px;z-index:99999;font-family:var(--kiln-font);
   font-size:13px;border-bottom:1px solid rgba(255,255,255,.07);overflow-x:auto}
-#kiln-topbar .kiln-status{position:static;transform:none;box-shadow:none;border:none;background:none;max-width:30vw}
+#kiln-topbar .kiln-status{position:static;transform:none;box-shadow:none;border:none;background:none;width:auto;max-width:30vw;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* The bar scrolls sideways when it does not fit. With something to publish,
+   Publish stays pinned at its right end instead of scrolling out of reach. */
+#kiln-topbar #kiln-publish:not(:disabled){position:sticky;right:0;z-index:1;flex:none;box-shadow:0 0 0 7px rgb(16,16,25)}
 .kiln-bar-spacer{flex:1}
 body:has(#kiln-topbar){padding-top:46px!important}
 .kiln-dragging{opacity:.45;outline:2px dashed var(--kiln-accent)!important}
@@ -5667,9 +5680,10 @@ body:has(#kiln-topbar){padding-top:46px!important}
 .kiln-fab-foot{padding-right:72px}
 .kiln-fab-foot button{min-height:44px;font-size:13.5px;padding:8px 12px}
 .kiln-pal-kbd{display:none}
-/* Status toasts: top-center, clear of FAB and keyboard. */
+/* Status toasts: top-center, clear of FAB and keyboard. A hint, not a fixture:
+   setStatus() takes it away after a few seconds, and a tap dismisses it. */
 #kiln-fab-wrap .kiln-status{position:fixed;left:50%;right:auto;bottom:auto;
-  top:calc(10px + env(safe-area-inset-top,0px));transform:translateX(-50%);max-width:92vw}
+  top:calc(10px + env(safe-area-inset-top,0px));transform:translateX(-50%);max-width:92vw;font-size:13px}
 /* Top-bar mode: same bar, thumb-height targets, finger-scrollable. */
 #kiln-topbar{height:56px;-webkit-overflow-scrolling:touch}
 body:has(#kiln-topbar){padding-top:56px!important}
