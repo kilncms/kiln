@@ -13,6 +13,7 @@
  * and exported for node tests.
  */
 
+import { whyNot } from './plain-failure.js';
 import { editFile } from '../github.js';
 
 let deps = null;
@@ -440,7 +441,7 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
         console.error('[kiln] theme', err);
         halted = deps.stopped(err, 'saved');
         if (halted) break;                          // the next file would get the same answer
-        failures.push(`${path}: ${err.message}`);   // its edits stay staged for a retry
+        failures.push(`${path} was not updated. ${whyNot(err)}`);   // its edits stay staged for a retry
       }
     }
     render();
@@ -451,10 +452,10 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
       : failures.length || halted ? [] : ['Nothing to change.'];
     parts.push(...notices);
     if (halted) parts.push(halted);
-    if (failures.length) parts.push(`Could not update ${failures.join(' · ')} — still staged.`);
+    if (failures.length) parts.push(`${failures.join(' ')} Your choices are still here.`);
     status.textContent = parts.join(' ');
     // No setStatus on success — journalAdd's first tick already narrates
     // ("“Theme” is going live…", then "live ✓") in the status line.
-    if (!committed && failures.length) setStatus('Theme update failed — see the panel', 'error');
+    if (!committed && failures.length) setStatus('The theme was not updated. The panel says why.', 'error');
   };
 }

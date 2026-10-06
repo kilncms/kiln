@@ -10,6 +10,7 @@
  * ONLY — nothing a commenter types is ever parsed as HTML.
  */
 
+import { notDone } from './plain-failure.js';
 import { TYPED } from './saved-edits.js';
 
 let ready = false;
@@ -263,7 +264,7 @@ function threadCard(t, num, rerender) {
   const act = async (el, did, fn, typed) => {
     el.disabled = true;
     try { await fn(); renderPins(); updateBadge(); rerender(); }
-    catch (err) { say(err, did, `Comment failed: ${err.message}`, typed); el.disabled = false; }
+    catch (err) { console.error('[kiln] comment', err); say(err, did, notDone(`That was not ${did}.`, err), typed); el.disabled = false; }
   };
   const swap = (nt) => { threads = threads.map(x => (x.id === t.id ? nt : x)); };
 
@@ -487,7 +488,8 @@ function openComposer(point, anchor, text = '') {
     } catch (err) {
       post.disabled = false;
       // what is in the box now, for the dialog: the saved copy holds it with the place it is pinned to
-      say(err, 'posted', `Comment failed: ${err.message}`, () => (ta.isConnected && ta.value.trim()
+      console.error('[kiln] comment', err);
+      say(err, 'posted', notDone('Your comment was not posted.', err), () => (ta.isConnected && ta.value.trim()
         ? { name: TYPED.comment, text: ta.value.trim(), keep: { where: 'comment', ...(anchor && { anchor }) } } : null));
     }
   });

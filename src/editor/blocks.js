@@ -17,6 +17,8 @@
  * up top are exported for node unit tests and must stay DOM-free.
  */
 
+import { notDone } from './plain-failure.js';
+
 // ─── Pure helpers (node-testable — no DOM access here) ───────────────────────
 
 // data-cms / -repeat / -menu / -list attributes and their key values. The
@@ -423,7 +425,7 @@ async function openPicker(anchor) {
   catch (err) {
     console.error('[kiln] blocks', err);
     const list = m.querySelector('#kiln-blk-list');
-    if (list) list.innerHTML = `<p class="kiln-dim">${escapeHtml(deps.stopped(err) || `Couldn’t load the block library: ${err.message}`)}</p>`;
+    if (list) list.innerHTML = `<p class="kiln-dim">${escapeHtml(deps.stopped(err) || notDone('The list of sections could not be read.', err))}</p>`;
     return;
   }
   if (!m.isConnected) return;    // closed while loading
@@ -555,7 +557,7 @@ function renderEmptyState(m, anchor) {
     } catch (err) {
       console.error('[kiln] example block', err);
       btn.disabled = false;
-      status.textContent = deps.stopped(err, 'created') || `Failed: ${err.message}`;
+      status.textContent = deps.stopped(err, 'created') || notDone('The example was not created.', err);
     }
   };
 }

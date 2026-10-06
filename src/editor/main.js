@@ -39,6 +39,8 @@ import { draftRecord, readDraft, draftHolds, TYPED } from './saved-edits.js';
 import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
+import { notDone, whyNot, said } from './plain-failure.js';
+import { demoSays, DEMO_DRAFT_SAVED } from './tryout.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -49,6 +51,7 @@ const PAUSE_KEY = 'kiln_pause';
 // before init() runs at module load — initSandbox reads them synchronously.
 const SANDBOX_KEY = 'kiln_sandbox';
 const SANDBOX_TTL = 24 * 3600 * 1000;
+const SANDBOX_FULL = 'This browser has no room left for the demo. Press “Start over” to clear it, or try smaller pictures.';
 const UNDO_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-8.4L3 7"/></svg>';
 // Phone-first chrome: ONE media query decides "phone" — shared verbatim by the
 // CSS in injectStyles() and the few JS behavior forks (menu/toolbar positioning,
@@ -169,7 +172,7 @@ init().catch(err => {
     box.querySelector('button').onclick = () => box.remove();
     document.body.appendChild(box);
   } else {
-    setStatus('Kiln failed to start — see console', 'error');
+    setStatus('Editing could not start on this page. Reloading it usually helps.', 'error');
   }
 });
 
@@ -1964,7 +1967,7 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB) — Publish to put it live`, 'saved');
   } catch (err) {
     console.error('[kiln] resize', err);
-    setStatus('Resize failed — see console', 'error');
+    setStatus(notDone('The picture was not resized.', err), 'error');
   }
 }
 
@@ -2121,7 +2124,7 @@ async function resampleImage(img, key, maxDim) {
     setStatus(`Resampling to max ${maxDim}px…`, 'saving');
     const src = img.getAttribute('data-kiln-src') || img.getAttribute('src');
     const res = await fetch(src, { cache: 'no-store' });
-    if (!res.ok) throw new Error(`could not fetch current image (${res.status})`);
+    if (!res.ok) throw Object.assign(new Error(`could not fetch current image (${res.status})`), { status: res.status });
     const blob0 = await res.blob();
     const baseName = (src.split('/').pop() || 'image').split('?')[0];
     const scaled = await downscale(new File([blob0], baseName, { type: blob0.type }), maxDim);
@@ -2129,7 +2132,7 @@ async function resampleImage(img, key, maxDim) {
     setStatus(`Resampled to max ${maxDim}px (${Math.round(scaled.blob.size / 1024)} KB) — Publish to put it live`, 'saved');
   } catch (err) {
     console.error('[kiln] resample', err);
-    setStatus('Resample failed — see console', 'error');
+    setStatus(notDone('The picture was not made smaller.', err), 'error');
   }
 }
 
@@ -2557,7 +2560,7 @@ async function sendSuggestionFromSheet(note) {
   } catch (err) {
     console.error('[kiln] suggest', err);
     keptNote = note || '';   // back in its box when the sheet is opened again
-    say(err, 'sent', `That did not send: ${err.message}. Your edits are still here.`, noteTyped(note));
+    say(err, 'sent', `${notDone('That was not sent.', err)} Your edits are still here.`, noteTyped(note));
   }
 }
 
@@ -2766,7 +2769,7 @@ async function publish(opts = {}) {
     const f = why ? null : readFailure(err);
     if (f && (f.kind === 'ended' || f.kind === 'refused')) stoppedDialog(f, true, noteTyped(opts.note));
     else if (f && f.kind === 'trouble') setStatus(publishTrouble(f, { edits: state.pending.size, source: state.pendingSource.size }), 'error');
-    else setStatus(why ? why + which : 'Publish failed — see console', 'error');
+    else setStatus(why ? why + which : `${notDone('That was not published.', err)} Your ${state.pending.size + state.pendingSource.size === 1 ? 'edit is' : 'edits are'} still here.`, 'error');
   }
 }
 
@@ -3149,14 +3152,14 @@ async function publishSource(note = '') {
       ok = true;
     } catch (err) {
       // What the worker said, when it answered; else why there was no answer.
-      data = Number.isInteger(err.status) ? err.data : { error: err.message };
+      data = Number.isInteger(err.status) ? err.data : { error: whyNot(err) };
       failure = err;
     }
     if (!ok) {
       firstFailure = firstFailure || failure;
       // The whole file's batch stays pending; the worker's own words surface
       // (suggest-mode 403s, vanished-file 404s, validation 422s — §8.1).
-      firstError = firstError || data.error || 'save failed — see console';
+      firstError = firstError || data.error || 'That was not saved.';
       console.warn('[kiln] source commit failed:', g.file, data);
       for (const ref of g.refs) markSourceFieldIssue(ref, data.error || 'save failed');
       for (const [ref, why] of matchSkippedRefs(g, data.skipped)) {
@@ -3275,7 +3278,7 @@ function sourceBuildFailedBanner(committed, sha) {
       } catch (err) {
         btn.disabled = false;
         btn.innerHTML = `${UNDO_ICON} Undo this change`;
-        say(err, 'undone', `Revert failed: ${err.message}`);
+        say(err, 'undone', notDone('That change was not undone.', err));
       }
     };
   });
@@ -3443,7 +3446,7 @@ function publishSandbox(noteMsg = '') {
   for (const [ref, v] of state.pendingSource) page[ref] = { text: v.value };
   s.pages[sandboxPath()] = page;
   if (!sandboxSave(s)) {
-    setStatus('This demo ran low on local browser space — click "Start over" to reset, or try smaller images.', 'error');
+    setStatus(SANDBOX_FULL, 'error');
     return;   // keep pending edits so the visitor can retry
   }
   for (const [ref, v] of state.pendingSource) state.sourceBase.set(ref, v.value);
@@ -3520,6 +3523,7 @@ async function initSandbox() {
   await initSourceFields();   // demo source fields stage + preview locally (no worker)
   revealFields();
   renderSandboxBanner();
+  offerDraftSandbox();
   bootBlocks();   // chrome shows in the demo; inserting explains it needs a real site
   // First visit to the demo: point at a heading, then at Publish, then say what happened.
   initGuide({ cfg, mobileMq: MOBILE_MQ,
@@ -3700,7 +3704,7 @@ function newContent() {
         if (err.status === 404) return null;
         throw err;
       });
-      if (exists) throw new Error(`${href} already exists — pick a different title`);
+      if (exists) throw said(`${href} is already a page on this site, so please pick another title`);
 
       // Optional AI draft: fill the template's remaining text fields from the
       // brief BEFORE the commit that creates the page. The title comes from the
@@ -3738,7 +3742,7 @@ function newContent() {
           .replaceAll('{{href}}', href)
           .replaceAll('{{date}}', escapeHtml(date));
         const newIndex = applyEdits(blogIndex.text, [{ key: 'post_list', prepend: '\n      ' + card.trim() }]);
-        if (!newIndex.applied.length) throw new Error('blog/index.html needs a data-cms-list="post_list" container');
+        if (!newIndex.applied.length) throw said('The blog page has no list for posts to go into. For the owner: blog/index.html needs a data-cms-list="post_list" container');
         files.push({ path: filePath, text: postHtml }, { path: root + 'blog/index.html', text: newIndex.html });
       } else {
         const tpl = await getFile(state.gh, cfg.repo, root + '_templates/page.html', branch);
@@ -3753,7 +3757,7 @@ function newContent() {
 
       journalAdd({ type: 'url', target: href, desc: `New ${kind} “${title}”`, sha: commit.sha });
       status.innerHTML = `Committed ✓ — the site is rebuilding (usually under a minute).<br>
-        ${draftFailed ? `<small>The AI draft didn’t work (${escapeHtml(draftFailed)}) — the ${kind} was created without it.</small><br>` : ''}
+        ${draftFailed ? `<small>The AI did not write a draft, so the ${kind} was created without one. ${escapeHtml(draftFailed)}</small><br>` : ''}
         <small>Safe to close this window: Kiln keeps watching in the background and the link below
         starts working the moment the ${kind} is live${kind === 'page' ? ' — then add it to your navigation via <strong>Site menu</strong>' : ''}.</small>`;
       const started = Date.now();
@@ -3783,7 +3787,7 @@ function newContent() {
       form.style.display = '';
       m.querySelector('#kiln-np-said').textContent = err.status === 404
         ? `This site has no ${kind} template (_templates/${kind}.html) — see the docs.`
-        : stopped(err, 'created', typedIn(form)) || `Failed: ${err.message}`;
+        : stopped(err, 'created', typedIn(form)) || notDone('Nothing was created.', err);
     }
   };
 }
@@ -3894,7 +3898,7 @@ function menuEditor() {
         if (result.applied.length) changed.push({ path: htmlFiles[i], text: result.html });
         else skippedPages++;
       }
-      if (!changed.length) throw new Error('no pages have a matching data-cms-menu container');
+      if (!changed.length) throw said('No page of the site has this menu marked for Kiln. For the owner: the menu needs a matching data-cms-menu container');
 
       status.textContent = `Committing ${changed.length} page${changed.length > 1 ? 's' : ''} as one change…`;
       const commit = await commitFiles(state.gh, cfg.repo, branch, changed,
@@ -3924,7 +3928,7 @@ function menuEditor() {
       poll();
     } catch (err) {
       console.error('[kiln] menu', err);
-      status.textContent = stopped(err, 'saved', typedIn(m, true)) || `Failed: ${err.message}`;
+      status.textContent = stopped(err, 'saved', typedIn(m, true)) || notDone('The menu was not saved.', err);
     }
   };
 }
@@ -4144,7 +4148,7 @@ async function invitePanel() {
         box.appendChild(row);
       }
     } catch (err) {
-      box.innerHTML = `<p class="kiln-dim" style="margin:6px 2px">${escapeHtml(stopped(err) || `Couldn't load the page list: ${err.message}`)}</p>`;
+      box.innerHTML = `<p class="kiln-dim" style="margin:6px 2px">${escapeHtml(stopped(err) || notDone('The list of pages could not be read.', err))}</p>`;
     }
   };
   m.querySelectorAll('input[name="kiln-p-role"]').forEach(r => r.addEventListener('change', syncRole));
@@ -4186,7 +4190,7 @@ async function invitePanel() {
           try {
             await ask('/admin/people/remove', { method: 'POST', body: { repo: cfg.repo, email: p.email } });
           } catch (err) {
-            status.textContent = stopped(err, 'removed') || `That person was not removed: ${err.message}`;
+            status.textContent = stopped(err, 'removed') || notDone('That person was not removed.', err);
             return;
           }
           refreshPeople();
@@ -4195,7 +4199,7 @@ async function invitePanel() {
       }
     } catch (err) {
       // The list could not be read. That says nothing about Google sign-in, so the form is left as it is.
-      status.textContent = stopped(err) || (Number.isInteger(err.status) ? `The list of people could not be read: ${err.message}` : 'Could not reach the auth worker.');
+      status.textContent = stopped(err) || notDone('The list of people could not be read.', err);
     }
   }
   refreshPeople();
@@ -4216,7 +4220,7 @@ async function invitePanel() {
         ...(suggestOnly ? { mode: 'suggest' } : m.dataset.mode === 'review' ? { mode: 'review' } : {}) } });
     } catch (err) {
       // What was typed stays in the form.
-      m.querySelector('#kiln-gstatus').textContent = stopped(err, 'added', typedIn(m)) || `That person was not added: ${err.message}`;
+      m.querySelector('#kiln-gstatus').textContent = stopped(err, 'added', typedIn(m)) || notDone('That person was not added.', err);
       return;
     }
     if (data.ok) {
@@ -4495,7 +4499,7 @@ async function historyPanel(resume = null) {
       refs = await state.gh.request('GET', `/repos/${cfg.repo}/git/matching-refs/tags/kiln/`);
     } catch (err) {
       // The list of publishes below is read with the same sign-in and says what happened; once is enough.
-      box.innerHTML = `<p class="kiln-dim">${escapeHtml(readFailure(err).kind === 'other' ? `Couldn’t load named versions: ${err.message}` : 'Named versions could not be read.')}</p>`;
+      box.innerHTML = `<p class="kiln-dim">${escapeHtml(readFailure(err).kind === 'other' ? notDone('Named versions could not be read.', err) : 'Named versions could not be read.')}</p>`;
       return;
     }
     if (!Array.isArray(refs)) refs = [];
@@ -4512,7 +4516,7 @@ async function historyPanel(resume = null) {
         <small>${when} · ${escapeHtml(String(v.sha).slice(0, 7))}</small></span>
         <span class="kiln-hist-acts"><button class="kiln-btn-ghost" title="Every section back to how it was in this named version">Go back to this</button></span>`;
       row.querySelector('button').onclick = () =>
-        restoreVersion(v.sha, `“${escapeHtml(v.name)}”`).catch(err => { status.textContent = stopped(err) || `Couldn’t read that version: ${err.message}`; });
+        restoreVersion(v.sha, `“${escapeHtml(v.name)}”`).catch(err => { status.textContent = stopped(err) || notDone('That version could not be read.', err); });
       box.appendChild(row);
     }
   }
@@ -4547,7 +4551,7 @@ async function historyPanel(resume = null) {
         status.textContent = err.status === 422
           ? 'A version with that name was just created — try a slightly different name.'
           : stopped(err, 'saved', () => (input.isConnected && input.value.trim()
-            ? { name: TYPED.version, text: input.value.trim(), keep: { where: 'version', sha: c.sha } } : null)) || `Couldn’t name it: ${err.message}`;
+            ? { name: TYPED.version, text: input.value.trim(), keep: { where: 'version', sha: c.sha } } : null)) || notDone('The name was not saved.', err);
       }
     };
     form.querySelector('[data-nv="save"]').onclick = save;
@@ -4563,7 +4567,7 @@ async function historyPanel(resume = null) {
   try {
     commits = await state.gh.request('GET',
       `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=20`);
-  } catch (err) { list.textContent = ''; status.textContent = stopped(err) || `Could not load history: ${err.message}`; return; }
+  } catch (err) { list.textContent = ''; status.textContent = stopped(err) || notDone('The history could not be read.', err); return; }
 
   list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No saved versions yet — they appear after your first publish.</p>';
 
@@ -4578,9 +4582,9 @@ async function historyPanel(resume = null) {
         ${i === 0 ? '' : '<button class="kiln-btn-ghost" data-act="restore" title="Every section back to how it was at this point">Go back to this</button>'}
         <button class="kiln-btn-ghost" data-act="name" title="Name this version so it’s easy to find and restore later">⭑ Name</button>
       </span>`;
-    div.querySelector('[data-act="undo"]').onclick = () => undoCommit(c).catch(err => { status.textContent = stopped(err) || `Couldn’t compare versions: ${err.message}`; });
+    div.querySelector('[data-act="undo"]').onclick = () => undoCommit(c).catch(err => { status.textContent = stopped(err) || notDone('The two versions could not be compared.', err); });
     const rBtn = div.querySelector('[data-act="restore"]');
-    if (rBtn) rBtn.onclick = () => restoreVersion(c.sha, escapeHtml(when)).catch(err => { status.textContent = stopped(err) || `Couldn’t read that version: ${err.message}`; });
+    if (rBtn) rBtn.onclick = () => restoreVersion(c.sha, escapeHtml(when)).catch(err => { status.textContent = stopped(err) || notDone('That version could not be read.', err); });
     div.querySelector('[data-act="name"]').onclick = () => nameVersionInline(div, c);
     list.appendChild(div);
     if (resume && typeof resume.name === 'string' && resume.sha === c.sha) {
@@ -4674,7 +4678,7 @@ async function fieldHistoryPanel(key, isRepeat = false) {
       if (btn) btn.onclick = () => previewFieldRevert(key, i === 0 ? rows[1].v : v, m);
       box.appendChild(r);
     });
-  } catch (err) { box.innerHTML = `<p class="kiln-dim">${escapeHtml(stopped(err) || `Couldn’t load history: ${err.message}`)}</p>`; }
+  } catch (err) { box.innerHTML = `<p class="kiln-dim">${escapeHtml(stopped(err) || notDone('The history could not be read.', err))}</p>`; }
 }
 
 function histPreview(html) {
@@ -4717,7 +4721,7 @@ function pageSettingsPanel() {
       await loadPageSource();
       journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: 'Page settings', sha: result.commit?.sha });
       status.textContent = 'Committed ✓ — safe to close; Kiln will confirm when live.';
-    } catch (err) { status.textContent = stopped(err, 'published', typedIn(m)) || `Failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, 'published', typedIn(m)) || notDone('The settings were not published.', err); }
   };
   const delBtn = m.querySelector('#kiln-ps-del');
   if (delBtn) delBtn.onclick = () => {
@@ -4732,7 +4736,7 @@ function pageSettingsPanel() {
         await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
           { message: `Delete ${state.page.path} (via Kiln)`, sha: file.sha, branch: cfg.branch || 'main' });
         status.innerHTML = 'Deleted ✓ — the page comes off the site on the next deploy. <strong>Open Site menu to remove its link.</strong>';
-      } catch (err) { status.textContent = stopped(err, 'deleted') || `Delete failed: ${err.message}`; }
+      } catch (err) { status.textContent = stopped(err, 'deleted') || notDone('The page was not deleted.', err); }
     })();
   };
 }
@@ -4786,9 +4790,9 @@ function findReplacePanel() {
           if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Find & replace', sha: commit.sha });
           status.textContent = 'Committed ✓ — rebuilding. Safe to close; Kiln will confirm when live.';
           act.remove();
-        } catch (err) { status.textContent = stopped(err, 'replaced', typedIn(m)) || `Failed: ${err.message}`; }
+        } catch (err) { status.textContent = stopped(err, 'replaced', typedIn(m)) || notDone('Nothing was replaced.', err); }
       };
-    } catch (err) { status.textContent = stopped(err, '', typedIn(m)) || `Scan failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, '', typedIn(m)) || notDone('The pages could not be searched.', err); }
   };
 }
 
@@ -4807,6 +4811,7 @@ async function ensureDraftBranch() {
 
 async function saveDraft() {
   if (!state.pending.size) return;
+  if (cfg.sandbox) { saveDraftSandbox(); return; }
   // Drafts save only text/attribute edits. Uploaded images and added sections
   // live in pendingBinaries/pendingStructural, which a draft can't carry — a
   // draft referencing an uncommitted image would publish a broken link, and an
@@ -4838,24 +4843,65 @@ async function saveDraft() {
     setStatus('Draft saved ✓ — nothing is live; resume it any time from this page', 'saved');
   } catch (err) {
     console.error('[kiln] draft', err);
-    say(err, 'saved', `Draft failed: ${err.message}`);
+    say(err, 'saved', notDone('The draft was not saved.', err));
   }
+}
+
+/** "There's a saved draft of this page": the same question on a real site and in the demo. */
+function draftDialog(canDelete) {
+  return modal(`
+    <h3>There's a saved draft of this page</h3>
+    <p class="kiln-dim">It isn't live. Resume editing it, publish it as-is, or leave it for later.</p>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Later</button>
+      ${canDelete ? '<button class="kiln-btn-ghost" id="kiln-dr-del">Delete draft</button>' : ''}
+      <button class="kiln-btn-ghost" id="kiln-dr-pub">Publish it now</button>
+      <button class="kiln-btn-publish" id="kiln-dr-resume">Resume draft</button>
+    </div>
+    <p class="kiln-np-step" id="kiln-dr-status"></p>`);
+}
+
+/**
+ * Try-out mode has no draft branch to save to. The draft is kept in this
+ * browser, beside the demo's publishes, and is offered back the next time the
+ * page is opened: the same thing a real site does, with nothing sent anywhere.
+ */
+function saveDraftSandbox() {
+  const s = sandboxStore();
+  s._createdAt = s._createdAt || Date.now();
+  s.drafts = s.drafts || {};
+  s.drafts[sandboxPath()] = { ts: Date.now(), edits: Object.fromEntries(state.pending) };
+  if (!sandboxSave(s)) { setStatus(SANDBOX_FULL, 'error'); return; }
+  state.pending.clear();
+  clearSavedPending();
+  forgetEditHistory();
+  document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
+  refreshPublishButton();
+  setStatus(DEMO_DRAFT_SAVED, 'saved');
+}
+
+/** Try-out mode, as the page opens: a draft saved here earlier is offered back. */
+function offerDraftSandbox() {
+  const draft = sandboxStore().drafts?.[sandboxPath()];
+  const n = draft && draft.edits && typeof draft.edits === 'object' ? Object.keys(draft.edits).length : 0;
+  if (!n) return;
+  const m = draftDialog(true);
+  const taken = () => { const s = sandboxStore(); if (s.drafts) { delete s.drafts[sandboxPath()]; sandboxSave(s); } m.remove(); };
+  const back = () => restoreSaved({ edits: draft.edits, source: {}, count: n }, Promise.resolve([]), false);
+  m.querySelector('#kiln-dr-resume').onclick = async () => {
+    taken();
+    await back();
+    setStatus(`Draft loaded, ${n} change${n === 1 ? '' : 's'}. Publish when ready.`, 'saved');
+  };
+  m.querySelector('#kiln-dr-pub').onclick = async () => { taken(); await back(); publishSandbox(); };
+  m.querySelector('#kiln-dr-del').onclick = () => { taken(); setStatus('Draft deleted.', 'saved'); };
 }
 
 async function checkForDraft() {
   let draft;
   try { draft = await getFile(state.gh, cfg.repo, state.page.path, DRAFT_BRANCH); } catch { return; }
   if (!draft || djb2(draft.text) === djb2(state.page.text)) return;
-  const m = modal(`
-    <h3>There's a saved draft of this page</h3>
-    <p class="kiln-dim">It isn't live. Resume editing it, publish it as-is, or leave it for later.</p>
-    <div class="kiln-modal-actions">
-      <button class="kiln-btn-ghost" data-close>Later</button>
-      ${mode === 'admin' ? '<button class="kiln-btn-ghost" id="kiln-dr-del">Delete draft</button>' : ''}
-      <button class="kiln-btn-ghost" id="kiln-dr-pub">Publish it now</button>
-      <button class="kiln-btn-publish" id="kiln-dr-resume">Resume draft</button>
-    </div>
-    <p class="kiln-np-step" id="kiln-dr-status"></p>`);
+  const m = draftDialog(mode === 'admin');
   const status = m.querySelector('#kiln-dr-status');
   m.querySelector('#kiln-dr-resume').onclick = () => {
     const draftFields = indexHtml(draft.text).fields;
@@ -4889,7 +4935,7 @@ async function checkForDraft() {
       journalAdd({ type: 'compare', target: location.pathname, expect: djb2(draft.text), desc: 'Draft publish', sha: result?.commit?.sha });
       await loadPageSource();
       status.textContent = 'Published ✓ — your site rebuilds now; the change goes live in about a minute.';
-    } catch (err) { status.textContent = stopped(err, 'published') || `Failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, 'published') || notDone('The draft was not published.', err); }
   };
   const del = m.querySelector('#kiln-dr-del');
   if (del) del.onclick = async () => {
@@ -4899,7 +4945,7 @@ async function checkForDraft() {
         { message: `Discard draft: ${state.page.path} (via Kiln)`, sha: draft.sha, branch: DRAFT_BRANCH });
       status.textContent = 'Draft deleted.';
       setTimeout(() => m.remove(), 600);
-    } catch (err) { status.textContent = stopped(err, 'deleted') || `Failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, 'deleted') || notDone('The draft was not deleted.', err); }
   };
 }
 
@@ -4942,7 +4988,7 @@ function schedulePanel(at) {
           try {
             await ask('/schedule/cancel', { method: 'POST', body: { repo: cfg.repo, id: s.id } });
           } catch (err) {
-            status.textContent = stopped(err, 'cancelled') || `That was not cancelled: ${err.message}`;
+            status.textContent = stopped(err, 'cancelled') || notDone('That was not cancelled.', err);
             return;
           }
           refreshList();
@@ -4968,7 +5014,7 @@ function schedulePanel(at) {
           edits, at: new Date(at).toISOString(),
           message: `Scheduled edit: ${state.page.path} (via Kiln)`,
           desc: `${state.page.path} (${[...state.pending.keys()].slice(0, 3).join(', ')})` } });
-      if (!data.ok) throw new Error(data.error || 'failed');
+      if (!data.ok) throw said(data.error || 'The site did not take the schedule');
       // The edits now live in the schedule on the worker — retire the stage.
       retireStaged();
       status.textContent = `Scheduled for ${new Date(data.at).toLocaleString()} ✓ — safe to close.`;
@@ -4977,7 +5023,7 @@ function schedulePanel(at) {
       status.textContent = stopped(err, 'scheduled', () => {
         const chosen = m.isConnected ? m.querySelector('#kiln-sc-at').value : '';
         return chosen ? { name: TYPED.schedule, text: new Date(chosen).toLocaleString(), keep: { where: 'schedule', at: chosen } } : null;
-      }) || `Failed: ${err.message}`;
+      }) || notDone('Nothing was scheduled.', err);
     }
   };
 }
@@ -5035,7 +5081,7 @@ function settingsPanel() {
       journalAdd({ type: 'compare', target: '/assets/kiln-config.js', expect: djb2(result.text), desc: 'Site settings', sha: result.commit?.sha });
       status.textContent = 'Committed ✓ — applies to everyone after the rebuild (~1 min).' + (uiChanged ? ' Reloading…' : '');
       if (uiChanged) setTimeout(() => location.reload(), 1500);
-    } catch (err) { status.textContent = stopped(err, 'saved') || `Failed: ${err.message}`; }
+    } catch (err) { status.textContent = stopped(err, 'saved') || notDone('The settings were not saved.', err); }
   };
 }
 
@@ -5317,7 +5363,7 @@ function makeDialog(el) {
       m.remove();
     } catch (err) {
       console.error('[kiln] make-editable', err);
-      status.textContent = `Failed: ${err.message}`;
+      status.textContent = notDone('That was not made editable.', err);
     }
   };
 }
@@ -5344,7 +5390,7 @@ function applyAnnotationToDom(el, kind, key) {
 async function annotateElement(el, kind, key) {
   const tag = el.tagName.toLowerCase();
   const nth = domNth(el);
-  if (nth < 0) throw new Error('lost track of the element — reload and try again');
+  if (nth < 0) throw said('Kiln lost track of that part of the page, so please reload and try again');
   const domText = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
   // Demo sandbox: no repo to commit to — just wire it up live for the session.
   if (cfg.sandbox) {
@@ -5363,7 +5409,7 @@ async function annotateElement(el, kind, key) {
   // annotation — it's applied to the file at Publish, so it's pending like any
   // other edit (nothing auto-commits).
   const node = findNthTag(state.page.text, tag, nth);
-  if (!node) throw new Error('could not locate this element in the page source. If the site builds this page with JavaScript, annotate the source file by hand.');
+  if (!node) throw said('Kiln could not find that part in the page’s file. For the owner: if the site builds this page with JavaScript, annotate the source file by hand');
   const srcText = node.innerText.replace(/\s+/g, ' ').trim().slice(0, 60);
   if (domText && srcText && domText !== srcText) {
     // Often the site's own JS rewrote the text (dates, counters). The element
@@ -5373,7 +5419,7 @@ async function annotateElement(el, kind, key) {
     if (!confirm(`Heads up: this text reads differently in the page source`
       + ` (a script on your site may update it on load).\n\nOn screen: “${domText}”\nIn source: “${srcText}”\n\n`
       + `Making it editable means edits replace the SOURCE text, and your script may keep changing what visitors see. Make it editable anyway?`)) {
-      throw new Error('cancelled — the source text didn’t match what’s on screen.');
+      throw said('The words in the page’s file are not the words on screen, so nothing was changed');
     }
   }
   state.pendingStructural.push({ op: 'annotate', tag, nth, attrs, key });

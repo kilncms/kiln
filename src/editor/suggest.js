@@ -13,6 +13,7 @@
  * that the review UI shows goes through textContent, never innerHTML.
  */
 
+import { notDone, said } from './plain-failure.js';
 import { applyEdits, readValues } from '../engine.js';
 import { editFile } from '../github.js';
 
@@ -113,7 +114,7 @@ export function suggestChanges() {
       console.error('[kiln] suggest', err);
       m.querySelector('#kiln-sug-go').disabled = false;
       status.textContent = stopped(err, 'sent', () => (m.isConnected ? noteTyped(m.querySelector('#kiln-sug-note').value) : null))
-        || `Failed: ${err.message} — your edits are still staged.`;
+        || `${notDone('Your suggestion was not sent.', err)} Your edits are still here.`;
     }
   };
 }
@@ -140,7 +141,7 @@ export async function sendSuggestion(note, onStatus = () => {}) {
   const body = { repo: cfg.repo, path: state.page.path, edits, note: String(note || '').slice(0, 200) };
   if (branch) { body.branch = branch; body.baseSha = baseSha; }
   const data = await ask('/suggestions', { method: 'POST', body });
-  if (!data.suggestion) throw new Error(data.error || 'the suggestion was not taken');
+  if (!data.suggestion) throw said(data.error || 'The site did not take the suggestion');
   // The edits now live in the suggestion on the worker — retire them here,
   // exactly like a schedule handoff (stage + undo history + markers).
   retireStaged();
@@ -355,7 +356,8 @@ function suggestionRow(m, sug) {
       await renderSuggestions(m);
       refreshSuggestBadge();
     } catch (e2) {
-      err.textContent = stopped(e2, approve ? 'approved' : 'declined') || `Failed: ${e2.message}`;
+      console.error('[kiln] suggestion', e2);
+      err.textContent = stopped(e2, approve ? 'approved' : 'declined') || notDone(approve ? 'That was not approved.' : 'That was not declined.', e2);
       err.hidden = false;
       approveBtn.disabled = declineBtn.disabled = false;
     }

@@ -20,6 +20,7 @@
 
 import DOMPurify from 'dompurify';
 import { SANITIZE } from './sanitize.js';
+import { notDone, whyNot, said } from './plain-failure.js';
 
 let deps = null;
 
@@ -34,7 +35,7 @@ async function aiRequest(body) {
     return await ask('/ai/assist', { method: 'POST', body: { repo: cfg.repo, ...body } });
   } catch (err) {
     if (err.status !== 501) throw err;
-    const none = new Error('AI is not set up on this site');
+    const none = said('AI is not set up on this site');
     none.notConfigured = true;
     throw none;
   }
@@ -47,10 +48,11 @@ async function aiRequest(body) {
  * limits) in words of its own: those are shown as they are. `asked` is what
  * the person typed for the AI to do, if anything: it is offered as a copy.
  */
-function failed(err, own, asked = '') {
+function failed(err, lead, asked = '') {
   const { say, setStatus } = deps;
-  if (err.status >= 500 && err.data?.error) setStatus(own, 'error');
-  else say(err, '', own, asked ? { name: 'what you asked for', text: asked } : null);
+  console.error('[kiln] ai', err);
+  if (err.status >= 500 && err.data?.error) setStatus(`${lead} The answer was: ${err.data.error}`, 'error');
+  else say(err, '', notDone(lead, err), asked ? { name: 'what you asked for', text: asked } : null);
 }
 
 /** The 501 explanation: admins get the fix, editors get who to ask. */
@@ -149,7 +151,7 @@ async function runTextAssist(el, key, kind, instruction) {
     previewModal(el, key, kind, instruction, text, data.text);
   } catch (err) {
     if (err.notConfigured) explainNotConfigured();
-    else failed(err, `AI assist failed: ${err.message}`, instruction);
+    else failed(err, 'The AI did not come back with a suggestion.', instruction);
   }
 }
 
@@ -191,7 +193,7 @@ function previewModal(el, key, kind, instruction, beforeHtml, afterRaw) {
       cleanAfter = DOMPurify.sanitize(data.text, SANITIZE);
       m.querySelector('#kiln-ai-after').innerHTML = cleanAfter;
     } catch (err) {
-      failed(err, `AI assist failed: ${err.message}`, instruction);
+      failed(err, 'The AI did not come back with a suggestion.', instruction);
     }
     retryBtn.disabled = false;
     retryBtn.textContent = 'Try again';
@@ -224,7 +226,7 @@ export async function assistAltText(img, key, altInput) {
     setStatus('Alt text drafted — confirm it', 'idle');
   } catch (err) {
     if (err.notConfigured) explainNotConfigured();
-    else failed(err, `Alt text failed: ${err.message}`);
+    else failed(err, 'The description was not written.');
     return;
   }
   const m = modal(`
@@ -261,6 +263,6 @@ export async function draftFill(brief, fields) {
     return { fields: data.fields || {} };
   } catch (err) {
     if (err.notConfigured) explainNotConfigured();
-    return { error: err.notConfigured ? 'AI isn’t set up on this site' : err.message };
+    return { error: err.notConfigured ? 'AI is not set up on this site.' : whyNot(err) };
   }
 }
