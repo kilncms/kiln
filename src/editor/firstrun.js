@@ -145,9 +145,12 @@ export function sideForHeading(top, height, tipHeight, viewHeight, { gap = 12, s
 // ─── The demo guide (sandbox only) ───────────────────────────────────────────
 
 const GUIDE_KEY = 'kiln_guide';
-const START_URL = 'https://kilncms.com/get-started.html';
+// Where the demo sends someone who wants Kiln on their own site, and what the
+// link is called: on the last card, and afterwards on the demo's own pill.
+export const START_URL = 'https://kilncms.com/get-started.html';
+export const START_LABEL = 'Put Kiln on my site';
 
-let deps = null;        // { cfg, mobileMq, unpublished(), publishButton() }
+let deps = null;        // { cfg, mobileMq, unpublished(), publishButton(), cardGone()? }
 let done = false;       // skipped or finished: nothing more on this page load
 let published = null;   // { before, after, message } once the visitor has published
 let undone = 0;         // …and then took that publish back with Undo: how many edits came back
@@ -225,6 +228,8 @@ function finish() {
   clearTimeout(cardTimer);
   removeTip();
   document.getElementById('kiln-guide-card')?.remove();
+  // The card held the demo's one link to Kiln itself: whoever keeps that link in sight is told it has gone.
+  deps?.cardGone?.();
 }
 
 /**
@@ -382,7 +387,7 @@ function showCard() {
     parts.push(msg);
   }
   const acts = el('div', 'kiln-guide-acts');
-  const go = el('a', invited ? 'kiln-btn-ghost' : 'kiln-btn-publish', invited ? 'Read the guide' : 'Put Kiln on my site');
+  const go = el('a', invited ? 'kiln-btn-ghost' : 'kiln-btn-publish', invited ? 'Read the guide' : START_LABEL);
   go.href = invited ? (deps.guideUrl || 'https://kilncms.com/editors') : START_URL;
   go.target = '_blank';
   go.rel = 'noopener';

@@ -27,7 +27,7 @@ import { initTheme, openThemePanel } from './theme.js';
 import { initComments, openComments, commentsTick, resumeComment, typedComment } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 import { initBlocks } from './blocks.js';
-import { publishLabel, editCommitMessage, goingLiveLabel, initGuide, guideSync, guidePublished, guideUndone, guideWaiting } from './firstrun.js';
+import { publishLabel, editCommitMessage, goingLiveLabel, initGuide, guideSync, guidePublished, guideUndone, guideWaiting, START_URL, START_LABEL } from './firstrun.js';
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl } from './grants.js';
@@ -42,7 +42,7 @@ import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { plainName, readableName } from './names.js';
 import { demoSays, demoShort, DEMO_DRAFT_SAVED, DEMO_HISTORY_EMPTY, DEMO_HISTORY_NOTE,
-  historyEntry, withEntry, undoChanges, goBackChanges, partVersions } from './tryout.js';
+  historyEntry, withEntry, undoChanges, goBackChanges, partVersions, hasPublished } from './tryout.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -3491,6 +3491,7 @@ function publishSandbox(noteMsg = '') {
   // Source edits stage + preview locally too — never a network commit (§13).
   for (const [ref, v] of state.pendingSource) page[ref] = { text: v.value };
   s.pages[sandboxPath()] = page;
+  s._published = true;   // the pill keeps the way to get Kiln in sight from now on (syncSandboxLink)
   s.history = s.history || {};
   const earlier = s.history[sandboxPath()];
   if (entry) s.history[sandboxPath()] = withEntry(earlier, entry);
@@ -3515,6 +3516,7 @@ function publishSandbox(noteMsg = '') {
   refreshPublishButton();
   offerUndo(record);
   guidePublished(told);
+  syncSandboxLink();
 }
 
 function renderSandboxBanner() {
@@ -3531,11 +3533,24 @@ function renderSandboxBanner() {
   #kiln-sandbox-banner b{color:#fff}
   #kiln-sandbox-banner button{background:#fff;color:#1c1c28;border:0;border-radius:999px;
     padding:7px 15px;font:600 12px sans-serif;cursor:pointer;white-space:nowrap}
+  /* The way to get Kiln. The demo exists to make someone put Kiln on their own
+     site, and the card that says so after a first publish does not stay. Once
+     the visitor has published and that card has gone, the pill carries the
+     link (.kiln-sbx-get) and says less: they know how the demo works by now. */
+  #kiln-sandbox-get{display:none;background:#6366f1;color:#fff;border-radius:999px;padding:7px 15px;
+    font:600 12px sans-serif;text-decoration:none;white-space:nowrap}
+  #kiln-sandbox-get:hover,#kiln-sandbox-get:focus-visible{background:#4f46e5;color:#fff;outline:2px solid #fff;outline-offset:1px}
+  #kiln-sandbox-banner.kiln-sbx-get{white-space:nowrap;gap:9px}
+  .kiln-sbx-get #kiln-sandbox-get{display:inline-block}
+  .kiln-sbx-get .kiln-sbx-more{display:none}
   /* The full sentence needs a wide window; below that the status pill beside the
-     pencil would run into it. Keep the name and the button, on one line. */
+     pencil would run into it. Keep the name and the button, on one line. With
+     the link in it, the link and "Start over" are what matter: the name goes. */
   @media (max-width:1179px){
     #kiln-sandbox-banner{white-space:nowrap}
     #kiln-sandbox-banner .kiln-sbx-more{display:none}
+    .kiln-sbx-get .kiln-sbx-words{display:none}
+    #kiln-sandbox-banner.kiln-sbx-get{padding-left:9px}
   }
   /* Phones: a small pill at the bottom left, level with the docked pencil and
      never under it (the pencil's column is kept free on the right). It steps
@@ -3547,6 +3562,8 @@ function renderSandboxBanner() {
       box-shadow:0 6px 22px rgba(0,0,0,.3)}
     #kiln-sandbox-banner span{overflow:hidden;text-overflow:ellipsis}
     #kiln-sandbox-banner button{flex:none;min-height:34px;padding:6px 13px}
+    #kiln-sandbox-banner.kiln-sbx-get{padding-left:5px;gap:6px}
+    .kiln-sbx-get #kiln-sandbox-get{display:inline-flex;align-items:center;flex:none;box-sizing:border-box;min-height:34px;padding:6px 12px}
     .kiln-tb-open #kiln-sandbox-banner,.kiln-menu-open #kiln-sandbox-banner{display:none}
   }
   /* The demo's menu is the menu of a real site: every item opens its own
@@ -3557,9 +3574,25 @@ function renderSandboxBanner() {
   document.head.appendChild(st);
   const b = document.createElement('div');
   b.id = 'kiln-sandbox-banner';
-  b.innerHTML = '<span><b>Your private demo.</b><span class="kiln-sbx-more"> Click any text or image to edit, then hit Publish. Saved only for you; resets in 24h.</span></span><button id="kiln-sandbox-reset">Start over</button>';
+  b.innerHTML = '<span class="kiln-sbx-words"><b>Your private demo.</b><span class="kiln-sbx-more"> Click any text or image to edit, then hit Publish. Saved only for you; resets in 24h.</span></span>'
+    + `<a id="kiln-sandbox-get" href="${START_URL}" target="_blank" rel="noopener">${START_LABEL}</a>`
+    + '<button id="kiln-sandbox-reset">Start over</button>';
   document.body.appendChild(b);
   b.querySelector('#kiln-sandbox-reset').onclick = () => { sandboxReset(); location.reload(); };
+  syncSandboxLink();
+}
+
+/**
+ * Whether the demo's pill shows its link to Kiln: once this browser's demo has
+ * had a publish, whenever the card that offers the same link is not on screen
+ * (it closes by itself, with "Keep exploring", or was never shown to a
+ * returning visitor). Called when the pill is drawn, after a publish, and when
+ * the card goes.
+ */
+function syncSandboxLink() {
+  const pill = document.getElementById('kiln-sandbox-banner');
+  if (!pill) return;
+  pill.classList.toggle('kiln-sbx-get', hasPublished(sandboxStore()) && !document.getElementById('kiln-guide-card'));
 }
 
 async function initSandbox() {
@@ -3582,7 +3615,7 @@ async function initSandbox() {
   restoreAsked.then(offerDraftSandbox);
   bootBlocks();   // chrome shows in the demo; inserting explains it needs a real site
   // First visit to the demo: point at a heading, then at Publish, then say what happened.
-  initGuide({ cfg, mobileMq: MOBILE_MQ,
+  initGuide({ cfg, mobileMq: MOBILE_MQ, cardGone: syncSandboxLink,
     unpublished: () => state.pending.size + state.pendingSource.size + state.pendingBinaries.size + state.pendingStructural.length,
     publishButton: () => document.getElementById('kiln-pubsheet-go') || document.getElementById('kiln-publish-quick') });
 }

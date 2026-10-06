@@ -43,6 +43,20 @@ export const DEMO_ITEMS = Object.keys(REAL);
 // What the demo's own Save as draft says.
 export const DEMO_DRAFT_SAVED = 'Draft saved in this browser. Nothing is published, and this page will offer it back when you open it again.';
 
+/**
+ * Whether this browser's demo has had a publish: said by the demo's own state
+ * (`store`, as it is kept in the browser), so it holds on a later visit for as
+ * long as that state lasts, and no longer. A publish that was then undone
+ * still counts: the visitor has seen what publishing is.
+ */
+export function hasPublished(store) {
+  if (!store || typeof store !== 'object') return false;
+  if (store._published === true) return true;
+  const some = (of, full) => !!of && typeof of === 'object' && Object.values(of).some(full);
+  return some(store.pages, p => !!p && typeof p === 'object' && Object.keys(p).length > 0)
+    || some(store.history, h => Array.isArray(h) && h.length > 0);
+}
+
 // ─── The history of this browser's publishes ─────────────────────────────────
 // The demo keeps each publish as what it changed and what was there before,
 // which is all it takes to undo one publish, or to go back to how the page was
