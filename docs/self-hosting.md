@@ -135,19 +135,31 @@ any time something feels off.
 
 ## Upgrading
 
+Two things run your site's editing, and each has its own command. Do the worker
+first: a current worker still serves an older editor.
+
 ```bash
 cd your-site-repo
-npx github:kilncms/kiln#release update
+npx github:kilncms/kiln#release update --worker   # the worker
+npx github:kilncms/kiln#release update            # the editor on your pages
 ```
 
-This re-copies the latest three bundles into your site (wherever your current
-`kiln.js` lives) and offers to commit and push. Your host redeploys and everyone gets
-the new editor. Upgrade the worker by pulling the Kiln repo and running
-`npx wrangler deploy --config wrangler.self.toml` from `worker/` again; KV data
-(sessions, people lists, app credentials) survives redeploys untouched. (A worker
-the setup wizard made lives in its own folder with a copy of the worker code:
-re-run the wizard there, or replace the files under its `worker/` and `src/` with
-the current ones, then `npx wrangler deploy`.)
+`update --worker` is for a worker the setup wizard made, which lives in
+`kiln-worker/` with a copy of the worker's code. It lists the files that differ
+from the current worker, asks, replaces them, and then asks whether to run
+`npx wrangler deploy` there. After a deploy it reads the version back from the
+worker's `/healthz`. It never touches `kiln-worker/wrangler.toml`, your secrets,
+or anything the worker has stored (sign-ins, people lists, app credentials). If
+you changed the worker's code yourself, that change is replaced: `git diff` shows
+it afterwards. A worker kept in another folder: `update --worker=<folder>`.
+
+`update` re-copies the latest three bundles into your site (wherever your current
+`kiln.js` lives) and offers to commit and push. Your host redeploys and everyone
+gets the new editor.
+
+A worker deployed from a clone of the Kiln repo, without the wizard, is upgraded
+in that clone: pull, then `npx wrangler deploy --config wrangler.self.toml` from
+`worker/` again. KV data survives redeploys untouched.
 
 ## One worker, many sites
 

@@ -424,6 +424,65 @@ async function doctor(args) {
   process.exit(pass === total ? 0 : 1);
 }
 
+// ─── the self-hosted worker's files ──────────────────────────────────────────
+
+/** The worker's code as the self-host wizard lays it out in kiln-worker/. The
+ *  worker is several modules: worker/index.js imports ./cloud.js (which imports
+ *  ./runbook.js), ./sanitize-guard.js, ./source.js, ../src/engine.js,
+ *  ../src/file-policy.js and ../src/adapters/. The folder mirrors this
+ *  repository's layout so every relative import still resolves. One list, for
+ *  the wizard that first writes them and for `update --worker` that replaces
+ *  them (test/cli-update-worker.test.js follows the imports and fails if a
+ *  file the worker needs is missing from it). */
+const WORKER_FILES = [
+  ...['index.js', 'cloud.js', 'runbook.js', 'sanitize-guard.js', 'source.js'].map(f => ['worker', f]),
+  ['src', 'engine.js'],
+  ['src', 'file-policy.js'],
+  ...['astro.js', 'detect.js', 'index.js', 'pointer.js', 'yaml-splice.js'].map(f => ['src', 'adapters', f]),
+];
+/** What the worker's own package.json must list for wrangler to bundle it. */
+const WORKER_DEPS = { parse5: '^8.0.0', yaml: '^2.0.0' };
+
+/** Add any dependency the worker needs and its package.json lacks. Never removes or changes one. */
+function mergeWorkerDeps(workerDir) {
+  const pjPath = path.join(workerDir, 'package.json');
+  if (!existsSync(pjPath)) {
+    writeFileSync(pjPath, JSON.stringify({ name: 'kiln-worker', private: true, type: 'module', dependencies: WORKER_DEPS }, null, 2) + '\n');
+    return Object.keys(WORKER_DEPS);
+  }
+  try {
+    const pj = JSON.parse(readFileSync(pjPath, 'utf8'));
+    const missing = Object.keys(WORKER_DEPS).filter(d => !pj.dependencies?.[d]);
+    if (missing.length) {
+      pj.dependencies = { ...pj.dependencies, ...Object.fromEntries(missing.map(d => [d, WORKER_DEPS[d]])) };
+      writeFileSync(pjPath, JSON.stringify(pj, null, 2) + '\n');
+    }
+    return missing;
+  } catch {
+    warn(`${workerDir}/package.json is not valid JSON — add ${Object.entries(WORKER_DEPS).map(([d, v]) => `"${d}": "${v}"`).join(' and ')} to its dependencies yourself`);
+    return [];
+  }
+}
+
+/** Make sure the worker's dependencies are installed where wrangler looks for them. False if they could not be. */
+function installWorkerDeps(workerDir) {
+  if (Object.keys(WORKER_DEPS).every(d => existsSync(path.join(workerDir, 'node_modules', d)))) return true;
+  info(`installing the worker's npm dependencies (${Object.keys(WORKER_DEPS).join(', ')})…`);
+  const inst = shTry('npm install --no-audit --no-fund', { cwd: workerDir });
+  if (inst.ok) return true;
+  // Offline / npm-broken fallback: reuse the copies shipped with this kiln checkout.
+  try {
+    for (const m of ['parse5', 'entities', 'yaml']) {   // entities = parse5's only dependency
+      cpSync(path.join(PKG_ROOT, 'node_modules', m), path.join(workerDir, 'node_modules', m), { recursive: true });
+    }
+    info('npm install failed — reused parse5 + yaml from the kiln package itself');
+    return true;
+  } catch {
+    fail(`npm install failed in ${workerDir}/ — run it there yourself, then run this again:\n${inst.out}`);
+    return false;
+  }
+}
+
 // ─── wizard ──────────────────────────────────────────────────────────────────
 
 /** Commit and push ONLY the files Kiln itself created/modified. Never `git add -A`:
@@ -754,6 +813,8 @@ function helpText() {
                      --site <url>  --repo <owner/name>  --worker <url>
   update           Copy the current editor into this site (and the members gate,
                    if the site has one).
+                     --worker  self-hosted only: bring the worker in kiln-worker/
+                               up to date instead, and offer to deploy it
   tag              Mark headings, text and images editable, as a first pass.
                      --dry  show what would change, write nothing
   add-site         Add this site to Kiln Cloud.
@@ -851,57 +912,23 @@ async function wizard() {
   // kiln-worker/worker/* + kiln-worker/src/* — keeping every relative import intact, and gets
   // its own package.json so wrangler's bundler resolves parse5 from a local
   // node_modules. wrangler.toml points main at worker/index.js.
-  mkdirSync(path.join(workerDir, 'worker'), { recursive: true });
-  mkdirSync(path.join(workerDir, 'src'), { recursive: true });
-  const putIfMissing = (from, to) => { if (existsSync(to)) return 0; cpSync(from, to); return 1; };
+  // A file already there is the owner's and is left alone: bringing an
+  // existing worker up to date is `update --worker`, which asks first.
   let copied = 0;
-  for (const f of ['index.js', 'cloud.js', 'runbook.js', 'sanitize-guard.js', 'source.js']) {
-    copied += putIfMissing(path.join(PKG_ROOT, 'worker', f), path.join(workerDir, 'worker', f));
-  }
-  copied += putIfMissing(path.join(PKG_ROOT, 'src', 'engine.js'), path.join(workerDir, 'src', 'engine.js'));
-  // What editor sessions may upload — worker/index.js imports it.
-  copied += putIfMissing(path.join(PKG_ROOT, 'src', 'file-policy.js'), path.join(workerDir, 'src', 'file-policy.js'));
-  // Source mode: the worker resolves adapters from ../src/adapters/ next to
-  // engine.js — copy all of them so a later mode switch needs no re-wiring.
-  mkdirSync(path.join(workerDir, 'src', 'adapters'), { recursive: true });
-  for (const f of ['astro.js', 'detect.js', 'index.js', 'pointer.js', 'yaml-splice.js']) {
-    copied += putIfMissing(path.join(PKG_ROOT, 'src', 'adapters', f), path.join(workerDir, 'src', 'adapters', f));
+  for (const parts of WORKER_FILES) {
+    const to = path.join(workerDir, ...parts);
+    if (existsSync(to)) continue;
+    mkdirSync(path.dirname(to), { recursive: true });
+    cpSync(path.join(PKG_ROOT, ...parts), to);
+    copied++;
   }
   if (copied) ok(`copied worker source into ${workerDir}/ (yours to keep + redeploy)`);
-  if (!existsSync(path.join(workerDir, 'package.json'))) {
-    writeFileSync(path.join(workerDir, 'package.json'), JSON.stringify({
-      name: 'kiln-worker', private: true, type: 'module',
-      dependencies: { parse5: '^8.0.0', yaml: '^2.0.0' },
-    }, null, 2) + '\n');
-  } else {
-    // RE-RUN: workers generated before source mode predate the yaml dependency.
-    // Add it (merge, never clobber) so the next deploy's bundle resolves.
-    try {
-      const pjPath = path.join(workerDir, 'package.json');
-      const pj = JSON.parse(readFileSync(pjPath, 'utf8'));
-      if (!pj.dependencies?.yaml) {
-        pj.dependencies = { ...pj.dependencies, yaml: '^2.0.0' };
-        writeFileSync(pjPath, JSON.stringify(pj, null, 2) + '\n');
-        info('added the yaml dependency to the worker package.json (source-mode adapters need it)');
-      }
-    } catch { warn(`${workerDir}/package.json is not valid JSON — add "yaml": "^2.0.0" to its dependencies yourself`); }
-  }
-  if (!existsSync(path.join(workerDir, 'node_modules', 'parse5')) || !existsSync(path.join(workerDir, 'node_modules', 'yaml'))) {
-    info("installing the worker's npm dependencies (parse5, yaml)…");
-    const inst = shTry('npm install --no-audit --no-fund', { cwd: workerDir });
-    if (!inst.ok) {
-      // Offline / npm-broken fallback: reuse the copies shipped with this kiln checkout.
-      let fell = false;
-      try {
-        for (const m of ['parse5', 'entities', 'yaml']) {   // entities = parse5's only dependency
-          cpSync(path.join(PKG_ROOT, 'node_modules', m), path.join(workerDir, 'node_modules', m), { recursive: true });
-        }
-        fell = true;
-      } catch { /* handled below */ }
-      if (fell) info('npm install failed — reused parse5 + yaml from the kiln package itself');
-      else { fail(`npm install failed in ${workerDir}/ — run it there manually, then re-run this wizard:\n${inst.out}`); process.exit(1); }
-    }
-  }
+  // RE-RUN: workers generated before source mode predate the yaml dependency.
+  // Add it (merge, never clobber) so the next deploy's bundle resolves.
+  const hadPackage = existsSync(path.join(workerDir, 'package.json'));
+  const addedDeps = mergeWorkerDeps(workerDir);
+  if (hadPackage && addedDeps.length) info(`added ${addedDeps.join(' and ')} to the worker package.json (the worker's code needs ${addedDeps.length === 1 ? 'it' : 'them'})`);
+  if (!installWorkerDeps(workerDir)) process.exit(1);
 
   // Cloudflare auth preflight: a piped `wrangler kv/deploy` on a logged-out
   // (especially headless) machine hangs silently waiting on a browser. Check
@@ -1183,7 +1210,7 @@ async function update() {
       ok('refreshed the members gate in functions/ — removing a member now ends their sign-in within 5 minutes');
       info('after the next deploy every member signs in once more (their old sign-in cannot be re-checked)');
     } else if (health) {
-      warn('left the members gate as it is: your worker is older than the current gate. Update the worker, then run this again');
+      warn('left the members gate as it is: your worker is older than the current gate. Update the worker (self-hosted: npx github:kilncms/kiln#release update --worker), then run this again');
     } else {
       warn('left the members gate as it is: the worker did not answer, so it is not known whether it supports the current gate');
     }
@@ -1202,6 +1229,93 @@ async function update() {
     if (gitError === null) ok('pushed — your host will redeploy');
     else { fail(`commit/push didn't complete:\n${gitError}\n  Resolve that, then: git add, git commit and git push the three kiln*.js files in ${dir}/`); process.exit(1); }
   } else info('Commit + push when ready and your host will redeploy.');
+  process.exit(0);
+}
+
+// ─── update --worker (self-hosted) ───────────────────────────────────────────
+
+const workerVersionIn = (file) => { try { return readFileSync(file, 'utf8').match(/const WORKER_VERSION = '([^']+)'/)?.[1] || null; } catch { return null; } };
+
+/**
+ * Bring a worker the setup wizard made up to this version: replace its code
+ * with the current worker's, keep everything that is the owner's (wrangler.toml,
+ * secrets, stored data), and offer to deploy. Nothing is written before a yes,
+ * and nothing is deployed before a second one.
+ */
+async function updateWorker(args) {
+  hr('kiln update --worker — bring a self-hosted worker up to this version');
+  const workerDir = (typeof args.worker === 'string' && args.worker ? args.worker : 'kiln-worker').replace(/[\\/]+$/, '');
+  const tomlPath = path.join(workerDir, 'wrangler.toml');
+  if (!existsSync(tomlPath)) {
+    fail(`There is no self-hosted worker here: ${tomlPath} does not exist.`);
+    console.log(`     This command updates a worker the setup wizard made, which it keeps in
+     kiln-worker/ at the top of the site's repository. Run it there, or name the
+     folder: --worker=<folder>.
+     On Kiln Cloud there is nothing to update: we run the worker.
+     A worker deployed from a clone of the Kiln repository is updated in that
+     clone: git pull, then npx wrangler deploy.`);
+    process.exit(1);
+  }
+  if (/^\s*main\s*=\s*"index\.js"/m.test(readFileSync(tomlPath, 'utf8'))) {
+    fail(`${workerDir}/ has the layout of an early setup (main = "index.js"). Run the setup wizard here once: it moves the worker to the current layout and keeps your settings. After that this command keeps it current.`);
+    process.exit(1);
+  }
+
+  const plan = WORKER_FILES.map(parts => {
+    const from = path.join(PKG_ROOT, ...parts), to = path.join(workerDir, ...parts);
+    const state = !existsSync(to) ? 'new' : readFileSync(to).equals(readFileSync(from)) ? 'same' : 'changed';
+    return { from, to, state, shown: [workerDir, ...parts].join('/') };
+  });
+  const todo = plan.filter(f => f.state !== 'same');
+  const carried = workerVersionIn(path.join(PKG_ROOT, 'worker', 'index.js')) || 'unknown';
+  const here = workerVersionIn(path.join(workerDir, 'worker', 'index.js'));
+  info(`${workerDir}/ holds worker ${here || 'code of an unknown version'}; this tool carries worker ${carried}.`);
+
+  if (!todo.length) {
+    ok(`the worker code in ${workerDir}/ is already the current one — nothing to replace`);
+  } else {
+    console.log(`\n  ${todo.length === 1 ? 'This file differs' : `These ${todo.length} files differ`} from the current worker:`);
+    for (const f of todo) console.log(`     ${f.state === 'new' ? 'add    ' : 'replace'}  ${f.shown}`);
+    console.log(`
+  Not touched: ${workerDir}/wrangler.toml (your settings), your secrets, and
+  everything the worker has stored (sign-ins, people lists, the GitHub App).
+  If you changed any of these files yourself, that change is replaced. In a git
+  repository, git diff shows it afterwards and git checkout brings it back.
+`);
+    if (!(await yes(`${todo.length === 1 ? 'Replace it' : `Replace these ${todo.length} files`} with the current worker code?`, 'y'))) {
+      info('nothing was changed.');
+      process.exit(0);
+    }
+    for (const f of todo) { mkdirSync(path.dirname(f.to), { recursive: true }); cpSync(f.from, f.to); }
+    ok(`${workerDir}/ now holds worker ${carried} (${todo.length} file${todo.length === 1 ? '' : 's'} written)`);
+  }
+  const addedDeps = mergeWorkerDeps(workerDir);
+  if (addedDeps.length) info(`added ${addedDeps.join(' and ')} to ${workerDir}/package.json (the worker's code needs ${addedDeps.length === 1 ? 'it' : 'them'})`);
+  if (!installWorkerDeps(workerDir)) process.exit(1);
+
+  // The code on disk is not the code that is running until it is deployed.
+  console.log('');
+  if (!(await yes(`Deploy it now? (runs: npx wrangler deploy, in ${workerDir}/)`, 'y'))) {
+    info(`not deployed: your running worker is unchanged. When you are ready: cd ${workerDir} && npx wrangler deploy`);
+    process.exit(0);
+  }
+  const dep = shTry('npx wrangler deploy', { cwd: workerDir });
+  if (!dep.ok) {
+    fail(`the deploy did not go through, so your running worker is unchanged:\n${dep.out}\n  Fix that, then: cd ${workerDir} && npx wrangler deploy`);
+    process.exit(1);
+  }
+  ok('deployed');
+  // Read it back from the worker itself: a deploy that printed success is not proof.
+  const cfgFile = ['public/assets/kiln-config.js', 'assets/kiln-config.js'].find(f => existsSync(f));
+  const workerUrl = (cfgFile ? readFileSync(cfgFile, 'utf8').match(/worker:\s*'([^']+)'/)?.[1] : null) || dep.out.match(/https:\/\/[^\s]+\.workers\.dev/)?.[0] || null;
+  if (workerUrl) {
+    const hz = await fetch(`${workerUrl}/healthz`).then(r => r.json()).catch(() => null);
+    if (hz?.version === carried) ok(`${workerUrl}/healthz answers as worker ${carried}`);
+    else if (hz) warn(`${workerUrl}/healthz answers as worker ${hz.version || 'of an unknown version'}, not ${carried} yet. Give it a minute, then check: npx github:kilncms/kiln#release doctor`);
+    else warn(`${workerUrl} did not answer /healthz. Check it: npx github:kilncms/kiln#release doctor`);
+  } else info('to check it: npx github:kilncms/kiln#release doctor');
+  info('Next, the editor on your pages: npx github:kilncms/kiln#release update');
+  info('Worker first, then the editor, is the safe order: a current worker still serves an older editor.');
   process.exit(0);
 }
 
@@ -1244,7 +1358,7 @@ if (wantsHelp || cmd === '--version' || args.version === true) {
 // An option a command does not have is refused by name, not silently ignored:
 // `kiln tag --dry-run` would otherwise rewrite the pages it was asked to preview.
 // (Commands that are not in this table check their own options.)
-const KNOWN_FLAGS = { '': [], doctor: ['site', 'repo', 'worker'], tag: ['dry'], update: [], 'add-site': [], new: ['from', 'name', 'dry'] };
+const KNOWN_FLAGS = { '': [], doctor: ['site', 'repo', 'worker'], tag: ['dry'], update: ['worker'], 'add-site': [], new: ['from', 'name', 'dry'] };
 const takes = KNOWN_FLAGS[cmd === undefined ? '' : cmd];
 const unknownFlag = takes && Object.keys(args).find(k => !takes.includes(k));
 if (unknownFlag) {
@@ -1253,7 +1367,7 @@ if (unknownFlag) {
 }
 if (cmd === 'doctor') doctor(args);
 else if (cmd === 'tag') tagCmd(args);
-else if (cmd === 'update') update();
+else if (cmd === 'update') (args.worker ? updateWorker(args) : update());
 else if (cmd === 'add-site') addSiteCloud();
 else if (cmd === 'rescue') import('./rescue.mjs').then(m => m.rescueCmd(positional[0], args));
 else if (cmd === 'new') import('./new.mjs').then(m => m.newCmd(positional[0], args));

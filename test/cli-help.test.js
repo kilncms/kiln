@@ -111,7 +111,7 @@ test('KLR-21 an option a command does not have is refused by name, exit 2, befor
     [['tag', '--dry-run'], /kiln tag has no option --dry-run\. It takes: --dry\./],
     [['tag', '--dry', '--force'], /kiln tag has no option --force/],
     [['doctor', '--sit', 'https://x.example'], /kiln doctor has no option --sit\. It takes: --site, --repo, --worker\./],
-    [['update', '--worker'], /kiln update has no option --worker\. It takes no options\./],
+    [['update', '--force'], /kiln update has no option --force\. It takes: --worker\./],
     [['add-site', '--open'], /kiln add-site has no option --open/],
     [['new', 'x', '--template', 'a/b'], /kiln new has no option --template\. It takes: --from, --name, --dry\./],
   ];

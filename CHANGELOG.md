@@ -8,6 +8,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`kiln update --worker`** — for self-hosters. Brings the worker the setup
+  wizard made (`kiln-worker/`) up to the current version: it lists the files
+  that differ, asks, replaces them, adds any dependency the worker now needs,
+  and asks again before running `npx wrangler deploy`. After a deploy it reads
+  the version back from the worker. `wrangler.toml`, secrets and stored data
+  are never touched. Until now the only way was to copy the files by hand.
+
 - **`kiln rescue --render`** — freezes a site that is drawn by JavaScript (what
   Lovable, v0 and Bolt usually build) into HTML that Kiln can edit. Each page is
   opened in a browser already on the machine (Chrome, Edge, Brave, Chromium; or

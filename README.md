@@ -193,6 +193,7 @@ fetches the tool as it was last released, which is also what the editor and
 ```bash
 npx github:kilncms/kiln#release doctor     # health-check an install: worker, app, CORS, bundles, members gate
 npx github:kilncms/kiln#release update     # re-copy the latest editor bundles into the site, offer to commit
+npx github:kilncms/kiln#release update --worker   # self-hosted: bring the worker in kiln-worker/ up to date, offer to deploy
 npx github:kilncms/kiln#release add-site   # add this site to Kiln Cloud (opens the dashboard)
 npx github:kilncms/kiln#release tag        # conservative auto-annotation pass (see above)
 npx github:kilncms/kiln#release new        # scaffold a fresh site from a template repo, wizard-ready
