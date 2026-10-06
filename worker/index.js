@@ -23,6 +23,7 @@
  *   GET/POST /admin/api-tokens  scoped API tokens (push-verified); POST /admin/api-tokens/revoke
  *   GET  /google/login     ?origin=&return_to=&repo= → Google authorize (invited people)
  *   POST /google/claim     {code} → member session exchange
+ *   POST /members/check    {sid, origin} → is this member sign-in still on the list
  *   ANY  /gh/*             session + path-scoped GitHub API proxy (editors)
  *   GET  /api/v1/pages     list editable pages            (Bearer API token)
  *   GET  /api/v1/fields    read a page's fields as JSON   (Bearer API token)
@@ -47,6 +48,7 @@
  *   state:<n>   OAuth state nonce            (TTL 10 min)
  *   sid:<id>    {refresh_token}              (TTL 180 days, rotated)
  *   people:<repo> [{email,name,role,days,paths?}]  editor/member allowlist
+ *   msess:<sid>   {repo,email,origin}  a member's sign-in on a site, so removal can end it
  *   esess:<id>  {repo,name,role,email,paths}  (TTL = person.days)
  *   atok:<sha>  {id,repo,name,paths,keys,readonly,created,exp}  API token, keyed by SHA-256(secret)  (TTL = days)
  *   itok:<repo> cached installation token    (TTL 50 min)
@@ -106,7 +108,7 @@ export default {
       // without it means an old worker and source fields render read-only.
       // Still a 200 that says ok, so status-probing monitors keep working.
       if (path === '/healthz') {
-        return await cors(env, request, json({ ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION }));
+        return await cors(env, request, json({ ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true }));
       }
       if (path === '/setup') return setupPage(url, env);
       if (path === '/setup/callback') return setupCallback(url, env);
@@ -123,6 +125,7 @@ export default {
       if (path === '/auth/callback') return authCallback(url, env);
       if (path === '/auth/refresh' && request.method === 'POST') return await cors(env, request, await authRefresh(request, env));
       if (path === '/auth/logout' && request.method === 'POST') return await cors(env, request, await authLogout(request, env));
+      if (path === '/members/check' && request.method === 'POST') return await memberCheck(request, env);
       if (path === '/admin/people' && request.method === 'GET') return await cors(env, request, await peopleList(request, env, url));
       if (path === '/admin/people' && request.method === 'POST') return await cors(env, request, await peopleUpsert(request, env));
       if (path === '/admin/people/remove' && request.method === 'POST') return await cors(env, request, await peopleRemove(request, env));
@@ -1612,6 +1615,7 @@ async function peopleUpsert(request, env) {
   // takes effect immediately — the frozen `paths` in an old esess would
   // otherwise keep their previous access until it expired (up to 360 days).
   await purgeEditorSessions(env, repo, addr);
+  await purgeMemberSessions(env, repo, addr);
   return json({ ok: true, person });
 }
 
@@ -1644,6 +1648,9 @@ async function peopleRemove(request, env) {
     }
     cursor = page.list_complete ? null : page.cursor;
   } while (cursor);
+  // A member's sign-in lives in a cookie their site signed; ending its record
+  // here is what makes the site's gate turn them away at its next check.
+  await purgeMemberSessions(env, repo, addr);
   // Also drop any pending scheduled posts this person created.
   let scur;
   do {
@@ -1747,7 +1754,7 @@ async function googleCallback(url, env) {
   // have it redeemed as a member of an unrelated paid site B (cross-tenant bypass).
   const gcode = crypto.randomUUID().replaceAll('-', '');
   await env.KILN.put(`gcode:${gcode}`,
-    JSON.stringify({ name: displayName, days: person.days, repo: state.repo, origin: state.origin }),
+    JSON.stringify({ name: displayName, days: person.days, repo: state.repo, origin: state.origin, email }),
     { expirationTtl: 300 });
   const dest = state.returnTo.startsWith('/members') ? state.returnTo : '/members/';
   return Response.redirect(
@@ -1773,7 +1780,7 @@ async function repoForOrigin(env, origin) {
 }
 
 async function googleClaim(request, env) {
-  const { code, origin } = await request.json().catch(() => ({}));
+  const { code, origin, session } = await request.json().catch(() => ({}));
   if (!/^[a-f0-9]{32}$/.test(code || '')) return json({ error: 'bad code' }, 400);
   const data = await env.KILN.get(`gcode:${code}`, 'json');
   if (!data) return json({ error: 'expired' }, 404);
@@ -1797,7 +1804,48 @@ async function googleClaim(request, env) {
       return json({ error: 'sign-in not valid for this site' }, 403);
     }
   }
-  return json({ ok: true, name: data.name, days: data.days });
+  // A site whose gate re-checks the list asks for a session id to put in its
+  // cookie. The cookie itself is signed by the site and cannot be taken back;
+  // this record can, and the gate asks about it (memberCheck).
+  let sid;
+  if (session && data.repo && data.email) {
+    sid = crypto.randomUUID().replaceAll('-', '');
+    const days = Number(data.days) === 0 ? 0 : Math.min(Math.max(Number(data.days) || 30, 1), 360);
+    await env.KILN.put(`msess:${sid}`, JSON.stringify({ repo: data.repo, email: data.email, origin: data.origin }),
+      days ? { expirationTtl: days * 24 * 3600 } : undefined);
+  }
+  return json({ ok: true, name: data.name, days: data.days, ...(sid ? { sid } : {}) });
+}
+
+/**
+ * POST /members/check {sid, origin} → { ok }. Asked by a site's members gate
+ * (templates/functions/members/_middleware.js) every few minutes for each
+ * signed-in member: is this sign-in still good? It is while its record exists,
+ * belongs to the asking site, and the person is still a member on the list.
+ * The id is 128 random bits and says nothing by itself, so there is no other
+ * credential. Called server to server, hence no CORS and no per-IP limit (every
+ * site's gate would share one address).
+ */
+async function memberCheck(request, env) {
+  const { sid, origin } = await request.json().catch(() => ({}));
+  if (!/^[a-f0-9]{32}$/.test(sid || '')) return json({ error: 'bad session' }, 400);
+  const sess = await env.KILN.get(`msess:${sid}`, 'json');
+  if (!sess || !origin || sess.origin !== origin) return json({ ok: false });
+  const listed = (await getPeople(env, sess.repo)).some(p => p.email === sess.email && p.role === 'member');
+  return json({ ok: listed });
+}
+
+/** End every member sign-in one person holds on one repo's site. */
+async function purgeMemberSessions(env, repo, addr) {
+  let cursor;
+  do {
+    const page = await env.KILN.list({ prefix: 'msess:', cursor });
+    for (const k of page.keys) {
+      const v = await env.KILN.get(k.name, 'json');
+      if (v && v.repo === repo && v.email === addr) await env.KILN.delete(k.name);
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
 }
 
 // ─── API tokens (headless scoped access — Phase 0 of the REST API) ──────────

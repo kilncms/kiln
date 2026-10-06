@@ -128,7 +128,14 @@ For each person you also set:
   adding sections from the [block library](#block-library).
 - **Suggest-only publishing** (editors) — see below.
 
-Removing someone revokes their access immediately, active session included.
+Removing someone ends their access, including a sign-in they already hold. An
+editor is signed out at once. A member is turned away from the members area
+within about five minutes: the gate on your site asks Kiln whether each
+signed-in member is still on the list at most once every five minutes. If Kiln
+cannot be reached, the last answer stands for up to an hour, then the members
+area closes until it can be. A members area set up with an earlier version of
+Kiln does not do this until you run `npx github:kilncms/kiln update` and
+deploy; `kiln doctor` tells you which one a site has.
 
 ### Suggest-mode editors
 

@@ -21,8 +21,13 @@ import { signToken, verifyToken, getCookie } from '../templates/functions/_kiln.
 const SECRET = 'a-per-site-secret-of-reasonable-length';
 const ORIGIN = 'https://club.example';
 const env = { KILN_MEMBER_SECRET: SECRET };
-const member = (over = {}, secret = SECRET) => signToken({ n: 'Ada', exp: Date.now() + 3600e3, t: 'ms', ...over }, secret);
-const cookieHeader = (token) => ({ Cookie: `theme=dark; kiln_member=${encodeURIComponent(token)}; other=1` });
+// A sign-in carries a session id, and the gate re-checks it with the worker
+// every few minutes (test/members-revoke.test.js). These tests are about
+// paths and caching, so the member here was checked a moment ago.
+const SID = 'c'.repeat(32);
+const member = (over = {}, secret = SECRET) => signToken({ n: 'Ada', exp: Date.now() + 3600e3, t: 'ms', s: SID, ...over }, secret);
+const CHECKED = await signToken({ s: SID, c: Date.now() + 240e3, exp: Date.now() + 3600e3, t: 'mc' }, SECRET);
+const cookieHeader = (token) => ({ Cookie: `theme=dark; kiln_member=${encodeURIComponent(token)}; kiln_member_ok=${encodeURIComponent(CHECKED)}; other=1` });
 
 /** Run the gate. `served` counts how often the protected file was produced. */
 async function gate(pathname, { headers = {}, asset, method = 'GET', gateEnv = env } = {}) {
@@ -133,7 +138,7 @@ test('KLN-06 members gate: a cookie value that does not even decode is treated a
 });
 
 test('KLN-06 members gate: a valid member is let in on every path variant, with or without an expiry', async () => {
-  const forever = await signToken({ n: 'Ada', exp: null, t: 'ms' }, SECRET);   // "never expires" access
+  const forever = await signToken({ n: 'Ada', exp: null, t: 'ms', s: SID }, SECRET);   // "never expires" access
   for (const token of [await member(), forever]) {
     for (const p of VARIANTS) {
       const { res, served } = await gate(p, { headers: cookieHeader(token) });

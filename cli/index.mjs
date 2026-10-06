@@ -247,6 +247,17 @@ async function doctor(args) {
   const health = await fetch(`${worker}/healthz`).then(r => r.ok).catch(() => false);
   check('worker reachable (/healthz)', health);
 
+  // The members gate is a file in the site's own repo. One from before
+  // sign-ins were re-checked keeps a removed member signed in until their
+  // cookie expires, which can be never.
+  const gatePath = path.join('functions', 'members', '_middleware.js');
+  if (existsSync(gatePath)) {
+    const current = /members\/check/.test(readFileSync(gatePath, 'utf8'));
+    check('members gate ends a removed member\'s sign-in', current, current
+      ? 're-checks the list every 5 minutes'
+      : 'this site has the old gate: a removed member stays signed in until their cookie expires. Run `npx github:kilncms/kiln update`, deploy, and have members sign in once more');
+  }
+
   // Source mode (SOURCE-MODE-SPEC §13): does the local tree match the configured mode?
   if (haveCfg) {
     try {
@@ -906,12 +917,32 @@ async function update() {
   mkdirSync(dir, { recursive: true });
   for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) cpSync(path.join(PKG_ROOT, 'dist', f), path.join(dir, f));
   ok(`copied the latest kiln.js + kiln-editor.js + kiln-features.js into ${dir}/`);
+  // The members gate is Kiln's code in the site's repo as well. A site that has
+  // one gets the current gate, but only when its worker can answer the gate's
+  // question: the new gate against an older worker would lock members out.
+  const gate = path.join('functions', 'members', '_middleware.js');
+  const gateFiles = [];
+  if (existsSync(gate)) {
+    const cfgFile = path.join(dir, 'kiln-config.js');
+    const workerUrl = existsSync(cfgFile) ? readFileSync(cfgFile, 'utf8').match(/worker:\s*'([^']+)'/)?.[1] : null;
+    const health = workerUrl ? await fetch(`${workerUrl}/healthz`).then(r => r.json()).catch(() => null) : null;
+    if (health && health.memberSessions) {
+      cpSync(path.join(PKG_ROOT, 'templates', 'functions'), 'functions', { recursive: true });
+      gateFiles.push(path.join('functions', '_kiln.js'), gate, path.join('functions', 'api', 'member-redeem-google.js'));
+      ok('refreshed the members gate in functions/ — removing a member now ends their sign-in within 5 minutes');
+      info('after the next deploy every member signs in once more (their old sign-in cannot be re-checked)');
+    } else if (health) {
+      warn('left the members gate as it is: your worker is older than the current gate. Update the worker, then run this again');
+    } else {
+      warn('left the members gate as it is: the worker did not answer, so it is not known whether it supports the current gate');
+    }
+  }
   if (await yes('Commit and push now?', 'y')) {
     // Add all three bundles: kiln-features.js is lazy-loaded by kiln.js, so leaving
     // it out ships a stale features runtime (e.g. event calendars) to visitors.
     // argv form, no shell: `dir` is read out of the site's own HTML, and a folder
     // name with a space, a quote or a `$(…)` in it must reach git as a path.
-    const files = ['kiln.js', 'kiln-editor.js', 'kiln-features.js'].map(f => path.join(dir, f));
+    const files = [...['kiln.js', 'kiln-editor.js', 'kiln-features.js'].map(f => path.join(dir, f)), ...gateFiles];
     let gitError = null;
     for (const argv of [['add', '--', ...files], ['commit', '-m', 'Update Kiln editor to latest'], ['push']]) {
       const r = spawnSync('git', argv, { encoding: 'utf8' });
