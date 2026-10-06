@@ -145,7 +145,7 @@ export const RUNBOOK_HTML = `<!doctype html>
         <thead><tr><th>Thing</th><th>What it is</th><th>Where it lives</th><th>Who sees it</th></tr></thead>
         <tbody>
           <tr><td><strong>kilncms.com</strong></td><td>Marketing site</td><td>GitHub <code>kilncms/kilncms.com</code> → Pages <code>kilncms</code></td><td>Public</td></tr>
-          <tr><td><strong>demo.kilncms.com</strong></td><td>The try-it sandbox</td><td>GitHub <code>kilncms/kiln-demo</code> → Pages <code>kiln-demo</code></td><td>Public</td></tr>
+          <tr><td><strong>demo.kilncms.com</strong></td><td>The try-it sandbox</td><td>Pages project <code>kiln-demo-mr</code>, <strong>uploaded by hand</strong> (not connected to git: a push to <code>kilncms/kiln-demo-mr</code> deploys nothing). The git-connected demo is <code>kilncms/kiln-demo</code> → <code>kiln-demo.pages.dev</code>, the canary.</td><td>Public</td></tr>
           <tr><td><strong>app.kilncms.com</strong></td><td>Customer + admin dashboard</td><td>GitHub <code>kilncms/cloud-app</code> → Pages <code>kiln-cloud-app</code></td><td>Public page, gated data</td></tr>
           <tr><td><strong>auth.kilncms.com</strong></td><td>The Worker — sign-in, every save, billing</td><td>GitHub <code>kilncms/kiln</code> <code>worker/</code> → Worker <code>kiln-auth</code></td><td>Server-side only</td></tr>
           <tr><td><strong>The registry</strong></td><td>Who's a customer, which sites, trial/active</td><td>Cloudflare <strong>D1</strong> database <code>kiln-cloud</code></td><td>You (admin)</td></tr>
@@ -219,7 +219,7 @@ export const RUNBOOK_HTML = `<!doctype html>
         <li>Commit, push. Their host redeploys; visitors see no change; editors get the new features.</li>
         <li>If anything looks wrong: <code>git revert</code> the commit, push. Instantly back to the old bundle.</li>
       </ol>
-      <div class="call rule"><span class="tag">Automatic for sites you keep checked out</span><p>Consumer repos cloned on the Mac Mini (the demo, npu-i, any managed site you add to <code>CONSUMERS</code> in <code>scripts/propagate-bundles.mjs</code>) are refreshed <em>automatically</em> at the end of every <code>npm run deploy:prod</code> — copied, committed, pushed. If one can't be updated the deploy reports failure, so "deploy succeeded" always means those sites are current. The manual steps above are only for customer repos you don't keep locally.</p></div>
+      <div class="call rule"><span class="tag">Sites you keep checked out: the demo first, customers second</span><p>A production deploy changes no site. Afterwards, <code>npm run propagate</code> copies the released bundles to the canary only (<code>kiln-demo</code> → <code>kiln-demo.pages.dev</code>), commits and pushes. Wait for it to deploy and try it. Then <code>npm run propagate -- --customers</code> does the customer sites, and refuses unless the canary's live <code>kiln.js</code> carries the new build. It stops at the first site that fails and prints, for every commit it pushed, the command that takes it back. A consumer marked <code>hold</code> or <code>pin</code> in <code>scripts/propagate-bundles.mjs</code> is never written to. <code>--dry-run</code> shows what would happen. <code>demo.kilncms.com</code> is not in the list: it is uploaded by hand until its Pages project is connected to git.</p></div>
     </section>
 
     <section id="s5">

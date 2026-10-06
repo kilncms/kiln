@@ -87,7 +87,7 @@ Toolbar / menu features (each grantable per-editor to invited editors):
 - Worker deploy, KV namespace creation, GitHub App manifest flow, config wiring
 - `scripts/managed-onboard.mjs` — managed-customer onboarding
 - `scripts/release.mjs` — the only way to staging and production (`deploy:test`, `deploy:prod`)
-- `scripts/propagate-bundles.mjs` — copies built bundles into consumer site repos (`npm run propagate`, a separate step)
+- `scripts/propagate-bundles.mjs` — copies released bundles into consumer site repos: the canary first (`npm run propagate`), customers as a second explicit step (`-- --customers`)
 
 ## 8. Marketing site (`kilncms.com`)
 

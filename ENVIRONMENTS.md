@@ -18,7 +18,7 @@ TL;DR of what to say:
 |---|---|---|---|
 | Worker | `wrangler dev` on `localhost:8787` (in-memory KV/D1) | `kiln-auth-staging.erikkwilder.workers.dev` | `auth.kilncms.com` |
 | KV / D1 | local, disposable | **own** KV `KILN_STAGING` + D1 `kiln-cloud-staging` | prod KV `KILN` + D1 `kiln-cloud` |
-| Sites | `python3 -m http.server` locally | CF Pages **preview** branch (e.g. `staging.kilncms.com`) | `kilncms.com`, `app.kilncms.com`, `demo.kilncms.com` |
+| Sites | `python3 -m http.server` locally | CF Pages **preview** branch (e.g. `staging.kilncms.com`) | `kilncms.com`, `app.kilncms.com` (git-connected); `demo.kilncms.com` (uploaded by hand) |
 | GitHub App | prod app, or a test app | its own staging app (one-click `/setup`) | prod `kiln-cms` app |
 | Lemon Squeezy | off | test mode | **live** |
 | Real customers / money | never | never | yes |
@@ -142,7 +142,31 @@ operator pages to whoever registers the old username.
 4. **prod:** `npm run deploy:prod`. It checks the six conditions above, then deploys
    and tags.
 5. **sites:** the worker release changes no site. Sites that carry their own copy of
-   the editor get it with `npm run propagate`, a separate step.
+   the editor get it in two steps, the demo first:
+
+```bash
+npm run propagate                  # the canary only: kiln-demo → kiln-demo.pages.dev
+#   wait for it to deploy, open it, edit and publish something
+npm run propagate -- --customers   # customer sites; refuses unless the canary's
+                                   # live kiln.js carries the new build
+npm run propagate -- --dry-run     # what would happen; nothing is fetched or pushed
+```
+
+`scripts/propagate-bundles.mjs` only sends a released build (`dist/` as
+committed, on a commit tagged `prod-…`). For each site it fetches and
+fast-forwards the checkout first, refuses if the checkout is on another branch,
+has uncommitted changes or holds commits of its own, and **stops at the first
+failure**: later sites are not touched. Every commit it pushes is printed with
+the command that takes it back. In the list at the top of the script a consumer
+can be `{ hold: true }` (skip it) or `{ pin: '<stamp>' }` (leave it on that
+build); a new site is one more line under `canary` or `customers`.
+
+**Which demo is which.** `~/repos/kiln-demo` deploys `kiln-demo.pages.dev` from
+git and is the canary. `demo.kilncms.com` is a different Pages project,
+`kiln-demo-mr`, which is uploaded by hand and not connected to git: a push to
+its repo deploys nothing, so it is not in the list and stays on its old editor
+until someone uploads a new copy. Connecting that project to git and adding it
+as the first canary is an owner step.
 
 ---
 
