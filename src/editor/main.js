@@ -29,6 +29,7 @@ import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.j
 import { initBlocks } from './blocks.js';
 import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished } from './firstrun.js';
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
+import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
 
@@ -1433,7 +1434,7 @@ function imageToolbar(img, key) {
     }
     tb.remove();
   };
-  tb.querySelector('[data-act="replace"]').onclick = (e) => { e.stopPropagation(); pickImage(img, key); };
+  tb.querySelector('[data-act="replace"]').onclick = (e) => { e.stopPropagation(); replaceImage(img, key); };
   const aiAltBtn = tb.querySelector('[data-act="ai-alt"]');
   if (aiAltBtn) aiAltBtn.onclick = (e) => { e.stopPropagation(); assistAltText(img, key, altInput); };
 
@@ -1444,7 +1445,8 @@ function imageToolbar(img, key) {
   const removeHandles = () => document.querySelectorAll('.kiln-img-handle').forEach(h => h.remove());
   tb.querySelector('[data-act="done"]').onclick = (e) => { e.stopPropagation(); finish(); removeHandles(); };
   const away = (e) => {
-    if (!tb.contains(e.target) && e.target !== img && !e.target.closest('.kiln-img-handle')) {
+    // the picture chooser is part of this toolbar's work: it stays for the description
+    if (!tb.contains(e.target) && e.target !== img && !e.target.closest('.kiln-img-handle, #kiln-modal')) {
       finish(); removeHandles(); document.removeEventListener('click', away);
     }
   };
@@ -1594,6 +1596,37 @@ function stageImageEl(img, key) {
   if (cfg.sandbox) attrs.src = img.getAttribute('src');
   else attrs.src = safeUrl(img.getAttribute('data-kiln-src') || img.getAttribute('src'));
   stagePending(key, { attrs });
+}
+
+/** The pictures on this page that live on this site: their address, name and size. */
+function pageImages() {
+  const seen = new Set(), out = [];
+  for (const i of document.images) {
+    if (i.closest(KILN_CHROME)) continue;
+    let u;
+    try { u = new URL(i.currentSrc || i.src, location.href); } catch { continue; }
+    if (u.origin !== location.origin || !/^https?:$/.test(u.protocol) || seen.has(u.pathname)) continue;
+    seen.add(u.pathname);
+    out.push({ url: u.pathname, path: u.pathname.slice(1), name: decodeURIComponent(u.pathname.split('/').pop() || 'picture'),
+      size: performance.getEntriesByName(u.href)[0]?.encodedBodySize || 0 });
+  }
+  return out;
+}
+
+/** "Replace image…": upload a new picture, or choose one that is already on the site. */
+function replaceImage(img, key) {
+  openImagePicker({
+    modal,
+    upload: () => pickImage(img, key),
+    choose: (image) => {
+      if (!chooseSiteImage(img, key, image.url, { stagePending, stageContainer, safeUrl })) return;
+      setStatus(cfg.sandbox ? `“${image.name}” is in place. Publish to save it to your demo` : `“${image.name}” is in place. Publish to put it live`, 'saved');
+    },
+    request: cfg.sandbox ? null : (method, path) => state.gh.request(method, path),
+    repo: cfg.repo, branch: cfg.branch || 'main', root: cfg.root || '',
+    paths: mode === 'editor' ? (state.scope?.paths || null) : null,
+    pageImages,
+  });
 }
 
 function pickImage(img, key) {
@@ -2230,6 +2263,7 @@ async function publish(opts = {}) {
         `Upload ${files.length} file${files.length > 1 ? 's' : ''} (via Kiln)`);
       // Retire only the paths we sent; a file queued during the commit survives.
       for (const { path } of files) state.pendingBinaries.delete(path);
+      clearImageCache();   // "From this site" should list what was just added
     }
     let result = null;
     // What Undo needs: the page file exactly as it was when this commit was made.
@@ -6385,6 +6419,6 @@ body:has(#kiln-topbar){padding-top:56px!important}
 #kiln-pickbar,#kiln-previewbar{flex-wrap:wrap;max-width:94vw;top:calc(10px + env(safe-area-inset-top,0px))}
 #kiln-pickbar button,#kiln-previewbar button{min-height:40px}
 #kiln-scope-note,#kiln-presence{max-width:60vw;bottom:calc(14px + env(safe-area-inset-bottom,0px))}
-}` + publishSheetCss(MOBILE_MQ);
+}` + publishSheetCss(MOBILE_MQ) + imagePickerCss(MOBILE_MQ);
   document.head.appendChild(style);
 }
