@@ -1,27 +1,30 @@
 /**
- * A session works only for the repository it was made for.
+ * A session or a token works only for the repository it was made for.
  *
  * The worker follows a renamed repository by its id (worker-repo-identity,
  * worker-repo-move). One thing was left: a site that never corrects its
  * config after a rename keeps reaching GitHub by the old name, and when
  * another repository takes that name (with the same App installed), the
- * site's editors would commit into it. The cron was already guarded.
+ * site's editors and scripts would commit into it. The cron was already
+ * guarded.
  *
- * So an editor session carries the id of the repository it was made for, and
- * every use checks that the name still answers as that repository. These
- * tests drive the real handlers through:
+ * So an editor session, a member's sign-in and an API token carry the id of
+ * the repository they were made for, and every use checks that the name
+ * still answers as that repository. For each of the three kinds, these tests
+ * drive the real handlers through:
  *
  *   - the takeover: refused, nothing of the request reaches GitHub, nothing
  *     stored is shown;
  *   - the normal case: one more KV read, no GitHub call of its own, nothing
  *     refused;
- *   - a session from before ids were carried;
+ *   - one from before ids were carried;
  *   - storage trouble: nobody is locked out.
  *
  * GitHub is played by the harness: a table of names → { id, full_name }.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import worker from '../worker/index.js';
 import { fakeKV, withFetch, jsonRes, b64, ORIGIN } from './worker-harness.js';
 
@@ -480,4 +483,173 @@ test('member sign-in, storage trouble: when the worker cannot read its records t
   // GitHub cannot be asked who the name is.
   const deaf = world({ ...met(OLD), [`people:${OLD}`]: [BEA], [`msess:${MEMBER}`]: memberSignIn(OLD, ID) });
   await withFetch(async () => { throw new TypeError('fetch failed'); }, async () => { assert.deepEqual(await check(deaf.env), YES); });
+});
+
+// ─── API tokens ──────────────────────────────────────────────────────────────
+
+const SECRET = '5'.repeat(64);
+const ATOK = `atok:${createHash('sha256').update(SECRET).digest('hex')}`;   // a token is stored under the hash of its secret
+const BEARER = { Authorization: `Bearer ${SECRET}` };
+/** An API token as the worker stores it now: with the id of its repository. One from before has none. */
+const apiToken = (repo, rid) => ({ id: 'abcd1234', repo, name: 'the newsletter script', paths: [''], keys: [], readonly: false, created: 5, exp: null, ...(rid ? { rid } : {}) });
+const readFields = (env, headers = BEARER) => ask(env, 'GET', '/api/v1/fields?path=/', { headers });
+const listPages = (env) => ask(env, 'GET', '/api/v1/pages?ref=main', { headers: BEARER });
+const writeEdit = (env) => ask(env, 'PATCH', '/api/v1/edits', { headers: BEARER, body: { path: '/', edits: [{ key: 't', html: 'After' }] } });
+
+test('API token: from the moment it is made, it carries the id of the repository it is for', async () => {
+  const plain = world({ ...met(OLD) });
+  await withFetch(github(same()), async () => {
+    const made = await ask(plain.env, 'POST', '/admin/api-tokens', { headers: OWNER, body: { repo: OLD, name: 'the newsletter script' } });
+    assert.equal(made.status, 200, JSON.stringify(made.json));
+    const stored = plain.json(`atok:${createHash('sha256').update(made.json.token).digest('hex')}`);
+    assert.deepEqual({ repo: stored.repo, rid: stored.rid }, { repo: OLD, rid: ID });
+    assert.equal((await readFields(plain.env, { Authorization: `Bearer ${made.json.token}` })).status, 200);
+  });
+  // Made through a page that still has the old name, after everything moved.
+  const after = world({ ...moved(NEW, OLD) });
+  await withFetch(github(renamed()), async () => {
+    const made = await ask(after.env, 'POST', '/admin/api-tokens', { headers: OWNER, body: { repo: OLD, name: 'made later' } });
+    const stored = after.json(`atok:${createHash('sha256').update(made.json.token).digest('hex')}`);
+    assert.deepEqual({ repo: stored.repo, rid: stored.rid }, { repo: NEW, rid: ID });
+  });
+});
+
+test('API token, takeover: when the name answers as another repository the token gets 403 and one sentence, nothing of the request reaches GitHub, and it works again once the site says where the repository went', async () => {
+  // The repository was renamed and its site never corrected. The App's token for the old name is still in hand.
+  const w = world({ ...met(OLD), ...heard(OLD, ID, NEW), ...TOKEN(OLD), [ATOK]: apiToken(OLD, ID) });
+  const names = renamed();
+  await quietly(() => withFetch(github(names), async (calls) => {
+    // A rename is not a takeover: the script goes on working.
+    assert.equal((await readFields(w.env)).status, 200);
+    assert.equal((await writeEdit(w.env)).status, 200);
+
+    Object.assign(names, taken());
+    w.kv.map.delete(`rsee:${OLD}`);
+    calls.length = 0;
+    for (const r of [await readFields(w.env), await listPages(w.env), await writeEdit(w.env)]) {
+      assert.equal(r.status, 403, JSON.stringify(r.json));
+      assert.equal(r.json.code, 'repo_changed');
+      assert.match(r.json.error, /^This token was made for a different repository than the one that now answers to its name, so nothing was read or changed: /);
+      assert.doesNotMatch(r.json.error, /[.!?]\s/, 'one sentence');
+      assert.doesNotMatch(JSON.stringify(r.json), /Before|pages|fields/);
+    }
+    assert.deepEqual(carriedOut(calls), [], 'no page is listed, read or written in the repository that has the name now');
+    assert.deepEqual(asks(calls), [`/repos/${OLD}`], 'GitHub was asked once who the name is');
+    assert.deepEqual(w.json(ATOK), apiToken(OLD, ID), 'refused, not removed');
+    calls.length = 0;
+    assert.equal((await writeEdit(w.env)).status, 403);
+    assert.deepEqual(calls, [], 'with the answer remembered, nothing at all is sent to GitHub');
+    // A token the worker does not know is still simply unauthorized.
+    assert.deepEqual((await readFields(w.env, { Authorization: `Bearer ${'0'.repeat(64)}` })).json, { error: 'unauthorized' });
+
+    // The owner corrects the config: the token follows the repository to its name, and works.
+    await corrected(w);
+    assert.deepEqual(w.json(ATOK), apiToken(NEW, ID));
+    calls.length = 0;
+    assert.equal((await writeEdit(w.env)).status, 200);
+    assert.deepEqual(carriedOut(calls).filter(c => c.startsWith('PUT')), [`PUT /repos/${NEW}/contents/index.html`]);
+  }));
+});
+
+test('API token, normal: the check is one more KV read, GitHub is asked nothing extra, nothing is refused', async () => {
+  const w = world({ ...met(OLD), ...heard(OLD), ...TOKEN(OLD), [ATOK]: apiToken(OLD, ID) });
+  await withFetch(github(same()), async (calls) => {
+    const r = await writeEdit(w.env);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.deepEqual(w.reads(), [ATOK, `rsee:${OLD}`, `itok:${OLD}`], 'two reads before tokens carried an id; the remembered answer is the third');
+    assert.deepEqual(w.writes(), []);
+    assert.deepEqual(carriedOut(calls), [`GET /repos/${OLD}/contents/index.html`, `PUT /repos/${OLD}/contents/index.html`]);
+    assert.deepEqual(asks(calls), []);
+    assert.equal((await readFields(w.env)).status, 200);
+    assert.equal((await listPages(w.env)).status, 200);
+    assert.deepEqual(asks(calls), []);
+  });
+});
+
+test('API token from before ids were carried: it takes the id on record for its name the first time it is used, and stays the same token with the same expiry', async () => {
+  const w = world({ ...met(OLD), ...heard(OLD), ...TOKEN(OLD), 'atok:other': apiToken('someone/else') });
+  await w.kv.put(ATOK, JSON.stringify({ ...apiToken(OLD), exp: FAR * 1000 }), { expiration: FAR });
+  await withFetch(github(same()), async (calls) => {
+    assert.equal((await readFields(w.env)).status, 200, 'same name, same repository: no token stops working');
+    assert.deepEqual(w.json(ATOK), { ...apiToken(OLD, ID), exp: FAR * 1000 }, 'the same key (the secret still works), now with the id');
+    assert.equal(w.kv.expires.get(ATOK), FAR, 'and it still expires when it was going to');
+    // From then on it is a token like any other: one read more than before, nothing written.
+    w.ops.length = 0;
+    assert.equal((await writeEdit(w.env)).status, 200);
+    assert.deepEqual(w.reads(), [ATOK, `rsee:${OLD}`, `itok:${OLD}`]);
+    assert.deepEqual(w.writes(), []);
+    assert.deepEqual(w.json('atok:other'), apiToken('someone/else'), 'another site\'s token is not touched');
+    assert.deepEqual(asks(calls), []);
+  });
+
+  // One that never expires still never does.
+  const forever = world({ ...met(OLD), ...heard(OLD), ...TOKEN(OLD), [ATOK]: apiToken(OLD) });
+  await withFetch(github(same()), async () => {
+    assert.equal((await readFields(forever.env)).status, 200);
+    assert.deepEqual(forever.json(ATOK), apiToken(OLD, ID));
+    assert.equal(forever.kv.expires.has(ATOK), false);
+  });
+
+  // One that was revoked a moment ago is not brought back by taking its id.
+  const revoked = world({ ...met(OLD), ...heard(OLD), ...TOKEN(OLD), [ATOK]: apiToken(OLD) });
+  const KILN = { ...revoked.env.KILN, list: async (o) => { if (o.prefix === ATOK) revoked.kv.map.delete(ATOK); return revoked.kv.list(o); } };
+  await withFetch(github(same()), async () => {
+    await readFields({ ...revoked.env, KILN });
+    assert.equal(revoked.kv.map.has(ATOK), false);
+    assert.equal((await readFields(revoked.env)).status, 401);
+  });
+
+  // A name the worker has no id on record for: used as it always was, and left as it is.
+  const unmet = world({ ...TOKEN(OLD), [ATOK]: apiToken(OLD) });
+  await withFetch(github(same()), async (calls) => {
+    assert.equal((await readFields(unmet.env)).status, 200);
+    assert.deepEqual(unmet.json(ATOK), apiToken(OLD));
+    assert.deepEqual(asks(calls), []);
+  });
+
+  // The name is on record as one repository and answers as another: the token is the first one's, and is not used.
+  const held = world({ ...met(OLD), ...TOKEN(OLD), [ATOK]: apiToken(OLD) });
+  await quietly(() => withFetch(github(taken()), async (calls) => {
+    assert.equal((await writeEdit(held.env)).status, 403);
+    assert.deepEqual(held.json(ATOK), apiToken(OLD, ID), 'it has taken the id of the repository the name is on record as');
+    assert.deepEqual(carriedOut(calls), []);
+    await corrected(held);
+    assert.equal((await writeEdit(held.env)).status, 200, 'and works again under the name that repository has now');
+  }));
+});
+
+test('API token, storage trouble: when the worker cannot read its records the request is carried out as before, and no token stops working', async () => {
+  // The remembered answer cannot be read.
+  const w = world({ ...met(OLD), ...heard(OLD), ...TOKEN(OLD), [ATOK]: apiToken(OLD, ID) });
+  w.fail.push('get rsee:');
+  await withFetch(github(same()), async () => {
+    assert.equal((await readFields(w.env)).status, 200);
+    assert.equal((await writeEdit(w.env)).status, 200);
+  });
+  assert.ok(w.reads().includes(`rsee:${OLD}`), 'it was tried');
+
+  // The record of the name cannot be read: a token from before stays as it is, and works.
+  const older = world({ ...met(OLD), ...heard(OLD), ...TOKEN(OLD), [ATOK]: apiToken(OLD) });
+  older.fail.push('get rname:');
+  await withFetch(github(same()), async () => { assert.equal((await writeEdit(older.env)).status, 200); });
+  assert.deepEqual(older.json(ATOK), apiToken(OLD));
+
+  // The id cannot be written (a free account out of writes for the day): it works, and takes it next time.
+  const full = world({ ...met(OLD), ...heard(OLD), ...TOKEN(OLD), [ATOK]: apiToken(OLD) });
+  full.fail.push('put atok:');
+  await withFetch(github(same()), async () => {
+    assert.equal((await readFields(full.env)).status, 200);
+    assert.deepEqual(full.json(ATOK), apiToken(OLD));
+    full.fail.length = 0;
+    assert.equal((await readFields(full.env)).status, 200);
+    assert.deepEqual(full.json(ATOK), apiToken(OLD, ID));
+  });
+
+  // GitHub cannot be asked who the name is (and nothing is remembered).
+  const deaf = world({ ...met(OLD), ...TOKEN(OLD), [ATOK]: apiToken(OLD, ID) });
+  const gh = github(same());
+  await withFetch(async (url, init) => (url === `${GH}/repos/${OLD}` ? jsonRes({ message: 'Server Error' }, 500) : gh(url, init)), async (calls) => {
+    assert.equal((await readFields(deaf.env)).status, 200);
+    assert.deepEqual(asks(calls), [`/repos/${OLD}`], 'it was tried');
+  });
 });

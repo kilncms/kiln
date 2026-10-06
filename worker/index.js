@@ -55,7 +55,7 @@
  *   rmove:<id>    {id,to,at,done,cursor?}  how far an unfinished move has got; gone when it is done
  *   msess:<sid>   {repo,email,origin,rid?}  a member's sign-in on a site, so removal can end it
  *   esess:<id>  {repo,name,role,email,paths,rid?}  (TTL = person.days; rid = the id of the repository it is for)
- *   atok:<sha>  {id,repo,name,paths,keys,readonly,created,exp}  API token, keyed by SHA-256(secret)  (TTL = days)
+ *   atok:<sha>  {id,repo,name,paths,keys,readonly,created,exp,rid?}  API token, keyed by SHA-256(secret)  (TTL = days)
  *   itok:<repo> cached installation token    (TTL 50 min)
  *   cmt:<repo>:<encodeURIComponent(page)>:<threadId>  comment thread
  *               {id,page,status,anchor,created,resolved,messages}  (no TTL — kept until deleted)
@@ -2088,6 +2088,10 @@ async function apiTokenCreate(request, env) {
     created: Date.now(),
     exp: d ? Date.now() + d * 24 * 3600 * 1000 : null,
   };
+  // And the id of the repository that name's things belong to: every use
+  // checks that the name still answers as that repository.
+  const rid = await idOnRecord(env, record.repo);
+  if (rid !== null) record.rid = rid;
   await env.KILN.put(`atok:${await sha256Hex(secret)}`, JSON.stringify(record),
     d ? { expirationTtl: d * 24 * 3600 } : undefined);
   // The secret appears in this response ONCE and is never recoverable again.
@@ -2131,14 +2135,31 @@ async function apiTokenRevoke(request, env) {
   return json({ error: 'not found' }, 404);
 }
 
-/** Resolve the API bearer secret to its stored token record, or null. */
+/**
+ * Resolve the API bearer secret to its stored token record, or null. null
+ * also for a good token whose repository's name now answers as another
+ * repository: everything a token does goes to GitHub by that name, so
+ * nothing is done with it (tokenRefused says why).
+ */
 async function apiTokenAuth(request, env) {
   const secret = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
   if (!/^[a-f0-9]{64}$/.test(secret)) return null;
-  const tok = await env.KILN.get(`atok:${await sha256Hex(secret)}`, 'json');
+  const key = `atok:${await sha256Hex(secret)}`;
+  const tok = await env.KILN.get(key, 'json');
   // Trust the stored expiry, not only KV's TTL.
   if (!tok || (tok.exp && tok.exp < Date.now())) return null;
+  if (!(await stillItsRepo(env, key, tok))) { tokenRefusal.set(request, TOKEN_REPO_CHANGED); return null; }
   return tok;
+}
+
+// Why apiTokenAuth said no, when the token itself is good.
+const tokenRefusal = new WeakMap();
+const TOKEN_REPO_CHANGED = 'This token was made for a different repository than the one that now answers to its name, so nothing was read or changed: the site owner corrects repo in kiln-config.js if the repository was renamed or moved, or makes a new token if it was deleted and made again.';
+
+/** The answer to an API request that apiTokenAuth turned down. */
+function tokenRefused(request) {
+  const why = tokenRefusal.get(request);
+  return why ? json({ error: why, code: 'repo_changed' }, 403) : json({ error: 'unauthorized' }, 401);
 }
 
 /** Section-key scope — same semantics as the editor's keyInScope: exact or prefix. */
@@ -2216,7 +2237,7 @@ function validateApiEdits(edits, keys) {
 
 async function apiPages(request, env, url) {
   const tok = await apiTokenAuth(request, env);
-  if (!tok) return json({ error: 'unauthorized' }, 401);
+  if (!tok) return tokenRefused(request);
   const itok = await installationToken(env, tok.repo);
   if (!itok) return json({ error: 'app not installed on repo', repo: tok.repo }, 503);
   const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA };
@@ -2242,7 +2263,7 @@ async function apiPages(request, env, url) {
 
 async function apiFields(request, env, url) {
   const tok = await apiTokenAuth(request, env);
-  if (!tok) return json({ error: 'unauthorized' }, 401);
+  if (!tok) return tokenRefused(request);
   const resolved = apiPageCandidates(url.searchParams.get('path'), tok.paths);
   if (resolved.error === 400) return json({ error: 'not an HTML page path' }, 400);
   if (resolved.error) return json({ error: "outside this token's path scope" }, 403);
@@ -2264,7 +2285,7 @@ async function apiFields(request, env, url) {
 
 async function apiEdits(request, env) {
   const tok = await apiTokenAuth(request, env);
-  if (!tok) return json({ error: 'unauthorized' }, 401);
+  if (!tok) return tokenRefused(request);
   if (tok.readonly) return json({ error: 'read-only token' }, 403);
   const { path, edits, message } = await request.json().catch(() => ({}));
   const resolved = apiPageCandidates(path, tok.paths);
@@ -3183,14 +3204,14 @@ async function whoAnswers(env, name, madeFor) {
   return { id, seen, other: !!seen && seen.id !== id };
 }
 
-// ─── A session is for one repository ─────────────────────────────────────────
-// An editor session reaches its repository by a name, and a name can change
-// hands: a site that never corrected its config after a rename, whose old
-// name another repository then takes, would send its editors' commits there.
-// So an editor session and a member's sign-in carry the id of the repository
-// they were made for (`rid`), and each use asks the question the cron asks
-// before a scheduled publish (whoAnswers): is whoever answers to this name
-// now that repository?
+// ─── A session or a token is for one repository ──────────────────────────────
+// An editor session and an API token reach their repository by a name, and a
+// name can change hands: a site that never corrected its config after a
+// rename, whose old name another repository then takes, would send its
+// editors' and its scripts' commits there. So an editor session, a member's
+// sign-in and an API token carry the id of the repository they were made for
+// (`rid`), and each use asks the question the cron asks before a scheduled
+// publish (whoAnswers): is whoever answers to this name now that repository?
 //
 //   · On the usual path that is one more KV read, of the ten-minute `rsee:`
 //     answer. GitHub is asked once when that has run out, not per request.
@@ -3199,9 +3220,10 @@ async function whoAnswers(env, name, madeFor) {
 //     read more. It is never rewritten to add the id: a rewrite could bring
 //     back a session that taking someone off the list is ending at that
 //     moment. It carries one from the person's next sign-in.
-//   · A member's sign-in from before takes that id the first time it is used
-//     (stillItsRepo): rewriting one is harmless, because the people list is
-//     asked again at every check.
+//   · A member's sign-in or a token from before takes that id the first time
+//     it is used (stillItsRepo), rewritten in place as a move rewrites them.
+//     For a sign-in that is harmless: the people list is asked again at every
+//     check. A token cannot be ended instead: only its holder has it.
 //   · One whose name answers as another repository is refused, not removed:
 //     it is good again once the site says where the repository went.
 
