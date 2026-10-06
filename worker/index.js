@@ -624,13 +624,12 @@ async function scheduleCancel(request, env) {
  * the renamed repository without leaning on a redirect. null when the stored
  * name has become a different repository: that one is never published to.
  * A name the worker has no id on record for is used as it is, as before.
+ * (The rule itself is whoAnswers.)
  */
 async function publishName(env, repo) {
-  const named = await env.KILN.get(`rname:${String(repo).toLowerCase()}`, 'json');
-  if (!named || !Number.isInteger(named.id)) return repo;
-  const seen = await repoIdentity(env, repo);
-  if (!seen) return repo;   // GitHub cannot be asked: the publish below waits for the next run by itself
-  return seen.id === named.id ? seen.name : null;
+  const { id, seen, other } = await whoAnswers(env, repo);
+  if (id === null || !seen) return repo;   // GitHub cannot be asked: the publish below waits for the next run by itself
+  return other ? null : seen.name;
 }
 
 async function runDueSchedules(env) {
@@ -3140,6 +3139,31 @@ async function sameOnRecord(env, a, b) {
     const [x, y] = await Promise.all([a, b].map(n => env.KILN.get(`rname:${n.toLowerCase()}`, 'json')));
     return !!x && !!y && Number.isInteger(x.id) && x.id === y.id;
   } catch { return false; }
+}
+
+/**
+ * The one rule about a name that may have changed hands, for whatever
+ * reaches a repository by a stored name: whoever answers to the name now
+ * must be the repository the thing was made for.
+ *
+ *   id     the repository it was made for: the id it carries (`madeFor`),
+ *          or, when it carries none, the id on record for the name
+ *   seen   GitHub's answer for the name, remembered for ten minutes
+ *   other  true only when both are known and they are different repositories
+ *
+ * A name with no id on record is used as it always was, and GitHub is not
+ * asked about it. A name GitHub cannot be asked about is not `other` either.
+ * Throws when storage or GitHub does: the caller decides what that means.
+ */
+async function whoAnswers(env, name, madeFor) {
+  let id = Number.isInteger(madeFor) ? madeFor : null;
+  if (id === null) {
+    const named = await env.KILN.get(`rname:${String(name).toLowerCase()}`, 'json');
+    if (named && Number.isInteger(named.id)) id = named.id;
+  }
+  if (id === null) return { id, seen: null, other: false };
+  const seen = await repoIdentity(env, name);
+  return { id, seen, other: !!seen && seen.id !== id };
 }
 
 /**
