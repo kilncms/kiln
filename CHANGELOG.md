@@ -185,8 +185,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   registered under the new name accepts a site whose config has the old one.
   `kiln doctor` asks the worker and fails on a rename (private repositories
   included) and on a name that changed hands. Backups include the new records.
-  Not followed: comment threads, suggestions, scheduled posts and API tokens
-  made under the old name stay under it.
+- **Everything a site stores follows a renamed repository.** Not the people
+  list alone: comment threads, suggestions, scheduled posts, API tokens and
+  members' sign-ins move to the new name too, the first time anyone uses it.
+  A large site is moved in steps (about a dozen threads a request, about a
+  hundred every five minutes by the cron) and nothing is hidden or counted
+  twice meanwhile. Editors sign in once more; members stay signed in. A site
+  that still has the old name keeps reading and writing the same things. A
+  post scheduled before the rename is published once, to the repository it
+  was made for. If the old name later answers as a different repository, that
+  repository gets none of it: comments, suggestions, schedules and tokens are
+  held under the name exactly as the people list was. `kiln doctor` says that
+  changing `repo` is safe and what follows. A repository followed by the
+  release before this one has the rest follow on its next request.
 - **"Latest" means released, everywhere.** The editor's "a newer Kiln editor is
   available" notice now reads the build stamp on the `release` branch, which
   each production release moves, as `kiln doctor` already did. Work on `main`

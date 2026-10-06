@@ -240,7 +240,8 @@ next to it, and offers to commit and push. `kiln doctor` reads `assets/kiln-conf
 if present and checks the worker, GitHub App registration and install, site liveness,
 CORS, and the members gate. It also fails when the repo has been renamed or moved on
 GitHub and the config still has the old name. Correct the config and the worker
-brings the people list along: it knows a repository by its GitHub id, not its name.
+brings along everything it stores for the site (people, comments, suggestions,
+scheduled posts, API tokens): it knows a repository by its GitHub id, not its name.
 
 ## What editors can do
 

@@ -63,19 +63,34 @@ Health-check an install any time:
 npx github:kilncms/kiln#release doctor
 ```
 
-If you rename the repo or move it to another account, run it again. GitHub keeps
-answering to the old name only until someone else takes it, so `doctor` fails that
-check and tells you what to change: `repo` in `kiln-config.js`. The worker knows a
-repository by its GitHub id, which never changes. The first time anyone signs in or
-opens People under the new name, the people list (and a Kiln Cloud registration)
-moves to it, so nobody has to be added again. Editors and members sign in once more.
-Comment threads, suggestions waiting for review, scheduled posts and API tokens made
-under the old name stay under it; scheduled posts and tokens keep working while
-GitHub redirects the old name.
+### If you rename or transfer the repository
+
+Renaming the repository on GitHub, or moving it to another account, does not
+break the site that day: GitHub keeps answering to the old name. It does so only
+until someone else takes that name, so do not leave it at that.
+
+**What to change.** One line: `repo` in `kiln-config.js`, to the repository's
+current `owner/name`, then deploy the site. It is safe to do at any time.
+`doctor` fails until you have (and, for a public repository, tells you the name
+to use). After a move to another account, Kiln's GitHub App also has to be
+installed on the repository there; `doctor` checks that too.
+
+**What follows by itself.** The worker knows a repository by its GitHub id, which
+never changes. As soon as the site is used under the new name, what is stored
+for it moves there: the people list, a Kiln Cloud registration, comment threads,
+suggestions waiting for review, scheduled posts, API tokens and members'
+sign-ins. Nobody has to be added again and no token has to be made again. A
+site with hundreds of comment threads takes a few minutes to move; nothing is
+hidden meanwhile, and a post scheduled for that moment is published once.
+
+**What people will notice.** Editors are asked to sign in once more. Members
+stay signed in, and scripts keep working with the tokens they have. For a few
+minutes, people on pages opened before and after the change do not see each
+other in the "is also editing this page" notice.
 
 If the old name ever answers as a different repository (someone else took it, or
-you deleted the repo and made it again), the worker shows and changes the stored
-people list for no one under that name, and `doctor` says so.
+you deleted the repository and made it again), the worker shows and changes
+nothing stored under that name, for anyone, and `doctor` says what to do.
 
 ### If your AI built a React app
 
