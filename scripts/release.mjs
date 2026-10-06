@@ -45,6 +45,7 @@ const refuse = (sentence) => { throw new Refusal(sentence); };
 export function realIo() {
   return {
     git: (...args) => execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     fetchJson: async (url, headers = {}) => {
       const res = await fetch(url, { headers: { 'User-Agent': 'kiln-release', ...headers }, signal: AbortSignal.timeout(20000) });
       if (!res.ok) throw new Error(`${url} answered ${res.status}`);
@@ -188,7 +189,14 @@ export async function release(io, { target = 'production', dryRun = false, hotfi
         catch (err) { io.log(`  ! could not ${s.say} (${String(err.message).split('\n')[0]}). Production is released; move the branch by hand: git push origin ${c.sha}:refs/heads/release`); }
       } else if (s.git) { io.git(...s.git); if (s.git[0] === 'tag') tagged = true; }
       if (s.verify) {
-        const health = await io.fetchJson(`${url}/healthz`);
+        // A new deploy takes a few seconds to answer everywhere. Ask again for up to a minute
+        // before calling it a failure: a false alarm here would leave a good release untagged.
+        let health = {};
+        for (let attempt = 0; attempt < 12; attempt++) {
+          try { health = await io.fetchJson(`${url}/healthz`); } catch { health = {}; }
+          if (health.ok && health.build && c.sha.startsWith(health.build)) break;
+          if (attempt < 11 && io.sleep) await io.sleep(5000);
+        }
         if (!health.ok || !health.build || !c.sha.startsWith(health.build)) {
           throw new Error(`${url}/healthz reports build ${health.build || 'none'}, not ${c.short}`);
         }

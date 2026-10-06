@@ -241,3 +241,19 @@ test('KLR-01 wrangler.toml: the top level names no production route, KV or D1; p
   assert.match(code(prod), /^name = "kiln-auth"$/m);
   assert.match(code(top), /^id = "0{32}"$/m);
 });
+
+test('KLR-01 a deploy that takes a few seconds to answer everywhere is not called a failure', async () => {
+  const w = world();
+  const answer = w.io.fetchJson;
+  let asked = 0;
+  const waits = [];
+  w.io.fetchJson = async (url) => {
+    if (url === `${PRODUCTION_URL}/healthz` && asked++ < 2) return { ok: true, build: '0000000' };
+    return answer(url);
+  };
+  w.io.sleep = async (ms) => { waits.push(ms); };
+  await release(w.io, {});
+  assert.equal(asked, 3, 'asked again until the new build answered');
+  assert.deepEqual(waits, [5000, 5000]);
+  assert.equal(w.ran.some(l => l.startsWith('git push')), true, 'the verified release is tagged on origin');
+});
