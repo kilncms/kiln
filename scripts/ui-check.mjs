@@ -427,6 +427,13 @@ async function runSignedIn(browser, size) {
   }, REPO);
   const puts = [];
   const blocked = [];
+  const gitWrites = [];
+  // the repository's files, as "From this site" reads them: the page's own pictures, and things that must not be listed
+  const pictures = [...new Set([...source.matchAll(/<img\b[^>]*\ssrc="(\/[^"?#]+\.(?:jpe?g|png|webp|avif|gif))"/gi)].map(m => m[1].slice(1)))];
+  const tree = [...pictures.map(path => ({ path, type: 'blob', size: 48 * 1024 })),
+    { path: 'img/archive/old-banner.jpg', type: 'blob', size: 300 * 1024 },
+    { path: 'assets/uploads/master-abc123.webp', type: 'blob', size: 900000 }, { path: 'docs/price-list.pdf', type: 'blob', size: 1000 },
+    { path: 'favicon.png', type: 'blob', size: 500 }, { path: file, type: 'blob', size: source.length }];
   let current = source, sha = 'sha0', commitAnswer = { status: 201, body: { sha: 'upload' } };
   await context.route('**/*', async (route) => {
     const req = route.request();
@@ -452,6 +459,8 @@ async function runSignedIn(browser, size) {
       return json({ commit: { sha: `commit${puts.length}` }, content: {} });
     }
     if (p === `/gh/repos/${REPO}/contents`) return json([{ path: 'index.html', type: 'file' }, { path: 'assets', type: 'dir' }]);
+    if (p.startsWith(`/gh/repos/${REPO}/git/`) && req.method() !== 'GET') gitWrites.push(`${req.method()} ${p}`);
+    if (p === `/gh/repos/${REPO}/git/trees/main` && req.method() === 'GET') return json({ sha: 'tree', tree, truncated: false });
     if (p === `/gh/repos/${REPO}/git/ref/heads/main`) return json({ object: { sha: 'head' } });
     if (p.startsWith(`/gh/repos/${REPO}/git/refs/`)) return json({ object: { sha: 'upload' } });
     if (p.startsWith(`/gh/repos/${REPO}/git/commits/`)) return json({ tree: { sha: 'tree' } });
@@ -572,6 +581,53 @@ async function runSignedIn(browser, size) {
       await shot('undo-blocked');
       if (await dialog.count()) await press(dialog.getByRole('button', { name: 'Close' }).last());
     }
+  }
+
+  // ── "From this site": choose a picture that is already there ───────────────
+  const picture = page.locator('img.kiln-field').first();
+  if ((await picture.count()) && pictures.length > 1) {
+    await picture.scrollIntoViewIfNeeded();
+    await press(picture);
+    await page.waitForTimeout(350);
+    await press(page.locator('#kiln-toolbar [data-act="replace"]'));
+    await page.waitForTimeout(300);
+    const picker = page.locator('#kiln-modal.kiln-imgpick .kiln-modal-card');
+    check(scope, '"Replace image…" offers Upload and From this site', (await picker.getByRole('tab').allTextContents()).join(' | ') === 'Upload | From this site');
+    await press(picker.getByRole('tab', { name: 'From this site' }));
+    await page.waitForTimeout(700);
+    const tiles = picker.locator('.kiln-pick-tile');
+    const names = await tiles.locator('.kiln-pick-name').allTextContents();
+    check(scope, 'it lists the site\'s pictures and nothing else', (await tiles.count()) === Math.min(24, pictures.length + 1)
+      && !names.some(n => /^master-|\.pdf$|^favicon/.test(n)), `${await tiles.count()} of ${pictures.length + 1}`);
+    check(scope, 'the pictures on this page come first, under their own label', (await picker.locator('#kiln-pick-grid > *').first().textContent()) === 'On this page'
+      && pictures.includes((await picture.getAttribute('src') || '').slice(1)) && names[0] === pictures[0].split('/').pop(), names[0]);
+    check(scope, 'each picture has a name and a size', /\.\w+$/.test(names[0] || '') && /48 KB$/.test((await tiles.first().locator('.kiln-pick-meta').textContent()) || ''));
+    const c = await box(picker);
+    check(scope, 'the chooser fits on screen', c.left >= 0 && c.top >= 0 && c.right <= size.width + 0.5 && c.bottom <= size.height + 0.5);
+    await shot('from-this-site');
+    // search, then choose a picture other than the one in place
+    const now = await picture.getAttribute('src');
+    const want = pictures.map(pth => '/' + pth).find(u => u !== now);
+    const wantName = want.split('/').pop();
+    await picker.locator('#kiln-pick-search').fill(wantName.replace(/\.\w+$/, ''));
+    await page.waitForTimeout(250);
+    check(scope, 'search narrows the list by name', (await tiles.count()) >= 1 && (await tiles.locator('.kiln-pick-name').allTextContents()).every(n => n.includes(wantName.replace(/\.\w+$/, ''))), `${await tiles.count()} left`);
+    const writesBefore = gitWrites.length, putsBefore = puts.length;
+    await press(picker.locator('.kiln-pick-tile', { hasText: wantName }).first());
+    await page.waitForTimeout(400);
+    check(scope, 'choosing a picture puts it on the page and closes the chooser', (await picture.getAttribute('src')) === want && (await picker.count()) === 0, await picture.getAttribute('src'));
+    if (await page.locator('#kiln-toolbar [data-act="done"]').count()) await press(page.locator('#kiln-toolbar [data-act="done"]'));
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await page.waitForTimeout(300);
+    await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+    await page.waitForTimeout(500);
+    const pics = page.locator('.kiln-ps-pics img');
+    check(scope, 'the publish sheet shows the old and the new picture', (await pics.count()) === 2 && (await pics.nth(1).getAttribute('src') || '').endsWith(want), `${await pics.count()} thumbnails`);
+    await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(1800);
+    const sent = puts.slice(putsBefore);
+    check(scope, 'publishing the chosen picture is one page commit', sent.length === 1 && Buffer.from(sent[0].content, 'base64').toString().includes(`src="${want}"`), `${sent.length} writes`);
+    check(scope, 'and no new file is committed', gitWrites.length === writesBefore, gitWrites.slice(writesBefore).join(', '));
   }
   check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
   check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
