@@ -18,19 +18,32 @@ export const ORIGIN = 'https://site.example';
 
 export function fakeKV(seed = {}) {
   const m = new Map();
+  // key → the second it expires at, for keys written with a lifetime. Nothing
+  // here ever expires; the stand-in only reports the time, as KV's list does.
+  const expires = new Map();
   for (const [k, v] of Object.entries(seed)) m.set(k, typeof v === 'string' ? v : JSON.stringify(v));
   return {
     map: m,
+    expires,
     async get(key, type) {
       const v = m.get(key);
       if (v === undefined) return null;
       return type === 'json' ? JSON.parse(v) : v;
     },
-    async put(key, value) { m.set(key, String(value)); },
-    async delete(key) { m.delete(key); },
-    async list({ prefix = '' } = {}) {
-      const keys = [...m.keys()].filter(k => k.startsWith(prefix)).sort().map(name => ({ name }));
-      return { keys, list_complete: true };
+    async put(key, value, opts) {
+      m.set(key, String(value));
+      if (opts && opts.expiration) expires.set(key, opts.expiration);
+      else if (opts && opts.expirationTtl) expires.set(key, Math.floor(Date.now() / 1000) + opts.expirationTtl);
+      else expires.delete(key);
+    },
+    async delete(key) { m.delete(key); expires.delete(key); },
+    // Pages like KV: at most `limit` keys (1000 unless asked for fewer), and a
+    // cursor to carry on from while there are more.
+    async list({ prefix = '', limit = 1000, cursor } = {}) {
+      const rest = [...m.keys()].filter(k => k.startsWith(prefix) && (!cursor || k > cursor)).sort();
+      const page = rest.slice(0, limit);
+      const keys = page.map(name => (expires.has(name) ? { name, expiration: expires.get(name) } : { name }));
+      return page.length < rest.length ? { keys, list_complete: false, cursor: page[page.length - 1] } : { keys, list_complete: true };
     },
   };
 }
