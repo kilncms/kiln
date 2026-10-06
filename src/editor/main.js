@@ -4779,6 +4779,12 @@ function stageSectionInsert({ node, html, key, anchor }) {
 function bootBlocks() {
   initBlocks({ state, cfg, mode, hasFeature, pageInScope, keyInScope, modal, setStatus, escapeHtml,
     isKilnChrome, decorateField, setupRepeat, pushUndoEntry, refreshPublishButton, stageSectionInsert,
+    // The screen space Kiln's fixed controls are using right now: a section
+    // divider that scrolls under any of them steps aside.
+    heldBoxes: () => ['#kiln-quick', '#kiln-fab', '#kiln-sandbox-banner', '#kiln-topbar', ...(isMobileEditor() ? ['#kiln-toolbar'] : [])].map(sel => {
+      const r = document.querySelector(sel)?.getBoundingClientRect();
+      return r && r.width && r.height ? { top: r.top, bottom: r.bottom } : null;
+    }).filter(Boolean),
     sanitizeBlock: (html) => DOMPurify.sanitize(html, BLOCK_SANITIZE),
     ghRequest: (method, path, body) => state.gh.request(method, path, body),
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
@@ -5338,6 +5344,7 @@ function placeQuickRow() {
   const fab = document.getElementById('kiln-fab-wrap');
   const row = document.getElementById('kiln-quick');
   if (!fab || !row) return;
+  window.dispatchEvent(new Event('kiln:chrome'));   // the row grew, shrank or emptied: section dividers re-check
   fab.classList.remove('kiln-flip-x', 'kiln-flip-y');
   const r = row.getBoundingClientRect();
   if (!r.width) return;   // nothing in it right now
@@ -6280,6 +6287,8 @@ body:has(#kiln-topbar){padding-top:46px!important}
 #kiln-blocks-layer{position:absolute;top:0;left:0;width:100%;height:0;pointer-events:none;z-index:999997;font-family:var(--kiln-font)}
 .kiln-block-gap{position:absolute;height:24px;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;pointer-events:auto;opacity:0;transition:opacity .15s}
 .kiln-block-gap:hover,.kiln-block-gap:focus-within{opacity:1}
+/* Under the pencil, its Undo/Redo/Publish row or the demo banner: that strip is theirs. */
+.kiln-block-gap.kiln-gap-yield{visibility:hidden;pointer-events:none}
 .kiln-block-gap::before{content:"";position:absolute;left:8px;right:8px;top:50%;height:2px;margin-top:-1px;background:var(--kiln-accent);border-radius:2px;opacity:.85}
 .kiln-block-gap button{position:relative;background:var(--kiln-accent);color:#fff;border:none;border-radius:999px;padding:4px 14px;font:600 12px var(--kiln-font);cursor:pointer;box-shadow:0 3px 12px rgba(0,0,0,.28);white-space:nowrap}
 .kiln-block-gap button:hover{background:var(--kiln-accent-h)}
@@ -6408,7 +6417,10 @@ body:has(#kiln-topbar){padding-top:56px!important}
 #kiln-cmt-hint{flex-wrap:wrap;top:calc(10px + env(safe-area-inset-top,0px))}
 #kiln-cmt-hint button{min-height:40px}
 /* Section chrome: add-section dividers stay visible (no hover on touch). */
-.kiln-block-gap{opacity:1;height:44px}
+/* No hover on a phone, so dividers show by themselves: only the two around
+   the section last touched, not one between every pair of sections. */
+.kiln-block-gap{opacity:0;pointer-events:none;height:44px}
+.kiln-block-gap.kiln-gap-near{opacity:1;pointer-events:auto}
 .kiln-block-gap button{padding:10px 18px;font-size:13px}
 .kiln-block-remove{padding:11px 16px;font-size:12.5px}
 /* Image chrome: size buttons inherit .kiln-tb-fmt 40px; bigger drag handle. */

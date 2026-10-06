@@ -307,6 +307,32 @@ async function run(browser, size, firstVisit) {
   s = await sideways(page);
   check(scope, 'page still does not scroll sideways', s.sw === s.cw, `scrollWidth ${s.sw}, clientWidth ${s.cw}${s.who ? `: ${s.who}` : ''}`);
 
+  // ── section dividers keep out of the way ───────────────────────────────────
+  {
+    const shown = () => page.evaluate(() => [...document.querySelectorAll('.kiln-block-gap')].filter(g => {
+      const cs = getComputedStyle(g); return cs.opacity !== '0' && cs.visibility !== 'hidden';
+    }).length);
+    if (phone) check(scope, 'on a phone at most two "+ Add section" dividers show: the ones around the section last touched', (await shown()) <= 2, `${await shown()} showing`);
+    // walk the whole page with edits unpublished: no divider may sit under the Undo / Redo / Publish row, the pencil or the banner
+    const total = await page.evaluate(() => document.documentElement.scrollHeight);
+    let under = 0, where = -1;
+    for (let y = 0; y < total; y += 61) {
+      await page.evaluate((yy) => window.scrollTo({ top: yy, behavior: 'instant' }), y);
+      await page.waitForTimeout(35);
+      const n = await page.evaluate(() => {
+        const held = ['#kiln-quick', '#kiln-fab', '#kiln-sandbox-banner'].map(q => document.querySelector(q)?.getBoundingClientRect()).filter(r => r && r.width && r.height);
+        return [...document.querySelectorAll('.kiln-block-gap')].filter(g => {
+          const cs = getComputedStyle(g);
+          if (cs.visibility === 'hidden' || (cs.opacity === '0' && !g.matches(':hover'))) return false;
+          const r = g.getBoundingClientRect();
+          return held.some(h => r.top < h.bottom && r.bottom > h.top);
+        }).length;
+      });
+      if (n > under) { under = n; where = y; }
+    }
+    check(scope, 'no "+ Add section" divider ever sits under the Undo, Redo and Publish row, the pencil or the banner', under === 0, under ? `${under} at scroll ${where}` : '');
+  }
+
   // ── the publish sheet: see it, drop one edit, publish ──────────────────────
   // a second edit, so there is one to drop
   const para = page.locator('p.kiln-field:not([data-cms-plain])').first();

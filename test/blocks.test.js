@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBlockManifest, blockTitleFromPath, collectCmsKeys, uniquifyCmsKeys, EXAMPLE_BLOCK } from '../src/editor/blocks.js';
+import { parseBlockManifest, blockTitleFromPath, collectCmsKeys, uniquifyCmsKeys, EXAMPLE_BLOCK, nearGaps, yieldsTo } from '../src/editor/blocks.js';
+import { readFileSync } from 'node:fs';
 import { indexHtml, insertAfterNthTag } from '../src/engine.js';
 
 // ─── parseBlockManifest ──────────────────────────────────────────────────────
@@ -138,4 +139,32 @@ test('uniquified block splices into a page via insertAfterNthTag and indexes cle
   assert.equal(fields.get('cards_title_2').tag, 'h2');         // the block's renamed heading
   assert.equal(fields.get('cards').kind, 'repeat');            // the repeat container arrives intact
   assert.equal(warnings.length, 0);                            // no duplicate-key warnings
+});
+
+// ─── section dividers: where they show, and what they give way to ────────────
+
+test('blocks: on a phone only the dividers around the touched section show', () => {
+  // dividers are numbered by the section they follow; the last is the end of the page
+  assert.deepEqual(nearGaps(5, 2), [1, 2], 'the one above and the one below');
+  assert.deepEqual(nearGaps(5, 0), [0], 'the first section has nothing above it');
+  assert.deepEqual(nearGaps(5, 4), [3, 4], 'the last section keeps the end-of-page slot');
+  assert.deepEqual(nearGaps(1, 0), [0]);
+  assert.deepEqual(nearGaps(5, -1), [], 'nothing touched yet: no dividers');
+  assert.deepEqual(nearGaps(5, 9), []);
+  const css = readFileSync(new URL('../src/editor/main.js', import.meta.url), 'utf8');
+  assert.ok(css.includes('.kiln-block-gap{opacity:0;pointer-events:none;height:44px}'), 'hidden by default at phone size');
+  assert.ok(css.includes('.kiln-block-gap.kiln-gap-near{opacity:1;pointer-events:auto}'));
+});
+
+test('blocks: a divider gives way to the Undo, Redo and Publish row, the pencil and the demo banner', () => {
+  const row = { top: 700, bottom: 744 }, pencil = { top: 760, bottom: 816 };
+  assert.equal(yieldsTo({ top: 690, bottom: 734 }, [row, pencil]), true, 'runs into the row');
+  assert.equal(yieldsTo({ top: 750, bottom: 794 }, [row, pencil]), true, 'runs into the pencil');
+  assert.equal(yieldsTo({ top: 640, bottom: 684 }, [row, pencil]), false, 'clear above, with air to spare');
+  assert.equal(yieldsTo({ top: 650, bottom: 696 }, [row, pencil]), true, 'closer than the 6 px of air');
+  assert.equal(yieldsTo({ top: 300, bottom: 344 }, []), false, 'nothing held: nothing to give way to');
+  assert.equal(yieldsTo({ top: 300, bottom: 344 }, [null, { top: 0, bottom: 0 }]), false, 'a control that is not showing holds nothing');
+  const css = readFileSync(new URL('../src/editor/main.js', import.meta.url), 'utf8');
+  assert.ok(css.includes('.kiln-block-gap.kiln-gap-yield{visibility:hidden;pointer-events:none}'));
+  assert.match(css, /heldBoxes: \(\) => \['#kiln-quick', '#kiln-fab', '#kiln-sandbox-banner'/);
 });

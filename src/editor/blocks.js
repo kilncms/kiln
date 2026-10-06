@@ -115,6 +115,8 @@ let lastSecs = [];        // sections as of the last refresh (for hover hit-test
 let removeBtn = null;     // the floating "✕ Remove section" affordance
 let removeTarget = null;  // { sec, info } while removeBtn is showing
 let ro = null, observed = [], rafPending = false;
+let nearSec = null;       // the section last touched: on a phone only its dividers show
+let yieldPending = false;
 let _blocksPromise = null;                  // session cache: the parsed block list
 const insertedNodes = new WeakMap();        // section node → its pending insert op
 
@@ -153,7 +155,59 @@ function buildChrome() {
   ro = new ResizeObserver(scheduleRefresh);
   window.addEventListener('resize', scheduleRefresh);
   document.addEventListener('mouseover', onHover, true);
+  // On a phone a divider between every pair of sections crowds short ones:
+  // only the section last touched keeps its two. Everywhere, a divider gives
+  // way to Kiln's own fixed controls when it scrolls under them.
+  document.addEventListener('pointerdown', onTouchSection, true);
+  window.addEventListener('scroll', scheduleYield, { passive: true });
+  window.addEventListener('kiln:chrome', scheduleYield);
   refresh();
+}
+
+/** Which dividers border `sec`: the one before it and the one after it. Pure. */
+export function nearGaps(count, index) {
+  if (index < 0 || index >= count) return [];
+  return index === 0 ? [0] : [index - 1, index];
+}
+
+/**
+ * Whether a divider's box (top, bottom) runs into any of the boxes held by
+ * Kiln's fixed controls. A divider is as wide as the page, so only the
+ * vertical overlap counts. `pad` keeps a little air between them. Pure.
+ */
+export function yieldsTo(gap, held, pad = 6) {
+  return held.some(h => h && h.bottom > h.top && gap.top < h.bottom + pad && gap.bottom > h.top - pad);
+}
+
+function onTouchSection(e) {
+  const t = e.target;
+  if (!(t instanceof Element) || t.closest('#kiln-blocks-layer')) return;
+  if (deps.isKilnChrome(t)) return;
+  const sec = lastSecs.find(s => s === t || s.contains(t)) || null;
+  if (sec === nearSec) return;
+  nearSec = sec;
+  markNear();
+}
+
+function markNear() {
+  const want = new Set(lastSecs.length ? nearGaps(lastSecs.length, lastSecs.indexOf(nearSec)) : [0]);
+  gaps.forEach((gap, i) => gap.classList.toggle('kiln-gap-near', want.has(i)));
+}
+
+function scheduleYield() {
+  if (yieldPending) return;
+  yieldPending = true;
+  requestAnimationFrame(() => { yieldPending = false; markYield(); });
+}
+
+/** Hide any divider that would sit under the pencil, its Undo/Redo/Publish row or the demo banner. */
+function markYield() {
+  if (!gaps.length) return;
+  const held = (deps.heldBoxes ? deps.heldBoxes() : []);
+  for (const gap of gaps) {
+    const r = gap.getBoundingClientRect();
+    gap.classList.toggle('kiln-gap-yield', held.length > 0 && yieldsTo({ top: r.top, bottom: r.bottom }, held));
+  }
 }
 
 function scheduleRefresh() {
@@ -213,6 +267,9 @@ function refresh() {
     gap.style.left = left + 'px';
     gap.style.width = width + 'px';
   });
+  if (nearSec && !secs.includes(nearSec)) nearSec = null;
+  markNear();
+  markYield();
 }
 
 // ─── "✕ Remove section" ──────────────────────────────────────────────────────
