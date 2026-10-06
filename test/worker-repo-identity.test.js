@@ -121,7 +121,11 @@ test('KLR-08 when the config is corrected, the people list comes along: nobody h
   assert.equal(w.json(`rid:${ID}`).name, NEW);
   assert.equal(w.json(`rid:${ID}`).was, OLD);
   assert.equal(w.json(`rname:${NEW.toLowerCase()}`).id, ID);
-  assert.equal(w.kv.map.has(`rname:${OLD}`), false, 'the old name holds nothing and is free');
+  assert.equal(w.kv.map.has(`rsee:${OLD}`), false, 'what was last heard about the old name is dropped: it said the name was current');
+  // The old name stays on record as this repository. That is what answers a
+  // site that still uses it, and it holds nothing: a later holder of the name
+  // starts clean (worker-repo-move.test.js).
+  assert.equal(w.json(`rname:${OLD}`).id, ID);
 });
 
 test('KLR-08 the list also comes along when the first one to use the new name is not the owner: a Google sign-in has no GitHub token', async () => {

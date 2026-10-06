@@ -48,9 +48,11 @@
  *   state:<n>   OAuth state nonce            (TTL 10 min)
  *   sid:<id>    {refresh_token}              (TTL 180 days, rotated)
  *   people:<repo> [{email,name,role,days,paths?}]  editor/member allowlist
- *   rid:<id>      {id,name,was?,at}  a repository by its GitHub id: the name its data is filed under
+ *   rid:<id>      {id,name,was?,at,from?,moved?}  a repository by its GitHub id: the name its data is
+ *                 filed under, and (from) the names a move is still bringing data from
  *   rname:<repo>  {id,at}            which repository a name is (lowercased); see "Repository identity"
  *   rsee:<repo>   {id,name}          GitHub's last answer for a name  (TTL 10 min)
+ *   rmove:<id>    {id,to,at,done,cursor?}  how far an unfinished move has got; gone when it is done
  *   msess:<sid>   {repo,email,origin}  a member's sign-in on a site, so removal can end it
  *   esess:<id>  {repo,name,role,email,paths}  (TTL = person.days)
  *   atok:<sha>  {id,repo,name,paths,keys,readonly,created,exp}  API token, keyed by SHA-256(secret)  (TTL = days)
@@ -97,6 +99,9 @@ export default {
     // must leave a line someone can find (Workers Logs, when observability is on).
     await cronJob('schedules', () => runDueSchedules(env));
     await cronJob('trials', () => expireStaleTrials(env));
+    // After the schedules: that pass is what files scheduled publishes under a
+    // repository's new name, and a move can only finish once it has.
+    await cronJob('moves', () => continueMoves(env));
   },
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -510,7 +515,8 @@ function normalizePaths(paths) {
 }
 
 // Exported for unit tests (test/worker.test.js); the Workers runtime uses only the default export.
-export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath, validateSuggestionInput, suggestWriteViolation, validateAiAssist, aiHostBlocked };
+// (Functions only: the runtime refuses to start a worker with any other kind of named export.)
+export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter, apiFieldsFor, apiPageCandidates, validateApiEdits, validateCommentInput, commentKey, normalizePagePath, validateSuggestionInput, suggestWriteViolation, validateAiAssist, aiHostBlocked, moveBounds };
 
 // ─── Scheduled publishing ────────────────────────────────────────────────────
 // sched:<id> → { repo, path, branch, content(b64), message, at, desc, by }
@@ -521,7 +527,9 @@ async function authActor(request, env, repo) {
   const sess = request.headers.get('X-Kiln-Session');
   if (sess && /^[a-f0-9]{64}$/.test(sess)) {
     const e = await env.KILN.get(`esess:${sess}`, 'json');
-    if (e && (!e.exp || e.exp >= Date.now()) && e.repo === repo && e.role === 'editor') return { name: e.name, email: e.email, paths: e.paths || [''], keys: e.keys || [], mode: e.mode || null, features: e.features || null, admin: false };
+    // A session is on a repository, not on a spelling: a site whose config
+    // still has the name from before a rename or a transfer is the same site.
+    if (e && (!e.exp || e.exp >= Date.now()) && e.role === 'editor' && (e.repo === repo || await sameOnRecord(env, e.repo, repo))) return { name: e.name, email: e.email, paths: e.paths || [''], keys: e.keys || [], mode: e.mode || null, features: e.features || null, admin: false };
   }
   if (await requirePush(request, repo, env)) return { name: 'admin', admin: true };
   return null;
@@ -571,8 +579,11 @@ async function scheduleCreate(request, env) {
     return json({ error: 'bad time' }, 400);
   }
   const id = crypto.randomUUID().replaceAll('-', '');
+  // Filed under the name the repository's things are under, which is not
+  // always the one this site's config has (a renamed repository).
+  const { home } = await shelf(env, repo);
   await env.KILN.put(`sched:${id}`,
-    JSON.stringify({ repo, path, branch, edits: edits || null, content: edits ? null : content, message: message || 'Scheduled publish (via Kiln)', at: when, desc: desc || path, by: actor.name, byEmail: actor.email, admin: !!actor.admin }),
+    JSON.stringify({ repo: home, path, branch, edits: edits || null, content: edits ? null : content, message: message || 'Scheduled publish (via Kiln)', at: when, desc: desc || path, by: actor.name, byEmail: actor.email, admin: !!actor.admin }),
     { expirationTtl: Math.ceil((when - Date.now()) / 1000) + 14 * 24 * 3600 });
   return json({ ok: true, id, at: when });
 }
@@ -581,13 +592,14 @@ async function scheduleList(request, env, url) {
   const repo = url.searchParams.get('repo') || '';
   const actor = await authActor(request, env, repo);
   if (!actor) return json({ error: 'forbidden' }, 403);
+  const mine = new Set([repo, ...(await shelf(env, repo)).names]);
   const out = [];
   let cursor;
   do {
     const page = await env.KILN.list({ prefix: 'sched:', cursor });
     for (const k of page.keys) {
       const v = await env.KILN.get(k.name, 'json');
-      if (v && v.repo === repo) out.push({ id: k.name.slice(6), at: v.at, desc: v.desc, path: v.path, by: v.by });
+      if (v && mine.has(v.repo)) out.push({ id: k.name.slice(6), at: v.at, desc: v.desc, path: v.path, by: v.by });
     }
     cursor = page.list_complete ? null : page.cursor;
   } while (cursor);
@@ -599,18 +611,52 @@ async function scheduleCancel(request, env) {
   const actor = await authActor(request, env, repo);
   if (!actor || !/^[a-f0-9]{32}$/.test(id || '')) return json({ error: 'forbidden' }, 403);
   const v = await env.KILN.get(`sched:${id}`, 'json');
-  if (!v || v.repo !== repo) return json({ error: 'not found' }, 404);
+  if (!v || (v.repo !== repo && !(await shelf(env, repo)).names.includes(v.repo))) return json({ error: 'not found' }, 404);
   await env.KILN.delete(`sched:${id}`);
   return json({ ok: true });
 }
 
+/**
+ * The name to reach a repository by when the worker publishes on its own: the
+ * one GitHub has for it now, so a publish scheduled before a rename lands in
+ * the renamed repository without leaning on a redirect. null when the stored
+ * name has become a different repository: that one is never published to.
+ * A name the worker has no id on record for is used as it is, as before.
+ */
+async function publishName(env, repo) {
+  const named = await env.KILN.get(`rname:${String(repo).toLowerCase()}`, 'json');
+  if (!named || !Number.isInteger(named.id)) return repo;
+  const seen = await repoIdentity(env, repo);
+  if (!seen) return repo;   // GitHub cannot be asked: the publish below waits for the next run by itself
+  return seen.id === named.id ? seen.name : null;
+}
+
 async function runDueSchedules(env) {
+  // Repositories whose things are moving to a new name. A scheduled publish
+  // that still names the old one is filed under the new one HERE, in the only
+  // place that also publishes and deletes schedules: one pass reads each
+  // schedule once, so it can be moved and published, never published twice.
+  const moving = await movesUnderWay(env);
   let cursor;
   do {
     const page = await env.KILN.list({ prefix: 'sched:', cursor });
     for (const k of page.keys) {
-      const v = await env.KILN.get(k.name, 'json');
-      if (!v || v.at > Date.now()) continue;
+      let v = await env.KILN.get(k.name, 'json');
+      if (!v) continue;
+      const move = moving.get(v.repo);
+      if (move) {
+        v = { ...v, repo: move.to };
+        const keep = keepExpiry(k);
+        if (keep !== null) await env.KILN.put(k.name, JSON.stringify(v), keep);
+      }
+      if (v.at > Date.now()) continue;
+      // Whatever answers to the stored name now must be the repository the
+      // schedule was made for. If the name has changed hands, the schedule
+      // waits where it is: for its site to say where the repository went, or
+      // for its expiry.
+      let target;
+      try { target = await publishName(env, v.repo); } catch { continue; }
+      if (!target) { console.log(`[kiln-cron] ${k.name} not published: its repository's name now answers as another repository`); continue; }
       // Re-validate scope at fire time. A non-admin editor's access may have been
       // narrowed or their scope changed since they scheduled this (peopleUpsert
       // purges live sessions but leaves schedules); enforce the CURRENT scope so a
@@ -625,10 +671,10 @@ async function runDueSchedules(env) {
         }
       }
       try {
-        const itok = await installationToken(env, v.repo);
+        const itok = await installationToken(env, target);
         if (!itok) continue;
         const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
-        const cur = await fetch(`${GH}/repos/${v.repo}/contents/${encodeURIComponent(v.path)}?ref=${v.branch}`, { headers: h });
+        const cur = await fetch(`${GH}/repos/${target}/contents/${encodeURIComponent(v.path)}?ref=${v.branch}`, { headers: h });
         const curJson = cur.ok ? await cur.json() : null;
         const sha = curJson ? curJson.sha : undefined;
         // Field-level edits: re-apply against the CURRENT source so anything
@@ -641,7 +687,7 @@ async function runDueSchedules(env) {
           const { html } = applyEdits(source, v.edits);
           content = b64FromUtf8(html);
         }
-        const res = await fetch(`${GH}/repos/${v.repo}/contents/${encodeURIComponent(v.path)}`, {
+        const res = await fetch(`${GH}/repos/${target}/contents/${encodeURIComponent(v.path)}`, {
           method: 'PUT', headers: h,
           body: JSON.stringify({ message: v.message, content, branch: v.branch, sha,
             author: { name: `${v.by} (via Kiln, scheduled)`, email: 'kiln-editor@users.noreply.github.com' } }),
@@ -653,10 +699,22 @@ async function runDueSchedules(env) {
     }
     cursor = page.list_complete ? null : page.cursor;
   } while (cursor);
+  // Every schedule has been read once: none names an old name any more.
+  for (const [id, to] of new Map([...moving.values()].map(m => [m.id, m.to]))) {
+    const mv = await env.KILN.get(`rmove:${id}`, 'json');
+    if (mv && mv.to === to && !(mv.done && mv.done.sched)) {
+      await env.KILN.put(`rmove:${id}`, JSON.stringify({ ...mv, done: { ...(mv.done || {}), sched: true } }));
+    }
+  }
 }
 
 // ─── Presence (who else is editing this page right now) ─────────────────────
 // pres:<repo>:<path>:<name> → { name, role, ts }   (TTL 90s; client pings every 30s)
+//
+// Filed under the name the site asks with and gone within minutes, so it is
+// the one thing that does not follow a renamed repository: for a few minutes
+// after the config changes, people on pages loaded before and after it do not
+// see each other.
 //
 // Advisory only: Kiln merges concurrent edits per-field at publish time (see
 // editFile's sha-conflict retry), so presence exists to make humans AWARE of
@@ -694,7 +752,7 @@ async function presencePing(request, env) {
   const sess = request.headers.get('X-Kiln-Session');
   if (sess && /^[a-f0-9]{64}$/.test(sess)) {
     const e = await env.KILN.get(`esess:${sess}`, 'json');
-    if (e && (!e.exp || e.exp >= Date.now()) && e.repo === repo && e.role === 'editor') {
+    if (e && (!e.exp || e.exp >= Date.now()) && e.role === 'editor' && (e.repo === repo || await sameOnRecord(env, e.repo, repo))) {
       who = e.name; role = 'editor';
       scope = { paths: e.paths || [''], keys: e.keys || [], features: e.features || null, mode: e.mode || null };  // editor UI uses this to gate handles + menu + suggest-mode publish
     }
@@ -815,17 +873,13 @@ async function commentList(request, env, url) {
   const page = normalizePagePath(url.searchParams.get('path') || '');
   if (!page) return json({ error: 'bad path' }, 400);
   if (!commentInScope(actor, page)) return json({ error: 'outside your editing scope' }, 403);
+  const { names } = await shelf(env, repo);
+  const { entries, truncated } = await shelfEntries(env, names, name => commentKey(name, page, ''), 300);
   const threads = [];
-  let truncated = false, cursor;
-  do {
-    const batch = await env.KILN.list({ prefix: commentKey(repo, page, ''), cursor });
-    for (const k of batch.keys) {
-      if (threads.length >= 300) { truncated = true; break; }
-      const v = await env.KILN.get(k.name, 'json');
-      if (v) threads.push(v);
-    }
-    cursor = truncated || batch.list_complete ? null : batch.cursor;
-  } while (cursor);
+  for (const entry of entries) {
+    const v = await shelfRead(env, entry);
+    if (v) threads.push(v);
+  }
   threads.sort((a, b) => (b.created || 0) - (a.created || 0));
   return json(truncated ? { threads, truncated: true } : { threads });
 }
@@ -837,21 +891,19 @@ async function commentCounts(request, env, url) {
   if (!actor) return json({ error: 'unauthorized' }, 401);
   // Null-prototype map: a page literally named "__proto__" must stay plain data.
   const counts = Object.create(null);
-  let total = 0, seen = 0, truncated = false, cursor;
-  do {
-    const batch = await env.KILN.list({ prefix: `cmt:${repo}:`, cursor });
-    for (const k of batch.keys) {
-      if (seen >= 1000) { truncated = true; break; }
-      seen++;
-      const v = await env.KILN.get(k.name, 'json');
-      if (!v || v.status !== 'open') continue;
-      // Out-of-scope pages are left out entirely — not even their names.
-      if (!commentInScope(actor, v.page)) continue;
-      counts[v.page] = (counts[v.page] || 0) + 1;
-      total++;
-    }
-    cursor = truncated || batch.list_complete ? null : batch.cursor;
-  } while (cursor);
+  let total = 0;
+  // The badge asks on every page load and reads up to a thousand threads, so
+  // this is the one reader that leaves an unfinished move to the others.
+  const { names } = await shelf(env, repo, { step: false });
+  const { entries, truncated } = await shelfEntries(env, names, name => `cmt:${name}:`, 1000);
+  for (const entry of entries) {
+    const v = await shelfRead(env, entry);
+    if (!v || v.status !== 'open') continue;
+    // Out-of-scope pages are left out entirely — not even their names.
+    if (!commentInScope(actor, v.page)) continue;
+    counts[v.page] = (counts[v.page] || 0) + 1;
+    total++;
+  }
   return json(truncated ? { counts, total, truncated: true } : { counts, total });
 }
 
@@ -866,20 +918,23 @@ async function commentPost(request, env) {
   if (!commentInScope(actor, v.page)) return json({ error: 'outside your editing scope' }, 403);
   if (!canComment(actor)) return grantRefusal('comments');
   const msg = { by: actor.name, email: actor.email, ts: Date.now(), text: v.text };
+  // New threads are filed under the name the repository's things are under; a
+  // thread that has not yet moved there after a rename is found where it is.
+  const { names } = await shelf(env, repo);
   if (thread != null) {
     if (!/^[a-f0-9]{12}$/.test(String(thread))) return json({ error: 'bad thread' }, 400);
-    const key = commentKey(repo, v.page, thread);
-    const t = await env.KILN.get(key, 'json');
-    if (!t) return json({ error: 'not found' }, 404);
+    const found = await shelfFind(env, names, name => commentKey(name, v.page, thread));
+    if (!found) return json({ error: 'not found' }, 404);
+    const t = found.value;
     if ((t.messages || []).length >= 200) return json({ error: 'thread full' }, 413);
     t.messages = [...(t.messages || []), msg];
     // Replying to a resolved thread does NOT reopen it — reopening is explicit.
-    await env.KILN.put(key, JSON.stringify(t));
+    await found.save(t);
     return json({ thread: t });
   }
   const id = [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, '0')).join('');
   const t = { id, page: v.page, status: 'open', anchor: v.anchor, created: Date.now(), resolved: null, messages: [msg] };
-  await env.KILN.put(commentKey(repo, v.page, id), JSON.stringify(t));
+  await env.KILN.put(commentKey(names[0], v.page, id), JSON.stringify(t));
   return json({ thread: t });
 }
 
@@ -894,12 +949,13 @@ async function commentResolve(request, env) {
   }
   if (!canComment(actor)) return grantRefusal('comments');
   if (!commentInScope(actor, page)) return json({ error: 'outside your editing scope' }, 403);
-  const key = commentKey(repo, page, thread);
-  const t = await env.KILN.get(key, 'json');
-  if (!t) return json({ error: 'not found' }, 404);
+  const { names } = await shelf(env, repo);
+  const found = await shelfFind(env, names, name => commentKey(name, page, thread));
+  if (!found) return json({ error: 'not found' }, 404);
+  const t = found.value;
   t.status = resolved ? 'resolved' : 'open';
   t.resolved = resolved ? { by: actor.name, ts: Date.now() } : null;
-  await env.KILN.put(key, JSON.stringify(t));
+  await found.save(t);
   return json({ thread: t });
 }
 
@@ -912,7 +968,8 @@ async function commentDelete(request, env) {
   if (!actor.admin) return json({ error: 'admin only' }, 403);
   const page = normalizePagePath(path);
   if (!page || !/^[a-f0-9]{12}$/.test(String(thread || ''))) return json({ error: 'bad request' }, 400);
-  await env.KILN.delete(commentKey(repo, page, thread));
+  // Under every name it may be filed under, or an unfinished move would bring it back.
+  for (const name of (await shelf(env, repo)).names) await env.KILN.delete(commentKey(name, page, thread));
   return json({ ok: true });
 }
 
@@ -982,7 +1039,7 @@ async function suggestionCreate(request, env) {
     id, page: v.page, by: actor.name, email: actor.email, ts: Date.now(), note: v.note,
     edits: v.edits, branch: v.branch, baseSha: v.baseSha, status: 'open', decided: null, commit: null,
   };
-  await env.KILN.put(`sug:${repo}:${id}`, JSON.stringify(sug));
+  await env.KILN.put(`sug:${(await shelf(env, repo)).home}:${id}`, JSON.stringify(sug));
   return json({ suggestion: sug });
 }
 
@@ -992,19 +1049,17 @@ async function suggestionList(request, env, url) {
   const actor = await authActor(request, env, repo);
   if (!actor) return json({ error: 'unauthorized' }, 401);
   const suggestions = [];
-  let truncated = false, cursor;
-  do {
-    const batch = await env.KILN.list({ prefix: `sug:${repo}:`, cursor });
-    for (const k of batch.keys) {
-      if (suggestions.length >= 300) { truncated = true; break; }
-      const v = await env.KILN.get(k.name, 'json');
-      if (!v) continue;
-      // Editors see only their own submissions; admins review everything.
-      if (!actor.admin && v.email !== actor.email) continue;
-      suggestions.push(v);
-    }
-    cursor = truncated || batch.list_complete ? null : batch.cursor;
-  } while (cursor);
+  let truncated = false;
+  const { names } = await shelf(env, repo);
+  const { entries } = await shelfEntries(env, names, name => `sug:${name}:`, Infinity);
+  for (const entry of entries) {
+    if (suggestions.length >= 300) { truncated = true; break; }
+    const v = await shelfRead(env, entry);
+    if (!v) continue;
+    // Editors see only their own submissions; admins review everything.
+    if (!actor.admin && v.email !== actor.email) continue;
+    suggestions.push(v);
+  }
   suggestions.sort((a, b) => (b.ts || 0) - (a.ts || 0));
   const counts = { open: suggestions.filter(s => s.status === 'open').length };
   return json(truncated ? { suggestions, counts, truncated: true } : { suggestions, counts });
@@ -1018,9 +1073,9 @@ async function suggestionDecide(request, env) {
   // Deciding lands (or buries) someone else's words on the live site — owner only.
   if (!actor.admin) return json({ error: 'admin only' }, 403);
   if (!/^[a-f0-9]{12}$/.test(String(id || '')) || typeof approve !== 'boolean') return json({ error: 'bad request' }, 400);
-  const key = `sug:${repo}:${id}`;
-  const sug = await env.KILN.get(key, 'json');
-  if (!sug) return json({ error: 'not found' }, 404);
+  const found = await shelfFind(env, (await shelf(env, repo)).names, name => `sug:${name}:${id}`);
+  if (!found) return json({ error: 'not found' }, 404);
+  const sug = found.value;
   if (sug.status !== 'open') return json({ error: 'already decided' }, 409);
   const decided = { by: actor.name, ts: Date.now() };
   if (typeof note === 'string' && note.trim()) decided.note = note.trim().slice(0, 500);
@@ -1028,7 +1083,7 @@ async function suggestionDecide(request, env) {
   if (!approve) {
     sug.status = 'declined';
     sug.decided = decided;
-    await env.KILN.put(key, JSON.stringify(sug));
+    await found.save(sug);
     return json({ suggestion: sug });
   }
 
@@ -1062,7 +1117,7 @@ async function suggestionDecide(request, env) {
         // nothing to commit, but the suggestion is honored.
         sug.status = 'approved';
         sug.decided = decided;
-        await env.KILN.put(key, JSON.stringify(sug));
+        await found.save(sug);
         return json({ suggestion: sug, unchanged: true });
       }
       // Same server-side content guard as every editor write path: the merged
@@ -1084,7 +1139,7 @@ async function suggestionDecide(request, env) {
         sug.status = 'approved';
         sug.decided = decided;
         sug.commit = { sha: out.commit?.sha, url: out.commit?.html_url };
-        await env.KILN.put(key, JSON.stringify(sug));
+        await found.save(sug);
         return json({ suggestion: sug, applied, skipped });
       }
       const err = await put.json().catch(() => ({}));
@@ -1654,10 +1709,15 @@ async function getPeople(env, repo) {
   if (list) return list;
   // Nothing under this name. The same repository may have people on record
   // under the name it had before a rename or a transfer (KLR-08).
-  // followRepo answers with the name the list is filed under now: another
-  // name the repository still has data under, or this one after a move.
-  const home = await followRepo(env, repo);
-  return home ? ((await env.KILN.get(`people:${home}`, 'json')) || []) : [];
+  // followRepo answers with the names the list may be filed under now:
+  // another name the repository still has data under, or this one after a
+  // move (and the one it is moving from, should the move have been cut short).
+  const rec = await followRepo(env, repo);
+  for (const name of rec ? [rec.name, ...movingFrom(rec)] : []) {
+    const there = await env.KILN.get(`people:${name}`, 'json');
+    if (there) return there;
+  }
+  return [];
 }
 
 /** The name a repository's people are filed under: `repo` itself, unless the
@@ -1665,7 +1725,8 @@ async function getPeople(env, repo) {
  *  there too, so one repository never ends up with two lists. */
 async function peopleHome(env, repo) {
   if (await env.KILN.get(`people:${repo}`)) return repo;
-  return (await followRepo(env, repo)) || repo;
+  const rec = await followRepo(env, repo);
+  return rec ? rec.name : repo;
 }
 
 async function peopleList(request, env, url) {
@@ -1743,7 +1804,7 @@ async function peopleUpsert(request, env) {
   // takes effect immediately — the frozen `paths` in an old esess would
   // otherwise keep their previous access until it expired (up to 360 days).
   // (Under each name the repository has sessions for.)
-  for (const r of new Set([repo, home])) {
+  for (const r of new Set([repo, home, ...(await shelf(env, home)).names])) {
     await purgeEditorSessions(env, r, addr);
     await purgeMemberSessions(env, r, addr);
   }
@@ -1770,9 +1831,10 @@ async function peopleRemove(request, env) {
   const home = await peopleHome(env, repo);
   const people = (await getPeople(env, home)).filter(p => p.email !== addr);
   await env.KILN.put(`people:${home}`, JSON.stringify(people));
-  // Under each name the repository has sessions for (the one asked with, and
-  // the one its list is filed under when that differs).
-  const names = new Set([repo, home]);
+  // Under each name the repository has sessions for (the one asked with, the
+  // one its list is filed under when that differs, and any a move after a
+  // rename has not finished with).
+  const names = new Set([repo, home, ...(await shelf(env, home)).names]);
   // Revoke any active editor sessions for this person immediately (not just future sign-ins).
   for (const r of names) await purgeEditorSessions(env, r, addr);
   // A member's sign-in lives in a cookie their site signed; ending its record
@@ -1865,8 +1927,12 @@ async function googleCallback(url, env) {
   if (person.role === 'editor') {
     const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
     const exp = person.days ? Date.now() + person.days * 24 * 3600 * 1000 : null;  // days:0 = never
+    // The session is filed under the name the repository's things are under,
+    // so there is never one that only an old name knows about. The site is
+    // told the name it asked with (below): that is what its editor compares.
+    const { home } = await shelf(env, state.repo);
     await env.KILN.put(`esess:${session}`,
-      JSON.stringify({ repo: state.repo, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], features: person.features || null, mode: person.mode === 'suggest' || person.mode === 'review' ? person.mode : null, created: Date.now(), exp }),
+      JSON.stringify({ repo: home, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], features: person.features || null, mode: person.mode === 'suggest' || person.mode === 'review' ? person.mode : null, created: Date.now(), exp }),
       person.days ? { expirationTtl: person.days * 24 * 3600 } : undefined);
     const fp = { 'kiln-esession': session, 'kiln-name': displayName, 'kiln-repo': state.repo };
     if (exp) fp['kiln-exp'] = String(exp);
@@ -1939,7 +2005,7 @@ async function googleClaim(request, env) {
   if (session && data.repo && data.email) {
     sid = crypto.randomUUID().replaceAll('-', '');
     const days = Number(data.days) === 0 ? 0 : Math.min(Math.max(Number(data.days) || 30, 1), 360);
-    await env.KILN.put(`msess:${sid}`, JSON.stringify({ repo: data.repo, email: data.email, origin: data.origin }),
+    await env.KILN.put(`msess:${sid}`, JSON.stringify({ repo: (await shelf(env, data.repo)).home, email: data.email, origin: data.origin }),
       days ? { expirationTtl: days * 24 * 3600 } : undefined);
   }
   return json({ ok: true, name: data.name, days: data.days, ...(sid ? { sid } : {}) });
@@ -1998,7 +2064,9 @@ async function apiTokenCreate(request, env) {
   const secret = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
   const record = {
     id: crypto.randomUUID().replaceAll('-', '').slice(0, 8),
-    repo,
+    // The name the repository's things are filed under: not always the one
+    // this site's config has (a renamed repository).
+    repo: (await shelf(env, repo)).home,
     name: label,
     paths: normalizePaths(paths),
     keys: normalizePaths(keys).filter(k => k !== '').slice(0, 50),
@@ -2015,13 +2083,14 @@ async function apiTokenCreate(request, env) {
 async function apiTokenList(request, env, url) {
   const repo = url.searchParams.get('repo') || '';
   if (!(await requirePush(request, repo, env))) return forbidden(request);
+  const mine = new Set([repo, ...(await shelf(env, repo)).names]);
   const tokens = [];
   let cursor;
   do {
     const page = await env.KILN.list({ prefix: 'atok:', cursor });
     for (const k of page.keys) {
       const v = await env.KILN.get(k.name, 'json');
-      if (v && v.repo === repo) tokens.push(v);
+      if (v && mine.has(v.repo)) tokens.push(v);
     }
     cursor = page.list_complete ? null : page.cursor;
   } while (cursor);
@@ -2032,12 +2101,13 @@ async function apiTokenRevoke(request, env) {
   const { repo, id } = await request.json().catch(() => ({}));
   if (!(await requirePush(request, repo, env))) return forbidden(request);
   if (!/^[a-f0-9]{8}$/.test(id || '')) return json({ error: 'bad id' }, 400);
+  const mine = new Set([repo, ...(await shelf(env, repo)).names]);
   let cursor;
   do {
     const page = await env.KILN.list({ prefix: 'atok:', cursor });
     for (const k of page.keys) {
       const v = await env.KILN.get(k.name, 'json');
-      if (v && v.repo === repo && v.id === id) {
+      if (v && mine.has(v.repo) && v.id === id) {
         await env.KILN.delete(k.name);
         return json({ ok: true });
       }
@@ -2389,6 +2459,18 @@ async function ghProxy(request, env, ghPath) {
   // Trust the stored expiry, not only KV's TTL.
   if (sess.exp && sess.exp < Date.now()) return json({ error: 'session expired' }, 401);
   if (sess.role !== 'editor') return json({ error: 'not an editor session' }, 403);
+
+  // A site whose config still has the name from before a rename or a transfer
+  // asks for /repos/<that name>/…. When the worker's records say it is the
+  // repository this session is on, the request is carried out under the
+  // session's own name. Any other name falls through to the allowlist below
+  // and is refused there, as it always was.
+  {
+    const asked = /^\/repos\/([\w.-]+\/[\w.-]+)(?=[/?]|$)/.exec(ghPath);
+    if (asked && asked[1] !== sess.repo && await sameOnRecord(env, asked[1], sess.repo)) {
+      ghPath = `/repos/${sess.repo}${ghPath.slice(asked[0].length)}`;
+    }
+  }
 
   // Path traversal guard (ALL methods): the allowlist matches on the raw path,
   // but GitHub's fetch collapses `..` — so `/repos/OWNER/A/contents/../../B/…`
@@ -2790,15 +2872,21 @@ async function installationToken(env, repo) {
 // until someone else takes it. A repository's numeric id never changes, so the
 // worker keeps, for every repository it meets:
 //
-//   rid:<id>            → { id, name, at }   the name its data is filed under
-//   rname:<owner/name>  → { id, at }         which repository a name was (lowercased)
+//   rid:<id>            → { id, name, was?, at, from?, moved? }
+//                           name   the name its things are filed under
+//                           from   names a move is still bringing things from
+//   rname:<owner/name>  → { id, at }         which repository a name is (lowercased)
 //   rsee:<owner/name>   → { id, name }       GitHub's last answer for a name, 10 minutes
+//   rmove:<id>          → { id, to, at, done, cursor? }   how far an unfinished move has got
 //
-// With that it can follow a rename: when a site starts using the new name, its
-// people list (and its Kiln Cloud registration) move to it; while a site still
-// uses the old name, the list is read from wherever it is filed. And it can
-// tell a rename from a takeover: an old name that now answers as a different
-// repository gets none of the people stored for the one that had it before.
+// With that it can follow a rename. When a site starts using the new name,
+// what it stores moves there: the people list and the Kiln Cloud registration
+// at once, then comment threads, suggestions, API tokens, member sign-ins and
+// scheduled publishes in bounded steps (see "Moving what a repository
+// stores" below). While a site still uses the old name, everything is read
+// from wherever it is filed. And it can tell a rename from a takeover: an old
+// name that now answers as a different repository gets nothing that is stored
+// for the one that had it before.
 
 /** GitHub's answer for a name, read with the App's token: { id, name } or null. Cached for ten minutes. */
 async function repoIdentity(env, repo) {
@@ -2826,19 +2914,19 @@ async function lookUpRepo(env, repo, token) {
 /**
  * Put a repository's id on record for the name a site uses, and say whether
  * the name may be used for it. False only when the name is on record as one
- * repository, with people stored under it, while GitHub now answers to it as
- * another. That is a takeover of an old name, or a repository deleted and
- * made again: either way the stored list belongs to the repository that had
- * the name before, and the record is left as it is. A name with nothing
- * stored under it is free and becomes the new repository's. Writes only what
- * is new; never throws.
+ * repository, with that repository's things still stored under it, while
+ * GitHub now answers to it as another. That is a takeover of an old name, or
+ * a repository deleted and made again: either way what is stored belongs to
+ * the repository that had the name before, and the record is left as it is.
+ * A name with nothing stored under it is free and becomes the new
+ * repository's. Writes only what is new; never throws.
  */
 async function admitRepo(env, repo, seen) {
   try {
     const nameKey = `rname:${repo.toLowerCase()}`;
     const had = await env.KILN.get(nameKey, 'json');
     const other = !!had && Number.isInteger(had.id) && had.id !== seen.id;
-    if (other && await env.KILN.get(`people:${repo}`)) return false;
+    if (other && await stillFiledUnder(env, repo, had.id)) return false;
     if (!had || other) {
       await env.KILN.put(nameKey, JSON.stringify({ id: seen.id, at: Date.now() }));
       // What was last heard about this name may be about the repository that
@@ -2850,19 +2938,80 @@ async function admitRepo(env, repo, seen) {
   return true;
 }
 
-/** Read only: is `repo` on record as another repository than `seen`, with people stored under it? */
+/** Read only: is `repo` on record as another repository than `seen`, with that repository's things still stored under it? */
 async function nameTakenOver(env, repo, seen) {
   try {
     const had = await env.KILN.get(`rname:${repo.toLowerCase()}`, 'json');
     if (!had || !Number.isInteger(had.id) || had.id === seen.id) return false;
-    return !!(await env.KILN.get(`people:${repo}`));
+    return await stillFiledUnder(env, repo, had.id);
   } catch { return false; }
 }
 
 /**
- * `repo` has no people filed under it. If the same repository (by id) has
- * them under another name, say which name holds them, moving them first when
- * `repo` is the repository's current name. null when there is nothing to follow.
+ * Does the repository `id` still have things filed under `name`? This is what
+ * holds a name against whoever GitHub says has it now: the people list, as
+ * before, and equally comment threads, suggestions, scheduled publishes and
+ * API tokens. Sign-ins need no look of their own: they are filed where the
+ * people list is, and a move ends or moves them before it lets go of a name.
+ *
+ * Schedules and tokens are found by reading every one of them, so that is
+ * done last and only when the repository's things are filed under this very
+ * name; after a finished move nothing of it names the old one any more.
+ * Read only. If storage cannot be asked the answer is yes: what cannot be
+ * shown to be nobody's is not handed over.
+ */
+async function stillFiledUnder(env, name, id) {
+  try {
+    if (await env.KILN.get(`people:${name}`)) return true;
+    const rec = await env.KILN.get(`rid:${id}`, 'json');
+    const same = (n) => typeof n === 'string' && n.toLowerCase() === name.toLowerCase();
+    if (movingFrom(rec).some(same)) return true;                 // a move away from this name is not finished
+    // Followed by the release before this one: only its people moved, and
+    // what else it left under this name has yet to be brought along.
+    if (rec && same(rec.was) && !same(rec.name) && !rec.moved && !Array.isArray(rec.from)) return true;
+    const home = !rec || same(rec.name);
+    const spellings = [...new Set([name, ...(rec && same(rec.name) ? [rec.name] : [])])];
+    for (const n of spellings) {
+      if (n !== name && await env.KILN.get(`people:${n}`)) return true;
+      if (await anyKey(env.KILN, `cmt:${n}:`) || await anyKey(env.KILN, `sug:${n}:`)) return true;
+    }
+    if (!home) return false;
+    return (await anyNaming(env, 'sched:', spellings)) || (await anyNaming(env, 'atok:', spellings));
+  } catch { return true; }
+}
+
+/** Is there any key at all under a prefix? */
+async function anyKey(kv, prefix) {
+  return (await kv.list({ prefix, limit: 1 })).keys.length > 0;
+}
+
+/** Is there a record under `prefix` whose `repo` is one of `names`? Reads them all: for the rare ask only. */
+async function anyNaming(env, prefix, names) {
+  let cursor;
+  do {
+    const page = await env.KILN.list({ prefix, cursor });
+    for (const k of page.keys) {
+      const v = await env.KILN.get(k.name, 'json');
+      if (v && names.includes(v.repo)) return true;
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return false;
+}
+
+/** The names a move is still bringing a repository's things from. Empty when nothing is moving. */
+function movingFrom(rec) {
+  return rec && Array.isArray(rec.from) ? rec.from.filter(n => typeof n === 'string' && n && n !== rec.name) : [];
+}
+
+/**
+ * `repo` is not the name its repository's things are filed under, or nothing
+ * says so yet. Ask GitHub which repository it is and answer with that
+ * repository's record: `name` is where its things are filed, and `from` (see
+ * movingFrom) the names a move is still bringing them from. When `repo` is
+ * the name GitHub has for the repository now and its things are under
+ * another, the move to `repo` begins here. null when there is nothing to
+ * follow.
  */
 async function followRepo(env, repo) {
   try {
@@ -2870,29 +3019,371 @@ async function followRepo(env, repo) {
     const seen = await repoIdentity(env, repo);
     if (!seen) return null;
     const rec = await env.KILN.get(`rid:${seen.id}`, 'json');
-    if (!rec || typeof rec.name !== 'string' || rec.name === repo) return null;
-    // Asked by a name GitHub only redirects: the data stays where it is filed.
-    if (repo.toLowerCase() !== seen.name.toLowerCase()) return rec.name;
+    if (!rec || typeof rec.name !== 'string') return null;
+    if (rec.name === repo) return movingFrom(rec).length ? rec : null;
+    // A name that is on record as another repository, with that repository's
+    // things still under it, is not followed: nothing is read from it for
+    // this one and nothing of this one is moved into it.
+    if (await nameTakenOver(env, repo, seen)) return null;
+    // Asked by a name GitHub only redirects, or by another spelling of the
+    // name the things are under: they stay where they are filed.
+    if (repo.toLowerCase() !== seen.name.toLowerCase() || rec.name.toLowerCase() === repo.toLowerCase()) return rec;
     // Asked by the repository's current name: bring what is stored along.
-    const from = rec.name;
-    const list = await env.KILN.get(`people:${from}`, 'json');
-    if (list) {
-      await env.KILN.put(`people:${repo}`, JSON.stringify(list));   // the new copy exists before the old one goes
-      await env.KILN.delete(`people:${from}`);
-    }
-    await env.KILN.put(`rid:${seen.id}`, JSON.stringify({ id: seen.id, name: repo, was: from, at: Date.now() }));
-    await env.KILN.put(`rname:${repo.toLowerCase()}`, JSON.stringify({ id: seen.id, at: Date.now() }));
-    // The old name holds nothing now: whoever has it next starts clean.
-    if (from.toLowerCase() !== repo.toLowerCase()) await env.KILN.delete(`rname:${from.toLowerCase()}`);
-    if (env.kiln_cloud) {
-      try { await env.kiln_cloud.prepare('UPDATE sites SET repo = ? WHERE lower(repo) = lower(?)').bind(repo, from).run(); } catch { /* the registration is corrected by hand */ }
-    }
-    console.log(`repo followed: ${from} is now ${repo} (id ${seen.id}); ${list ? list.length : 0} people moved`);
-    return repo;
+    return await beginMove(env, seen.id, rec, repo);
   } catch (err) {
     console.error('repo follow failed', String(err && err.message || err));
     return null;
   }
+}
+
+/**
+ * Turn a repository over to the name it has now. One write says both things
+ * at once: its things are filed under `to` from here on, and what is under
+ * its earlier names is still to come. Nothing is copied before that is on
+ * record, so wherever this stops, every reader knows to look in both places
+ * and the move is picked up again (moveStep). The people list is one key and
+ * comes along here; the rest follows in bounded steps.
+ */
+async function beginMove(env, id, rec, to) {
+  const from = [...new Set([...movingFrom(rec), rec.name])].filter(n => n !== to);
+  const next = { id, name: to, was: rec.name, at: Date.now(), from };
+  await env.KILN.put(`rid:${id}`, JSON.stringify(next));
+  await env.KILN.put(`rmove:${id}`, JSON.stringify({ id, to, at: next.at, done: {} }));
+  await env.KILN.put(`rname:${to.toLowerCase()}`, JSON.stringify({ id, at: next.at }));
+  for (const name of from) {
+    // The old name stays on record as this repository: that is what answers a
+    // site still using it, and what keeps the name from anyone else until
+    // everything under it has left.
+    const key = `rname:${name.toLowerCase()}`;
+    if (!(await env.KILN.get(key))) await env.KILN.put(key, JSON.stringify({ id, at: next.at }));
+    // What was last heard about it may say it is the current name: forget
+    // that, so nothing is moved back on stale word.
+    if (name.toLowerCase() !== to.toLowerCase()) await env.KILN.delete(`rsee:${name.toLowerCase()}`);
+  }
+  await movePeople(env.KILN, from, to);
+  if (env.kiln_cloud) {
+    for (const name of from) {
+      try { await env.kiln_cloud.prepare('UPDATE sites SET repo = ? WHERE lower(repo) = lower(?)').bind(to, name).run(); } catch { /* the registration is corrected by hand */ }
+    }
+  }
+  console.log(`repo followed: ${rec.name} is now ${to} (id ${id}); what is stored under ${from.join(', ')} follows`);
+  return next;
+}
+
+/**
+ * A repository followed by the release before this one has only its people
+ * under its new name. What it left under the name before (`was`) follows
+ * now, unless that name has since become another repository's: then what is
+ * under it is not this repository's to take. Decided once, and written down.
+ */
+async function adoptLeftBehind(env, rec) {
+  if (typeof rec.was !== 'string' || rec.was === rec.name || Array.isArray(rec.from) || rec.moved || !Number.isInteger(rec.id)) return rec;
+  try {
+    const key = `rname:${rec.was.toLowerCase()}`;
+    const named = await env.KILN.get(key, 'json');
+    const ours = !named || named.id === rec.id;
+    const next = ours ? { ...rec, from: [rec.was] } : { ...rec, moved: Date.now() };
+    await env.KILN.put(`rid:${rec.id}`, JSON.stringify(next));
+    if (ours) {
+      if (!named) await env.KILN.put(key, JSON.stringify({ id: rec.id, at: Date.now() }));
+      await env.KILN.put(`rmove:${rec.id}`, JSON.stringify({ id: rec.id, to: rec.name, at: Date.now(), done: {} }));
+    }
+    return next;
+  } catch { return rec; }
+}
+
+/**
+ * Where a repository's stored things are, for a request made under `repo`:
+ *   home    the name they are filed under; whatever is written goes there
+ *   names   every name to read from, home first. More than one only while a
+ *           move after a rename or a transfer is unfinished.
+ * Answered from the worker's own records: two KV reads for a repository that
+ * never changed its name, and GitHub is asked (followRepo) only when the
+ * records say this name's repository files its things under another one.
+ * While a move is unfinished, a request also does one bounded step of it
+ * (moveStep) unless `step` is false. Never throws: with no record, or with
+ * trouble, a name is simply its own shelf, as it always was.
+ */
+async function shelf(env, repo, { step = true } = {}) {
+  const plain = { home: repo, names: [repo] };
+  try {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(String(repo || ''))) return plain;
+    const named = await env.KILN.get(`rname:${repo.toLowerCase()}`, 'json');
+    if (!named || !Number.isInteger(named.id)) return plain;
+    let rec = await env.KILN.get(`rid:${named.id}`, 'json');
+    if (!rec || typeof rec.name !== 'string') return plain;
+    if (rec.name !== repo) {
+      rec = await followRepo(env, repo);
+      if (!rec) return plain;
+    }
+    rec = await adoptLeftBehind(env, rec);
+    const from = movingFrom(rec);
+    if (from.length && step) await moveStep(env, Number.isInteger(rec.id) ? rec.id : named.id, MOVE_OPS_PER_REQUEST);
+    return { home: rec.name, names: [rec.name, ...from] };
+  } catch { return plain; }
+}
+
+/** By the worker's own records, are two names the same repository? KV only: GitHub is not asked. */
+async function sameOnRecord(env, a, b) {
+  if (a === b) return true;
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  try {
+    const [x, y] = await Promise.all([a, b].map(n => env.KILN.get(`rname:${n.toLowerCase()}`, 'json')));
+    return !!x && !!y && Number.isInteger(x.id) && x.id === y.id;
+  } catch { return false; }
+}
+
+/**
+ * The entries of one kind (comment threads, suggestions) a repository has,
+ * over every name they may be filed under. Old names are listed first and
+ * the home name last, so an entry that moves while this runs is still met;
+ * one that is under both for a moment (copied, not yet removed) counts once,
+ * as its copy under the home name. At most `max` entries.
+ */
+async function shelfEntries(env, names, prefixOf, max) {
+  const home = prefixOf(names[0]);
+  const at = new Map();   // the part of a key after its prefix → the key to read
+  let truncated = false;
+  for (const name of [...names.slice(1), names[0]]) {
+    const prefix = prefixOf(name);
+    let cursor;
+    do {
+      const batch = await env.KILN.list({ prefix, cursor });
+      for (const k of batch.keys) {
+        const rest = k.name.slice(prefix.length);
+        if (!at.has(rest) && at.size >= max) { truncated = true; break; }
+        at.set(rest, k.name);
+      }
+      cursor = truncated || batch.list_complete ? null : batch.cursor;
+    } while (cursor);
+    if (truncated) break;
+  }
+  return { entries: [...at].map(([rest, key]) => ({ key, home: home + rest })), truncated };
+}
+
+/** Read one such entry. If it moved between the listing and now, it is under the home name. */
+async function shelfRead(env, entry) {
+  const v = await env.KILN.get(entry.key, 'json');
+  return v || entry.key === entry.home ? v : env.KILN.get(entry.home, 'json');
+}
+
+/**
+ * Find one entry that is about to be changed, under whichever name it is
+ * filed. Returns { value, save } or null. save() writes it under the home
+ * name and only then removes a copy an unfinished move had not got to, so
+ * the change is never under the old name alone.
+ */
+async function shelfFind(env, names, keyOf) {
+  const home = keyOf(names[0]);
+  let value = null, old = null;
+  for (const name of names.slice(1)) {
+    const key = keyOf(name);
+    const v = await env.KILN.get(key, 'json');
+    if (v) { value = v; old = key; break; }
+  }
+  // Looked at last, so an entry moved a moment ago is not missed; and when
+  // it is under both names, the copy under the home name is the newer one.
+  const current = await env.KILN.get(home, 'json');
+  if (current) value = current;
+  if (!value) return null;
+  return {
+    value,
+    save: async (next) => {
+      await env.KILN.put(home, JSON.stringify(next));
+      if (old) await env.KILN.delete(old);
+    },
+  };
+}
+
+// ─── Moving what a repository stores to its new name ─────────────────────────
+// A site can hold hundreds of comment threads, and a request may only make so
+// many KV operations, so a move is done in steps. Each step is bounded:
+//
+//   MOVE_OPS_PER_REQUEST   KV operations a request spends on an unfinished
+//                          move (about a dozen comment threads)
+//   MOVE_OPS_PER_CRON      the same for one cron run, which is what finishes
+//                          a move nobody is making requests for
+//
+// What makes it safe to stop anywhere:
+//   · `rid:<id>.from` names the old names until the move is done, and every
+//     reader looks under them as well as under the new one (shelf);
+//   · a thread or a suggestion is copied to its new key BEFORE its old key
+//     is removed, and never over a copy that is already there (that copy has
+//     been written to since);
+//   · tokens and member sign-ins are rewritten in place, one write each;
+//   · editor sign-ins under the old name are ended: an editor signs in again
+//     and gets a session filed under the new one;
+//   · scheduled publishes are rewritten by the cron pass that publishes them
+//     (runDueSchedules), not here, so one cannot be moved by a request while
+//     the cron is publishing it. Only where no cron has done it within the
+//     hour (a worker set up without the cron trigger) does a step do it;
+//   · the move is done only when every old name is seen empty, and then
+//     `from` and `rmove:<id>` go.
+
+const MOVE_OPS_PER_REQUEST = 60;
+const MOVE_OPS_PER_CRON = 400;
+// How long a move waits for the cron to file its scheduled publishes (the
+// cron runs every five minutes) before a step does it instead.
+const MOVE_SCHED_WAIT_MS = 60 * 60 * 1000;
+// What a step may spend outside its copying: reading the two records, the
+// people list, and writing down where it got to.
+const MOVE_OVERHEAD = 12;
+
+/** The two bounds, for the tests. */
+function moveBounds() {
+  return { request: MOVE_OPS_PER_REQUEST, cron: MOVE_OPS_PER_CRON };
+}
+
+/** KV with a count of the operations made through it. */
+function metered(kv) {
+  const m = { ops: 0 };
+  for (const op of ['get', 'put', 'delete', 'list']) m[op] = (...args) => { m.ops++; return kv[op](...args); };
+  return m;
+}
+
+/** KV options that keep a rewritten key's expiry as it was. null: it is about to expire, so it is left to (KV refuses so short a life). */
+function keepExpiry(key) {
+  if (!key.expiration) return undefined;
+  return key.expiration - Math.floor(Date.now() / 1000) < 90 ? null : { expiration: key.expiration };
+}
+
+/** The people list: one key. Copied first, removed after; a list already under the new name is the one that counts. */
+async function movePeople(kv, from, to) {
+  for (const name of from) {
+    const list = await kv.get(`people:${name}`);
+    if (list === null) continue;
+    if ((await kv.get(`people:${to}`)) === null) await kv.put(`people:${to}`, list);
+    await kv.delete(`people:${name}`);
+  }
+}
+
+/** Move the keys under one prefix to another, as many as `cap` allows. True once the old prefix is seen empty. */
+async function movePrefix(kv, fromPrefix, toPrefix, cap) {
+  for (;;) {
+    const room = Math.floor((cap - kv.ops - 1) / 4);
+    if (room < 1) return false;
+    const page = await kv.list({ prefix: fromPrefix, limit: Math.min(room, 250) });
+    if (!page.keys.length) return true;
+    for (const k of page.keys) {
+      const dst = toPrefix + k.name.slice(fromPrefix.length);
+      const value = await kv.get(k.name);
+      const keep = keepExpiry(k);
+      if (value !== null && keep !== null && (await kv.get(dst)) === null) await kv.put(dst, value, keep);
+      await kv.delete(k.name);
+    }
+  }
+}
+
+/**
+ * One pass over every record of a kind that names its repository in its
+ * value (`atok`, `msess`, `esess`, `sched`), as far as `cap` allows: those naming an
+ * old name are rewritten to the new one, or, for editor sign-ins, ended.
+ * Returns { done } or { done: false, cursor } to carry on from.
+ */
+async function moveNamed(kv, kind, old, to, cursor, cap) {
+  for (;;) {
+    const room = Math.floor((cap - kv.ops - 1) / 2);
+    if (room < 1) return { done: false, cursor };
+    let page;
+    try { page = await kv.list({ prefix: `${kind}:`, limit: Math.min(room, 1000), ...(cursor ? { cursor } : {}) }); }
+    catch (err) {
+      if (!cursor) throw err;
+      cursor = undefined;   // a place that is no longer good: the pass starts over, and what it already did stays done
+      continue;
+    }
+    for (const k of page.keys) {
+      const v = await kv.get(k.name, 'json');
+      if (!v || !old.has(v.repo)) continue;
+      if (kind === 'esess') { await kv.delete(k.name); continue; }
+      const keep = keepExpiry(k);
+      if (keep !== null) await kv.put(k.name, JSON.stringify({ ...v, repo: to }), keep);
+    }
+    if (page.list_complete || !page.cursor) return { done: true };
+    cursor = page.cursor;
+  }
+}
+
+/**
+ * One bounded step of a repository's move to its new name. Spends at most
+ * `budget` KV operations and returns how many it spent. Never throws: a step
+ * that fails part way has lost nothing (see the notes above) and the next
+ * one starts from what is actually there.
+ */
+async function moveStep(env, id, budget) {
+  const kv = metered(env.KILN);
+  try {
+    const rec = await kv.get(`rid:${id}`, 'json');
+    const from = movingFrom(rec);
+    if (!from.length) { await kv.delete(`rmove:${id}`); return kv.ops; }
+    const to = rec.name;
+    const kept = await kv.get(`rmove:${id}`, 'json');
+    const mv = kept && kept.to === to && kept.done && typeof kept.done === 'object' ? kept : { id, to, at: Date.now(), done: {} };
+    const before = JSON.stringify(kept);
+    const cap = budget - MOVE_OVERHEAD;
+
+    await movePeople(kv, from, to);
+    let empty = true;
+    for (const name of from) {
+      for (const kind of ['cmt', 'sug']) {
+        if (!(await movePrefix(kv, `${kind}:${name}:`, `${kind}:${to}:`, cap))) empty = false;
+      }
+    }
+    const old = new Set(from);
+    // Scheduled publishes are filed under the new name by the cron pass that
+    // publishes them. With none stored there is nothing for it to do; and if
+    // an hour has gone by without it, no cron is running and a step does it.
+    if (!mv.done.sched && !(await anyKey(kv, 'sched:'))) mv.done.sched = true;
+    const overdue = Date.now() - (Number(mv.at) || 0) > MOVE_SCHED_WAIT_MS;
+    for (const kind of ['atok', 'msess', 'esess', ...(overdue ? ['sched'] : [])]) {
+      if (mv.done[kind]) continue;
+      const pass = await moveNamed(kv, kind, old, to, mv.cursor && mv.cursor[kind], cap);
+      const cursor = { ...(mv.cursor || {}) };
+      delete cursor[kind];
+      if (pass.done) mv.done[kind] = true;
+      else if (pass.cursor) cursor[kind] = pass.cursor;
+      if (Object.keys(cursor).length) mv.cursor = cursor; else delete mv.cursor;
+    }
+
+    if (empty && ['atok', 'msess', 'esess', 'sched'].every(kind => mv.done[kind])) {
+      // Unless the repository was turned over to yet another name meanwhile.
+      const now = await kv.get(`rid:${id}`, 'json');
+      if (now && now.name === to && now.at === rec.at) {
+        const { from: _brought, ...settled } = now;
+        await kv.put(`rid:${id}`, JSON.stringify({ ...settled, moved: Date.now() }));
+        await kv.delete(`rmove:${id}`);
+        console.log(`repo move finished: everything stored for ${from.join(', ')} is under ${to} (id ${id})`);
+      }
+    } else if (JSON.stringify(mv) !== before) {
+      await kv.put(`rmove:${id}`, JSON.stringify(mv));
+    }
+  } catch (err) {
+    console.error('repo move step failed', String(err && err.message || err));
+  }
+  return kv.ops;
+}
+
+/** The cron's share: carry every unfinished move one step further, within one run's budget. */
+async function continueMoves(env) {
+  let left = MOVE_OPS_PER_CRON;
+  const page = await env.KILN.list({ prefix: 'rmove:', limit: 25 });
+  for (const k of page.keys) {
+    if (left <= MOVE_OVERHEAD) break;
+    const id = Number(k.name.slice('rmove:'.length));
+    if (!Number.isInteger(id)) { await env.KILN.delete(k.name); continue; }
+    left -= await moveStep(env, id, left);
+  }
+}
+
+/** Old name → { id, to } for every repository whose things are on the move. */
+async function movesUnderWay(env) {
+  const moving = new Map();
+  const page = await env.KILN.list({ prefix: 'rmove:', limit: 25 });
+  for (const k of page.keys) {
+    const id = Number(k.name.slice('rmove:'.length));
+    const rec = Number.isInteger(id) ? await env.KILN.get(`rid:${id}`, 'json') : null;
+    for (const name of movingFrom(rec)) moving.set(name, { id, to: rec.name });
+  }
+  return moving;
 }
 
 /** Are two names the same repository? Same spelling, or the same id by the worker's records or GitHub's answer. */

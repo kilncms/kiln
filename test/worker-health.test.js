@@ -103,14 +103,15 @@ test('KLR-09 cron: each job runs on its own and leaves one structured line; a fa
     await worker.scheduled({}, env);
     assert.equal(trialsRan, 1, 'the second job ran');
     const parsed = lines.map(([level, l]) => ({ level, ...JSON.parse(l) }));
-    assert.equal(parsed.length, 2);
-    assert.deepEqual(parsed.map(p => [p.level, p.evt, p.job, p.ok]), [['error', 'cron', 'schedules', false], ['log', 'cron', 'trials', true]]);
+    assert.equal(parsed.length, 3);
+    // (The third job, which carries a renamed repository's things over, lists KV too.)
+    assert.deepEqual(parsed.map(p => [p.level, p.evt, p.job, p.ok]), [['error', 'cron', 'schedules', false], ['log', 'cron', 'trials', true], ['error', 'cron', 'moves', false]]);
     assert.match(parsed[0].error, /KV list exploded/);
     assert.equal(typeof parsed[1].ms, 'number');
     // Both fail: still no throw (an unhandled error in a cron is invisible).
     lines.length = 0;
     await worker.scheduled({}, { KILN: env.KILN, kiln_cloud: { prepare: () => { throw new Error('D1 down'); } } });
-    assert.deepEqual(lines.map(([level]) => level), ['error', 'error']);
+    assert.deepEqual(lines.map(([level]) => level), ['error', 'error', 'error']);
   } finally { console.log = real.log; console.error = real.error; }
 });
 
