@@ -278,3 +278,11 @@ test('KLR-03 the launchd template runs the script nightly as a login agent and e
   assert.doesNotMatch(plist, /TOKEN|API_KEY|SECRET|RECIPIENT/i);
   assert.doesNotMatch(plist, /--env|--local|--out/, 'defaults only: production, ~/Backups/kiln, 14 kept');
 });
+
+test('KLR-03 a value is read from both of wrangler\'s answers: local {value} and Cloudflare\'s bare string', async () => {
+  const { kvValue } = await import('../scripts/backup-cloud.mjs');
+  assert.equal(kvValue({ value: '{"app_id":1}', metadata: null }), '{"app_id":1}', 'local store');
+  assert.equal(kvValue('{"app_id":1}'), '{"app_id":1}', 'Cloudflare');
+  assert.equal(kvValue({ value: null }), null, 'a key that expired between list and get');
+  assert.equal(kvValue(undefined), undefined, 'a key that was not returned');
+});

@@ -40,6 +40,16 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // The KV keys that cannot be recreated. Everything else in the namespace is a
 // session, a one-time code or a cache.
+/**
+ * One key's value out of `wrangler kv bulk get`. Against a local store wrangler answers
+ * `{ key: { value, metadata } }`; against Cloudflare it answers `{ key: "the value" }`.
+ * Reading only the first shape made every production key look expired.
+ */
+export function kvValue(entry) {
+  if (entry && typeof entry === 'object' && 'value' in entry) return entry.value;
+  return entry;
+}
+
 export const KV_PREFIXES = ['app:creds', 'people:', 'atok:', 'cmt:', 'sug:', 'sched:', 'firstseen:'];
 const D1_NAME = { production: 'kiln-cloud', staging: 'kiln-cloud-staging', local: 'kiln-cloud-local' };
 const CHUNK = 100;   // keys per `kv bulk get`
@@ -131,7 +141,7 @@ export async function backup(opts, { env = process.env, log = console.log, now =
       writeFileSync(want, JSON.stringify(chunk.map(k => k.name)), { mode: 0o600 });
       const got = jsonFrom(wrangler(['kv', 'bulk', 'get', want, '--binding', 'KILN', ...where], env), '{');
       for (const k of chunk) {
-        const value = got[k.name]?.value;
+        const value = kvValue(got[k.name]);
         if (value === null || value === undefined) { vanished++; continue; }   // expired between list and get
         entries.push({ key: k.name, value: typeof value === 'string' ? value : JSON.stringify(value),
           ...(k.expiration ? { expiration: k.expiration } : {}), ...(k.metadata ? { metadata: k.metadata } : {}) });
