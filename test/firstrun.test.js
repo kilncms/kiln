@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { publishLabel, editCommitMessage, guideStep, guideCardCopy, diffSnippet, placeTip, sideForHeading, initGuide, guideSync, guidePublished, guideUndone } from '../src/editor/firstrun.js';
+import { publishLabel, editCommitMessage, goingLiveLabel, guideStep, guideCardCopy, diffSnippet, placeTip, sideForHeading, initGuide, guideSync, guidePublished, guideUndone } from '../src/editor/firstrun.js';
 
 test('publishLabel: says how many edits will go out', () => {
   assert.equal(publishLabel(0), 'Publish');                 // an upload with no field edit still publishes
@@ -28,6 +28,12 @@ test('editCommitMessage: the message a page publish has always had', () => {
     'Edit blog/post.html: post_title, post_body, +gallery_1 (via Kiln)');
   // A field with both a text and a link change is named once per change, as before.
   assert.equal(editCommitMessage('about.html', ['cta', 'cta']), 'Edit about.html: cta, cta (via Kiln)');
+});
+
+test('goingLiveLabel: after "Published." the wait for the host is not called publishing again', () => {
+  assert.equal(goingLiveLabel([{ desc: 'Your page edit' }]), '“Your page edit” is going live… usually under a minute');
+  assert.equal(goingLiveLabel([{ desc: 'a' }, { desc: 'b' }, { desc: 'c' }]), '3 changes are going live… usually under a minute');
+  for (const waiting of [[{ desc: 'x' }], [{ desc: 'x' }, { desc: 'y' }]]) assert.doesNotMatch(goingLiveLabel(waiting), /Publishing/i);
 });
 
 test('guideStep: follows the page — edit, then publish, then what happened', () => {

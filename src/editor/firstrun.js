@@ -17,6 +17,17 @@ export function publishLabel(n, { suggest = false } = {}) {
   return n > 0 ? `Publish ${n} edit${n > 1 ? 's' : ''}` : 'Publish';
 }
 
+/**
+ * The status line while a publish is on its way to the site. The publish
+ * itself has already been confirmed ("Published. Undo"), so this must not go
+ * back to saying "Publishing": what is still happening is the host building.
+ * `waiting` are the journal entries not yet seen on the site ({ desc }).
+ */
+export function goingLiveLabel(waiting) {
+  const what = waiting.length === 1 ? `“${waiting[0].desc}” is` : `${waiting.length} changes are`;
+  return `${what} going live… usually under a minute`;
+}
+
 /** The commit message a page publish gets; `keys` are the edited fields, in order. */
 export function editCommitMessage(path, keys) {
   return `Edit ${path}: ${keys.join(', ')} (via Kiln)`;

@@ -277,6 +277,9 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   copied across and the old copies are named, not deleted. `kiln doctor` reads
   the config from `public/`, and `kiln update` refreshes the editor there
   (it used to stop with "No page here loads kiln.js").
+- **The status line went from "Published." back to "Publishing…"** while the
+  host was building. The wait now reads "“Your page edit” is going live…
+  usually under a minute".
 - **After Undo, the guide's last card still said the change was committed.**
   Pressing Undo while "That was a Git commit" (or, for an invited editor,
   "That is published") was on screen left it up. The card now says the edit is

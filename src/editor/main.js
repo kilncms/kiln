@@ -27,7 +27,7 @@ import { initTheme, openThemePanel } from './theme.js';
 import { initComments, openComments, commentsTick } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 import { initBlocks } from './blocks.js';
-import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished, guideUndone, guideWaiting } from './firstrun.js';
+import { publishLabel, editCommitMessage, goingLiveLabel, initGuide, guideSync, guidePublished, guideUndone, guideWaiting } from './firstrun.js';
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl } from './grants.js';
@@ -3227,7 +3227,7 @@ function runJournal() {
     }
     journalSave(keep);
     if (keep.length && !failed) {
-      setStatus(`Publishing ${keep.length === 1 ? `“${keep[0].desc}”` : keep.length + ' changes'}… usually under a minute`, 'saving');
+      setStatus(goingLiveLabel(keep), 'saving');
     }
   };
   journalTimer = setInterval(tick, 6000);
