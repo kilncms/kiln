@@ -183,6 +183,7 @@ test('doctor: with a worker that moves everything, a name that changed hands is 
   assert.match(out, /a different repository than the one whose people, comment threads, suggestions, scheduled posts or API tokens are stored under this name/);
   assert.match(out, /wrangler kv key delete "rname:kiln-doctor-test-no-such-owner\/site" --binding KILN/, 'the record is filed under the name in lower case');
   assert.match(out, /it keeps the people and everything else stored under the name/);
+  assert.match(out, /a sign-in or an API token made for the first repository stays refused, so people sign in again and tokens are made again/);
   assert.doesNotMatch(out, /kv key delete "people:/);
   assert.equal(code, 1);
 });
