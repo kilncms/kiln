@@ -17,7 +17,14 @@
  * absent, Publish must send the commit, and a refused upload must say why.
  * In sandbox mode again, the safety net: in each list a block is removed,
  * added, moved and duplicated, and after each Undo and Redo every block must
- * be there to be seen, the same elements as before.
+ * be there to be seen, the same elements as before. Removing asks nothing in a
+ * browser box and offers its own Undo. Then what a nervous person tries next:
+ * Save as draft (kept, offered back), a reload with an edit unpublished
+ * ("Pick up where you left off?"), Schedule and every other menu item (each
+ * opens its dialog and says what a real site does, never an error), History
+ * (publish twice, get the first one back), the ✨ button, and the names a
+ * person reads. On a phone: nothing of Kiln's lies on the page's buttons, on
+ * the menu's items or on a list's words.
  * Both passes go through the publish sheet (open it, drop one edit, publish)
  * and press Undo; the signed-in pass also has someone else publish in between.
  * A last pass has the worker end the editor's sign-in: on page load the page
@@ -135,6 +142,16 @@ async function run(browser, size, firstVisit) {
     await guide.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
     check(scope, 'guide step 1 points at the first editable heading', /^(Click|Tap) this and type\.$/.test((await guide.locator('span').first().textContent().catch(() => '')) || ''));
     if (await guide.count()) check(scope, 'guide step 1 does not cover the heading', apart(await box(guide), await box(heading)));
+    if (await guide.count()) {
+      await page.waitForTimeout(2400);   // the page's own fade-ins have settled, and the tip has been looked at again
+      const on = await guide.evaluate((g) => {
+        const r = g.getBoundingClientRect();
+        return [...document.querySelectorAll('a[href], button')].filter(el => !el.closest('[id^="kiln-"], .kiln-item-ctl, .kiln-repeat-add, .kiln-block-gap'))
+          .filter((el) => { const b = el.getBoundingClientRect(); return b.width && b.height && !(b.right <= r.left || r.right <= b.left || b.bottom <= r.top || r.bottom <= b.top); })
+          .map(el => (el.textContent || '').trim().slice(0, 20));
+      });
+      check(scope, 'guide step 1 lies on none of the page\'s own buttons or links', on.length === 0, on.join(', '));
+    }
     await shot('guide-1');
   } else {
     check(scope, 'no guide for a returning visitor', (await guide.count()) === 0);
@@ -477,6 +494,9 @@ async function run(browser, size, firstVisit) {
     if (!(await menu.isVisible())) await press(pencil);
     await page.waitForTimeout(300);
     const help = page.locator('#kiln-help');
+    // the demo's menu is the full menu of a real site: on a phone its last items are a scroll of the sheet away
+    await help.scrollIntoViewIfNeeded().catch(() => {});
+    await page.waitForTimeout(150);
     check(scope, 'the menu has Help, and it can be pressed', (await help.isVisible().catch(() => false)) && (await hit(help)).ok);
     await shot('help-in-menu');
     const popup = context.waitForEvent('page', { timeout: 3000 }).catch(() => null);
@@ -628,6 +648,241 @@ async function runSafetyNet(browser, size) {
   }
   // a block that is itself a link (a card that opens its page) is not followed when one of its buttons is pressed
   check(scope, 'pressing a block\'s buttons opened no other page', opened.length === 0 && blocked.length === 0 && page.url() === URL_ARG, [...opened, ...blocked].slice(0, 2).join(', '));
+
+  // ── the rest of the safety net: a draft, the restore offer, Schedule, the menu, History ──
+  const words = async (locator) => ((await locator.count()) ? ((await locator.first().innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim() : '');
+  const status = page.locator('#kiln-status');
+  const dialog = page.locator('#kiln-modal .kiln-modal-card');
+  const pencil = page.locator('#kiln-fab');
+  const menu = page.locator('#kiln-fab-menu');
+  const toTop = () => page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+  const started = async () => { await pencil.waitFor({ state: 'visible', timeout: 15000 }); await page.waitForTimeout(900); };
+  const item = async (id) => {
+    await toTop();
+    if (!(await menu.isVisible())) { await press(pencil); await page.waitForTimeout(350); }
+    const b = page.locator(`#${id}`);
+    await b.scrollIntoViewIfNeeded().catch(() => {});
+    await press(b);
+    await page.waitForTimeout(600);
+  };
+  const putAway = async () => {
+    for (let i = 0; i < 3 && await page.locator('#kiln-modal').count(); i++) { await page.locator('#kiln-modal [data-close]').first().click().catch(() => {}); await page.waitForTimeout(200); }
+  };
+  const heading = page.locator('h1.kiln-field, h2.kiln-field, h3.kiln-field').first();
+  const key = await heading.getAttribute('data-cms');
+  const read = async () => (await heading.innerText()).replace(/\s+/g, ' ').trim();
+  const original = await read();
+  const retype = async (text) => {
+    await heading.scrollIntoViewIfNeeded();
+    await press(heading);
+    await page.waitForTimeout(350);
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+a' : 'Control+a');
+    await page.keyboard.type(text);
+    await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(400);
+  };
+  const publishNow = async () => {
+    await toTop();
+    await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+    await page.waitForTimeout(450);
+    await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(600);
+  };
+  const plain = (text) => !/!|[—–]| - |Cannot read|undefined|null|forbidden|TypeError|failed/i.test(text);
+
+  // names: what the person editing reads is not the developer's name for the field
+  await heading.scrollIntoViewIfNeeded();
+  const hint = (await heading.getAttribute('title')) || '';
+  check(scope, 'the hover hint names the field in words', /^Edit: [A-Z]/.test(hint) && !hint.includes('_') && !hint.includes(key), hint);
+  await press(heading);
+  await page.waitForTimeout(350);
+  if (!phone) {
+    const label = page.locator('#kiln-toolbar .kiln-tb-label');
+    check(scope, 'the toolbar is labelled in words, and keeps the stored name as its title', !((await label.textContent()) || '').includes('_') && (await label.getAttribute('title')) === key, `${await label.textContent()} / ${await label.getAttribute('title')}`);
+  }
+  // ✨: says what it is, beside the button
+  const spark = page.locator('#kiln-toolbar #kiln-ai');
+  if (await spark.count()) {
+    await press(spark);
+    await page.waitForTimeout(400);
+    const note = page.locator('#kiln-ai-menu');
+    const said = await words(note);
+    check(scope, 'the ✨ button says what it is and where it works', /^Nothing here in the demo\. On a real site, /.test(said) && plain(said) && await note.isVisible(), said.slice(0, 90));
+    if (await note.count()) {
+      const n = await box(note), s2 = await box(spark);
+      if (!phone) check(scope, 'and says it beside the button, on screen', Math.abs(n.left - s2.left) < 40 && Math.abs(n.top - s2.bottom) < 40 && n.right <= size.width && n.bottom <= size.height, `note at ${Math.round(n.left)},${Math.round(n.top)}; button at ${Math.round(s2.left)},${Math.round(s2.bottom)}`);
+      await shot('sparkle-note');
+      await press(note.getByRole('button', { name: 'Got it' }));
+      await page.waitForTimeout(250);
+      check(scope, '"Got it" puts the note away and the edit stays open', (await note.count()) === 0 && (await page.locator('#kiln-toolbar').count()) === 1);
+    }
+  }
+  if (await page.locator('#kiln-toolbar .kiln-tb-cancel').count()) await press(page.locator('#kiln-toolbar .kiln-tb-cancel'));
+  await page.waitForTimeout(250);
+
+  // Save as draft: kept in this browser, said so, offered back
+  await retype('A draft of the heading');
+  await item('kiln-draft');
+  let said = await words(status);
+  check(scope, 'Save as draft works in the demo and says where the draft is', /^Draft saved in this browser\./.test(said) && plain(said), said.slice(0, 110));
+  check(scope, 'the draft is put aside: nothing is waiting to be published', (await page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).count()) === 0);
+  await shot('draft-saved');
+  await page.reload({ waitUntil: 'load' });
+  await started();
+  check(scope, 'the next visit offers the draft back', /^(✕ )?There's a saved draft of this page/.test(await words(dialog)) && (await read()) === original, (await words(dialog)).slice(0, 60));
+  await shot('draft-offered');
+  if (await page.locator('#kiln-dr-resume').count()) await press(page.locator('#kiln-dr-resume'));
+  await page.waitForTimeout(500);
+  check(scope, 'Resume draft puts it on the page, unpublished', (await read()) === 'A draft of the heading' && (await words(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first())) === 'Publish 1 edit');
+
+  // "Pick up where you left off?": an edit that was not published is there after a reload
+  await page.reload({ waitUntil: 'load' });
+  await started();
+  said = await words(dialog);
+  check(scope, 'after a reload the unpublished edit is offered back', /Pick up where you left off\?/.test(said) && /1 unpublished edit/.test(said), said.slice(0, 120));
+  check(scope, 'and it names the part in words', !said.includes(key) && !/\([a-z0-9]+_[a-z0-9_]+\)/.test(said), said.slice(-50));
+  await shot('restore-offered');
+  if (await page.locator('#kiln-rest-yes').count()) await press(page.locator('#kiln-rest-yes'));
+  await page.waitForTimeout(500);
+  check(scope, 'Restore edits brings it back, ready to publish', (await read()) === 'A draft of the heading' && (await words(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first())) === 'Publish 1 edit');
+
+  // Schedule: what a real site does, and nothing asked of a worker
+  await item('kiln-schedule');
+  said = await words(dialog);
+  check(scope, 'Schedule says what a real site does, in the demo\'s words', /Nothing is scheduled in the demo\. On a real site, /.test(said) && plain(said.replace(/Schedule these 1 edit Kiln .*? rebuilds\./, '')), said.slice(-150));
+  await shot('schedule');
+  if (await page.locator('#kiln-sc-go').count()) await press(page.locator('#kiln-sc-go'));
+  await page.waitForTimeout(300);
+  check(scope, 'pressing Schedule says the edit is still here', /^Nothing is scheduled in the demo\. Your edit is still here/.test(await words(page.locator('#kiln-sc-status'))), await words(page.locator('#kiln-sc-status')));
+  await putAway();
+
+  // the menu is the menu of a real site, and each item opens its own dialog and says something plain
+  await toTop();
+  if (!(await menu.isVisible())) { await press(pencil); await page.waitForTimeout(350); }
+  const shown = await page.evaluate(() => [...document.querySelectorAll('#kiln-fab-menu button')].filter(b => b.getClientRects().length).map(b => b.id));
+  const wanted = ['kiln-newpost', 'kiln-pagesettings', 'kiln-history', 'kiln-menu', 'kiln-findreplace', 'kiln-invite', 'kiln-theme', 'kiln-suggestions', 'kiln-settings', 'kiln-help', 'kiln-done'];
+  check(scope, 'the demo\'s menu has what a real site\'s menu has', wanted.every(id => shown.includes(id)), wanted.filter(id => !shown.includes(id)).join(', '));
+  check(scope, 'and leaves out Comments and Sign out', !shown.includes('kiln-comments') && !shown.includes('kiln-signout'));
+  {
+    const m = await box(menu), p = await box(pencil), done = page.locator('#kiln-done');
+    check(scope, 'the open menu lies inside the screen', m.top >= 0 && m.bottom <= size.height + 0.5 && m.left >= 0 && m.right <= size.width + 0.5, `${Math.round(m.top)} to ${Math.round(m.bottom)} of ${size.height}`);
+    check(scope, '"Done editing" is in sight without scrolling, and can be pressed', (await done.isVisible()) && (await hit(done)).ok);
+    // no item of the menu lies under the pencil where it can be seen (the foot is the pencil's own strip)
+    const under = await page.evaluate(() => {
+      const f = document.querySelector('#kiln-fab').getBoundingClientRect();
+      const foot = document.querySelector('.kiln-fab-foot').getBoundingClientRect();
+      return [...document.querySelectorAll('#kiln-fab-menu .kiln-fab-item')].filter(b => b.getClientRects().length).filter((b) => {
+        const r = b.getBoundingClientRect();
+        const bottom = Math.min(r.bottom, foot.top);
+        return r.right > f.left && r.left < f.right && bottom > f.top + 1 && r.top < f.bottom;
+      }).map(b => b.textContent.trim());
+    });
+    check(scope, 'the pencil lies on none of the menu\'s items', under.length === 0, under.join(', '));
+    if (!phone) check(scope, 'the menu ends above the pencil', m.bottom <= p.top + 0.5);
+    await shot('full-menu');
+  }
+  if (phone) { await press(pencil); await page.waitForTimeout(250); }
+  const acts = { 'kiln-newpost': ['#kiln-np-go', '#kiln-np-said', 'Nothing is created in the demo'], 'kiln-pagesettings': ['#kiln-ps-go', '#kiln-ps-status', 'Nothing is saved in the demo'],
+    'kiln-menu': ['#kiln-menu-save', '#kiln-menu-status', 'Nothing is saved in the demo'], 'kiln-findreplace': ['#kiln-fr-scan', '#kiln-fr-status', 'Nothing is replaced in the demo'],
+    'kiln-invite': ['#kiln-p-add', '#kiln-people-list', 'Nobody is added in the demo'] };
+  for (const [id, [go, where, says]] of Object.entries(acts)) {
+    await item(id);
+    const opened = (await dialog.count()) === 1;
+    for (const [sel, value] of [['#kiln-np-title', 'A new page'], ['#kiln-fr-find', 'shirt'], ['#kiln-fr-repl', 'tee'], ['#kiln-p-email', 'pat@example.com']]) { if (await page.locator(sel).count()) await page.locator(sel).fill(value); }
+    if (await page.locator(go).count()) { await page.locator(go).scrollIntoViewIfNeeded().catch(() => {}); await press(page.locator(go)); }
+    await page.waitForTimeout(400);
+    said = await words(page.locator(where));
+    check(scope, `"${id.replace('kiln-', '')}" opens its own dialog and says the demo's sentence where it would act`, opened && said.startsWith(says) && plain(said), said.slice(0, 100));
+    await putAway();
+  }
+  // Theme and Search & jump speak to an editor
+  await item('kiln-theme');
+  await page.waitForTimeout(500);
+  said = await words(dialog.locator('p').first());
+  const settings = await page.locator('.kiln-th-name').allTextContents();
+  check(scope, 'Theme is said in an editor\'s words, and names its settings without the stylesheet\'s dashes', /^The site’s colours and type sizes\./.test(said) && !/CSS|:root/.test(said)
+    && settings.length > 0 && !settings.some(n => /--/.test(n)), `${said.slice(0, 60)} / ${settings.slice(0, 4).join(', ')}`);
+  await putAway();
+  await item('kiln-palette-btn');
+  const names = await page.locator('.kiln-pal-item .kiln-pal-name').allTextContents();
+  check(scope, 'Search & jump lists this page\'s parts in words', names.length > 0 && !names.some(n => /_/.test(n)) && !names.includes('hero img'), names.slice(-4).join(' | '));
+  await page.locator('.kiln-pal-input').fill('history');
+  await page.waitForTimeout(350);
+  const found = await page.locator('.kiln-pal-item .kiln-pal-name').allTextContents();
+  check(scope, 'typing "history" finds History, not parts that only share its letters', found[0] === 'History & restore' && found.every(n => /history/i.test(n)), found.join(' | '));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  await putAway();
+
+  // History: publish twice, and get the first one back
+  await retype('First version');
+  await publishNow();
+  await retype('Second version');
+  await publishNow();
+  await item('kiln-history');
+  const rows = page.locator('#kiln-hist .kiln-hist-row');
+  check(scope, 'History lists the demo\'s publishes, newest first, the newest marked live', (await rows.count()) >= 2 && /live now/.test(await words(rows.first())), `${await rows.count()} rows`);
+  check(scope, 'each has "Undo this change", and all but the newest "Go back to this"', (await rows.first().locator('[data-act="undo"]').count()) === 1 && (await rows.first().locator('[data-act="restore"]').count()) === 0 && (await rows.nth(1).locator('[data-act="restore"]').count()) === 1);
+  await shot('history');
+  if (await rows.nth(1).locator('[data-act="restore"]').count()) await press(rows.nth(1).locator('[data-act="restore"]'));
+  await page.waitForTimeout(700);
+  const bar = page.locator('#kiln-previewbar');
+  check(scope, '"Go back to this" shows the earlier version on the page first', (await bar.isVisible().catch(() => false)) && (await read()) === 'First version', `${await read()} / ${(await words(bar)).slice(0, 50)}`);
+  await shot('history-preview');
+  if (await page.locator('#kiln-pv-keep').count()) await press(page.locator('#kiln-pv-keep'));
+  await page.waitForTimeout(400);
+  await publishNow();
+  await page.reload({ waitUntil: 'load' });
+  await started();
+  check(scope, 'kept and published, the first version is the page again', (await read()) === 'First version' && (await page.locator('#kiln-modal').count()) === 0, await read());
+  // one section's clock lists that section's versions
+  await heading.scrollIntoViewIfNeeded();
+  await press(heading);
+  await page.waitForTimeout(350);
+  if (await page.locator('#kiln-toolbar [data-cmd="hist"]').count()) {
+    await press(page.locator('#kiln-toolbar [data-cmd="hist"]'));
+    await page.waitForTimeout(500);
+    const list = await words(page.locator('#kiln-fh'));
+    check(scope, 'a section\'s clock lists its versions, down to before the first publish', /First version/.test(list) && /Second version/.test(list) && /before your first publish/.test(list), list.slice(0, 120));
+  }
+  await putAway();
+
+  // phone: a block's opened buttons cover none of the list's words
+  if (phone && keys.length) {
+    const key2 = keys[keys.length - 1];
+    const second = page.locator(`[data-cms-repeat="${key2}"] > .kiln-repeat-item`).nth(1);
+    await second.scrollIntoViewIfNeeded();
+    await second.locator('.kiln-ctl-more').tap();
+    await page.waitForTimeout(350);
+    const covered = await page.evaluate((k) => {
+      const item = document.querySelectorAll(`[data-cms-repeat="${k}"] > .kiln-repeat-item`)[1];
+      const btns = [...item.querySelectorAll('.kiln-item-ctl button')].filter(b => b.getClientRects().length && !b.classList.contains('kiln-ctl-more')).map(b => b.getBoundingClientRect());
+      return [...document.querySelectorAll(`[data-cms-repeat="${k}"] [data-cms]`)].filter((f) => {
+        const r = f.getBoundingClientRect();
+        return btns.some(b => b.right > r.left + 1 && b.left < r.right - 1 && b.bottom > r.top + 1 && b.top < r.bottom - 1);
+      }).map(f => (f.textContent || '').trim().slice(0, 24));
+    }, key2);
+    check(scope, 'a block\'s opened buttons lie on none of the list\'s words', covered.length === 0, covered.join(' | '));
+    await shot('row-buttons-open');
+    await page.touchscreen.tap(4, size.height / 2);
+    await page.waitForTimeout(200);
+  }
+
+  // Settings, Top bar: the top of the page is not slid under the bar
+  await item('kiln-settings');
+  if (await page.locator('input[name="kiln-uimode"][value="bar"]').count()) {
+    await page.locator('input[name="kiln-uimode"][value="bar"]').check();
+    await press(page.locator('#kiln-set-save'));
+    await page.locator('#kiln-topbar').waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(900);
+    const top = await page.evaluate(() => {
+      const barEl = document.querySelector('#kiln-topbar');
+      const first = [...document.body.children].find(el => !el.id.startsWith('kiln-') && el.getBoundingClientRect().height > 0);
+      return barEl && first ? { y: window.scrollY, bar: barEl.getBoundingClientRect().bottom, first: first.getBoundingClientRect().top } : null;
+    });
+    check(scope, 'choosing the top bar leaves the top of the page in sight under it', !!top && top.y === 0 && top.first >= top.bar - 1, top ? `scrolled ${top.y}, bar ends ${Math.round(top.bar)}, page starts ${Math.round(top.first)}` : 'no bar');
+    await shot('top-bar');
+  }
 
   check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
   check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
