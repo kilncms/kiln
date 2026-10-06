@@ -21,6 +21,7 @@
 import DOMPurify from 'dompurify';
 import { SANITIZE } from './sanitize.js';
 import { notDone, whyNot, said } from './plain-failure.js';
+import { demoSays } from './tryout.js';
 
 let deps = null;
 
@@ -63,12 +64,48 @@ function explainNotConfigured() {
     : 'AI assist isn’t set up on this site — ask the site owner to enable it', 'error');
 }
 
-function sandboxNote() {
-  deps.setStatus('The demo has no AI backend — a real Kiln site connects its own API key for AI assist', 'idle');
-}
-
 function closeMenu() {
   document.getElementById('kiln-ai-menu')?.remove();
+}
+
+const MENU_CSS = 'position:fixed;z-index:2147483200;background:#1c1c28;color:#e7e7ee;border-radius:10px;'
+  + 'box-shadow:0 10px 34px rgba(0,0,0,.4);font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+
+/** Put a menu or a note beside the button that opened it: under it when there is room, else over it. */
+function placeBy(box, anchor) {
+  const r = anchor.getBoundingClientRect();
+  box.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - box.offsetWidth - 8))}px`;
+  box.style.top = `${r.bottom + 6 + box.offsetHeight > window.innerHeight ? r.top - box.offsetHeight - 6 : r.bottom + 6}px`;
+}
+
+/**
+ * The demo has no AI behind the ✨. Pressing it used to light the button up
+ * and put one line in the status corner, far from where the person was
+ * looking, so it read as a button that does nothing. It now says what the
+ * button is and where it works, in a note beside the button (the same place,
+ * and on a phone the same sheet, as the menu a real site opens). One note at
+ * a time; it goes on "Got it" or on a click anywhere else.
+ */
+function demoNote(anchor, what) {
+  closeMenu();
+  const note = document.createElement('div');
+  note.id = 'kiln-ai-menu';
+  note.setAttribute('role', 'status');
+  note.style.cssText = `${MENU_CSS};padding:12px 14px;max-width:min(310px,calc(100vw - 16px));box-sizing:border-box`;
+  const text = document.createElement('p');
+  text.style.cssText = 'margin:0 0 10px;font-size:13px;line-height:1.5';
+  text.textContent = demoSays(what);
+  const ok = document.createElement('button');
+  ok.type = 'button';
+  ok.textContent = 'Got it';
+  ok.style.cssText = `${BTN_CSS};display:inline-block;width:auto;background:#6366f1;color:#fff;padding:6px 14px`;
+  note.append(text, ok);
+  document.body.appendChild(note);
+  if (anchor?.isConnected) placeBy(note, anchor);
+  const away = (e) => { if (!note.contains(e.target)) close(); };
+  const close = () => { note.remove(); document.removeEventListener('click', away, true); };
+  ok.onclick = (e) => { e.stopPropagation(); close(); };
+  setTimeout(() => document.addEventListener('click', away, true), 0);
 }
 
 const MENU_ITEMS = [
@@ -85,12 +122,11 @@ const BTN_CSS = 'display:block;width:100%;text-align:left;background:none;border
 /** The ✨ menu on the text toolbar: pick an action; the … ones ask one line first. */
 export function openAssistMenu(el, key, anchor) {
   const { cfg, escapeHtml } = deps;
-  if (cfg.sandbox) { sandboxNote(); return; }
+  if (cfg.sandbox) { demoNote(anchor, 'ai'); return; }
   closeMenu();
   const menu = document.createElement('div');
   menu.id = 'kiln-ai-menu';
-  menu.style.cssText = 'position:fixed;z-index:2147483200;background:#1c1c28;color:#e7e7ee;border-radius:10px;'
-    + 'padding:5px;min-width:190px;box-shadow:0 10px 34px rgba(0,0,0,.4);font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+  menu.style.cssText = `${MENU_CSS};padding:5px;min-width:190px`;
   const list = () => {
     menu.innerHTML = MENU_ITEMS.map((it, i) =>
       `<button data-i="${i}" style="${BTN_CSS}">${escapeHtml(it.label)}</button>`).join('');
@@ -124,9 +160,7 @@ export function openAssistMenu(el, key, anchor) {
   };
   list();
   document.body.appendChild(menu);
-  const r = anchor.getBoundingClientRect();
-  menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8))}px`;
-  menu.style.top = `${r.bottom + 6 + menu.offsetHeight > window.innerHeight ? r.top - menu.offsetHeight - 6 : r.bottom + 6}px`;
+  placeBy(menu, anchor);
   const away = (e) => { if (!menu.contains(e.target)) close(); };
   const close = () => { menu.remove(); document.removeEventListener('click', away, true); };
   setTimeout(() => document.addEventListener('click', away, true), 0);
@@ -210,9 +244,9 @@ function previewModal(el, key, kind, instruction, beforeHtml, afterRaw) {
  * "✨ Alt text" on the image toolbar: the worker looks at the image and drafts
  * alt text; a small editable confirm stages it via the normal attr edit.
  */
-export async function assistAltText(img, key, altInput) {
+export async function assistAltText(img, key, altInput, anchor = altInput) {
   const { cfg, modal, setStatus, stagePending, stageContainer, escapeHtml } = deps;
-  if (cfg.sandbox) { sandboxNote(); return; }
+  if (cfg.sandbox) { demoNote(anchor, 'alt'); return; }
   let abs = null;
   try { abs = new URL(img.currentSrc || img.getAttribute('src') || '', location.href); } catch { /* no usable src */ }
   if (!abs || (abs.protocol !== 'https:' && abs.protocol !== 'http:')) {

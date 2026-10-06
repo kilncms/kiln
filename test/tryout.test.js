@@ -81,3 +81,27 @@ test('try-out: every other item that cannot act in the demo says it in the same 
   // a gallery added in the demo says how long it stays
   assert.match(main, /is added for this visit to the demo\. On a real site, Publish keeps it\./);
 });
+
+test('try-out: the ✨ button says what it is and where it works, beside the button, when pressed', () => {
+  const assist = read('assist.js');
+  // it used to put one line in the status corner, far from the button, and read as a button that does nothing
+  assert.equal(/The demo has no AI backend/.test(assist), false);
+  assert.equal(/function sandboxNote\(/.test(assist), false);
+  assert.match(assist, /if \(cfg\.sandbox\) \{ demoNote\(anchor, 'ai'\); return; \}/);
+  assert.match(assist, /if \(cfg\.sandbox\) \{ demoNote\(anchor, 'alt'\); return; \}/);
+  const note = assist.slice(assist.indexOf('function demoNote('), assist.indexOf('const MENU_ITEMS'));
+  // one note at a time, in the place (and on a phone the sheet) of the menu a real site opens
+  assert.ok(note.indexOf('closeMenu();') !== -1 && note.indexOf('closeMenu();') < note.indexOf("document.createElement('div')"));
+  assert.match(note, /note\.id = 'kiln-ai-menu';/);
+  assert.match(note, /text\.textContent = demoSays\(what\);/);
+  assert.match(note, /placeBy\(note, anchor\)/);
+  assert.match(note, /ok\.textContent = 'Got it';/);
+  // a click inside it does not end the edit the person is in the middle of
+  assert.match(main, /closest\('#kiln-toolbar, #kiln-imgpop, #kiln-ai-menu, \.kiln-img-handle'\)/);
+  // the picture's own ✨ hands over its button, so the note opens beside it
+  assert.match(main, /assistAltText\(img, key, altInput, aiAltBtn\)/);
+  for (const what of ['ai', 'alt']) {
+    assert.match(demoSays(what), /^Nothing here in the demo\. On a real site, this (rewrites|writes)/);
+    assert.match(demoSays(what), /using the site owner’s own AI key\.$/);
+  }
+});

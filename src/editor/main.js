@@ -1834,7 +1834,7 @@ function imageToolbar(img, key) {
   };
   tb.querySelector('[data-act="replace"]').onclick = (e) => { e.stopPropagation(); replaceImage(img, key); };
   const aiAltBtn = tb.querySelector('[data-act="ai-alt"]');
-  if (aiAltBtn) aiAltBtn.onclick = (e) => { e.stopPropagation(); assistAltText(img, key, altInput); };
+  if (aiAltBtn) aiAltBtn.onclick = (e) => { e.stopPropagation(); assistAltText(img, key, altInput, aiAltBtn); };
 
   const handle = enableImageDragResize(img, key);
   // Match ANY current handle, not the one captured above: "Replace image…"
@@ -7152,7 +7152,7 @@ body:has(#kiln-topbar){padding-top:56px!important}
 .kiln-style-select{height:40px}
 #kiln-toolbar .kiln-href-input{flex:1;min-width:120px;width:auto}
 /* The toolbar's ✨ menu (inline-styled, assist.js) → small sheet. */
-#kiln-ai-menu{left:0!important;right:0!important;top:auto!important;bottom:0!important;min-width:0!important;
+#kiln-ai-menu{left:0!important;right:0!important;top:auto!important;bottom:0!important;min-width:0!important;max-width:none!important;
   border-radius:16px 16px 0 0!important;box-shadow:0 -12px 48px rgba(0,0,0,.45)!important;
   padding:10px 14px calc(14px + env(safe-area-inset-bottom,0px))!important}
 #kiln-ai-menu button{min-height:44px!important}
