@@ -21,6 +21,13 @@
  * must say so and /kiln must show the sign-in, and at Publish the edit must
  * stay, come back after signing in again and then be sent; a 500 and a 403
  * must drop neither the sign-in nor the edit.
+ * Then the sign-in ends and they find out anywhere else: History, a version
+ * (going back to it, naming it), Save as draft, Schedule and its cancel, a
+ * comment and a reply, a suggestion, the site's pictures, AI assist, page
+ * settings, the site menu, a new page, find and replace, the undo after a
+ * publish, or the editor asking by itself. Each must show the same dialog,
+ * keep what was typed on screen, and bring back what the saved copy holds.
+ * A sign-in that ran out by the browser's own clock must be said once.
  * Exits non-zero if any check fails. `--shots <dir>` also saves a screenshot
  * of each step as <step>-<width>.png.
  *
@@ -998,6 +1005,578 @@ async function runSignInEnded(browser, size) {
   await context.close();
 }
 
+/**
+ * The worker ends an invited editor's sign-in, and they find out somewhere
+ * other than at Publish: opening History, going back to a version, naming one,
+ * saving a draft, scheduling, cancelling a schedule, posting a comment or a
+ * reply, sending a suggestion, listing the site's pictures, asking the AI,
+ * page settings, the site menu, a new page, find and replace, undoing a
+ * publish, or doing nothing at all (the editor asks who else is here).
+ * Each must show the dialog Publish shows, lose nothing that was typed, and
+ * bring back what the saved copy holds after signing in again. A sign-in that
+ * ran out by the browser's own clock must be said once on the next page.
+ */
+async function runSignInEverywhere(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} ended elsewhere`;
+  const WORKER = 'https://worker.invalid';
+  const REPO = 'acme/site';
+  const OLD = 'a'.repeat(64), FRESH = 'b'.repeat(64);
+  const source = await (await fetch(URL_ARG)).text();
+  const file = new URL(URL_ARG).pathname.replace(/^\/+/, '').replace(/(^|\/)$/, '$1index.html');
+  // the page as an earlier publish left it: the first heading read differently
+  const firstHeading = /<(h[1-3])\b[^>]*\sdata-cms="[^"]+"[^>]*>([\s\S]*?)<\/\1>/.exec(source);
+  const older = firstHeading ? source.replace(firstHeading[0], firstHeading[0].replace(firstHeading[2], 'An older headline')) : source;
+  const pictures = [...new Set([...source.matchAll(/<img\b[^>]*\ssrc="(\/[^"?#]+\.(?:jpe?g|png|webp|avif|gif))"/gi)].map(m => m[1].slice(1)))];
+  const tree = [...pictures.map(path => ({ path, type: 'blob', size: 48 * 1024 })), { path: file, type: 'blob', size: source.length }];
+  const TOOLS = ['pagesettings', 'history', 'draft', 'schedule', 'comments', 'ai', 'newpost', 'menu', 'findreplace', 'theme'];
+  const day = 24 * 3600 * 1000;
+  const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: ORIGIN }).catch(() => {});
+  await context.addInitScript(() => { try { localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ } });
+  const worker = {};
+  const reset = () => Object.assign(worker, {
+    known: new Set([OLD]), mode: null, fail: null, grantSchedule: true, signIns: [], puts: [], current: source, sha: 'sha0', draftBranch: false,
+    schedules: [{ id: '1'.repeat(32), at: Date.now() + 3 * day, desc: `${file} (opening hours)`, path: file, by: 'Sam' }], scheduled: [], cancelled: [],
+    threads: [{ id: 't1', status: 'open', created: Date.now() - day, anchor: null, messages: [{ by: 'Ana', ts: Date.now() - day, text: 'Is the price still right?' }] }], posted: [],
+    suggested: [], tags: [], asked: 0,
+  });
+  reset();
+  const blocked = [];
+  await context.route('**/*', async (route) => {
+    const req = route.request();
+    const u = new URL(req.url());
+    const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': ORIGIN }, body: JSON.stringify(body) });
+    if (u.origin === ORIGIN && u.pathname.endsWith('kiln-config.js')) {
+      return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
+    }
+    if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
+    if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+    const p = decodeURIComponent(u.pathname);
+    const method = req.method();
+    if (method === 'OPTIONS') {
+      return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS' } });
+    }
+    if (p === '/google/login') {
+      worker.signIns.push(u.searchParams.get('return_to'));
+      worker.known.add(FRESH);
+      return route.fulfill({ status: 302, headers: { Location: `${ORIGIN}${u.searchParams.get('return_to') || '/'}#${new URLSearchParams({ 'kiln-esession': FRESH, 'kiln-name': 'Sam', 'kiln-repo': REPO })}` } });
+    }
+    if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'] });
+    const signedIn = worker.known.has(req.headers()['x-kiln-session'] || '');
+    const body = () => { try { return JSON.parse(req.postData() || '{}'); } catch { return {}; } };
+    // what the worker answers to someone it does not know, route by route (worker/index.js)
+    const unknown403 = () => json({ error: 'forbidden' }, 403);
+    const unknown401 = () => json({ error: 'unauthorized' }, 401);
+    if (worker.fail && worker.fail.test(`${method} ${p}`)) return json({ error: 'internal error' }, 500);
+    if (p === '/presence') return signedIn ? json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: TOOLS, mode: worker.mode } }) : unknown403();
+    if (p === '/schedules') return signedIn ? json({ schedules: worker.schedules }) : unknown403();
+    if (p === '/schedule') {
+      if (!signedIn) return unknown403();
+      if (!worker.grantSchedule) return json({ error: 'your access does not include scheduling', code: 'grant_required', grant: 'schedule' }, 403);
+      const b = body();
+      worker.scheduled.push(b);
+      worker.schedules.push({ id: '2'.repeat(32), at: Date.parse(b.at), desc: b.desc, path: b.path, by: 'Sam' });
+      return json({ ok: true, id: '2'.repeat(32), at: Date.parse(b.at) });
+    }
+    if (p === '/schedule/cancel') {
+      if (!signedIn) return unknown403();
+      worker.cancelled.push(body().id);
+      worker.schedules = worker.schedules.filter(x => x.id !== body().id);
+      return json({ ok: true });
+    }
+    if (p === '/comments/counts') return signedIn ? json({ total: worker.threads.length, counts: { [file]: worker.threads.filter(t => t.status === 'open').length } }) : unknown401();
+    if (p === '/comments' && method === 'GET') return signedIn ? json({ threads: worker.threads }) : unknown401();
+    if (p === '/comments') {
+      if (!signedIn) return unknown401();
+      const b = body();
+      worker.posted.push(b);
+      let thread = worker.threads.find(t => t.id === b.thread);
+      if (thread) thread.messages.push({ by: 'Sam', ts: Date.now(), text: b.text });
+      else { thread = { id: `t${worker.threads.length + 1}`, status: 'open', created: Date.now(), anchor: b.anchor || null, messages: [{ by: 'Sam', ts: Date.now(), text: b.text }] }; worker.threads.unshift(thread); }
+      return json({ thread });
+    }
+    if (p === '/suggestions' && method === 'GET') return signedIn ? json({ suggestions: [], counts: { open: 0 } }) : unknown401();
+    if (p === '/suggestions') {
+      if (!signedIn) return unknown401();
+      worker.suggested.push(body());
+      return json({ suggestion: { id: 's1', status: 'open' } });
+    }
+    if (p === '/ai/assist') { worker.asked++; return signedIn ? json({ text: 'A brighter headline' }) : unknown401(); }
+    if (!p.startsWith('/gh/')) return json({ error: 'not found' }, 404);
+    if (!signedIn) return json({ error: 'session expired' }, 401);
+    const gh = p.slice(`/gh/repos/${REPO}`.length);
+    if (gh === `/contents/${file}`) {
+      if (method === 'GET') {
+        const ref = u.searchParams.get('ref');
+        if (ref === 'kiln-drafts') return json({ message: 'Not Found' }, 404);
+        return json({ sha: ref === 'c1' ? 'old' : worker.sha, content: Buffer.from(ref === 'c1' ? older : worker.current).toString('base64') });
+      }
+      const b = body();
+      worker.puts.push(b);
+      if (b.branch === 'main') { worker.current = Buffer.from(b.content, 'base64').toString(); worker.sha = `sha${worker.puts.length}`; }
+      return json({ commit: { sha: `commit${worker.puts.length}` }, content: {} });
+    }
+    if (gh === '/contents') return json([{ path: 'index.html', type: 'file' }, { path: 'assets', type: 'dir' }]);
+    if (gh === '/commits') {
+      const commit = (sha, parent, daysAgo) => ({ sha, parents: [{ sha: parent }], commit: { message: `Edit ${file}: hero_headline (via Kiln)`, author: { name: 'Sam', date: new Date(Date.now() - daysAgo * day).toISOString() } } });
+      return json([commit('c2', 'c1', 1), commit('c1', 'c0', 9)]);
+    }
+    if (gh === '/git/matching-refs/tags/kiln/') return json(worker.tags);
+    if (gh === '/git/refs' && method === 'POST') {
+      const b = body();
+      if (b.ref.startsWith('refs/tags/')) worker.tags.push({ ref: b.ref, object: { sha: b.sha } }); else worker.draftBranch = true;
+      return json({ ref: b.ref, object: { sha: b.sha } }, 201);
+    }
+    if (gh === '/git/ref/heads/main') return json({ object: { sha: 'head' } });
+    if (gh === '/git/ref/heads/kiln-drafts') return worker.draftBranch ? json({ object: { sha: 'head' } }) : json({ message: 'Not Found' }, 404);
+    if (gh === '/git/trees/main' && method === 'GET') return json({ sha: 'tree', tree, truncated: false });
+    if (gh.includes('/deployments')) return json([]);
+    if (gh.endsWith('/status')) return json({ total_count: 0 });
+    return json({ message: 'Not Found' }, 404);
+  });
+  const page = await context.newPage();
+  const errors = [], leaving = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  page.on('dialog', (d) => { leaving.push(d.type()); d.accept(); });
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+  const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+  const words = async (locator) => ((await locator.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+  const dialog = page.locator('#kiln-modal .kiln-modal-card');             // whatever panel or dialog is on top
+  const told = page.locator('#kiln-modal[data-over] .kiln-modal-card');    // the dialog about the sign-in, over a panel or on its own
+  const status = page.locator('#kiln-status');
+  const pencil = page.locator('#kiln-fab');
+  const heading = page.locator('h1.kiln-field, h2.kiln-field, h3.kiln-field').first();
+  const started = async () => { await pencil.waitFor({ state: 'visible', timeout: 15000 }); await page.waitForTimeout(700); };
+  /**
+   * The editor on the page has finished with the sign-in it found: it started, or it said why not and
+   * dropped it. Only then is the browser's storage ours to set (it would otherwise remove what we put there).
+   */
+  const settled = () => page.locator('#kiln-fab, #kiln-notice').first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+  /** A fresh page, signed in, with nothing left over from the case before. */
+  const fresh = async (opts = {}) => {
+    reset();
+    Object.assign(worker, opts);
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    await settled();
+    await page.evaluate(([repo, session]) => {
+      for (const k of Object.keys(localStorage)) if (/^kiln_(pending|publishing)/.test(k)) localStorage.removeItem(k);
+      sessionStorage.clear();
+      localStorage.setItem('kiln_editor', JSON.stringify({ session, name: 'Sam', repo, role: 'editor' }));
+    }, [REPO, OLD]);
+    await page.reload({ waitUntil: 'load' });
+    await started();
+    leaving.length = 0;   // "leave this page?" prompts from here on belong to this case
+  };
+  const end = () => worker.known.clear();
+  /** A menu entry, pressed the way the menu presses it (the menu itself is checked elsewhere). */
+  const menu = async (id) => { await page.evaluate((i) => document.getElementById(i).click(), id); await page.waitForTimeout(500); };
+  const edit = async () => {
+    await heading.scrollIntoViewIfNeeded();
+    await press(heading);
+    await page.keyboard.type(' Kept words');
+    await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(300);
+  };
+  const ENDED = '✕ Your sign-in has ended ';
+  const BACK = 'when you have signed in again with Google';
+  /** The dialog says `text` (after its title), fits on screen, and offers the way back in. */
+  const ended = async (name, text, buttons = 'Not now Sign in again') => {
+    await told.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    const said = (await told.count()) ? await words(told) : `no dialog; on screen: ${await words(dialog)} ${await words(status)}`;
+    check(scope, `${name}: the dialog says the sign-in has ended, and what is kept`, said === `${ENDED}${text} ${buttons}`, said.slice(0, 260));
+    if (await told.count()) {
+      const c = await box(told);
+      check(scope, `${name}: the dialog fits on screen`, c.left >= 0 && c.top >= 0 && c.right <= size.width + 0.5 && c.bottom <= size.height + 0.5);
+    }
+  };
+  const notNow = async () => { if (await told.count()) await press(told.locator('[data-close]').last()); await page.waitForTimeout(300); };
+  const signInAgain = async () => {
+    if (await page.locator('#kiln-stop-go').count()) await press(page.locator('#kiln-stop-go'));
+    await page.waitForURL((u) => u.origin === ORIGIN && !u.hash.includes('kiln-esession'), { timeout: 15000 }).catch(() => {});
+    await started();
+  };
+  /** One case: whatever goes wrong inside it is that case's failure, and the next one starts afresh. */
+  const scene = async (name, fn) => {
+    try { await fn(name); } catch (err) { check(scope, `${name}: ran to the end`, false, String(err.message || err).split('\n')[0].slice(0, 200)); }
+  };
+
+  // ── History: the list, an earlier version, a name for one ──────────────────
+  await scene('History', async (name) => {
+    await fresh();
+    end();
+    await menu('kiln-history');
+    await ended(name, 'Please sign in again with Google to carry on.');
+    await shot('ended-history');
+    await notNow();
+    check(scope, `${name}: put away, the panel is still there and says why it is empty`, (await words(dialog)).includes('Page history') && (await words(page.locator('#kiln-hist-status'))) === 'Your sign-in has ended.', (await words(dialog)).slice(-120));
+  });
+  await scene('History, going back to a version', async (name) => {
+    await fresh();
+    await edit();
+    await menu('kiln-history');
+    await page.locator('#kiln-hist [data-act="restore"]').first().waitFor({ state: 'visible', timeout: 5000 });
+    end();
+    await press(page.locator('#kiln-hist [data-act="restore"]').first());
+    await ended(name, `Your edit is saved in this browser and will be back on this page ${BACK}.`);
+    await shot('ended-history-restore');
+    await notNow();
+    check(scope, `${name}: put away, History is as it was, with its list`, (await page.locator('#kiln-modal #kiln-hist .kiln-hist-row').count()) === 2 && (await words(page.locator('#kiln-hist-status'))) === 'Your sign-in has ended.');
+  });
+  await scene('History, naming a version', async (name) => {
+    await fresh();
+    await menu('kiln-history');
+    await page.locator('#kiln-hist [data-act="name"]').first().waitFor({ state: 'visible', timeout: 5000 });
+    await press(page.locator('#kiln-hist [data-act="name"]').first());
+    await page.locator('.kiln-nv-input').fill('Summer menu');
+    end();
+    await press(page.locator('.kiln-nv-form [data-nv="save"]'));
+    await ended(name, `Nothing was saved. The name you typed is saved in this browser and will be back on this page ${BACK}.`);
+    await shot('ended-history-name');
+    await notNow();
+    check(scope, `${name}: put away, the name is still in its box`, (await page.locator('#kiln-modal .kiln-nv-input').inputValue().catch(() => '')) === 'Summer menu');
+    await press(page.locator('.kiln-nv-form [data-nv="save"]'));   // pressed again, it says the same, and this time they go
+    await told.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await signInAgain();
+    await page.locator('#kiln-modal .kiln-nv-input').waitFor({ state: 'visible', timeout: 6000 }).catch(() => {});
+    check(scope, `${name}: after signing in again History is open with the name in its box`, (await page.locator('#kiln-modal .kiln-nv-input').inputValue().catch(() => '')) === 'Summer menu'
+      && (await words(status)) === 'You are signed in again, and the name you typed is back on this page.', await words(status));
+    if (await page.locator('.kiln-nv-form [data-nv="save"]').count()) await press(page.locator('.kiln-nv-form [data-nv="save"]'));
+    await page.waitForTimeout(600);
+    check(scope, `${name}: saving it then names that version`, worker.tags.length === 1 && /^refs\/tags\/kiln\/\d+-summer-menu$/.test(worker.tags[0]?.ref || '') && worker.tags[0]?.object.sha === 'c2', JSON.stringify(worker.tags));
+  });
+
+  // ── Save as draft ──────────────────────────────────────────────────────────
+  await scene('Save as draft', async (name) => {
+    await fresh();
+    await edit();
+    end();
+    await menu('kiln-draft');
+    await ended(name, `Nothing was saved. Your edit is saved in this browser and will be back on this page ${BACK}.`);
+    await shot('ended-draft');
+    await notNow();
+    check(scope, `${name}: the words are still on the page, still unpublished, and the status line keeps a way back`, (await words(heading)).includes('Kept words')
+      && (await words(status)) === 'Not saved: your sign-in has ended. Sign in again' && worker.puts.length === 0, await words(status));
+  });
+
+  // ── Schedule: the time, an ended sign-in told apart from "not allowed", cancel ─
+  await scene('Schedule', async (name) => {
+    await fresh();
+    await edit();
+    await menu('kiln-schedule');
+    await page.locator('#kiln-sc-list .kiln-inv-row').first().waitFor({ state: 'visible', timeout: 5000 });
+    const at = '2031-05-17T09:30';
+    await page.locator('#kiln-sc-at').fill(at);
+    // trouble first: nothing is lost and nothing is asked about the sign-in
+    worker.fail = /^POST \/schedule$/;
+    await press(page.locator('#kiln-sc-go'));
+    await page.waitForTimeout(600);
+    check(scope, `${name}: a 500 says nothing was lost and to try again, in the panel`, (await words(page.locator('#kiln-sc-status'))) === 'Not scheduled: the site had a problem just now. Your edit is still here, so please try again in a moment.', await words(page.locator('#kiln-sc-status')));
+    worker.fail = null;
+    // signed in, but scheduling is not part of this person's access
+    worker.grantSchedule = false;
+    await press(page.locator('#kiln-sc-go'));
+    await told.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    check(scope, `${name}: a 403 with the sign-in still good says it is not allowed, with the reason, and does not offer to sign in`,
+      /^✕ This was not scheduled Your sign-in does not allow this change, so nothing was scheduled\. Your edit is still on this page: copy your text to keep it, and ask the site’s owner\. The answer was: your access does not include scheduling/.test(await words(told))
+      && (await told.locator('#kiln-stop-go').count()) === 0, (await words(dialog)).slice(0, 200));
+    await shot('schedule-not-allowed');
+    await notNow();
+    worker.grantSchedule = true;
+    // the worker answers 403 here to a sign-in it no longer knows: the editor finds out which it is
+    end();
+    await press(page.locator('#kiln-sc-go'));
+    await ended(name, `Nothing was scheduled. Your edit is saved in this browser and will be back on this page ${BACK}, and so will the time you chose.`);
+    await shot('ended-schedule');
+    await notNow();
+    check(scope, `${name}: put away, the panel is still there with the time`, (await page.locator('#kiln-modal #kiln-sc-at').inputValue().catch(() => '')) === at
+      && (await words(page.locator('#kiln-sc-status'))) === 'Not scheduled: your sign-in has ended.', await words(page.locator('#kiln-sc-status')));
+    await shot('ended-schedule-put-away');
+    await press(page.locator('#kiln-sc-go'));   // pressed again, it says the same, and this time they go
+    await told.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await signInAgain();
+    await page.locator('#kiln-modal #kiln-sc-at').waitFor({ state: 'visible', timeout: 6000 }).catch(() => {});
+    check(scope, `${name}: after signing in again the edit is back and the panel is open with the time`, (await words(heading)).includes('Kept words')
+      && (await page.locator('#kiln-modal #kiln-sc-at').inputValue().catch(() => '')) === at && leaving.length === 0
+      && (await words(status)) === 'You are signed in again, and your edit is back on this page, with the time you chose. Publish when ready.', await words(status));
+    await shot('ended-schedule-back');
+    if (await page.locator('#kiln-sc-go').count()) await press(page.locator('#kiln-sc-go'));
+    await page.waitForTimeout(700);
+    check(scope, `${name}: Schedule then sends that edit for that time`, worker.scheduled.length === 1 && worker.scheduled[0].at === new Date(at).toISOString()
+      && JSON.stringify(worker.scheduled[0].edits || '').includes('Kept words'), `${worker.scheduled.length} scheduled`);
+  });
+  await scene('Schedule, cancelling one', async (name) => {
+    await fresh();
+    await edit();
+    await menu('kiln-schedule');
+    await page.locator('#kiln-sc-list .kiln-inv-row button').first().waitFor({ state: 'visible', timeout: 5000 });
+    end();
+    await press(page.locator('#kiln-sc-list .kiln-inv-row button').first());
+    await ended(name, `Nothing was cancelled. Your edit is saved in this browser and will be back on this page ${BACK}.`);
+    await notNow();
+    check(scope, `${name}: nothing was cancelled, and the list is as it was`, worker.cancelled.length === 0 && (await page.locator('#kiln-modal #kiln-sc-list .kiln-inv-row').count()) === 1);
+  });
+
+  // ── Comments: a new one, and a reply ───────────────────────────────────────
+  await scene('Comment', async (name) => {
+    await fresh();
+    await menu('kiln-comments');
+    await press(page.locator('#kiln-cmt-new'));
+    const spot = await box(heading);
+    await page.mouse.click(spot.left + Math.min(40, spot.width / 2), spot.top + spot.height / 2);
+    const composer = page.locator('#kiln-cmt-composer');
+    await composer.locator('textarea').fill('The price on the third card is out of date.');
+    end();
+    await press(composer.getByRole('button', { name: 'Post' }));
+    await ended(name, `Nothing was posted. Your comment is saved in this browser and will be back on this page ${BACK}.`);
+    await shot('ended-comment');
+    await notNow();
+    check(scope, `${name}: put away, the comment is still in its box, unposted`, (await composer.locator('textarea').inputValue().catch(() => '')) === 'The price on the third card is out of date.' && worker.posted.length === 0
+      && (await words(status)) === 'Not posted: your sign-in has ended. Sign in again', await words(status));
+    await shot('ended-comment-put-away');
+    await press(status.locator('.kiln-status-act'));
+    await signInAgain();
+    await composer.waitFor({ state: 'visible', timeout: 6000 }).catch(() => {});
+    check(scope, `${name}: after signing in again the comment is back in its box`, (await composer.locator('textarea').inputValue().catch(() => '')) === 'The price on the third card is out of date.'
+      && (await words(status)) === 'You are signed in again, and your comment is back on this page.' && leaving.length === 0, await words(status));
+    await shot('ended-comment-back');
+    if (await composer.count()) await press(composer.getByRole('button', { name: 'Post' }));
+    await page.waitForTimeout(700);
+    check(scope, `${name}: Post then sends it, pinned where it was put`, worker.posted.length === 1 && worker.posted[0].text === 'The price on the third card is out of date.' && !!worker.posted[0].anchor, JSON.stringify(worker.posted).slice(0, 160));
+  });
+  await scene('Comment, a reply', async (name) => {
+    await fresh();
+    await edit();
+    await menu('kiln-comments');
+    const reply = page.locator('#kiln-modal .kiln-cmt-reply');
+    await reply.locator('input').fill('Yes, until June.');
+    end();
+    await press(reply.getByRole('button', { name: 'Reply' }));
+    await ended(name, `Nothing was posted. Your edit is saved in this browser and will be back on this page ${BACK}, and so will your reply.`);
+    await shot('ended-reply');
+    await notNow();
+    check(scope, `${name}: put away, the reply is still in its box`, (await page.locator('#kiln-modal .kiln-cmt-reply input').inputValue().catch(() => '')) === 'Yes, until June.' && worker.posted.length === 0);
+    await press(page.locator('#kiln-modal .kiln-cmt-reply').getByRole('button', { name: 'Reply' }));
+    await told.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await signInAgain();
+    await page.locator('#kiln-modal .kiln-cmt-reply input').waitFor({ state: 'visible', timeout: 6000 }).catch(() => {});
+    await page.waitForTimeout(600);
+    check(scope, `${name}: after signing in again the edit and the reply are back`, (await words(heading)).includes('Kept words')
+      && (await page.locator('#kiln-modal .kiln-cmt-reply input').inputValue().catch(() => '')) === 'Yes, until June.'
+      && (await words(status)) === 'You are signed in again, and your edit is back on this page, with your reply. Publish when ready.', await words(status));
+  });
+
+  // ── A suggestion, with its note ────────────────────────────────────────────
+  await scene('Suggestion', async (name) => {
+    await fresh({ mode: 'suggest' });
+    await edit();
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await press(page.getByRole('button', { name: /^Send|^Suggest/ }).filter({ visible: true }).first());
+    await page.locator('#kiln-ps-note').fill('Corrected the opening line');
+    end();
+    await press(page.locator('#kiln-pubsheet-go'));
+    await ended(name, `Nothing was sent. Your edit is saved in this browser and will be back on this page ${BACK}, and so will your note.`);
+    await shot('ended-suggestion');
+    await signInAgain();
+    check(scope, `${name}: after signing in again the edit is back, and the status line says the note is too`, (await words(heading)).includes('Kept words')
+      && (await words(status)) === 'You are signed in again, and your edit is back on this page, with your note. Publish when ready.', await words(status));
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await press(page.getByRole('button', { name: /^Send|^Suggest/ }).filter({ visible: true }).first());
+    check(scope, `${name}: the note is back in its box`, (await page.locator('#kiln-ps-note').inputValue().catch(() => '')) === 'Corrected the opening line');
+    if (await page.locator('#kiln-pubsheet-go').count()) await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(800);
+    check(scope, `${name}: sending it then carries the edit and the note`, worker.suggested.length === 1 && worker.suggested[0].note === 'Corrected the opening line' && JSON.stringify(worker.suggested[0].edits).includes('Kept words'), JSON.stringify(worker.suggested).slice(0, 160));
+  });
+
+  // ── The site's pictures ────────────────────────────────────────────────────
+  await scene('Pictures of this site', async (name) => {
+    await fresh();
+    const picture = page.locator('img[data-cms].kiln-field, img.kiln-field').first();
+    await picture.scrollIntoViewIfNeeded();
+    await press(picture);
+    await press(page.locator('#kiln-toolbar [data-act="replace"]'));
+    end();
+    await press(page.locator('#kiln-pick-tab-site'));
+    await ended(name, 'Please sign in again with Google to carry on.');
+    await shot('ended-pictures');
+    await notNow();
+    check(scope, `${name}: put away, the picker is still there, says why the list is empty, and still offers an upload`, (await words(page.locator('#kiln-modal #kiln-pick-note'))) === 'Your sign-in has ended.'
+      && (await page.locator('#kiln-modal #kiln-pick-tab-upload').count()) === 1, await words(page.locator('#kiln-pick-note')));
+  });
+
+  // ── AI assist: the words being typed are kept too ──────────────────────────
+  await scene('AI assist', async (name) => {
+    await fresh();
+    await heading.scrollIntoViewIfNeeded();
+    await press(heading);
+    await page.keyboard.type(' Kept words');
+    end();
+    await press(page.locator('#kiln-toolbar #kiln-ai'));
+    await press(page.locator('#kiln-ai-menu button').first());
+    await ended(name, `Your edit is saved in this browser and will be back on this page ${BACK}.`);
+    await shot('ended-ai');
+    await signInAgain();
+    check(scope, `${name}: after signing in again the words that were being typed are back`, (await words(heading)).includes('Kept words')
+      && (await words(status)) === 'You are signed in again, and your edit is back on this page. Publish when ready.', await words(status));
+  });
+
+  // ── Panels whose boxes the saved copy does not hold: kept on screen, and offered as a copy ─
+  await scene('Page settings', async (name) => {
+    await fresh();
+    await menu('kiln-pagesettings');
+    await page.locator('#kiln-ps-title').fill('Muskrat and Rorke, summer');
+    end();
+    await press(page.locator('#kiln-ps-go'));
+    await ended(name, 'Nothing was published. Signing in again with Google loads this page afresh. What you typed here cannot be saved and will need typing again. Copy your text first to be sure of it.', 'Not now Copy my text Sign in again');
+    await shot('ended-page-settings');
+    if (await page.locator('#kiln-stop-copy').count()) await press(page.locator('#kiln-stop-copy'));
+    await page.waitForTimeout(300);
+    const copied = await page.evaluate(() => navigator.clipboard.readText()).catch(() => '');
+    const shown = await page.locator('#kiln-stop-text').inputValue().catch(() => '');
+    check(scope, `${name}: "Copy my text" gives what was typed in the panel`, (copied || shown).includes('Muskrat and Rorke, summer'), (copied || shown).slice(0, 120));
+    await notNow();
+    check(scope, `${name}: put away, the panel is still there with what was typed`, (await page.locator('#kiln-modal #kiln-ps-title').inputValue().catch(() => '')) === 'Muskrat and Rorke, summer'
+      && (await words(page.locator('#kiln-ps-status'))) === 'Not published: your sign-in has ended.', await words(page.locator('#kiln-ps-status')));
+    await shot('ended-page-settings-put-away');
+  });
+  await scene('Site menu', async (name) => {
+    await fresh();
+    await menu('kiln-menu');
+    await press(page.locator('#kiln-menu-add'));
+    await page.locator('.kiln-menu-label').last().fill('Stockists');
+    end();
+    await press(page.locator('#kiln-menu-save'));
+    await ended(name, 'Nothing was saved. Signing in again with Google loads this page afresh. What you typed here cannot be saved and will need typing again. Copy your text first to be sure of it.', 'Not now Copy my text Sign in again');
+    await shot('ended-site-menu');
+    await notNow();
+    check(scope, `${name}: put away, the rows are as they were typed`, (await page.locator('#kiln-modal .kiln-menu-label').last().inputValue().catch(() => '')) === 'Stockists'
+      && (await words(page.locator('#kiln-menu-status'))) === 'Not saved: your sign-in has ended.', await words(page.locator('#kiln-menu-status')));
+  });
+  await scene('New page', async (name) => {
+    await fresh();
+    await menu('kiln-newpost');
+    await page.locator('#kiln-np-title').fill('Autumn drop');
+    end();
+    await press(page.locator('#kiln-np-go'));
+    await ended(name, 'Nothing was created. Signing in again with Google loads this page afresh. What you typed here cannot be saved and will need typing again. Copy your text first to be sure of it.', 'Not now Copy my text Sign in again');
+    await shot('ended-new-page');
+    await notNow();
+    check(scope, `${name}: put away, the title is still in its box and Create can be pressed again`, (await page.locator('#kiln-modal #kiln-np-title').inputValue().catch(() => '')) === 'Autumn drop'
+      && await page.locator('#kiln-modal #kiln-np-go').isVisible().catch(() => false));
+  });
+  await scene('Find and replace', async (name) => {
+    await fresh();
+    await menu('kiln-findreplace');
+    await page.locator('#kiln-fr-find').fill('Atlanta');
+    await page.locator('#kiln-fr-repl').fill('Decatur');
+    end();
+    await press(page.locator('#kiln-fr-scan'));
+    await ended(name, 'Signing in again with Google loads this page afresh. What you typed here cannot be saved and will need typing again. Copy your text first to be sure of it.', 'Not now Copy my text Sign in again');
+    await shot('ended-find-replace');
+    await notNow();
+    check(scope, `${name}: put away, both boxes are as they were typed`, (await page.locator('#kiln-modal #kiln-fr-find').inputValue().catch(() => '')) === 'Atlanta'
+      && (await page.locator('#kiln-modal #kiln-fr-repl').inputValue().catch(() => '')) === 'Decatur');
+  });
+
+  // ── Undo, in the ten seconds after a publish ───────────────────────────────
+  await scene('Undo after publishing', async (name) => {
+    await fresh();
+    await edit();
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+    await page.waitForTimeout(500);
+    if (await page.locator('#kiln-pubsheet-go').count()) await press(page.locator('#kiln-pubsheet-go'));
+    await status.locator('.kiln-status-act').waitFor({ state: 'visible', timeout: 6000 });
+    await page.waitForTimeout(1200);   // the editor's first look at whether the publish is live has been answered
+    end();
+    await press(status.locator('.kiln-status-act'));
+    await ended(name, 'Nothing was undone. Please sign in again with Google to carry on.');
+    await shot('ended-undo');
+    check(scope, `${name}: the publish itself is as it was`, worker.puts.length === 1);
+  });
+
+  // ── Nobody pressed anything: the editor asks who else is here, and is told ─
+  await scene('Found out by the editor itself', async (name) => {
+    await fresh();
+    await edit();
+    end();
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.waitForTimeout(900);
+    check(scope, `${name}: the status line says so and offers the way back in, with no dialog in the way`, (await words(status)) === 'Your sign-in has ended. Sign in again' && (await dialog.count()) === 0, await words(status));
+    await shot('ended-found-out');
+    if (await status.locator('.kiln-status-act').count()) await press(status.locator('.kiln-status-act'));
+    await ended(name, `Your edit is saved in this browser and will be back on this page ${BACK}.`);
+  });
+
+  await scene('A comment half written when the editor finds out', async (name) => {
+    await fresh();
+    await menu('kiln-comments');
+    await press(page.locator('#kiln-cmt-new'));
+    const spot = await box(heading);
+    await page.mouse.click(spot.left + Math.min(40, spot.width / 2), spot.top + spot.height / 2);
+    const composer = page.locator('#kiln-cmt-composer');
+    await composer.locator('textarea').fill('Half a thought');
+    end();
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await status.locator('.kiln-status-act').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    if (await status.locator('.kiln-status-act').count()) await press(status.locator('.kiln-status-act'));
+    await ended(name, `Your comment is saved in this browser and will be back on this page ${BACK}.`);
+    await signInAgain();
+    await composer.waitFor({ state: 'visible', timeout: 6000 }).catch(() => {});
+    check(scope, `${name}: after signing in again the comment is back in its box, though Post was never pressed`, (await composer.locator('textarea').inputValue().catch(() => '')) === 'Half a thought' && worker.posted.length === 0);
+  });
+
+  // ── Publish itself, with a line typed under "What changed?" ────────────────
+  await scene('Publish, with a note', async (name) => {
+    await fresh();
+    await edit();
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+    await page.locator('#kiln-ps-note').fill('New opening line');
+    end();
+    await press(page.locator('#kiln-pubsheet-go'));
+    await ended(name, `Nothing was published. Your edit is saved in this browser and will be back on this page ${BACK}, and so will your note.`);
+    await notNow();
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+    check(scope, `${name}: put away, the note is back in its box when the sheet is opened again`, (await page.locator('#kiln-ps-note').inputValue().catch(() => '')) === 'New opening line');
+    if (await page.locator('#kiln-pubsheet-go').count()) await press(page.locator('#kiln-pubsheet-go'));
+    await told.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await signInAgain();
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+    check(scope, `${name}: after signing in again the edit is back, and the note is in its box`, (await words(heading)).includes('Kept words') && (await page.locator('#kiln-ps-note').inputValue().catch(() => '')) === 'New opening line');
+    if (await page.locator('#kiln-pubsheet-go').count()) await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(1500);
+    check(scope, `${name}: Publish then sends the edit with the note as its message`, worker.puts.length === 1 && worker.puts[0].message === 'New opening line (via Kiln)' && Buffer.from(worker.puts[0].content || '', 'base64').toString().includes('Kept words'), `${worker.puts.length} writes, ${worker.puts[0]?.message}`);
+  });
+
+  // ── The sign-in ran out by the browser's own clock ─────────────────────────
+  await scene('Run out by the clock', async (name) => {
+    reset();
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    await settled();
+    await page.evaluate(([repo, session]) => {
+      sessionStorage.clear();
+      localStorage.setItem('kiln_editor', JSON.stringify({ session, name: 'Sam', repo, role: 'editor', exp: Date.now() - 60000 }));
+    }, [REPO, OLD]);
+    await page.reload({ waitUntil: 'load' });
+    const notice = page.locator('#kiln-notice');
+    await notice.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+    check(scope, `${name}: the next page says the sign-in has ended, in the card the page-load path shows`, (await words(notice.locator('p').first())) === 'Your sign-in to edit this site has ended, so please sign in again with Google.'
+      && (await notice.getByRole('button', { name: 'Sign in again' }).count()) === 1, await words(notice));
+    check(scope, `${name}: the sign-in is gone and the editor draws nothing`, !(await page.evaluate(() => localStorage.getItem('kiln_editor'))) && (await pencil.count()) === 0 && (await page.locator('style[data-kiln]').count()) === 0);
+    await shot('ended-by-clock');
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForTimeout(900);
+    check(scope, `${name}: it is said once: the page after that is the plain site`, (await notice.count()) === 0 && (await pencil.count()) === 0);
+  });
+
+  check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+  check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
+  await context.close();
+}
+
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
   try { await fn(); } catch (err) { check(label, 'ran to the end', false, String(err.message || err).split('\n')[0].slice(0, 220)); }
@@ -1013,6 +1592,8 @@ try {
   await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
   // the worker ends an invited editor's sign-in
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} sign-in ended`, () => runSignInEnded(browser, size));
+  // …and they find out anywhere else in the editor
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} ended elsewhere`, () => runSignInEverywhere(browser, size));
 } finally { await browser.close(); }
 
 console.log(lines.join('\n'));
