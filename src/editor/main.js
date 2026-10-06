@@ -40,7 +40,8 @@ import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publi
 import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
 import { notDone, whyNot, said } from './plain-failure.js';
-import { demoSays, demoShort, DEMO_DRAFT_SAVED } from './tryout.js';
+import { demoSays, demoShort, DEMO_DRAFT_SAVED, DEMO_HISTORY_EMPTY, DEMO_HISTORY_NOTE,
+  historyEntry, withEntry, undoChanges, goBackChanges, partVersions } from './tryout.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -2852,6 +2853,7 @@ function undoSandboxPublish(rec) {
   const s = sandboxStore();
   s.pages = s.pages || {};
   if (rec.prevPage) s.pages[sandboxPath()] = rec.prevPage; else delete s.pages[sandboxPath()];
+  if (rec.historyId && s.history?.[sandboxPath()]) s.history[sandboxPath()] = s.history[sandboxPath()].filter(e => e.id !== rec.historyId);
   sandboxSave(s);
   for (const [ref, v] of rec.source || []) {
     state.sourceBase.set(ref, v.base);
@@ -3441,7 +3443,10 @@ function publishSandbox(noteMsg = '') {
   s._createdAt = s._createdAt || Date.now();
   s.pages = s.pages || {};
   const prevPage = s.pages[sandboxPath()] ? JSON.parse(JSON.stringify(s.pages[sandboxPath()])) : null;
-  const record = publishRecord({ sandbox: true, prevPage, source: [] });
+  // The demo's History: this publish, with what each part was before it.
+  const entry = state.pending.size ? historyEntry({ id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    ts: Date.now(), message: told.message, pending: state.pending, baseHtml: (key) => state.undoBase.get(key), baseAttr: attrBefore }) : null;
+  const record = publishRecord({ sandbox: true, prevPage, source: [], historyId: entry?.id });
   for (const [key, v] of state.pending) {
     record.entries.set(key, JSON.stringify(v));
     record.prevBase.set(key, state.undoBase.get(key));
@@ -3459,6 +3464,11 @@ function publishSandbox(noteMsg = '') {
   // Source edits stage + preview locally too — never a network commit (§13).
   for (const [ref, v] of state.pendingSource) page[ref] = { text: v.value };
   s.pages[sandboxPath()] = page;
+  s.history = s.history || {};
+  const earlier = s.history[sandboxPath()];
+  if (entry) s.history[sandboxPath()] = withEntry(earlier, entry);
+  // No room: the publish matters more than how far back History reaches.
+  if (!sandboxSave(s) && entry) { s.history[sandboxPath()] = [entry]; if (!sandboxSave(s)) delete s.history[sandboxPath()]; }
   if (!sandboxSave(s)) {
     setStatus(SANDBOX_FULL, 'error');
     return;   // keep pending edits so the visitor can retry
@@ -3512,9 +3522,11 @@ function renderSandboxBanner() {
     #kiln-sandbox-banner button{flex:none;min-height:34px;padding:6px 13px}
     .kiln-tb-open #kiln-sandbox-banner,.kiln-menu-open #kiln-sandbox-banner{display:none}
   }
-  [data-kiln-sandbox] #kiln-newpost,[data-kiln-sandbox] #kiln-menu,[data-kiln-sandbox] #kiln-pagesettings,
-  [data-kiln-sandbox] #kiln-findreplace,[data-kiln-sandbox] #kiln-history,[data-kiln-sandbox] #kiln-comments,
-  [data-kiln-sandbox] #kiln-signout{display:none!important}`;
+  /* The demo's menu is the menu of a real site: every item opens its own
+     dialog, and says what a real site does where the demo cannot act. Only
+     comments (they need other people) and Sign out (nobody is signed in) are
+     left out. */
+  [data-kiln-sandbox] #kiln-comments,[data-kiln-sandbox] #kiln-signout{display:none!important}`;
   document.head.appendChild(st);
   const b = document.createElement('div');
   b.id = 'kiln-sandbox-banner';
@@ -3699,6 +3711,7 @@ function newContent() {
     const kind = m.querySelector('input[name="kiln-new-kind"]:checked').value;
     const brief = m.querySelector('#kiln-np-brief')?.value.trim() || '';
     if (!title) return;
+    if (cfg.sandbox) { m.querySelector('#kiln-np-said').textContent = demoSays('newpage'); return; }
     const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || kind;
     const date = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
     const root = cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '';
@@ -3813,7 +3826,11 @@ function newContent() {
 
 function menuEditor() {
   const menuField = [...state.fields.fields.values()].find(f => f.kind === 'menu');
-  if (!menuField) {
+  // The demo shows the dialog with the links of the page's own menu in it,
+  // whether or not that menu is marked for Kiln: nothing is saved there anyway.
+  const demoNav = cfg.sandbox && !menuField
+    ? [...document.querySelectorAll('header nav, nav')].find(n => !n.closest(KILN_CHROME) && n.querySelector('a')) : null;
+  if (!menuField && !demoNav) {
     modal(`<h3>No editable menu</h3>
       <p class="kiln-dim">This page's navigation isn't marked with <code>data-cms-menu</code>,
       so Kiln can't manage it. See the docs to enable menu editing.</p>
@@ -3821,7 +3838,7 @@ function menuEditor() {
     return;
   }
   // Parse the current items from this page's source.
-  const innerHtml = state.page.text.slice(menuField.inner.start, menuField.inner.end);
+  const innerHtml = demoNav ? demoNav.innerHTML : state.page.text.slice(menuField.inner.start, menuField.inner.end);
   const docFrag = new DOMParser().parseFromString(innerHtml, 'text/html');
   let rows = [...docFrag.querySelectorAll('a')].map(a => ({
     label: a.textContent.trim(), href: a.getAttribute('href') || '/',
@@ -3883,6 +3900,7 @@ function menuEditor() {
 
   m.querySelector('#kiln-menu-save').onclick = async () => {
     const status = m.querySelector('#kiln-menu-status');
+    if (cfg.sandbox) { status.textContent = demoSays('menu'); return; }
     const menuKey = menuField.key;
     const wrap = (a) => itemTag ? `<${itemTag}>${a}</${itemTag}>` : a;
     const items = rows
@@ -3974,6 +3992,18 @@ function extractSections(html) {
 let _sitePagesCache = null;
 async function listSitePages() {
   if (_sitePagesCache) return _sitePagesCache;
+  if (cfg.sandbox) {
+    // The demo has no repository to list: this page, and the pages of the site it links to.
+    const pages = new Set(pageFileCandidates(location.pathname, cfg.root || '').slice(0, 1));
+    for (const a of document.querySelectorAll('a[href]')) {
+      if (a.closest(KILN_CHROME)) continue;
+      let u;
+      try { u = new URL(a.getAttribute('href'), location.href); } catch { continue; }
+      if (u.origin === location.origin && /(\/|\.html)$/.test(u.pathname)) pages.add(pageFileCandidates(u.pathname, cfg.root || '')[0]);
+    }
+    _sitePagesCache = [...pages];
+    return _sitePagesCache;
+  }
   const tree = await state.gh.request('GET',
     `/repos/${cfg.repo}/git/trees/${encodeURIComponent(cfg.branch || 'main')}?recursive=1`);
   _sitePagesCache = tree.tree.filter(t => t.type === 'blob' && t.path.endsWith('.html')
@@ -4084,6 +4114,7 @@ async function invitePanel() {
 
     box.innerHTML = '<p class="kiln-dim" style="margin:6px 2px">Loading sections…</p>';
     // Resolve which pages to show sections for, honoring the page scope (folders expand).
+    const thisPage = cfg.sandbox ? pageFileCandidates(location.pathname, cfg.root || '')[0] : state.page.path;
     let pages;
     try {
       const scope = m.querySelector('#kiln-p-paths').value.split(',').map(s => s.trim()).filter(Boolean);
@@ -4096,16 +4127,17 @@ async function invitePanel() {
           if (s.endsWith('.html')) { if (!pages.includes(s)) pages.push(s); }
           else all.filter(p => p === s || p.startsWith(s.replace(/\/$/, '') + '/')).forEach(p => { if (!pages.includes(p)) pages.push(p); });
         }
-        if (!pages.includes(state.page.path)) pages.unshift(state.page.path);
+        if (!pages.includes(thisPage)) pages.unshift(thisPage);
       }
-    } catch (err) { stopped(err); pages = [state.page.path]; }
+    } catch (err) { stopped(err); pages = [thisPage]; }
     pages = pages.slice(0, 25);
 
     // Fetch each page's sections+snippets (current page parses its own source — no round-trip).
     const groups = [];
     for (const path of pages) {
-      if (path === state.page.path) { groups.push({ path, sections: extractSections(state.page.text) }); continue; }
-      try { const f = await getFile(state.gh, cfg.repo, path, cfg.branch || 'main'); groups.push({ path, sections: extractSections(f.text) }); }
+      if (path === thisPage) { groups.push({ path, sections: extractSections(state.page.text) }); continue; }
+      // the demo reads its other pages as a visitor would; a real site reads the files
+      try { const f = cfg.sandbox ? { text: await (await fetch('/' + path)).text() } : await getFile(state.gh, cfg.repo, path, cfg.branch || 'main'); groups.push({ path, sections: extractSections(f.text) }); }
       catch (err) { groups.push({ path, sections: [], err: true }); if (signInOver) break; }
     }
 
@@ -4114,7 +4146,7 @@ async function invitePanel() {
     for (const g of groups) {
       const head = document.createElement('div');
       head.className = 'kiln-pick-group';
-      head.textContent = g.path + (g.path === state.page.path ? '  · this page' : '');
+      head.textContent = g.path + (g.path === thisPage ? '  · this page' : '');
       box.appendChild(head);
       if (g.err) { const p = document.createElement('p'); p.className = 'kiln-dim'; p.style.margin = '2px'; p.textContent = "Couldn't load this page."; box.appendChild(p); continue; }
       if (!g.sections.length) { const p = document.createElement('p'); p.className = 'kiln-dim'; p.style.margin = '2px'; p.textContent = 'No named sections.'; box.appendChild(p); continue; }
@@ -4179,6 +4211,13 @@ async function invitePanel() {
   async function refreshPeople() {
     const status = m.querySelector('#kiln-gstatus');
     const form = m.querySelector('#kiln-people-form');
+    if (cfg.sandbox) {
+      // The form a site's owner fills in, with nobody behind it.
+      status.textContent = demoSays('people');
+      form.style.display = '';
+      m.querySelector('#kiln-people-list').innerHTML = '';
+      return;
+    }
     try {
       const data = await ask(`/admin/people?repo=${encodeURIComponent(cfg.repo)}`);
       if (!data.googleConfigured) {
@@ -4231,6 +4270,7 @@ async function invitePanel() {
     const features = [...m.querySelectorAll('.kiln-p-feat:checked')].map(c => c.value);
     const suggestOnly = m.querySelector('#kiln-p-suggest').checked;
     if (!email) return;
+    if (cfg.sandbox) { m.querySelector('#kiln-people-list').innerHTML = `<p class="kiln-dim">${escapeHtml(demoShort('people'))}</p>`; return; }
     let data;
     try {
       data = await ask('/admin/people', { method: 'POST', body: { repo: cfg.repo, email, name, role, days, paths, keys, features,
@@ -4305,14 +4345,20 @@ function currentDomHtmlFor(key) {
 function previewRestore(changes, label, note, removals = []) {
   document.getElementById('kiln-previewbar')?.remove();
   const applied = [];
-  for (const { key, value } of changes) {
-    const before = currentDomHtmlFor(key);
-    if (before === undefined) continue;              // section not on this page
-    const el = applyKeyDom(key, value);
+  for (const { key, value, attrs } of changes) {
+    const before = value === undefined ? undefined : currentDomHtmlFor(key);
+    if (value !== undefined && before === undefined) continue;              // section not on this page
+    const el = value === undefined ? elementForKey(key) : applyKeyDom(key, value);
     if (!el) continue;
+    // A swapped picture or a link's address (the demo's History keeps these too).
+    let attrsBefore = null;
+    if (attrs) {
+      attrsBefore = {};
+      for (const [name, v] of Object.entries(attrs)) { attrsBefore[name] = el.getAttribute(name); el.setAttribute(name, v); }
+    }
     el.classList.add('kiln-modified', 'kiln-flash');
     setTimeout(() => el.classList.remove('kiln-flash'), 1600);
-    applied.push({ key, value, before, el });
+    applied.push({ key, value, before, el, attrs, attrsBefore });
   }
   // Sections that must DISAPPEAR for this restore (e.g. a gallery that publish
   // added): preview by hiding; Keep stages a removeSection op.
@@ -4342,7 +4388,10 @@ function previewRestore(changes, label, note, removals = []) {
   document.body.appendChild(bar);
   bar.querySelector('#kiln-pv-keep').onclick = () => {
     undoGroup(() => {
-      for (const a of applied) stagePending(a.key, { html: a.value });
+      for (const a of applied) {
+        if (a.value !== undefined) stagePending(a.key, { html: a.value });
+        if (a.attrs) stagePending(a.key, { attrs: a.attrs });
+      }
       for (const r of removed) {
         const parent = r.node.parentElement, next = r.node.nextSibling;
         const op = cfg.sandbox ? null : { op: 'removeSection', key: r.key };
@@ -4359,7 +4408,8 @@ function previewRestore(changes, label, note, removals = []) {
   };
   bar.querySelector('#kiln-pv-cancel').onclick = () => {
     for (const a of applied) {
-      applyKeyDom(a.key, a.before);
+      if (a.value !== undefined) applyKeyDom(a.key, a.before);
+      for (const [name, v] of Object.entries(a.attrsBefore || {})) { if (v === null) a.el.removeAttribute(name); else a.el.setAttribute(name, v); }
       if (!state.pending.has(a.key)) {
         const esc = CSS.escape(a.key);
         document.querySelectorAll(`[data-cms="${esc}"],[data-cms-repeat="${esc}"]`).forEach(n => n.classList.remove('kiln-modified'));
@@ -4428,6 +4478,57 @@ function confirmRestoreVisual({ title, nowText, thenText, thenLabel = 'This vers
   });
 }
 
+/**
+ * History in the demo: this browser's publishes of this page, newest first,
+ * each with the two ways back a real site offers. Both preview on the page
+ * and are published like any other edit, so a visitor can publish twice and
+ * get the first one back.
+ */
+function demoHistory(m) {
+  const list = m.querySelector('#kiln-hist');
+  const status = m.querySelector('#kiln-hist-status');
+  const store = sandboxStore();
+  const entries = store.history?.[sandboxPath()] || [];
+  const published = store.pages?.[sandboxPath()] || {};
+  list.insertAdjacentHTML('beforebegin', '<h4>Recent publishes</h4>');
+  list.innerHTML = entries.length ? '' : `<p class="kiln-dim">${escapeHtml(DEMO_HISTORY_EMPTY)}</p>`;
+  status.textContent = DEMO_HISTORY_NOTE;
+  // Only what would change something: a part may already read that way.
+  const needed = (changes) => changes.map((c) => {
+    const out = { key: c.key };
+    const now = state.pending.get(c.key)?.html ?? published[c.key]?.html;
+    if (c.value !== undefined && c.value !== now) out.value = c.value;
+    const el = elementForKey(c.key);
+    for (const [name, v] of Object.entries(c.attrs || {})) {
+      if (el && el.getAttribute(name) !== v) out.attrs = { ...(out.attrs || {}), [name]: v };
+    }
+    return out;
+  }).filter(c => c.value !== undefined || c.attrs);
+  const back = (changes, label) => {
+    const todo = needed(changes);
+    if (!todo.length) { status.textContent = 'The page already reads that way.'; return; }
+    m.querySelector('.kiln-modal-x').click();
+    if (!previewRestore(todo, label, '')) setStatus('Those parts are not on this page any more, so there is nothing to put back.', 'error');
+  };
+  [...entries].reverse().forEach((pub, i) => {
+    const at = entries.length - 1 - i;
+    const when = new Date(pub.ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const what = escapeHtml(describeCommit(pub.message));
+    const row = document.createElement('div');
+    row.className = 'kiln-inv-row kiln-hist-row';
+    row.innerHTML = `<span><strong>${what}</strong>
+      <small>${i === 0 ? '<b class="kiln-hist-live">live now</b> · ' : ''}${escapeHtml(when)} · You</small></span>
+      <span class="kiln-hist-acts">
+        <button class="kiln-btn-ghost" data-act="undo" title="Put back just what this publish changed">${UNDO_ICON} Undo this change</button>
+        ${i === 0 ? '' : '<button class="kiln-btn-ghost" data-act="restore" title="Every section back to how it was at this point">Go back to this</button>'}
+      </span>`;
+    row.querySelector('[data-act="undo"]').onclick = () => back(undoChanges(pub), `undo “${what}”`);
+    const rBtn = row.querySelector('[data-act="restore"]');
+    if (rBtn) rBtn.onclick = () => back(goBackChanges(entries, at), `the page as it was ${escapeHtml(when)}`);
+    list.appendChild(row);
+  });
+}
+
 /** `resume`: { sha, name } puts a name that was being typed back on that version's row (after signing in again). */
 async function historyPanel(resume = null) {
   const m = modal(`
@@ -4440,11 +4541,7 @@ async function historyPanel(resume = null) {
     <p class="kiln-np-step" id="kiln-hist-status"></p>`);
   const status = m.querySelector('#kiln-hist-status');
 
-  if (cfg.sandbox) {
-    m.querySelector('#kiln-hist').innerHTML =
-      '<p class="kiln-dim">The demo doesn’t keep saved versions — a real Kiln site saves one on every publish. Use ⌘Z to undo your edits here.</p>';
-    return;
-  }
+  if (cfg.sandbox) { demoHistory(m); return; }
 
   const list = m.querySelector('#kiln-hist');
   const spin = (msg) => { status.innerHTML = `<span class="kiln-spin"></span> ${msg}`; };
@@ -4645,20 +4742,8 @@ async function fieldHistoryPanel(key, isRepeat = false) {
   const esc = CSS.escape(key);
   const liveEl = document.querySelector(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`);
 
-  if (cfg.sandbox) {
-    box.innerHTML = '<p class="kiln-dim">The demo doesn’t keep saved history — that comes with a real Kiln site. You can still undo an unpublished edit on the page.</p>';
-    return;
-  }
-  try {
-    const commits = await state.gh.request('GET',
-      `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=15`);
-    let lastVal = null;
-    for (const c of commits.slice(0, 12)) {
-      const text = await histFile(c.sha);
-      const v = readValues(text)[key];
-      if (v === undefined) continue;
-      if (v !== lastVal) { rows.push({ c, v }); lastVal = v; }
-    }
+  // The rows are drawn the same way wherever the versions come from.
+  const draw = () => {
     box.innerHTML = '';
     if (pend && pend.html !== undefined && pend.html !== (rows[0] && rows[0].v)) {
       const r = document.createElement('div');
@@ -4678,8 +4763,8 @@ async function fieldHistoryPanel(key, isRepeat = false) {
       box.appendChild(r);
     }
     if (!rows.length && !box.children.length) { box.innerHTML = '<p class="kiln-dim">No saved history for this section yet — it appears here after your first publish.</p>'; return; }
-    rows.forEach(({ c, v }, i) => {
-      const when = new Date(c.commit.author.date).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    rows.forEach(({ c, v, start }, i) => {
+      const when = start ? '' : new Date(c.commit.author.date).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
       const r = document.createElement('div');
       r.className = 'kiln-inv-row';
       // Top row = what's live: its Undo goes back to the previous version.
@@ -4689,12 +4774,33 @@ async function fieldHistoryPanel(key, isRepeat = false) {
         ? (rows.length > 1 ? `<button class="kiln-btn-ghost" title="Put this section back to the version before">${UNDO_ICON} Undo this change</button>` : '')
         : `<button class="kiln-btn-ghost">${UNDO_ICON} Go back to this</button>`;
       r.innerHTML = `<span><span class="kiln-hist-prev">${histPreview(v)}</span>
-        <small>${i === 0 ? '<b class="kiln-hist-live">live now</b> · ' : ''}${when} · ${escapeHtml(c.commit.author.name)}</small></span>
+        <small>${i === 0 ? '<b class="kiln-hist-live">live now</b> · ' : ''}${start ? 'before your first publish' : `${when} · ${escapeHtml(c.commit.author.name)}`}</small></span>
         ${btnHtml}`;
       const btn = r.querySelector('button');
       if (btn) btn.onclick = () => previewFieldRevert(key, i === 0 ? rows[1].v : v, m);
       box.appendChild(r);
     });
+  };
+
+  if (cfg.sandbox) {
+    // The demo's history of this part: this browser's publishes that changed it.
+    const store = sandboxStore();
+    const versions = partVersions(store.history?.[sandboxPath()] || [], key, store.pages?.[sandboxPath()]?.[key]?.html);
+    for (const v of versions) rows.push({ c: { commit: { author: { date: v.ts, name: 'You' } } }, v: v.value, start: v.ts === null });
+    draw();
+    return;
+  }
+  try {
+    const commits = await state.gh.request('GET',
+      `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=15`);
+    let lastVal = null;
+    for (const c of commits.slice(0, 12)) {
+      const text = await histFile(c.sha);
+      const v = readValues(text)[key];
+      if (v === undefined) continue;
+      if (v !== lastVal) { rows.push({ c, v }); lastVal = v; }
+    }
+    draw();
   } catch (err) { box.innerHTML = `<p class="kiln-dim">${escapeHtml(stopped(err) || notDone('The history could not be read.', err))}</p>`; }
 }
 
@@ -4729,6 +4835,7 @@ function pageSettingsPanel() {
     const description = m.querySelector('#kiln-ps-desc').value;
     const ogImage = m.querySelector('#kiln-ps-ogimg').value;
     const status = m.querySelector('#kiln-ps-status');
+    if (cfg.sandbox) { status.textContent = demoSays('pagesettings'); return; }
     status.textContent = 'Publishing…';
     try {
       const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
@@ -4776,6 +4883,7 @@ function findReplacePanel() {
     const repl = m.querySelector('#kiln-fr-repl').value;
     const out = m.querySelector('#kiln-fr-out');
     if (!find || find.length < 2) { status.textContent = 'Type at least 2 characters to find.'; return; }
+    if (cfg.sandbox) { status.textContent = demoSays('findreplace'); return; }
     status.textContent = 'Scanning every page…';
     out.innerHTML = '';
     try {
@@ -5599,7 +5707,7 @@ function renderAdminBar() {
         <button id="kiln-theme" class="kiln-fab-item">Theme</button>
         <button id="kiln-findreplace" class="kiln-fab-item">Find &amp; replace</button>
         ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-fab-item">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}
-        ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
+        ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
         <button id="kiln-settings" class="kiln-fab-item">Settings</button>
         <button id="kiln-help" class="kiln-fab-item" data-href="${escapeHtml(helpLink())}" title="Opens the guide in a new tab">Help <span class="kiln-pal-kbd" aria-hidden="true">↗</span></button>
       </div>
@@ -5753,10 +5861,15 @@ function renderAdminBar() {
     menu.style.visibility = 'hidden';
     menu.hidden = false;
     const br = btn.getBoundingClientRect();
+    // As tall as the room on its side of the pencil, and no taller: a full
+    // menu on a small laptop scrolls inside itself instead of running off the
+    // screen or lying over the pencil and the status line beside it.
+    const above = br.top > window.innerHeight / 2;
+    menu.style.maxHeight = `${Math.max(220, (above ? br.top : window.innerHeight - br.bottom) - 18)}px`;
     const mw = menu.offsetWidth, mh = menu.offsetHeight;
     let left = br.right - mw;                       // right-align to the button…
     left = Math.max(8, Math.min(left, window.innerWidth - mw - 8));   // …then clamp
-    let top = br.top > window.innerHeight / 2 ? br.top - mh - 10 : br.bottom + 10;
+    let top = above ? br.top - mh - 10 : br.bottom + 10;
     top = Math.max(8, Math.min(top, window.innerHeight - mh - 8));
     menu.style.left = left + 'px';
     menu.style.top = top + 'px';
@@ -5888,7 +6001,7 @@ function renderTopBar() {
     <button id="kiln-findreplace" class="kiln-btn-ghost">Replace</button>
     <button id="kiln-history" class="kiln-btn-ghost">History</button>
     <button id="kiln-comments" class="kiln-btn-ghost">💬 Comments</button>
-    ${canMakeEditable() ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button>' : ''}${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-btn-ghost" title="Review suggested changes">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
+    ${canMakeEditable() ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button>' : ''}${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-btn-ghost" title="Review suggested changes">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}${mode === 'admin' || cfg.sandbox ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
     <button id="kiln-settings" class="kiln-btn-ghost">Settings</button>
     <button id="kiln-help" class="kiln-btn-ghost" data-href="${escapeHtml(helpLink())}" title="Opens the guide in a new tab">Help</button>
     <button id="kiln-draft" class="kiln-btn-ghost" hidden>Draft</button>
@@ -6538,7 +6651,9 @@ function injectStyles() {
 #kiln-fab-menu[hidden]{display:none!important}
 #kiln-fab-menu{position:absolute;width:230px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(16px);
   backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.09);border-radius:16px;padding:8px;
-  box-shadow:0 18px 50px rgba(0,0,0,.4);display:flex;flex-direction:column;gap:3px}
+  box-shadow:0 18px 50px rgba(0,0,0,.4);display:flex;flex-direction:column;gap:3px;
+  /* a full menu is taller than a small laptop's screen: it scrolls inside itself, never off the screen */
+  max-height:calc(100vh - 16px);overflow-y:auto;box-sizing:border-box;overscroll-behavior:contain}
 .kiln-fab-head{display:flex;align-items:center;gap:8px;padding:6px 10px 8px}
 .kiln-brand{font-weight:700;letter-spacing:.02em;font-size:14px;
   background:linear-gradient(135deg,#a5b4fc,#818cf8);-webkit-background-clip:text;background-clip:text;color:transparent}
@@ -6556,7 +6671,9 @@ function injectStyles() {
 .kiln-fab-primary:hover{background:var(--kiln-accent-h);color:#fff}
 .kiln-fab-primary:disabled{opacity:.4;cursor:default;background:rgba(255,255,255,.08);color:#9ca3af;font-weight:500}
 .kiln-fab-foot{display:flex;justify-content:space-between;border-top:1px solid rgba(255,255,255,.08);
-  margin-top:4px;padding-top:6px}
+  margin:4px -8px -8px;padding:6px 8px 8px;
+  /* stays in sight while a long menu scrolls: the way out is never below the fold */
+  position:sticky;bottom:-8px;background:rgb(20,20,31);border-radius:0 0 16px 16px}
 .kiln-fab-foot button{background:none;border:none;color:#8b8e9c;font-size:11.5px;cursor:pointer;
   padding:5px 8px;border-radius:7px;font-family:var(--kiln-font)}
 .kiln-fab-foot button:hover{color:#fff;background:rgba(255,255,255,.07)}
