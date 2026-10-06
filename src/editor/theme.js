@@ -447,7 +447,7 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
     if (failures.length) parts.push(`Could not update ${failures.join(' · ')} — still staged.`);
     status.textContent = parts.join(' ');
     // No setStatus on success — journalAdd's first tick already narrates
-    // ("Publishing “Theme”…", then "live ✓") in the status line.
+    // ("“Theme” is going live…", then "live ✓") in the status line.
     if (!committed && failures.length) setStatus('Theme update failed — see the panel', 'error');
   };
 }

@@ -1204,7 +1204,18 @@ async function update() {
     if (prefix !== null) break;
   }
   if (prefix === null) { fail('No page here loads kiln.js — run the wizard first (npx github:kilncms/kiln#release).'); process.exit(1); }
+  // The folder comes out of the site's own HTML. It is only written to when it
+  // is a folder of this site: not another address, and not somewhere above.
+  if (/^([a-z][a-z0-9+.-]*:)?\/\//i.test(prefix)) {
+    fail(`This site loads kiln.js from another address (${prefix}kiln.js), not from a file in this folder, so there is nothing here to update. Update the copy at that address.`);
+    process.exit(1);
+  }
   const dir = path.join(root, prefix.replace(/^\//, '').replace(/\/$/, '')).split(path.sep).join('/') || '.';
+  const target = path.resolve(dir), here = path.resolve('.');
+  if (target !== here && !target.startsWith(here + path.sep)) {
+    fail(`The page names a folder outside this site for kiln.js (${prefix}), so nothing was written. Run this at the top of the site's folder, or correct the script tag.`);
+    process.exit(1);
+  }
   mkdirSync(dir, { recursive: true });
   for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) cpSync(path.join(PKG_ROOT, 'dist', f), path.join(dir, f));
   ok(`copied the latest kiln.js + kiln-editor.js + kiln-features.js into ${dir}/`);

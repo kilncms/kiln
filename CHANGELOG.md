@@ -298,6 +298,10 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Table rows' controls, invisible on touch screens, are visible again.
 - **The image resize handle made the page scroll sideways** on a full-width
   image, and could be left behind on the page after its toolbar closed.
+- **`kiln update` wrote wherever the page's script tag pointed**, a folder
+  above the site included, and made a folder named `https:` for a page that
+  loads `kiln.js` from another address. It now writes only inside the site
+  and says why when it will not.
 - **`kiln update` ran its git commands through a shell** with a folder name
   read from the site's own HTML; a name with a space broke the commit. git now
   gets its arguments directly.
