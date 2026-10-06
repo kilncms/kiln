@@ -27,7 +27,7 @@ import { initTheme, openThemePanel } from './theme.js';
 import { initComments, openComments, commentsTick } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 import { initBlocks } from './blocks.js';
-import { publishLabel, editCommitMessage } from './firstrun.js';
+import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished } from './firstrun.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -2637,7 +2637,50 @@ function restoreSandboxPage() {
   if (edits) applySandboxEdits(edits);
 }
 
+/**
+ * What the demo guide's last card says about a publish: one edit's text before
+ * and after, and the commit message the same publish gets on a real site.
+ */
+function describePublish() {
+  // Text the way a person reads it on the page: lay the HTML out in a throwaway
+  // copy of the field (same tag, classes and parent, so the site's CSS applies)
+  // and take its rendered text. Reading the live element would pick up Kiln's
+  // own block controls, and plain textContent runs lines together.
+  const text = (key, html) => {
+    let el = null;
+    try { el = document.querySelector(`[data-cms="${CSS.escape(key)}"], [data-cms-repeat="${CSS.escape(key)}"]`); } catch { el = null; }
+    const copy = el ? el.cloneNode(false) : document.createElement('div');
+    copy.removeAttribute('id');
+    copy.innerHTML = html ?? '';
+    copy.style.cssText += ';position:absolute!important;left:-99999px!important;top:0!important;opacity:0!important;pointer-events:none!important';
+    (el || document.body.lastChild).after(copy);
+    const out = copy.innerText;
+    copy.remove();
+    return out;
+  };
+  let before = '', after = '';
+  const html = [...state.pending].find(([, v]) => v.html !== undefined);
+  const attr = [...state.pending].find(([, v]) => v.attrs);
+  const src = [...state.pendingSource][0];
+  if (html) {
+    before = text(html[0], state.undoBase.get(html[0]));
+    after = text(html[0], html[1].html);
+  } else if (src) {
+    before = state.sourceBase.get(src[0]) ?? '';
+    after = src[1].value;
+  } else if (attr) {
+    // An image swap or a link change: say what kind of thing changed, not a data: URL.
+    const [key, v] = attr;
+    const name = ['alt', 'href'].find(a => a in v.attrs);
+    before = name ? (state.undoBaseAttrs.get(key)?.[name] ?? '') : 'The old picture';
+    after = name ? v.attrs[name] : 'Your new picture';
+  }
+  const file = pageFileCandidates(location.pathname, cfg.root || '')[0];
+  return { before, after, message: editCommitMessage(file, [...flattenPending().map(e => e.key), ...state.pendingSource.keys()]) };
+}
+
 function publishSandbox() {
+  const told = describePublish();
   const s = sandboxStore();
   s._createdAt = s._createdAt || Date.now();
   s.pages = s.pages || {};
@@ -2659,9 +2702,19 @@ function publishSandbox() {
   state.pendingSource.clear();
   state.pending.clear();
   state.originals.clear();
+  // Same publish boundary as a real site: what is published is no longer
+  // something Undo can take back off the page.
+  for (const [key, v] of Object.entries(page)) {
+    if (v.html !== undefined) state.undoBase.set(key, v.html);
+    if (v.attrs) state.undoBaseAttrs.set(key, { ...(state.undoBaseAttrs.get(key) || {}), ...v.attrs });
+  }
+  editHistory.undo.length = 0;
+  editHistory.redo.length = 0;
+  updateUndoUi();
   document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
   refreshPublishButton();
-  setStatus('Saved to your private demo. Only you can see this — a real Kiln site commits to GitHub and your host publishes it in about a minute.', 'saved');
+  setStatus('Saved to your private demo. Only you can see it.', 'saved');
+  guidePublished(told);
 }
 
 function renderSandboxBanner() {
@@ -2722,6 +2775,10 @@ async function initSandbox() {
   revealFields();
   renderSandboxBanner();
   bootBlocks();   // chrome shows in the demo; inserting explains it needs a real site
+  // First visit to the demo: point at a heading, then at Publish, then say what happened.
+  initGuide({ cfg, mobileMq: MOBILE_MQ,
+    unpublished: () => state.pending.size + state.pendingSource.size + state.pendingBinaries.size + state.pendingStructural.length,
+    publishButton: () => document.getElementById('kiln-publish-quick') });
 }
 
 /**
@@ -4955,6 +5012,7 @@ function watchToolbar(onOpen) {
     if (open === document.documentElement.classList.contains('kiln-tb-open')) return;
     document.documentElement.classList.toggle('kiln-tb-open', open);
     if (open && onOpen) onOpen();
+    guideSync();   // the demo guide's next step may have been waiting behind the toolbar
   }).observe(document.body, { childList: true });
 }
 
@@ -5319,6 +5377,7 @@ function refreshPublishButton() {
   const shareBtn = document.getElementById('kiln-sharepreview');
   if (shareBtn) shareBtn.style.display = (nHtml && !shareBtn.dataset.gated) ? '' : 'none';
   savePendingToStorage();
+  guideSync();   // the demo guide follows the page's state (a no-op anywhere else)
 }
 
 function disablePublish(yes) {
