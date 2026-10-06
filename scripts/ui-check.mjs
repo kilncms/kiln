@@ -589,6 +589,43 @@ async function runSafetyNet(browser, size) {
     }
   }
   check(scope, 'with every change undone, nothing is unpublished', (await page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).count()) === 0);
+
+  // ── removing a block: at once, with the editor's own way back ──────────────
+  check(scope, 'removing a block never opens the browser\'s own box', boxes.length === 0, (boxes[0] || '').slice(0, 60));
+  if (keys.length) {
+    const key = keys[keys.length - 1];
+    const second = page.locator(`[data-cms-repeat="${key}"] > .kiln-repeat-item`).nth(1);
+    await page.evaluate((q) => document.querySelectorAll(q).forEach((el, i) => { el.__uiCheck = i; }), blocksOf(key));
+    const before = await look(key);
+    await second.scrollIntoViewIfNeeded();
+    if (phone) { await second.locator('.kiln-ctl-more').tap(); await page.waitForTimeout(250); } else { await second.hover(); await page.waitForTimeout(250); }
+    await press(second.locator('button[title="Remove this block"]'));
+    await page.waitForTimeout(400);
+    const line = page.locator('#kiln-status');
+    const way = line.locator('.kiln-status-act');
+    const said = ((await line.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+    check(scope, 'the block is gone at once, and the line reads "Removed." with an Undo button', (await page.locator(blocksOf(key)).count()) === before.length - 1
+      && /^Removed\. ?Undo$/.test(said) && (await way.count()) === 1 && (await line.isVisible()), said);
+    if (await way.count()) {
+      check(scope, 'that Undo can be pressed', ...Object.values(await hit(way)));
+      await shot('removed-undo');
+      await press(way);
+      await page.waitForTimeout(700);
+      const now = await look(key);
+      check(scope, 'it puts the block back where it was, there to be seen', now.length === before.length && allSeen(now) && now.map(b => b.mark).join(',') === before.map(b => b.mark).join(','), told(now));
+    }
+    // once something else has been changed, that button would undo the wrong thing: the line has gone
+    if (phone) { await second.locator('.kiln-ctl-more').tap(); await page.waitForTimeout(250); } else { await second.hover(); await page.waitForTimeout(250); }
+    await press(second.locator('button[title="Remove this block"]'));
+    await page.waitForTimeout(300);
+    if (phone) { await second.locator('.kiln-ctl-more').tap(); await page.waitForTimeout(250); } else { await second.hover(); await page.waitForTimeout(250); }
+    await press(second.locator('button[title="Duplicate this block"]'));
+    await page.waitForTimeout(300);
+    check(scope, 'after another change the "Removed. Undo" line is put away', !(await line.isVisible()) || !/^Removed/.test((await line.innerText()) || ''));
+    await press(undo); await page.waitForTimeout(400);
+    await press(undo); await page.waitForTimeout(600);
+    check(scope, 'and the two Undo presses beside the pencil bring the list back', (await page.locator(blocksOf(key)).count()) === before.length && allSeen(await look(key)));
+  }
   // a block that is itself a link (a card that opens its page) is not followed when one of its buttons is pressed
   check(scope, 'pressing a block\'s buttons opened no other page', opened.length === 0 && blocked.length === 0 && page.url() === URL_ARG, [...opened, ...blocked].slice(0, 2).join(', '));
 

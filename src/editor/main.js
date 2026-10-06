@@ -144,6 +144,10 @@ function undoGroup(fn) {
 }
 
 function pushUndoEntry(entry) {
+  // "Removed. Undo" is the way back while the removal is the last change made.
+  // After another change its button would undo that one instead: put it away.
+  const line = document.getElementById('kiln-status');
+  if (line?.dataset.tag === 'removed') line.hidden = true;
   editHistory.undo.push(entry);
   if (editHistory.undo.length > 100) editHistory.undo.shift();
   editHistory.redo.length = 0;
@@ -1146,11 +1150,15 @@ function attachItemControls(container, key, item) {
   };
   del.onclick = (e) => {
     e.stopPropagation();
-    if (realSiblings().length <= 1) { setStatus('Keep at least one block (edit it instead)', 'error'); return; }
-    if (!confirm('Remove this block? (You can still Cancel by leaving without publishing.)')) return;
+    if (realSiblings().length <= 1) { setStatus('A list keeps at least one block. Change this one instead.', 'error'); return; }
+    // No question first: the block is gone at once, and one press brings it
+    // back, as "Published. Undo" does for a publish. (The browser's own box
+    // used to ask here, and told people the way back was to leave the page.)
+    closeItemControls();          // it comes back with its buttons folded away, as it was found
     item.remove();
     keepAside(container, item);   // Undo puts this very block back
     stageContainer(container, key);
+    setStatus('Removed.', 'saved', { hold: 10000, tag: 'removed', action: { label: 'Undo', title: 'Put the block back', run: undoEdit } });
   };
   // Phones: five thumb-sized buttons on every card buries the page under
   // controls, and on a two-column grid they would not even fit. There each
@@ -6414,15 +6422,17 @@ function setStatus(text, kind, opts) {
     + (opts?.action ? `<button type="button" class="kiln-status-act" title="${escapeHtml(opts.action.title || '')}">${escapeHtml(opts.action.label)}</button>` : '');
   if (opts?.action) el.querySelector('.kiln-status-act').onclick = (e) => { e.stopPropagation(); opts.action.run(); };
   el.className = `kiln-status kiln-status--${kind}${opts?.action ? ' kiln-status--act' : ''}`;
+  if (opts?.tag) el.dataset.tag = opts.tag; else delete el.dataset.tag;
   el.hidden = false;
   clearTimeout(statusHideTimer);
   if (opts?.signIn) { signInLine = [text, kind, opts]; return; }
   if (signInLine && !opts?.offer) { statusHideTimer = setTimeout(() => setStatus(...signInLine), 6000); return; }
   if (opts?.sticky) return;
   // Busy/error states stay visible; calm states fade away on their own. On a
-  // phone the toast sits over the top of the page, so it leaves sooner.
+  // phone the toast sits over the top of the page, so it leaves sooner. A line
+  // with something to press says how long it stays (opts.hold).
   if (kind === 'idle' || kind === 'saved') {
-    statusHideTimer = setTimeout(() => { el.hidden = true; }, isMobileEditor() ? 4000 : 6000);
+    statusHideTimer = setTimeout(() => { el.hidden = true; }, opts?.hold || (isMobileEditor() ? 4000 : 6000));
   }
 }
 

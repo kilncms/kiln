@@ -31,3 +31,28 @@ test('block controls: every button of the bar is inside it', () => {
   assert.match(controls, /item\.appendChild\(ctl\);/);
   assert.match(controls, /cell\.appendChild\(ctl\);/);
 });
+
+test('block controls: removing a block asks nothing in the browser\'s own box, and offers its own way back', () => {
+  // the box read "Remove this block? (You can still Cancel by leaving without publishing.)"
+  assert.equal(/confirm\([^)]*Remove this block/.test(main), false, 'the browser\'s box is still asked');
+  assert.equal(/leaving without publishing/.test(main), false);
+  const del = controls.slice(controls.indexOf('del.onclick'), controls.indexOf('// Phones: five thumb-sized buttons'));
+  assert.equal(/\bconfirm\(|\bprompt\(|\balert\(/.test(del), false);
+  // gone at once, kept aside for Undo, staged, and said with a button: in that order
+  const order = ['item.remove();', 'keepAside(container, item);', 'stageContainer(container, key);', "setStatus('Removed.', 'saved', { hold: 10000, tag: 'removed', action: { label: 'Undo'"];
+  let at = -1;
+  for (const step of order) { const i = del.indexOf(step); assert.ok(i > at, step); at = i; }
+  assert.match(del, /run: undoEdit \}/);
+  // a block taken off with its buttons open comes back with them folded away
+  assert.ok(del.indexOf('closeItemControls();') !== -1 && del.indexOf('closeItemControls();') < del.indexOf('item.remove();'));
+});
+
+test('block controls: "Removed. Undo" is put away once another change is made, so its button never undoes the wrong thing', () => {
+  const push = main.slice(main.indexOf('function pushUndoEntry('), main.indexOf('/** A publish, a draft, a schedule'));
+  assert.match(push, /if \(line\?\.dataset\.tag === 'removed'\) line\.hidden = true;/);
+  assert.ok(push.indexOf("dataset.tag === 'removed'") < push.indexOf('editHistory.undo.push(entry)'));
+  // the line says how long it stays, and any other line clears the mark
+  const status = main.slice(main.indexOf('function setStatus('), main.indexOf('// ─── Crash-proof pending edits'));
+  assert.match(status, /if \(opts\?\.tag\) el\.dataset\.tag = opts\.tag; else delete el\.dataset\.tag;/);
+  assert.match(status, /opts\?\.hold \|\| \(isMobileEditor\(\) \? 4000 : 6000\)/);
+});
