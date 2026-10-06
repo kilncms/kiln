@@ -418,9 +418,10 @@ cookie, `KILN_WORKER` points the redeem function at your auth worker.
 
 ```bash
 npm install
-npm test               # engine, transport, worker + source-mode suites — 362 tests (node --test)
+npm test               # engine, transport, worker, CLI + source-mode suites (node --test)
 npm run build          # dist/kiln.js + dist/kiln-editor.js + dist/kiln-features.js
 node scripts/ui-check.mjs http://localhost:8774/   # browser check of the editor against a local sandbox site (needs Playwright, see the file)
+node scripts/demo-video.mjs --site <demo site folder> --out <folder outside this repo>   # records the first minute of editing, phone and desktop (needs Playwright and ffmpeg, see the file)
 node scripts/e2e.mjs --smoke                     # maintainers: the staging worker refuses what it should (writes nothing)
 KILN_E2E_REPO=owner/test-repo GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   # maintainers: the whole editing loop on staging
 ```
