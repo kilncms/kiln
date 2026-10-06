@@ -43,7 +43,7 @@ test('KLR-20 create-kiln packs with everything the wizard copies, a readme, the 
   assert.deepEqual(manifest('cli').bin, { 'create-kiln': 'index.mjs' });
   assert.match(readFileSync(path.join(ROOT, 'cli', 'index.mjs'), 'utf8'), /^#!\/usr\/bin\/env node\n/);
   // Packing leaves the folder as it was: nothing vendored stays to shadow the repository's own files.
-  assert.deepEqual(p.left, ['README.md', 'index.mjs', 'new.mjs', 'package-lock.json', 'package.json', 'prepack.mjs', 'rescue.mjs']);
+  assert.deepEqual(p.left, ['README.md', 'index.mjs', 'new.mjs', 'package-lock.json', 'package.json', 'prepack.mjs', 'render.mjs', 'rescue.mjs']);
 });
 
 test('KLR-20 kiln-mcp and @kilncms/astro pack with licence and readme, and say where they come from', () => {
