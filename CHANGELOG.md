@@ -284,6 +284,54 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Undo in a list could make the whole list invisible.** On a site whose
+  blocks fade in as they scroll into view, Undo after removing, adding, moving
+  or duplicating a block, or after changing a word in one, left the list on
+  the page and out of sight, and so did "Drop" in the publish sheet and
+  History's preview. The editor wrote the list's earlier HTML back as new
+  elements, which the site's own script had never seen and so never showed.
+  A list is now written block by block: a block that is on the page stays the
+  element it is, a block that was taken off is the one put back, and a block
+  that is new takes the classes the site gave the block it stands in for.
+- **A block's buttons followed the link when the block was one.** On a card
+  that is a link, pressing Move, Duplicate, Tags or Remove also opened the
+  card's address in a new tab.
+- **Failures were shown as the text of an exception.** "Draft failed: Cannot
+  read properties of null (reading 'request')", "Failed: GitHub 422: Reference
+  already exists", "Publish failed — see console". Every such place now says
+  what was not done and why, in a sentence. The exception goes to the console.
+- **The demo's safety net.** In try-out mode (`sandbox: true`): Save as draft
+  failed, and now keeps the draft in the visitor's browser and offers it back;
+  an edit that was not published was gone after a reload, and is now offered
+  back with "Pick up where you left off?"; "Schedule for later" printed the
+  worker's "forbidden", and now says what a real site does; and there was no
+  History, where there is now one of this browser's publishes, with "Undo this
+  change" and "Go back to this" working. New post or page, Page settings, Site
+  menu, Find & replace and People & access are shown in the demo's menu, each
+  opening its own dialog and saying what a real site does where it would act.
+  The ✨ button says what it is beside the button instead of doing nothing
+  visible.
+- **A saved draft could take the place of "Pick up where you left off?"**, on a
+  real site, when a page had both: the question about the draft opened over the
+  other one, and the unpublished edits were lost with the next change. The
+  draft is now asked about afterwards. Edits thrown away with "Discard & exit"
+  are no longer offered back.
+- **Removing a block asked in the browser's own box**, which told people the
+  way back was to leave the page. It is immediate, with "Removed. Undo".
+- **Developer names shown to the person editing.** The toolbar, the hover
+  hint, Search & jump, the publish sheet and "Pick up where you left off?"
+  show a readable name made from the field's name ("Hero headline", "Hero
+  picture"; the stored name is the label's title). Search & jump no longer
+  matches a scatter of letters ("history" found "hero img"). Theme says "The
+  site's colours and type sizes" and names its settings in words, with the
+  stylesheet's names as small print for the owner.
+- **On a phone** the first tip lay on the page's own buttons, the pencil on
+  the last items of the menu, and a block's opened buttons on the next block's
+  words; none does now. Choosing "Top bar" in Settings no longer leaves the
+  first lines of the page under the bar (laptop too), and a full menu no longer
+  runs off a small laptop's screen. The first-session guide's last card puts
+  itself away after twenty seconds.
+
 - **An editor whose sign-in the worker had ended was left with an editor that
   did not start, and no way back to the sign-in.** A 401 for the stored
   sign-in (someone taken off People and added back, a repository renamed, a

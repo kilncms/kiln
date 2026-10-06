@@ -25,12 +25,26 @@ check whether they added a different address of yours, then try again.
 
 ## Editing
 
-Once you're in, the site looks like itself, with one difference: the parts you can
-edit are outlined. When the page opens, every editable part shows a dashed outline for
-a moment. After that an outline appears when your pointer is over one, and on a phone
-or tablet a faint outline stays on all of them. Click any outlined text and type. A small toolbar gives you
-bold, italic, underline, lists, links, and a **Style** menu with the site's own text
-styles, so whatever you write matches the design.
+Once you're in, the site looks like itself, with two differences. There is a round
+button with a pencil on it in the bottom right corner: that is the Kiln button, and
+its menu holds everything this page describes. Visitors never see it.
+
+<!-- A picture belongs here: the round Kiln button in the corner of a page.
+     Files: guide-the-button-1280.png (the corner alone: guide-the-button-corner-1280.png),
+     and for a phone guide-the-button-390.png. -->
+
+And the parts you can edit are outlined. When the page opens, every editable part
+shows a dashed outline for a moment. After that an outline appears when your pointer
+is over one, and on a phone or tablet a faint outline stays on all of them. Click any
+outlined text and type. A small toolbar gives you bold, italic, underline, lists,
+links, and a **Style** menu with the site's own text styles, so whatever you write
+matches the design. The toolbar starts with the name of the part you are in ("Hero
+headline"). **Done** keeps what you typed; **Revert**, or the Esc key, throws it away.
+A part you have changed keeps a solid yellow outline until it is published.
+
+<!-- A picture belongs here: a heading with its dashed outline, the pointer on it.
+     Files: guide-the-outline-1280.png, and for a phone guide-the-outline-390.png
+     (the toolbar open: guide-the-toolbar-1280.png; a changed part waiting: guide-the-waiting-edit-1280.png). -->
 
 Some other things you can do, depending on what the owner has set up:
 
@@ -39,10 +53,15 @@ Some other things you can do, depending on what the owner has set up:
   page first, with a search box: pick one and it is used as it is, with nothing new
   added to the site. Write a description for it, and drag the corner handle to resize.
 - **Blocks**: lists of similar things (cards, table rows, gallery photos) have
-  controls to duplicate, reorder, and remove items. On a phone, tap the **⋯** button
-  on a block to open them.
-- **Undo**: Ctrl+Z (Cmd+Z on a Mac) undoes any staged change, including image swaps
-  and block changes.
+  controls to move an item up or down, copy it (＋), tag it and remove it (✕). On a
+  computer they appear when the pointer is on the item. On a phone each item has a
+  **⋯** button: tap it and the controls open in a row under that item. A button
+  under the list adds an item. Removing is immediate, and the line beside the Kiln
+  button reads **Removed. Undo** for ten seconds.
+- **Undo**: **Undo** and **Redo** buttons appear beside the Kiln button as soon as
+  there is something to undo, and Ctrl+Z (Cmd+Z on a Mac) does the same. It takes
+  back any change you have not published, one at a time: words, a swapped picture,
+  an item you added, moved, copied or removed. The list comes back as it was.
 
 Nothing goes live while you type. Your edits stage on the page.
 
@@ -72,17 +91,37 @@ under **What changed?**, and it is saved with the change so History reads well. 
 press the one button at the bottom. Escape or Cancel closes the sheet and keeps
 everything. Ctrl+Enter (Cmd+Enter on a Mac) publishes.
 
+<!-- A picture belongs here: the sheet Publish opens, one edit shown as before and after.
+     Files: guide-the-publish-sheet-1280.png, and for a phone guide-the-publish-sheet-390.png. -->
+
 All your staged changes go out together, and the live site updates about a minute
 later (that minute is the site rebuilding, which is normal). If you never press it,
-nothing has changed for visitors. You
-can close the tab: your unpublished edits are kept in that browser, and the next
-time you open the page there the editor offers to bring them back. They are not
-on the site, and not on any other device.
+nothing has changed for visitors.
 
 For ten seconds afterwards the confirmation reads **Published. Undo**. Undo takes
 exactly that publish back and puts your edits on the page again, unpublished, so
 nothing you typed is lost. If someone else published the same page in those seconds,
-Undo does nothing and tells you so, because it would take their work with it.
+Undo does nothing and tells you so, because it would take their work with it. After
+that the line says the change is going live, and then **Live ✓** once visitors can
+see it. You can keep editing meanwhile, or close the tab: the change is already
+saved.
+
+### Closed the tab, or not ready to publish
+
+Your unpublished edits are kept in that browser as you make them, for seven days.
+Reload the page, close the tab, or open the page in another tab: the editor asks
+**Pick up where you left off?** and names the parts you had changed. **Restore
+edits** puts them back, still unpublished. They are not on the site, and not on any
+other device.
+
+**Save as draft**, in the Kiln menu, puts your waiting text changes aside without
+publishing them. The next time that page is opened in Kiln it says there is a saved
+draft and offers to resume it, publish it, or leave it for later. A draft holds text
+changes, so publish new pictures and added sections first. If the page has both a
+draft and unpublished edits, you are asked about the edits first.
+
+**Discard edits**, in the same menu, drops everything that is waiting and puts the
+page back to what is live.
 
 If you publish all day and would rather skip the sheet, the menu's **Settings** has
 **Publish without the preview**. It is remembered in that browser only.
@@ -90,6 +129,15 @@ If you publish all day and would rather skip the sheet, the menu's **Settings** 
 Every publish is saved in the site's history with your name on it. The owner can see
 who changed what and can restore any earlier version, so you can't permanently break
 anything. Edit with confidence.
+
+If the owner has given you **History & restore**, it is in the Kiln menu. Every
+publish of the page is listed with who made it and when, and each offers two ways
+back: **Undo this change** takes back that one publish and leaves everything since;
+**Go back to this** returns the whole page to how it was then. Either way the result
+is shown on the page first, and it goes live when you press Publish. For one part of
+the page, click into it and press the clock on its toolbar: it lists that part's
+earlier versions. If History is not in your menu, tell the owner what went wrong.
+They can undo any publish.
 
 If someone else is editing at the same time, you'll see who. If you both changed the
 same piece of text, Kiln warns you before publishing and keeps both versions visible
@@ -130,9 +178,22 @@ any email address (many work emails are Google accounts already).
 **Where do my changes actually go?** Into the site's source on GitHub, as a change
 recorded under your name. You never touch GitHub yourself; Kiln handles it.
 
-**Can I edit from my phone?** Yes. While you type, the toolbar sits across the bottom
-of the screen, above the keyboard. Tap **Done** and the pencil and the Publish button
-come back.
+**Can I edit from my phone?** Yes. The Kiln menu slides up from the bottom of the
+screen, with **Done editing** always in sight at its foot. While you type, the
+toolbar sits across the bottom of the screen, above the keyboard. Tap **Done** and
+the pencil and the Publish button come back. On a list, each item has a **⋯** button
+that opens its controls.
+
+**Something went wrong and the message was not clear.** Messages say what was not
+done and why, in a sentence, and that nothing you typed was lost when that is so. If
+one tells you Kiln had a problem of its own, reload the page: your unpublished edits
+are offered back.
+
+**Can I try it without being invited?** The demo at demo.kilncms.com is a private
+copy for each visitor, kept in the visitor's own browser for a day. Publish, Undo,
+Save as draft, "Pick up where you left off?" and History all work there. Where
+something needs a real site (scheduling, new pages, inviting people), it says what a
+real site does.
 
 **I got signed out.** Your access has an expiry the owner set. Go back to
 `yoursite.com/kiln` and sign in with Google again. If it says you're not on the list,
