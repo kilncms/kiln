@@ -766,6 +766,26 @@ function attachItemControls(container, key, item) {
     item.remove();
     stageContainer(container, key);
   };
+  // Phones: five thumb-sized buttons on every card buries the page under
+  // controls, and on a two-column grid they would not even fit. There each
+  // block shows one "more" button, and its bar opens on a tap — one bar at a
+  // time. (Added after the buttons above were picked out by position; the
+  // stylesheet hides it on desktop, where the bar appears on hover.)
+  const more = document.createElement('button');
+  more.type = 'button';
+  more.className = 'kiln-ctl-more';
+  more.title = 'Block options';
+  more.setAttribute('aria-label', 'Block options');
+  more.setAttribute('aria-expanded', 'false');
+  more.textContent = '⋯';
+  more.onclick = (e) => {
+    e.stopPropagation(); e.preventDefault();
+    const open = !ctl.classList.contains('kiln-ctl-open');
+    closeItemControls();
+    ctl.classList.toggle('kiln-ctl-open', open);
+    more.setAttribute('aria-expanded', String(open));
+  };
+  ctl.prepend(more);
   // A <div> is not valid inside <tr> — anchor the controls in the row's last
   // cell instead so table rows get working move/duplicate/remove buttons too.
   if (item.tagName === 'TR') {
@@ -802,6 +822,19 @@ function attachItemControls(container, key, item) {
     stageContainer(container, key);
   });
 }
+
+/** Fold every block's control bar back to its "more" button (phones). */
+function closeItemControls() {
+  document.querySelectorAll('.kiln-item-ctl.kiln-ctl-open').forEach((c) => {
+    c.classList.remove('kiln-ctl-open');
+    c.querySelector('.kiln-ctl-more')?.setAttribute('aria-expanded', 'false');
+  });
+}
+// A tap anywhere else folds an open bar away. Capture phase: a tap on a field
+// is stopped by the field's own handler before it could bubble up to here.
+document.addEventListener('click', (e) => {
+  if (!e.target.closest?.('.kiln-item-ctl')) closeItemControls();
+}, true);
 
 /** Comma-tags on a repeat block → visitors get automatic filter pills. */
 function editItemTags(container, key, item) {
@@ -5687,13 +5720,17 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-th-val{flex:0 1 auto;max-width:230px;font:12px ui-monospace,Menlo,monospace;color:#9ca3af}
 .kiln-th-example{background:#f6f7f9;border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;font:12px/1.6 ui-monospace,Menlo,monospace;overflow-x:auto}
 .kiln-repeat-item{position:relative}
-.kiln-item-ctl{position:absolute;top:8px;right:8px;display:flex;gap:5px;z-index:9999;opacity:0;transition:opacity .15s}
+/* The control bar stays INSIDE its block: on a narrow card (a two-column grid
+   on a phone, a small gallery thumbnail) it wraps onto a second row instead of
+   hanging out over the neighbouring block or off the edge of the screen. */
+.kiln-item-ctl{position:absolute;top:8px;right:8px;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px;
+  max-width:calc(100% - 16px);z-index:9999;opacity:0;transition:opacity .15s}
 .kiln-repeat-item:hover>.kiln-item-ctl{opacity:1}
 .kiln-row-editing .kiln-item-ctl{opacity:0!important;pointer-events:none}
 /* Table rows keep their controls in a dedicated end-of-row cell (a floating
    overlay would cover the last column's text while typing). */
 .kiln-ctl-cell{width:1%;white-space:nowrap;vertical-align:middle;background:none!important;border:none!important;padding:2px 4px!important}
-.kiln-ctl-cell .kiln-item-ctl{position:static;display:flex;opacity:0}
+.kiln-ctl-cell .kiln-item-ctl{position:static;display:flex;flex-wrap:nowrap;max-width:none;opacity:0}
 .kiln-repeat-item:hover .kiln-ctl-cell .kiln-item-ctl{opacity:1}
 /* An empty field being edited must still show a caret and accept clicks. */
 .kiln-editing:empty{min-width:70px;min-height:1.15em;display:inline-block}
@@ -5701,11 +5738,12 @@ td.kiln-editing:empty,th.kiln-editing:empty{display:table-cell}
 .kiln-editing{caret-color:var(--kiln-accent)}
 /* Touch devices have no hover: keep block controls permanently visible so
    move/duplicate/tag/remove (and the only reorder path on a phone) are reachable. */
-@media(hover:none){.kiln-item-ctl{opacity:1}}
+@media(hover:none){.kiln-item-ctl,.kiln-ctl-cell .kiln-item-ctl{opacity:1}}
 .kiln-item-ctl button{background:var(--kiln-bg);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
   color:#fff;border:1px solid rgba(255,255,255,.1);width:27px;height:27px;border-radius:8px;
   cursor:pointer;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.25);transition:background .12s}
 .kiln-item-ctl button:hover{background:var(--kiln-accent)}
+.kiln-ctl-more{display:none}
 .kiln-repeat-add{display:block;margin:10px auto 0;background:rgba(99,102,241,.08);color:var(--kiln-accent);
   border:1.5px dashed rgba(99,102,241,.5);border-radius:10px;padding:8px 18px;cursor:pointer;
   font-size:13px;font-weight:600;font-family:var(--kiln-font);transition:all .15s}
@@ -5924,9 +5962,21 @@ body:has(#kiln-topbar){padding-top:56px!important}
   padding:10px 14px calc(14px + env(safe-area-inset-bottom,0px))!important}
 #kiln-ai-menu button{min-height:44px!important}
 #kiln-ai-menu input{min-height:40px;font-size:16px!important}
-/* Repeat blocks: thumb-size controls, always visible (no hover on touch). */
-.kiln-item-ctl{gap:8px;opacity:1}
-.kiln-item-ctl button{width:40px;height:40px;border-radius:10px;font-size:16px}
+/* Repeat blocks: thumb-size controls. One "more" button per block is always
+   visible (no hover on touch); a tap on it opens that block's bar underneath
+   it. The button keeps its corner either way, so the same spot closes it. */
+.kiln-item-ctl{gap:8px;opacity:1;min-width:40px;min-height:40px}
+.kiln-item-ctl button{width:40px;height:40px;border-radius:10px;font-size:16px;display:none}
+.kiln-item-ctl.kiln-ctl-open button{display:inline-block}
+.kiln-item-ctl .kiln-ctl-more{display:inline-block;position:absolute;top:0;right:0;font-size:20px;line-height:1}
+.kiln-item-ctl.kiln-ctl-open{padding-top:48px}
+.kiln-item-ctl.kiln-ctl-open .kiln-ctl-more{background:var(--kiln-accent)}
+/* In a table row the bar lives in its own cell and must not change the cell's
+   size (the whole table would reflow). It stays one button wide; open, its
+   buttons spill out along the row to the left of the "more" button. */
+.kiln-ctl-cell .kiln-item-ctl{position:relative;width:40px;max-width:none;flex-wrap:nowrap;padding:0;opacity:1}
+.kiln-ctl-cell .kiln-item-ctl .kiln-ctl-more{position:static;order:99}
+.kiln-ctl-cell .kiln-item-ctl.kiln-ctl-open{padding:0}
 .kiln-repeat-add{min-height:44px;font-size:14px}
 /* Comments: thumb-size pins; popover + composer → bottom sheets. */
 .kiln-cmt-pin{width:40px;height:40px;font-size:14px;border-radius:50% 50% 50% 5px}
