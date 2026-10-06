@@ -240,6 +240,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **After Undo, the guide's last card still said the change was committed.**
+  Pressing Undo while "That was a Git commit" (or, for an invited editor,
+  "That is published") was on screen left it up. The card now says the edit is
+  back, not published, and closes once that edit is published again or
+  dropped.
 - **On a phone the demo banner covered the pencil and the editing toolbar** —
   the menu could not be opened and the tap that tried hit "Start over". The
   banner is now a one-line pill beside the pencil, and steps aside while the

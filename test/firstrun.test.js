@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { publishLabel, editCommitMessage, guideStep, diffSnippet, placeTip, sideForHeading, initGuide, guideSync, guidePublished } from '../src/editor/firstrun.js';
+import { publishLabel, editCommitMessage, guideStep, guideCardCopy, diffSnippet, placeTip, sideForHeading, initGuide, guideSync, guidePublished, guideUndone } from '../src/editor/firstrun.js';
 
 test('publishLabel: says how many edits will go out', () => {
   assert.equal(publishLabel(0), 'Publish');                 // an upload with no field edit still publishes
@@ -45,6 +45,51 @@ test('guideStep: skipped or finished means nothing more is shown', () => {
   assert.equal(guideStep({ done: true, unpublished: 0 }), 0);
   assert.equal(guideStep({ done: true, unpublished: 3 }), 0);
   assert.equal(guideStep({ done: true, published: true }), 0);
+});
+
+test('guideStep: after Undo the last card stays only while the edit it brought back is waiting', () => {
+  assert.equal(guideStep({ published: true, undone: true, unpublished: 1 }), 3);
+  assert.equal(guideStep({ published: true, undone: true, unpublished: 3 }), 3);
+  // Published again, or dropped: the card would no longer be true, so the guide is over.
+  assert.equal(guideStep({ published: true, undone: true, unpublished: 0 }), 0);
+  assert.equal(guideStep({ done: true, published: true, undone: true, unpublished: 1 }), 0);
+  // Undo means nothing to the guide before a publish.
+  assert.equal(guideStep({ undone: true, unpublished: 1 }), 2);
+});
+
+test('the last card: after a publish it says what was saved', () => {
+  const demo = guideCardCopy({ message: 'Edit index.html: hero_headline (via Kiln)' });
+  assert.equal(demo.title, 'That was a Git commit');
+  assert.equal(demo.diff, true);
+  assert.equal(demo.message, 'Edit index.html: hero_headline (via Kiln)');
+  const invited = guideCardCopy({ invited: true, message: 'Edit index.html: hero_headline (via Kiln)' });
+  assert.equal(invited.title, 'That is published');
+  assert.equal(invited.diff, true);
+  assert.equal(invited.message, null);
+  assert.doesNotMatch(invited.title + invited.sub, /Git|commit/i);
+});
+
+test('the last card: after Undo it says the edit is back, not published, and no longer that a commit happened', () => {
+  for (const invited of [false, true]) {
+    const card = guideCardCopy({ invited, undone: true, message: 'Edit index.html: hero_headline (via Kiln)' });
+    assert.equal(card.title, 'Your edit is back, not published');
+    assert.doesNotMatch(card.title + ' ' + card.sub, /That was a Git commit|That is published|goes live|is saved to/);
+    assert.doesNotMatch(card.sub, /\bedits\b|\bchanges\b/);
+    assert.match(card.sub, /^Undo took that publish back\./);
+    // The before and after pair described the publish that is no longer there.
+    assert.equal(card.diff, false);
+  }
+  // The demo teaches what Undo is on a real site: one more commit, named as History names it.
+  const demo = guideCardCopy({ undone: true, message: 'Edit index.html: hero_headline (via Kiln)' });
+  assert.equal(demo.message, 'Undo "Edit index.html: hero_headline" (via Kiln)');
+  assert.match(demo.sub, /one more commit/);
+  // An invited editor is not told about Git.
+  const invited = guideCardCopy({ invited: true, undone: true, message: 'Edit index.html: hero_headline (via Kiln)' });
+  assert.equal(invited.message, null);
+  assert.doesNotMatch(invited.sub, /Git|commit/i);
+  // Several edits came back: the card counts them the way the status line does.
+  for (const who of [false, true]) assert.equal(guideCardCopy({ invited: who, undone: true, edits: 2 }).title, 'Your edits are back, not published');
+  assert.match(guideCardCopy({ invited: true, undone: true, edits: 3 }).sub, /Your changes are on this page again, and you can publish them/);
 });
 
 test('diffSnippet: short texts come back whole, whitespace tidied', () => {
@@ -151,4 +196,5 @@ test('the demo guide never starts outside sandbox mode', () => {
   // …and with no guide running, the hooks main.js calls are no-ops.
   assert.doesNotThrow(() => guideSync());
   assert.doesNotThrow(() => guidePublished({ before: 'a', after: 'b', message: 'm' }));
+  assert.doesNotThrow(() => guideUndone());
 });

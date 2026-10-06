@@ -9,6 +9,7 @@
  * same pattern as palette.js and suggest.js. Everything the guide shows that
  * came from the page goes through textContent, never innerHTML.
  */
+import { undoMessage } from './undo-publish.js';
 
 /** Label for a Publish control: "Publish", "Publish 1 edit", "Publish 3 edits". */
 export function publishLabel(n, { suggest = false } = {}) {
@@ -25,11 +26,42 @@ export function editCommitMessage(path, keys) {
  * Which guide step to show: 1 (make an edit), 2 (publish it), 3 (what just
  * happened), or 0 for nothing. Derived from the page's state rather than
  * counted, so undoing the only edit steps back to 1.
+ *
+ * `undone` is a publish taken back with Undo. The last card then says the
+ * edit is back, not published, and stays only while that is true: once the
+ * edit is published again or dropped, the guide is over.
  */
-export function guideStep({ done = false, published = false, unpublished = 0 } = {}) {
+export function guideStep({ done = false, published = false, undone = false, unpublished = 0 } = {}) {
   if (done) return 0;
+  if (published && undone) return unpublished > 0 ? 3 : 0;
   if (published) return 3;
   return unpublished > 0 ? 2 : 1;
+}
+
+/**
+ * What the last card says. After a publish: what was just saved. After Undo
+ * took that publish back: that the edit is on the page again, not published.
+ * `invited` is an editor on a real site, who is told what happened to their
+ * change, not what Git is or where to get Kiln. `diff` is whether the card
+ * shows the before and after texts; `message` is the commit message it shows,
+ * or null for none. `edits` is how many edits Undo brought back.
+ */
+export function guideCardCopy({ invited = false, undone = false, edits = 1, message = '' } = {}) {
+  if (undone) {
+    const many = edits > 1;
+    const title = many ? 'Your edits are back, not published' : 'Your edit is back, not published';
+    return invited
+      ? { title, diff: false, message: null,
+        sub: many ? 'Undo took that publish back. Your changes are on this page again, and you can publish them when they are ready.'
+          : 'Undo took that publish back. Your change is on this page again, and you can publish it when it is ready.' }
+      : { title, diff: false, message: undoMessage(message),
+        sub: 'Undo took that publish back. On your own site, Undo is one more commit that puts the page as it was, so both versions stay in the history.' };
+  }
+  return invited
+    ? { title: 'That is published', diff: true, message: null,
+      sub: 'Your change is saved to the site and goes live in about a minute. For ten seconds you can undo it, and every version is kept, so nothing is lost for good.' }
+    : { title: 'That was a Git commit', diff: true, message,
+      sub: 'A commit is a saved change with a note. On your own site, Kiln saves each edit to your GitHub repo this way, and your host puts it live in about a minute.' };
 }
 
 const squash = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -101,6 +133,7 @@ const START_URL = 'https://kilncms.com/get-started.html';
 let deps = null;        // { cfg, mobileMq, unpublished(), publishButton() }
 let done = false;       // skipped or finished: nothing more on this page load
 let published = null;   // { before, after, message } once the visitor has published
+let undone = 0;         // …and then took that publish back with Undo: how many edits came back
 let tip = null;         // the step 1 / step 2 bubble
 let tipStep = 0;
 
@@ -131,9 +164,9 @@ export function initGuide(d) {
 /** Re-read the page's state and show the step that fits it. Safe to call any time. */
 export function guideSync() {
   if (!deps) return;
-  const step = guideStep({ done, published: !!published, unpublished: deps.unpublished() });
+  const step = guideStep({ done, published: !!published, undone: undone > 0, unpublished: deps.unpublished() });
   if (step === 3) { removeTip(); showCard(); return; }
-  if (step === 0) { removeTip(); return; }
+  if (step === 0) { finish(); return; }
   const target = step === 1 ? firstHeading() : deps.publishButton();
   if (!target || !target.getClientRects().length) { removeTip(); return; }
   showTip(step, target);
@@ -148,6 +181,16 @@ export function guideWaiting() {
 export function guidePublished(info) {
   if (!deps || done || published) return;
   published = info;
+  guideSync();
+}
+
+/**
+ * Undo took that publish back. The card must stop saying it happened: it now
+ * says the edit is on the page again, not published.
+ */
+export function guideUndone(edits = 1) {
+  if (!deps || done || !published || undone) return;
+  undone = Math.max(1, edits);
   guideSync();
 }
 
@@ -229,31 +272,40 @@ function placeGuideTip() {
 }
 
 function showCard() {
-  if (document.getElementById('kiln-guide-card')) return;
+  const kind = undone ? 'undone' : 'published';
+  let card = document.getElementById('kiln-guide-card');
+  if (card && card.dataset.kind === kind) return;
   const el = (tag, cls, text) => {
     const n = document.createElement(tag);
     if (cls) n.className = cls;
     if (text !== undefined) n.textContent = text;
     return n;
   };
-  const card = el('div');
-  card.id = 'kiln-guide-card';
-  card.setAttribute('role', 'dialog');
-  card.setAttribute('aria-labelledby', 'kiln-guide-title');
-  // An invited editor on a real site is told what happened to their change,
-  // not what Git is or where to get Kiln.
+  const fresh = !card;
+  if (fresh) {
+    card = el('div');
+    card.id = 'kiln-guide-card';
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-labelledby', 'kiln-guide-title');
+  }
+  card.dataset.kind = kind;
   const invited = deps.audience === 'editor';
-  const title = el('h3', null, invited ? 'That is published' : 'That was a Git commit');
+  const copy = guideCardCopy({ invited, undone: undone > 0, edits: undone, message: published.message });
+  const title = el('h3', null, copy.title);
   title.id = 'kiln-guide-title';
-  const sub = el('p', 'kiln-guide-sub', invited
-    ? 'Your change is saved to the site and goes live in about a minute. For ten seconds you can undo it, and every version is kept, so nothing is lost for good.'
-    : 'A commit is a saved change with a note. On your own site, Kiln saves each edit to your GitHub repo this way, and your host puts it live in about a minute.');
-  const diff = el('div', 'kiln-guide-diff');
-  const snip = diffSnippet(published.before, published.after);
-  diff.append(el('span', 'kiln-guide-label', 'Before'), el('span', 'kiln-guide-before', snip.before || '(empty)'),
-    el('span', 'kiln-guide-label', 'After'), el('span', 'kiln-guide-after', snip.after || '(empty)'));
-  const msg = el('div', 'kiln-guide-msg');
-  msg.append(el('span', 'kiln-guide-label', 'Commit message'), el('code', null, published.message));
+  const parts = [title, el('p', 'kiln-guide-sub', copy.sub)];
+  if (copy.diff) {
+    const diff = el('div', 'kiln-guide-diff');
+    const snip = diffSnippet(published.before, published.after);
+    diff.append(el('span', 'kiln-guide-label', 'Before'), el('span', 'kiln-guide-before', snip.before || '(empty)'),
+      el('span', 'kiln-guide-label', 'After'), el('span', 'kiln-guide-after', snip.after || '(empty)'));
+    parts.push(diff);
+  }
+  if (copy.message) {
+    const msg = el('div', 'kiln-guide-msg');
+    msg.append(el('span', 'kiln-guide-label', 'Commit message'), el('code', null, copy.message));
+    parts.push(msg);
+  }
   const acts = el('div', 'kiln-guide-acts');
   const go = el('a', invited ? 'kiln-btn-ghost' : 'kiln-btn-publish', invited ? 'Read the guide' : 'Put Kiln on my site');
   go.href = invited ? (deps.guideUrl || 'https://kilncms.com/editors') : START_URL;
@@ -263,9 +315,10 @@ function showCard() {
   const stay = el('button', invited ? 'kiln-btn-publish' : 'kiln-btn-ghost', invited ? 'Got it' : 'Keep exploring');
   stay.type = 'button';
   stay.addEventListener('click', finish);
-  if (invited) { acts.append(stay, go); card.append(title, sub, diff, acts); }
-  else { acts.append(go, stay); card.append(title, sub, diff, msg, acts); }
-  document.body.appendChild(card);
+  if (invited) acts.append(stay, go); else acts.append(go, stay);
+  parts.push(acts);
+  card.replaceChildren(...parts);
+  if (fresh) document.body.appendChild(card);
   stay.focus({ preventScroll: true });
 }
 

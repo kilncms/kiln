@@ -425,6 +425,26 @@ async function run(browser, size, firstVisit) {
       check(scope, 'guide step 3 covers none of pencil, banner, status', clear);
     }
     await shot('guide-3');
+    // Undo with the card still up: it must stop saying a commit happened.
+    if (await undoBtn.count()) {
+      check(scope, 'Undo can be pressed while guide step 3 is up', ...Object.values(await hit(undoBtn)));
+      await press(undoBtn);
+      await page.waitForTimeout(450);
+      const after = (await card.count()) ? await read(card) : '';
+      check(scope, 'after Undo the card says the edit is back, not published', /^Your edit is back, not published/.test(after) && !/That was a Git commit/.test(after), after.slice(0, 80));
+      check(scope, 'after Undo the card names the commit an undo makes', /Undo "Edit [\w./-]+: [\w-]+" \(via Kiln\)/.test(after), (/Undo ".*\(via Kiln\)/.exec(after) || [''])[0]);
+      const again = page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first();
+      check(scope, 'after Undo the edit is on the page, unpublished', (await again.count()) === 1 && (await again.textContent()).trim() === 'Publish 1 edit' && (await read(heading)) === `${before} Hello`);
+      if (await card.count()) {
+        const c = await box(card);
+        let clear = c.left >= 0 && c.top >= 0 && c.right <= size.width && c.bottom <= size.height && apart(c, await box(pencil));
+        if (await banner.isVisible()) clear = clear && apart(c, await box(banner));
+        if (await status.isVisible()) clear = clear && apart(c, await box(status));
+        if (await again.count()) clear = clear && apart(c, await box(again));
+        check(scope, 'after Undo the card fits on screen and covers none of pencil, banner, status, Publish', clear);
+      }
+      await shot('guide-3-undone');
+    }
     const keep = card.getByRole('button', { name: 'Keep exploring' });
     if (await keep.count()) await press(keep);
     await page.waitForTimeout(200);
@@ -663,9 +683,6 @@ async function runSignedIn(browser, size, opts = {}) {
     const link = card.getByRole('link', { name: 'Read the guide' });
     check(scope, 'it links to the editors\' guide', (await link.count()) === 1 && (await link.getAttribute('href')) === 'https://kilncms.com/editors');
     await shot('editor-guide-3');
-    if (await card.count()) await press(card.getByRole('button', { name: 'Got it' }));
-    await page.waitForTimeout(200);
-    check(scope, '"Got it" closes the guide', (await card.count()) === 0 && (await guide.count()) === 0);
   }
 
   // ── Undo after publishing ──────────────────────────────────────────────────
@@ -681,6 +698,16 @@ async function runSignedIn(browser, size, opts = {}) {
     check(scope, 'the undo commit puts the file back exactly', Buffer.from(undo.content || '', 'base64').toString() === source);
     check(scope, 'the undo commit is written against the published file, without force', undo.sha === `sha${before1}` && undo.force === undefined && /^Undo "Edit .*" \(via Kiln\)$/.test(undo.message || ''), `${undo.sha} ${undo.message}`);
     check(scope, 'Undo says what it did', /^Undone\. The site is back as it was/.test(await said()), await said());
+    {
+      // The first-session card was still up: it must stop saying the change is published.
+      const card = page.locator('#kiln-guide-card');
+      const text = (await card.count()) ? (await card.innerText()).replace(/\s+/g, ' ') : '';
+      check(scope, 'after Undo the guide says the edit is back, not published, in an editor\'s words', (staged ? /^Your edits are back, not published Undo took that publish back\. Your changes are/ : /^Your edit is back, not published Undo took that publish back\. Your change is/).test(text) && !/That is published|Git|commit/i.test(text), text.slice(0, 90));
+      await shot('editor-guide-3-undone');
+      if (await card.count()) await press(card.getByRole('button', { name: 'Got it' }));
+      await page.waitForTimeout(200);
+      check(scope, '"Got it" closes the guide', (await card.count()) === 0 && (await guide.count()) === 0);
+    }
     const again = page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first();
     check(scope, 'the edit is unpublished again, still on the page', (await again.count()) === 1 && (await again.textContent()).trim() === `Publish ${staged ? 2 : 1} edit${staged ? 's' : ''}`
       && (await heading.innerText()).includes('Hello'));

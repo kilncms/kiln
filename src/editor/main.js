@@ -27,7 +27,7 @@ import { initTheme, openThemePanel } from './theme.js';
 import { initComments, openComments, commentsTick } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 import { initBlocks } from './blocks.js';
-import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished, guideWaiting } from './firstrun.js';
+import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished, guideUndone, guideWaiting } from './firstrun.js';
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { hasGrant, offersMakeEditable, helpUrl } from './grants.js';
 import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
@@ -2433,6 +2433,7 @@ async function undoPublish(rec) {
     const n = restageRecord(rec);
     await loadPageSource();
     setStatus(`Undone. The site is back as it was, and ${editsWaiting(n)}.`, 'saved');
+    guideUndone(n);   // a first-session card still on screen stops saying it is published
   } catch (err) {
     console.error('[kiln] undo publish', err);
     setStatus('Undo did not go through, so nothing changed. History can take the page back.', 'error');
@@ -2469,6 +2470,7 @@ function undoSandboxPublish(rec) {
   }
   const n = restageRecord(rec) + (rec.source?.length || 0);
   setStatus(`Undone: ${editsWaiting(n)}.`, 'saved');
+  guideUndone(n);   // the demo's last card stops saying a commit happened
 }
 
 /**
