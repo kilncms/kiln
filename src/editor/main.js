@@ -209,6 +209,7 @@ async function init() {
   } else {
     decorateFields();
     await initSourceFields();
+    revealFields();
     offerPendingRestore();
   }
   if (journalAll().length) runJournal();
@@ -555,6 +556,20 @@ function decorateFields() {
       inlineImgPopover(e.target);
     }
   });
+}
+
+/**
+ * Nothing on a page looks editable until the pointer happens to be over it, and
+ * a phone has no pointer. So when editing starts, every field shows its outline
+ * for a moment and fades back (CSS: .kiln-reveal). Touch devices also keep a
+ * faint outline at rest. Under prefers-reduced-motion there is no fade: the
+ * outlines show, then go.
+ */
+function revealFields() {
+  const root = document.documentElement;
+  const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  root.classList.add('kiln-reveal');
+  setTimeout(() => root.classList.remove('kiln-reveal'), still ? 1500 : 2100);
 }
 
 /** Mini popover for an image inside a rich-text field: width presets + remove. */
@@ -2671,6 +2686,7 @@ async function initSandbox() {
   renderAdminBar();
   decorateFields();
   await initSourceFields();   // demo source fields stage + preview locally (no worker)
+  revealFields();
   renderSandboxBanner();
   bootBlocks();   // chrome shows in the demo; inserting explains it needs a real site
 }
@@ -5477,8 +5493,17 @@ function injectStyles() {
   padding:6px 12px;border-radius:9px;cursor:pointer;font-size:12.5px;font-family:var(--kiln-font);
   white-space:nowrap;transition:all .15s}
 .kiln-btn-ghost:hover{color:#fff;background:rgba(255,255,255,.12)}
-.kiln-field{cursor:pointer;outline:2px dashed transparent;outline-offset:4px;border-radius:4px;transition:outline-color .15s}
+.kiln-field{cursor:pointer;outline:2px dashed var(--kiln-rest,transparent);outline-offset:4px;border-radius:4px;transition:outline-color .15s}
 .kiln-field:hover{outline-color:rgba(99,102,241,.75)}
+/* When editing starts every field shows its outline for a moment, then settles
+   back (revealFields). A touch screen has no hover to find them with, so there
+   a faint outline stays. */
+.kiln-reveal .kiln-field:not(.kiln-editing):not(.kiln-modified){animation:kilnreveal 2.1s ease-out both}
+@keyframes kilnreveal{0%,70%{outline-color:rgba(99,102,241,.75)}100%{outline-color:var(--kiln-rest,transparent)}}
+@media(hover:none){:root{--kiln-rest:rgba(99,102,241,.32)}}
+@media(prefers-reduced-motion:reduce){
+  .kiln-reveal .kiln-field:not(.kiln-editing):not(.kiln-modified){animation:none;transition:none;outline-color:rgba(99,102,241,.75)}
+}
 .kiln-field.kiln-editing{outline:2px solid var(--kiln-accent);cursor:text;padding:2px 4px;min-width:40px}
 .kiln-field.kiln-modified{outline:2px solid var(--kiln-warn)}
 img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
