@@ -747,6 +747,48 @@ async function runSignedIn(browser, size, opts = {}) {
     check(scope, 'publishing the chosen picture is one page commit', sent.length === 1 && Buffer.from(sent[0].content, 'base64').toString().includes(`src="${want}"`), `${sent.length} writes`);
     check(scope, 'and no new file is committed', gitWrites.length === writesBefore, gitWrites.slice(writesBefore).join(', '));
   }
+
+  // ── a picture uploaded but not yet published survives a closed tab ─────────
+  if (!phone && await picture.count()) {
+    const png = await page.screenshot({ clip: { x: 0, y: 0, width: 96, height: 64 } });
+    await picture.scrollIntoViewIfNeeded();
+    await press(picture);
+    await page.waitForTimeout(350);
+    const chooser = page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
+    await press(page.locator('#kiln-toolbar [data-act="replace"]'));
+    await page.waitForTimeout(300);
+    await press(page.locator('#kiln-pick-upload'));
+    const fc = await chooser;
+    if (fc) await fc.setFiles({ name: 'New sign.png', mimeType: 'image/png', buffer: png });
+    await page.waitForTimeout(1800);
+    const staged = (await picture.getAttribute('data-kiln-src')) || '';
+    check(scope, 'an uploaded picture waits for Publish', /^\/assets\/uploads\/img-/.test(staged), staged);
+    if (await page.locator('#kiln-toolbar [data-act="done"]').count()) await press(page.locator('#kiln-toolbar [data-act="done"]'));
+    await page.waitForTimeout(600);
+    await page.reload({ waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(800);
+    const offer = page.locator('#kiln-rest-yes');
+    check(scope, 'after the tab is closed and reopened, the edits are offered back', (await offer.count()) === 1);
+    if (await offer.count()) {
+      await press(offer);
+      await page.waitForTimeout(800);
+      const back = page.locator('img.kiln-field').first();
+      check(scope, 'the picture comes back with them, shown from the kept file', (await back.getAttribute('data-kiln-src')) === staged && ((await back.getAttribute('src')) || '').startsWith('blob:'),
+        `${await back.getAttribute('data-kiln-src')} ${((await back.getAttribute('src')) || '').slice(0, 24)}`);
+      check(scope, 'the picture is drawn, not broken', await back.evaluate((img) => img.complete && img.naturalWidth > 0));
+      const writes0 = gitWrites.length, puts0 = puts.length;
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+      await page.waitForTimeout(300);
+      await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+      await page.waitForTimeout(500);
+      await press(page.locator('#kiln-pubsheet-go'));
+      await page.waitForTimeout(2200);
+      const last = puts.length > puts0 ? Buffer.from(puts[puts.length - 1].content, 'base64').toString() : '';
+      check(scope, 'publishing commits the picture\'s file, then the page that uses it', gitWrites.slice(writes0).some(w => /git\/blobs$/.test(w)) && puts.length === puts0 + 1 && last.includes(staged),
+        `${gitWrites.length - writes0} file writes, ${puts.length - puts0} page writes`);
+    }
+  }
   check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
   check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
   await context.close();
