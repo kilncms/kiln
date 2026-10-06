@@ -318,6 +318,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   are no longer offered back.
 - **Removing a block asked in the browser's own box**, which told people the
   way back was to leave the page. It is immediate, with "Removed. Undo".
+- **The link button asked in the browser's own box too.** It opens the
+  editor's dialog: one box for the address, "Add link" or, with the cursor in a
+  link, "Change link" and "Remove link". Enter submits, Escape cancels, and the
+  cursor and the selection come back to the field either way. What an address
+  may be is unchanged.
+- **The demo lost its one link to Kiln when the card after a first publish
+  closed.** Once a visitor has published, the demo's pill carries "Put Kiln on
+  my site" whenever that card is not on screen, for as long as the demo's
+  state lasts.
+- **On a phone the saved draft's four choices** were in one row, with "Resume
+  draft" on two lines and, on a small phone, "Later" off the edge. They are two
+  to a row, each on one line.
 - **Developer names shown to the person editing.** The toolbar, the hover
   hint, Search & jump, the publish sheet and "Pick up where you left off?"
   show a readable name made from the field's name ("Hero headline", "Hero

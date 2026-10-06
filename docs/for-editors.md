@@ -40,6 +40,11 @@ outlined text and type. A small toolbar gives you bold, italic, underline, lists
 links, and a **Style** menu with the site's own text styles, so whatever you write
 matches the design. The toolbar starts with the name of the part you are in ("Hero
 headline"). **Done** keeps what you typed; **Revert**, or the Esc key, throws it away.
+
+To make words a link, select them and press the link button on the toolbar. A small
+dialog asks for the address: a web address, or a page of the site such as `/about`.
+With the cursor in a link, the same button shows its address to change, and **Remove
+link** takes the link off and keeps the words.
 A part you have changed keeps a solid yellow outline until it is published.
 
 <!-- A picture belongs here: a heading with its dashed outline, the pointer on it.
