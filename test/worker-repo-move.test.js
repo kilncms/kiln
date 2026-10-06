@@ -767,6 +767,11 @@ test('schedule: a worker with no cron running still finishes a move: after an ho
 
 // ─── What kiln doctor relies on ──────────────────────────────────────────────
 
+test('doctor: the worker says that it moves everything, so the advice can', async () => {
+  const r = await ask(world().env, 'GET', '/healthz');
+  assert.equal(r.json.renameMovesAll, true);
+});
+
 test('doctor: a repository deleted and made again under the same name is held by what is stored, and released by removing the name\'s record, as doctor advises', async () => {
   // The first repository is gone; a new one has its name. Its owner is the same person, on their own worker.
   const w = world({ ...met(OLD), ...stored(OLD, 2, 1), 'atok:h': token(OLD) });

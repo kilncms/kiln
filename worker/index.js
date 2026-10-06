@@ -118,7 +118,9 @@ export default {
       // without it means an old worker and source fields render read-only.
       // Still a 200 that says ok, so status-probing monitors keep working.
       if (path === '/healthz') {
-        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, ...deployedBuild(env) };
+        // `renameMovesAll` tells `kiln doctor` that this worker brings everything a
+        // site stores along when its repository is renamed, not the people list alone.
+        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, ...deployedBuild(env) };
         // ?deep=1 asks the things publishing depends on. A plain GET stays a
         // constant 200 that touches nothing, as every editor and monitor expects.
         if (url.searchParams.get('deep') === '1') {

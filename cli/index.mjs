@@ -342,7 +342,12 @@ async function doctor(args) {
     // keeps repository ids says `renamed` and `reused`): it sees private
     // repositories through its App, and answers yes or no without the name.
     const follows = typeof inst.json.renamed === 'boolean';
-    const carried = `Set repo to its current owner/name in ${cfgPath} and deploy. Your worker carries the people list (and a Kiln Cloud registration) over by the repository's id, so nobody has to be added again`;
+    // A worker that brings everything along says so in /healthz; the release
+    // before it followed a rename with the people list alone.
+    const all = follows && (await fetchJson(`${worker}/healthz`).catch(() => ({ json: {} }))).json.renameMovesAll === true;
+    const carried = all
+      ? `It is safe to change: set repo to its current owner/name in ${cfgPath} and deploy. Your worker knows the repository by its id and brings what is stored for it over to the new name by itself: the people list (and a Kiln Cloud registration), comment threads, suggestions, scheduled posts, API tokens and members' sign-ins. Nobody has to be added again and no token has to be made again; editors sign in once more`
+      : `Set repo to its current owner/name in ${cfgPath} and deploy. Your worker carries the people list (and a Kiln Cloud registration) over by the repository's id, so nobody has to be added again. Comment threads, suggestions, scheduled posts and API tokens stay under the old name with this worker; bring it up to date first and they follow too: npx github:kilncms/kiln#release update --worker`;
     const gh = await fetchJson(`https://api.github.com/repos/${repo}`).catch(() => ({ json: {} }));
     if (gh.json.full_name) {
       const same = gh.json.full_name === repo;
@@ -353,7 +358,9 @@ async function doctor(args) {
       check('repo name matches GitHub', false, `your worker reports that GitHub now knows this repository by another name: it was renamed or moved to another account, and the old name works only while GitHub redirects it. ${carried}`);
     }
     if (inst.json.reused === true) {
-      check('repo is the repository Kiln was set up for', false, `${repo} now answers as a different repository than the one whose people are stored under this name, so your worker shows and changes that list for no one. If the first repository was renamed or moved, set repo to its current owner/name in ${cfgPath}. If it was deleted and made again, the stored list has to be cleared before a new one can start: self-hosted, run npx wrangler kv key delete "people:${repo}" --binding KILN in your worker's folder; on Kiln Cloud, write to us`);
+      check('repo is the repository Kiln was set up for', false, all
+        ? `${repo} now answers as a different repository than the one whose people, comment threads, suggestions, scheduled posts or API tokens are stored under this name, so your worker shows and changes them for no one. If the first repository was renamed or moved, set repo to its current owner/name in ${cfgPath}. If it was deleted and made again, your worker has to be told that the repository under this name is now the one those things belong to: self-hosted, run npx wrangler kv key delete "rname:${repo.toLowerCase()}" --binding KILN in your worker's folder (it keeps the people and everything else stored under the name); on Kiln Cloud, write to us`
+        : `${repo} now answers as a different repository than the one whose people are stored under this name, so your worker shows and changes that list for no one. If the first repository was renamed or moved, set repo to its current owner/name in ${cfgPath}. If it was deleted and made again, the stored list has to be cleared before a new one can start: self-hosted, run npx wrangler kv key delete "people:${repo}" --binding KILN in your worker's folder; on Kiln Cloud, write to us`);
     }
   }
 

@@ -136,6 +136,57 @@ test('KLR-08 doctor: a worker that says the name is current and its own adds not
   assert.equal(code, 0, out);
 });
 
+// ─── A worker that brings everything along says so, and doctor says what moves ──
+
+const movesAll = { [`${WORKER}/healthz`]: { json: { ok: true, modes: ['html', 'source'], renameMovesAll: true } } };
+
+test('doctor: with a worker that moves everything, a renamed repository is still a failing check, and the advice says it is safe to change the config and what follows', () => {
+  const { out, code } = doctor(healthy({
+    ...movesAll,
+    [`${WORKER}/setup/install-check`]: { json: { installed: true, renamed: true, reused: false } },
+    [`https://api.github.com/repos/${REPO}`]: { json: { full_name: 'new-owner/new-name' } },
+  }));
+  assert.match(out, /❌ repo name matches GitHub — GitHub answers as new-owner\/new-name but the config says/);
+  assert.match(out, /It is safe to change: set repo to 'new-owner\/new-name' in assets\/kiln-config\.js and deploy/);
+  assert.match(out, /brings what is stored for it over to the new name by itself: the people list \(and a Kiln Cloud registration\), comment threads, suggestions, scheduled posts, API tokens and members' sign-ins/);
+  assert.match(out, /Nobody has to be added again and no token has to be made again; editors sign in once more/);
+  assert.doesNotMatch(out, /stay under the old name|add your editors again|update --worker/);
+  assert.equal(code, 1);
+  const m = /(\d+)\/(\d+) checks passed/.exec(out);
+  assert.ok(m && Number(m[1]) === Number(m[2]) - 1, `reported once: ${m && m[0]}`);
+});
+
+test('doctor: the same advice for a private repository, which only the worker can see was renamed', () => {
+  const table = healthy({ ...movesAll, [`${WORKER}/setup/install-check`]: { json: { installed: true, renamed: true, reused: false } } });
+  delete table[`https://api.github.com/repos/${REPO}`];
+  const { out, code } = doctor(table);
+  assert.match(out, /❌ repo name matches GitHub — your worker reports that GitHub now knows this repository by another name/);
+  assert.match(out, /It is safe to change: set repo to its current owner\/name in assets\/kiln-config\.js and deploy/);
+  assert.match(out, /comment threads, suggestions, scheduled posts, API tokens and members' sign-ins/);
+  assert.equal(code, 1);
+});
+
+test('doctor: with a worker from the release before, which moves the people list alone, the advice says so and how to get the rest to follow', () => {
+  const { out, code } = doctor(healthy({
+    [`${WORKER}/setup/install-check`]: { json: { installed: true, renamed: true, reused: false } },
+    [`https://api.github.com/repos/${REPO}`]: { json: { full_name: 'new-owner/new-name' } },
+  }));
+  assert.match(out, /carries the people list .* over by the repository's id, so nobody has to be added again/);
+  assert.match(out, /Comment threads, suggestions, scheduled posts and API tokens stay under the old name with this worker; bring it up to date first and they follow too: npx github:kilncms\/kiln#release update --worker/);
+  assert.doesNotMatch(out, /It is safe to change/);
+  assert.equal(code, 1);
+});
+
+test('doctor: with a worker that moves everything, a name that changed hands is held by all that is stored under it, and the advice names the one record to remove', () => {
+  const { out, code } = doctor(healthy({ ...movesAll, [`${WORKER}/setup/install-check`]: { json: { installed: true, renamed: false, reused: true } } }), { repo: 'Kiln-Doctor-Test-No-Such-Owner/site' });
+  assert.match(out, /❌ repo is the repository Kiln was set up for/);
+  assert.match(out, /a different repository than the one whose people, comment threads, suggestions, scheduled posts or API tokens are stored under this name/);
+  assert.match(out, /wrangler kv key delete "rname:kiln-doctor-test-no-such-owner\/site" --binding KILN/, 'the record is filed under the name in lower case');
+  assert.match(out, /it keeps the people and everything else stored under the name/);
+  assert.doesNotMatch(out, /kv key delete "people:/);
+  assert.equal(code, 1);
+});
+
 // ─── KLN-08 · doctor ─────────────────────────────────────────────────────────
 
 test('KLN-08 doctor: an unreachable worker is never reported as "Google sign-in — configured"', () => {
