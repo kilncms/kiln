@@ -20,7 +20,7 @@ const SHA = 'abc1234def5678900000000000000000000000ff';
 function world(over = {}) {
   const w = {
     branch: 'main', dirty: '', remote: SHA, origin: 'https://github.com/kilncms/kiln.git',
-    checkRuns: [{ name: 'test', status: 'completed', conclusion: 'success' }],
+    ciRuns: [{ head_sha: SHA, event: 'push', status: 'completed', conclusion: 'success' }],
     drift: [], staging: { ok: true, build: 'abc1234' }, production: { ok: true, build: 'abc1234' },
     tags: [], failOn: null, ...over,
   };
@@ -41,7 +41,7 @@ function world(over = {}) {
       return '';
     },
     fetchJson: async (url) => {
-      if (url.includes('/check-runs')) { if (w.checkRuns === 'down') throw new Error('api.github.com answered 503'); return { check_runs: w.checkRuns }; }
+      if (url.includes(`/actions/workflows/ci.yml/runs?head_sha=${SHA}`)) { if (w.ciRuns === 'down') throw new Error('api.github.com answered 503'); return { workflow_runs: w.ciRuns }; }
       if (url === `${STAGING_URL}/healthz`) { if (w.staging === 'down') throw new Error('fetch failed'); return w.staging; }
       if (url === `${PRODUCTION_URL}/healthz`) return w.production;
       throw new Error(`unexpected fetch ${url}`);
@@ -91,11 +91,15 @@ test('KLR-01 refuses: HEAD is not what origin/main points at (ahead, behind, or 
 });
 
 test('KLR-01 refuses: CI is red, still running, never ran, or cannot be asked', async () => {
-  assert.match(await refusal({ checkRuns: [{ name: 'test', status: 'completed', conclusion: 'success' }, { name: 'dist', status: 'completed', conclusion: 'failure' }] }), /CI failed \(dist\) for abc1234/);
-  assert.match(await refusal({ checkRuns: [{ name: 'test', status: 'in_progress', conclusion: null }] }), /CI is still running for abc1234/);
-  assert.match(await refusal({ checkRuns: [] }), /CI has not run for abc1234/);
-  assert.match(await refusal({ checkRuns: 'down' }), /GitHub could not be asked whether CI passed/);
-  assert.match(await refusal({ checkRuns: [] }), /github\.com\/kilncms\/kiln\/commit\/abc1234def5678900000000000000000000000ff\/checks/);
+  const run = (over) => ({ head_sha: SHA, event: 'push', status: 'completed', conclusion: 'success', ...over });
+  assert.match(await refusal({ ciRuns: [run(), run({ event: 'pull_request', conclusion: 'failure' })] }), /CI did not pass \(failure\) for abc1234/);
+  assert.match(await refusal({ ciRuns: [run({ conclusion: 'cancelled' })] }), /CI did not pass \(cancelled\)/);
+  assert.match(await refusal({ ciRuns: [run({ status: 'in_progress', conclusion: null })] }), /CI is still running for abc1234/);
+  assert.match(await refusal({ ciRuns: [] }), /CI has not run for abc1234/);
+  // A run of the same workflow for another commit does not vouch for this one.
+  assert.match(await refusal({ ciRuns: [run({ head_sha: 'f'.repeat(40) })] }), /CI has not run for abc1234/);
+  assert.match(await refusal({ ciRuns: 'down' }), /GitHub could not be asked whether CI passed/);
+  assert.match(await refusal({ ciRuns: [] }), /github\.com\/kilncms\/kiln\/commit\/abc1234def5678900000000000000000000000ff\/checks/);
   assert.match(await refusal({ origin: '/tmp/somewhere.git' }), /origin .* is not a GitHub repository/);
 });
 
@@ -115,7 +119,7 @@ test('KLR-01 refuses: staging does not report the same build, reports none, or d
 
 test('KLR-01 the checks run in order and stop at the first failure', async () => {
   // Everything is wrong at once: only the branch is mentioned.
-  const m = await refusal({ branch: 'feature', dirty: ' M x', remote: '', checkRuns: [], drift: ['kiln.js'], staging: 'down' });
+  const m = await refusal({ branch: 'feature', dirty: ' M x', remote: '', ciRuns: [], drift: ['kiln.js'], staging: 'down' });
   assert.match(m, /you are on branch "feature"/);
   assert.doesNotMatch(m, /uncommitted|origin has no|CI|dist|staging/);
 });
@@ -165,7 +169,7 @@ test('KLR-01 when a step fails: before the deploy nothing is left behind; after 
 });
 
 test('KLR-01 staging: any branch, but a clean tree and a matching dist/; deploys with --env staging and never tags', async () => {
-  const { io, ran } = world({ branch: 'prod-ready-2026-10', remote: '', checkRuns: [], staging: { ok: true, build: 'abc1234' } });
+  const { io, ran } = world({ branch: 'prod-ready-2026-10', remote: '', ciRuns: [], staging: { ok: true, build: 'abc1234' } });
   await release(io, { target: 'staging' });
   assert.deepEqual(ran, [
     'worker$ npx wrangler d1 migrations apply kiln-cloud-staging --env staging --remote',

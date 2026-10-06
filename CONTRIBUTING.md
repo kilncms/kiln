@@ -24,8 +24,27 @@ npm test               # splice engine + transport suite (node --test)
 npm run build          # dist/kiln.js + dist/kiln-editor.js + dist/kiln-features.js
 ```
 
-`npm test` runs the engine and transport suites and is the fastest signal that a
-change is sound. `npm run build` produces the shipped bundles.
+`npm test` runs every suite (the editing engine, the worker's request handlers
+against stand-ins for GitHub, KV and D1, the CLI, the release and backup
+scripts) and is the fastest signal that a change is sound. It needs Node 20 or
+newer; the database tests need Node 22 and are skipped on 20. `npm run build`
+produces the shipped bundles.
+
+**What CI checks** (`.github/workflows/ci.yml`, on every push and pull request):
+
+- `npm test` on Node 20 and 22
+- `dist/` is what the sources build: it rebuilds with the committed stamp and
+  fails on any difference. If you change anything under `src/`, run
+  `npm run build` and commit `dist/` in a commit of its own
+- the worker bundles in all three configurations (`wrangler deploy --dry-run`;
+  nothing is uploaded)
+- every script parses, the `mcp/` tests pass, the CLI package packs
+- `npm audit --audit-level=high` in the root, `cli/` and `mcp/`
+- every link in the markdown files points at a file or heading that exists
+  (`node scripts/check-links.mjs`)
+
+A weekly workflow also requests every web link and lists advisories of any
+severity.
 
 `scripts/e2e.mjs` is **maintainer-only**: it exercises a real GitHub round-trip
 against the live public demo repo, which external contributors' tokens can't
@@ -49,7 +68,7 @@ scripts/             build, live e2e (maintainer-only), managed onboarding
 
 ## Pull request expectations
 
-- Run `npm test` and make sure the engine tests pass before opening a PR.
+- Run `npm test` and make sure it passes before opening a PR.
 - Keep diffs minimal and focused — one logical change per PR.
 - Add or update tests when you change engine or transport behavior.
 - Match the existing code style, wording, and formatting in files you touch.

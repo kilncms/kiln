@@ -1,18 +1,114 @@
 name: CI
 
+# Every push to every branch, and every pull request. scripts/release.mjs
+# refuses to release a commit unless every job here passed for it.
 on:
   push:
-    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
+    name: tests (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]   # engines say >=20; the database tests need node:sqlite and are skipped on 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
+          cache: npm
       - run: npm ci
       - run: npm test
-      - run: npm run build
+
+  dist:
+    name: dist/ matches the sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Rebuild with the stamp the committed bundles carry. Any difference means
+      # dist/ was not built from these sources: sites would get an editor that
+      # matches no commit.
+      - name: Rebuild with the committed stamp
+        run: KILN_BUILD_VERSION="$(cat dist/VERSION)" npm run build
+      - name: Fail on any difference
+        run: |
+          if ! git diff --exit-code --stat -- dist; then
+            echo "::error::dist/ is not what the sources build. Run: npm run build, and commit dist/."
+            exit 1
+          fi
+
+  worker:
+    name: worker bundles in every configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # --dry-run bundles the worker and reads the configuration; it uploads
+      # nothing and needs no Cloudflare account.
+      - run: npx wrangler deploy --dry-run
+        working-directory: worker
+      - run: npx wrangler deploy --dry-run --env staging
+        working-directory: worker
+      - run: npx wrangler deploy --dry-run --env production
+        working-directory: worker
+
+  packages:
+    name: cli and mcp packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Every script parses
+        run: |
+          for f in cli/*.mjs scripts/*.mjs mcp/*.mjs integrations/astro/index.mjs; do
+            node --check "$f"
+          done
+      - name: mcp tests
+        working-directory: mcp
+        run: |
+          npm ci
+          npm test
+      - name: The CLI package packs
+        working-directory: cli
+        run: npm pack --dry-run
+
+  audit:
+    name: no known high-severity vulnerability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: npm audit --audit-level=high
+      - run: npm audit --audit-level=high
+        working-directory: cli
+      - run: npm audit --audit-level=high
+        working-directory: mcp
+
+  links:
+    name: markdown links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: node scripts/check-links.mjs

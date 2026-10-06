@@ -1,0 +1,37 @@
+name: Weekly checks
+
+# Things that can go wrong without a commit: a web page a guide links to
+# disappears, or an advisory is published for a package already in use. A
+# failed scheduled run emails the repository's owner. Needs no secret.
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    name: web links in the markdown files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: node scripts/check-links.mjs --external
+
+  audit:
+    name: advisories of any severity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: npm audit
+      - run: npm audit
+        working-directory: cli
+      - run: npm audit
+        working-directory: mcp

@@ -11,7 +11,7 @@
  *   1. the branch is main (or hotfix/* with --hotfix)
  *   2. the working tree is clean
  *   3. HEAD is exactly what origin has for that branch
- *   4. CI passed for that commit
+ *   4. the CI workflow passed for that commit
  *   5. dist/ is what these sources build with dist/VERSION as the stamp
  *   6. staging /healthz reports this same commit
  * The first one that fails stops the run with one sentence saying what to do.
@@ -110,16 +110,19 @@ export async function check(io, { target, hotfix = false }) {
     }
     const slug = repoSlug(io);
     const token = io.env.GITHUB_TOKEN || io.env.GH_TOKEN;
+    // Only the CI workflow's runs for this exact commit count (a push run, and
+    // a pull-request run if there was one). The weekly workflow also runs on
+    // main's head, and a dead web link there says nothing about this build.
     let runs;
     try {
-      runs = (await io.fetchJson(`https://api.github.com/repos/${slug}/commits/${sha}/check-runs?per_page=100`,
-        { Accept: 'application/vnd.github+json', ...(token ? { Authorization: `Bearer ${token}` } : {}) })).check_runs || [];
+      runs = ((await io.fetchJson(`https://api.github.com/repos/${slug}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=50`,
+        { Accept: 'application/vnd.github+json', ...(token ? { Authorization: `Bearer ${token}` } : {}) })).workflow_runs || [])
+        .filter(r => r.head_sha === sha);
     } catch (err) {
       refuse(`Refusing to release: GitHub could not be asked whether CI passed for ${short} (${err.message}). Check https://github.com/${slug}/commit/${sha}/checks and, once GitHub answers, run this again.`);
     }
-    const passed = (r) => r.status === 'completed' && ['success', 'skipped', 'neutral'].includes(r.conclusion);
     const state = !runs.length ? 'has not run' : runs.some(r => r.status !== 'completed') ? 'is still running'
-      : runs.every(passed) ? 'passed' : `failed (${runs.filter(r => !passed(r)).map(r => r.name).join(', ')})`;
+      : runs.every(r => r.conclusion === 'success') ? 'passed' : `did not pass (${[...new Set(runs.filter(r => r.conclusion !== 'success').map(r => r.conclusion))].join(', ')})`;
     if (state !== 'passed') {
       refuse(`Refusing to release: CI ${state} for ${short}. Wait for it or fix it at https://github.com/${slug}/commit/${sha}/checks and run this again.`);
     }
