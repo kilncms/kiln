@@ -67,7 +67,7 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.4.0';
 
-import { handleCloud, expireStaleTrials } from './cloud.js';
+import { handleCloud, expireStaleTrials, cloudSiteForOrigin } from './cloud.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, isHtmlPath } from './sanitize-guard.js';
 import { adapterIds } from '../src/adapters/index.js';
@@ -173,12 +173,11 @@ async function originAllowed(env, origin) {
   if (!origin) return false;
   const envList = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
   if (envList.includes(origin)) return true;          // static: demo, self-host, localhost
-  if (env.kiln_cloud) {                               // Kiln Cloud: a paid (or trialing) site
+  if (env.kiln_cloud) {
+    // Kiln Cloud: a site that is paying or trialing, or still inside what it
+    // paid for after cancelling, or inside the grace after a failed charge.
     try {
-      const row = await env.kiln_cloud.prepare(
-        "SELECT 1 FROM sites WHERE origin = ? AND status IN ('active','trialing') LIMIT 1"
-      ).bind(origin).first();
-      if (row) return true;
+      if (await cloudSiteForOrigin(env, origin)) return true;
     } catch (e) { /* fail-safe: if D1 is unreachable, fall back to the static list */ }
   }
   return false;
@@ -1769,9 +1768,7 @@ async function googleCallback(url, env) {
 async function repoForOrigin(env, origin) {
   if (env.kiln_cloud) {
     try {
-      const row = await env.kiln_cloud.prepare(
-        "SELECT repo FROM sites WHERE origin = ? AND status IN ('active','trialing') LIMIT 1"
-      ).bind(origin).first();
+      const row = await cloudSiteForOrigin(env, origin);
       if (row) return row.repo;
     } catch { /* D1 unreachable — fall through */ }
   }

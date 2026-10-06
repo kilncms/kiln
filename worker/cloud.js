@@ -192,13 +192,62 @@ async function verifyLsSignature(request, bodyText, env) {
   return diff === 0;
 }
 
-const LS_STATUS = { active: 'active', on_trial: 'trialing', past_due: 'past_due', unpaid: 'past_due', cancelled: 'canceled', expired: 'canceled', paused: 'past_due' };
+// What each Lemon Squeezy subscription status means for a site.
+//   status   what the dashboard and the admin page show
+//   access   'yes'    editing is on
+//            'until'  cancelled, and paid up to `ends_at`: editing stays on until then
+//            'grace'  a charge failed (or billing is paused): editing stays on for
+//                     PAST_DUE_GRACE_DAYS from the first such event, while Lemon
+//                     Squeezy retries the card
+//            'no'     the subscription is over: editing is off
+// Only `expired` ends access outright.
+export const PAST_DUE_GRACE_DAYS = 7;
+const LS_STATE = {
+  active:    { status: 'active',   access: 'yes' },
+  on_trial:  { status: 'trialing', access: 'yes' },
+  cancelled: { status: 'canceled', access: 'until' },
+  expired:   { status: 'canceled', access: 'no' },
+  past_due:  { status: 'past_due', access: 'grace' },
+  unpaid:    { status: 'past_due', access: 'grace' },
+  paused:    { status: 'past_due', access: 'grace' },
+};
+
+// A site may be edited while it is active or trialing, or, after that, until
+// its `access_until` passes. One rule, in SQL for the request path and in JS
+// for the admin page.
+const ACCESS_SQL = "(status IN ('active','trialing') OR (status IN ('canceled','past_due') AND access_until > ?))";
+export function siteHasAccess(site, now = Date.now()) {
+  if (!site) return false;
+  if (site.status === 'active' || site.status === 'trialing') return true;
+  return (site.status === 'canceled' || site.status === 'past_due') && Number(site.access_until) > now;
+}
+
+// `access_until` arrives with migration 0002, which is applied before this
+// worker is deployed. Should the worker ever run against a database without
+// it, every statement that names the column falls back to the one that does
+// not, so sites that are paid up keep working either way.
+async function withAccessUntil(run, fallback) {
+  try { return await run(); }
+  catch (e) {
+    if (/access_until/.test(String((e && e.message) || e))) return fallback();
+    throw e;
+  }
+}
+
+/** The site row for an origin that may be edited right now, or null. */
+export async function cloudSiteForOrigin(env, origin, now = Date.now()) {
+  if (!env.kiln_cloud || !origin) return null;
+  return withAccessUntil(
+    () => env.kiln_cloud.prepare(`SELECT repo, status, access_until FROM sites WHERE origin = ? AND ${ACCESS_SQL} LIMIT 1`).bind(origin, now).first(),
+    () => env.kiln_cloud.prepare("SELECT repo, status FROM sites WHERE origin = ? AND status IN ('active','trialing') LIMIT 1").bind(origin).first(),
+  );
+}
 
 // Cron housekeeping: a site registers as `trialing` immediately so the owner can set up
 // and preview before paying — but that grace can't be open-ended, or a site could edit
 // forever without ever subscribing. Expire `trialing` sites that never started a Lemon
 // Squeezy subscription once they pass the grace window; that drops them from the editable
-// allowlist (originAllowed only permits active/trialing). Real LS trials carry an
+// allowlist (a canceled site with no access_until has no access). Real LS trials carry an
 // ls_subscription_id and are untouched — their lifecycle is driven entirely by webhooks.
 const TRIAL_GRACE_DAYS = 7;
 export async function expireStaleTrials(env) {
@@ -256,8 +305,15 @@ export async function handleCloud(request, env, url, path) {
   if (path === '/cloud/me') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const account = await env.kiln_cloud.prepare('SELECT id, github_login, email, ls_customer_id FROM accounts WHERE id = ?').bind(sess.account_id).first();
-    const sites = await env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, created_at FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all();
-    return json({ account, sites: sites.results || [], billing: lsConfigured(env) });
+    const sites = await withAccessUntil(
+      () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until, created_at FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
+      () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, created_at FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
+    );
+    // `editable` is the worker's own answer, so the dashboard never has to
+    // work out for itself what a status plus a date means.
+    const now = Date.now();
+    const rows = (sites.results || []).map(r => ({ ...r, editable: siteHasAccess(r, now) }));
+    return json({ account, sites: rows, billing: lsConfigured(env) });
   }
 
   if (path === '/cloud/sites' && request.method === 'POST') {
@@ -348,8 +404,21 @@ export async function handleCloud(request, env, url, path) {
     const subId = evt?.data?.id;   // a real subscription id, given the guard above
     const lsStatus = evt?.data?.attributes?.status;
     // Ignore unknown statuses rather than downgrading a paying site to past_due.
-    if (!LS_STATUS[lsStatus]) return json({ ok: true, ignored: `unknown status ${lsStatus}` });
-    const status = LS_STATUS[lsStatus];
+    const state = Object.prototype.hasOwnProperty.call(LS_STATE, lsStatus) ? LS_STATE[lsStatus] : null;
+    if (!state) return json({ ok: true, ignored: `unknown status ${lsStatus}` });
+    const status = state.status;
+    const attrs = evt.data.attributes;
+    const ms = (v) => { const t = Date.parse(v || ''); return Number.isFinite(t) ? t : null; };
+    // Cancelled: paid up to ends_at. A grace runs from the event's own time, so
+    // a delivery that arrives late, or again, cannot stretch it.
+    const until = state.access === 'until' ? ms(attrs.ends_at)
+      : state.access === 'grace' ? (ms(attrs.updated_at) ?? Date.now()) + PAST_DUE_GRACE_DAYS * 86400 * 1000
+      : null;
+    // A site already in its grace keeps the date it was given: a second failed
+    // charge (past_due → unpaid) does not start the seven days again.
+    const setUntil = state.access === 'grace'
+      ? "access_until = CASE WHEN status = 'past_due' AND access_until IS NOT NULL THEN access_until ELSE ? END"
+      : 'access_until = ?';
     // Replay guard: a captured valid delivery could otherwise be re-POSTed to
     // flip a re-subscribed customer back to canceled. Dedupe on a stable id
     // (updated_at makes the same subscription's DISTINCT transitions unique,
@@ -359,9 +428,15 @@ export async function handleCloud(request, env, url, path) {
     // Apply the state change FIRST, then record the dedupe key — otherwise a D1
     // failure would leave the key set and silently drop LS's retry of this event.
     if (siteId) {
-      await env.kiln_cloud.prepare('UPDATE sites SET status = ?, ls_subscription_id = ? WHERE id = ?').bind(status, subId || null, siteId).run();
+      await withAccessUntil(
+        () => env.kiln_cloud.prepare(`UPDATE sites SET ${setUntil}, status = ?, ls_subscription_id = ? WHERE id = ?`).bind(until, status, subId || null, siteId).run(),
+        () => env.kiln_cloud.prepare('UPDATE sites SET status = ?, ls_subscription_id = ? WHERE id = ?').bind(status, subId || null, siteId).run(),
+      );
     } else if (subId) {
-      await env.kiln_cloud.prepare('UPDATE sites SET status = ? WHERE ls_subscription_id = ?').bind(status, subId).run();
+      await withAccessUntil(
+        () => env.kiln_cloud.prepare(`UPDATE sites SET ${setUntil}, status = ? WHERE ls_subscription_id = ?`).bind(until, status, subId).run(),
+        () => env.kiln_cloud.prepare('UPDATE sites SET status = ? WHERE ls_subscription_id = ?').bind(status, subId).run(),
+      );
     }
     await env.KILN.put(evtKey, '1', { expirationTtl: 7 * 24 * 3600 });
     return json({ ok: true });
@@ -389,7 +464,11 @@ export async function handleCloud(request, env, url, path) {
     if (path === '/admin/cloud/grant' && request.method === 'POST') {
       const { site_id, status } = await request.json().catch(() => ({}));
       if (!['active', 'trialing', 'past_due', 'canceled'].includes(status)) return json({ error: 'bad status' }, 400);
-      await env.kiln_cloud.prepare('UPDATE sites SET status = ? WHERE id = ?').bind(status, site_id).run();
+      // The operator's word is final: no leftover date keeps a site open (or shut).
+      await withAccessUntil(
+        () => env.kiln_cloud.prepare('UPDATE sites SET status = ?, access_until = NULL WHERE id = ?').bind(status, site_id).run(),
+        () => env.kiln_cloud.prepare('UPDATE sites SET status = ? WHERE id = ?').bind(status, site_id).run(),
+      );
       return json({ ok: true });
     }
     if (path === '/admin/cloud/remove' && request.method === 'POST') {
@@ -419,8 +498,9 @@ export async function handleCloud(request, env, url, path) {
       add('GitHub App installed on repo', installed,
         installed ? `kiln-cms is installed on ${site.repo}` : `Not installed — customer must add it at github.com/apps/kiln-cms`);
 
-      add('Site editable (allowlisted)', ['active', 'trialing'].includes(site.status),
-        `Status is "${site.status}" — editing is allowed only for active/trialing`);
+      const until = Number(site.access_until) ? ` and access runs until ${new Date(Number(site.access_until)).toISOString().slice(0, 10)}` : '';
+      add('Site editable (allowlisted)', siteHasAccess(site),
+        `Status is "${site.status}"${until} — editing is on for active and trialing sites, to the end of the paid period after a cancellation, and for ${PAST_DUE_GRACE_DAYS} days after a failed payment`);
 
       let reachable = false, reachDetail = 'no response';
       try {
