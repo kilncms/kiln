@@ -7,7 +7,7 @@
  * node:sqlite ships with Node 22. On Node 20 `d1Available` is false and the
  * tests that need a database are skipped with that reason. Not a test file.
  */
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -19,8 +19,7 @@ export const d1Skip = d1Available ? false : 'needs node:sqlite (Node 22)';
 
 export function schemaFiles() {
   const dir = path.join(WORKER, 'migrations');
-  if (existsSync(dir)) return readdirSync(dir).filter(f => f.endsWith('.sql')).sort().map(f => path.join(dir, f));
-  return [path.join(WORKER, 'cloud-schema.sql')];
+  return readdirSync(dir).filter(f => f.endsWith('.sql')).sort().map(f => path.join(dir, f));
 }
 
 export function fakeD1({ upTo = Infinity } = {}) {

@@ -30,6 +30,7 @@ id = "376ca9e637724d9fabebbc24ba149814"
 binding = "kiln_cloud"
 database_name = "kiln-cloud"
 database_id = "a00713f4-3838-49fd-9e53-58961b1feb2e"
+migrations_dir = "migrations"   # every schema change is a numbered file here; see ENVIRONMENTS.md
 
 # Scheduled publishing: commit due posts every 5 minutes.
 # Only needed if you use Kiln's "schedule this post" feature; safe to remove otherwise.
@@ -83,6 +84,7 @@ id = "5900a59cba9e48568d9886d975571fd9"   # KILN_STAGING (isolated from prod)
 binding = "kiln_cloud"
 database_name = "kiln-cloud-staging"
 database_id = "153c3353-6e1e-4d18-a2b8-9f7b50f517ba"
+migrations_dir = "migrations"
 
 [env.staging.triggers]
 crons = ["*/5 * * * *"]

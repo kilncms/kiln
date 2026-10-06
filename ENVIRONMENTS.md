@@ -118,6 +118,40 @@ list at the top of `scripts/propagate-bundles.mjs`.
 
 ---
 
+## Database changes
+
+The Kiln Cloud database (D1) changes only through numbered files in
+`worker/migrations/`. Wrangler keeps a ledger of which files a database has had
+(a `d1_migrations` table in that database), so a change is applied once, in
+order, and the same way to staging and to production.
+
+```bash
+cd worker
+npx wrangler d1 migrations list  kiln-cloud-staging --env staging --remote   # what is waiting
+npx wrangler d1 migrations apply kiln-cloud-staging --env staging --remote   # staging first
+npx wrangler d1 migrations apply kiln-cloud         --env production --remote
+npx wrangler d1 migrations apply kiln-cloud --local                          # your machine
+```
+
+- **A new change** is a new file, `NNNN_what_it_does.sql`, one number up. Never
+  edit a file that has been applied anywhere.
+- **Write changes the running worker survives.** The migration is applied
+  before the worker that needs it is deployed, so for a few minutes the old
+  worker runs against the new schema: add columns as nullable, do not rename or
+  drop in the same release as the code change.
+- **The two databases that already exist** (staging and production were created
+  from the schema by hand before there was a ledger) need no special step.
+  `0001_init.sql` is that same schema, written with `CREATE … IF NOT EXISTS`:
+  the first `migrations apply` runs it, changes nothing, and records it. This
+  was checked on a local database that already had the tables and a row in
+  them: the row was still there afterwards and `migrations list` reported
+  nothing left to apply.
+- **Going back**: D1 keeps 30 days of history. `npx wrangler d1 time-travel
+  info kiln-cloud --env production` gives a bookmark for "now" before a
+  migration; `time-travel restore --bookmark <id>` returns to it.
+
+---
+
 ## Resources (canonical instance)
 
 | Resource | dev | test | prod |
