@@ -109,7 +109,10 @@ test('keep-blocks: the editor writes a list\'s HTML through writeBlocks, never w
   assert.match(demo, /writeBlocks\(el, v\.html, tidyBlocks\)/);
   // the ✕ on a block keeps the block, so that Undo puts the same one back
   assert.match(main, /item\.remove\(\);\s*\n\s*keepAside\(container, item\)/);
-  // a field keeps one click handler however often its list is written
-  const decorate = main.slice(main.indexOf('function decorateField('), main.indexOf('// ─── Repeatable blocks'));
-  assert.match(decorate, /if \(decorated\.has\(el\)\) return;\s*\n\s*decorated\.add\(el\);/);
+  // a field keeps one click handler however often its list is written, and is still marked as editable each time
+  const decorate = main.slice(main.indexOf('function decorateField('), main.indexOf('function fieldHint('));
+  assert.match(decorate, /if \(decorated\.has\(el\)\) return;\s*\n\s*decorated\.add\(el\);\s*\n\s*el\.addEventListener\('click'/);
+  assert.ok(decorate.indexOf("el.classList.add('kiln-field');") < decorate.indexOf('if (decorated.has(el)) return;'), 'marked before the guard');
+  // the handler reads the field's name when it is pressed: a part un-made and made editable again under another name works, and an un-made one is left alone
+  assert.match(decorate, /const key = el\.getAttribute\('data-cms'\);\s*\n\s*if \(!key\) return;/);
 });

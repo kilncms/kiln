@@ -989,8 +989,6 @@ function inlineImgPopover(img) {
 
 function decorateField(el, key) {
   if (el.hasAttribute(SOURCE_ATTR)) return;   // §4.3: data-kiln-source wins, on every decorate path
-  if (decorated.has(el)) return;
-  decorated.add(el);
   el.classList.add('kiln-field');
   el.title = fieldHint(key);
   // Seed the undo baseline with the pre-edit state (first decoration wins;
@@ -1004,7 +1002,14 @@ function decorateField(el, key) {
     if (el.tagName === 'IMG') base.alt = el.getAttribute('alt') || '';
     state.undoBaseAttrs.set(key, base);
   }
+  // One click handler per element, however often it is decorated: a list that
+  // is written again keeps its blocks, and a part can be made editable, un-made
+  // and made editable again. The handler reads the field's name as it is now.
+  if (decorated.has(el)) return;
+  decorated.add(el);
   el.addEventListener('click', (e) => {
+    const key = el.getAttribute('data-cms');
+    if (!key) return;   // no longer editable: an ordinary part of the page again
     // Cmd/Ctrl+click on a link follows it even in edit mode.
     if ((e.metaKey || e.ctrlKey) && e.target.closest('a')) return;
     if (el.getAttribute('data-cms-attr') === 'src' && el.tagName === 'IMG') {
