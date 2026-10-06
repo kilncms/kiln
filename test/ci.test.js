@@ -43,7 +43,7 @@ test('KLR-19 ci.yml: tests on Node 20 and 22; the build; and a job that fails wh
 test('KLR-19 ci.yml: the worker is bundled in all three configurations, mcp tests run, the CLI packs, audits and links are checked', () => {
   const { jobs } = load('ci.yml');
   const worker = jobs.worker.steps.filter(s => s.run && s.run.includes('wrangler')).map(s => s.run);
-  assert.deepEqual(worker, ['npx wrangler deploy --dry-run', 'npx wrangler deploy --dry-run --env staging', 'npx wrangler deploy --dry-run --env production']);
+  assert.deepEqual(worker, ['npx wrangler deploy --dry-run', 'npx wrangler deploy --dry-run --env staging', 'npx wrangler deploy --dry-run --env production', 'npx wrangler deploy --dry-run --config wrangler.example.toml']);
   for (const run of worker) assert.match(run, /--dry-run/, 'CI never uploads a worker');
   const pk = jobs.packages.steps;
   assert.ok(pk.some(s => s['working-directory'] === 'mcp' && /npm ci\s+npm test/.test(s.run)));

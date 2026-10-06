@@ -144,22 +144,16 @@ The full design is [docs/SOURCE-MODE-SPEC.md](docs/SOURCE-MODE-SPEC.md).
 git clone https://github.com/kilncms/kiln && cd kiln   # (or your fork)
 npm install
 cd worker
-npx wrangler kv namespace create KILN     # put the id in wrangler.toml
-npx wrangler deploy
+npx wrangler kv namespace create KILN            # prints an id
+cp wrangler.example.toml wrangler.self.toml      # your own config; git ignores it
+#   in wrangler.self.toml set: name, the KV id, ALLOWED_ORIGINS (your site's address)
+npx wrangler deploy --config wrangler.self.toml
 ```
 
-The manual path requires editing the top of `worker/wrangler.toml` before
-`wrangler deploy`. The top level of that file is a local-development
-configuration with placeholder ids, so it cannot be deployed as it is:
-
-- **Set `name`** to what your worker should be called (for example `kiln-auth`).
-- **Set the KV namespace `id`** to one you created (`npx wrangler kv namespace create KILN`).
-- **Set `ALLOWED_ORIGINS`** to your own site origin(s).
-- **Delete the `[[d1_databases]]` block** (Kiln Cloud billing only; self-host never
-  touches D1).
-
-Leave the `[env.staging]` and `[env.production]` sections alone or delete them:
-they are the maintainer's, and a plain `npx wrangler deploy` does not use them.
+`worker/wrangler.example.toml` is a complete configuration for your own account,
+with the three values to change marked. (`worker/wrangler.toml` is the
+maintainers' file, with their staging and production environments; its top level
+holds placeholders and cannot be deployed.)
 
 The fastest path skips all of this: `npx github:kilncms/kiln` automates the worker
 deploy, KV namespace, and config wiring for you. Full walkthrough in
@@ -173,7 +167,7 @@ Then install the app on your site's repo (pick **Only select repositories**).
 
 **3. Allow your site's origin**
 
-Add your site URL to `ALLOWED_ORIGINS` in `worker/wrangler.toml`, redeploy.
+Add your site URL to `ALLOWED_ORIGINS` in your `worker/wrangler.self.toml`, redeploy.
 
 **4. Add the script tags + `data-cms` attributes to your site** (see above), build the
 assets (`npm run build`) and copy `dist/kiln.js` + `dist/kiln-editor.js` +
@@ -313,9 +307,10 @@ Google sign-in needs a Google OAuth client on your worker (one-time, ~5 minutes)
 3. Set the two secrets on the worker:
    ```bash
    cd worker
-   npx wrangler secret put GOOGLE_CLIENT_ID
-   npx wrangler secret put GOOGLE_CLIENT_SECRET
+   npx wrangler secret put GOOGLE_CLIENT_ID --config wrangler.self.toml
+   npx wrangler secret put GOOGLE_CLIENT_SECRET --config wrangler.self.toml
    ```
+   (If the setup wizard made your worker folder, it has its own `wrangler.toml`: leave `--config …` off.)
 
 That's it. Open **People & access** in the Kiln menu and start adding editors and
 members by email.

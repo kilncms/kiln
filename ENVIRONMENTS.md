@@ -394,6 +394,55 @@ npx wrangler d1 migrations apply kiln-cloud --local                          # y
 
 ---
 
+## Every name the worker reads
+
+Bindings and variables live in `worker/wrangler.toml` (per environment);
+secrets are set with `npx wrangler secret put <NAME> --env <staging|production>`
+and are never in a file. A self-hosted worker needs only the rows marked
+"self-host" (`worker/wrangler.example.toml` has them).
+
+| Name | Kind | What it is for | Where the value comes from | Needed in |
+|---|---|---|---|---|
+| `KILN` | KV binding | the App's credentials, sign-ins, people lists, comments, scheduled posts | `npx wrangler kv namespace create KILN` | everywhere (self-host too) |
+| `kiln_cloud` | D1 binding | Kiln Cloud accounts and sites | `npx wrangler d1 create …`, then `d1 migrations apply` | staging, production |
+| `RL` | rate-limit binding | per-address limit on sign-in routes and the deep health check | declared in the config; no value | optional everywhere; the worker does not limit without it |
+| `CF_VERSION_METADATA` | version-metadata binding | lets `/healthz` show Cloudflare's record of the upload | declared in the config | staging, production |
+| `ALLOWED_ORIGINS` | variable | the site addresses allowed to sign in (comma-separated). Kiln Cloud sites are allowed from the database instead | you write it | everywhere (self-host too) |
+| `CLOUD_DASHBOARD` | variable | where `/cloud/callback` sends a customer after sign-in | the dashboard's address | staging, production |
+| `CLOUD_ADMIN` | variable | GitHub login of the operator, compared only when `CLOUD_ADMIN_ID` is not set | the owner's login | staging, production |
+| `CLOUD_ADMIN_ID` | variable | numeric GitHub id of the operator; when set, it alone decides | `gh api user --jq .id` | staging, production |
+| `AI_MODEL` | variable | overrides the model AI assist uses | optional | where AI assist is on |
+| `KILN_BUILD` | variable | the commit the worker was deployed from, shown by `/healthz` | `scripts/release.mjs` passes it at deploy; never set by hand | staging, production |
+| `GOOGLE_CLIENT_ID` | secret | Google sign-in for invited editors and members | Google Cloud console → Credentials → OAuth client (web). Redirect URI: `<worker>/google/callback` | production; optional for self-host and staging |
+| `GOOGLE_CLIENT_SECRET` | secret | the same client's secret | same place | with the id |
+| `AI_API_KEY` | secret | AI assist (the owner's own Anthropic key) | console.anthropic.com | optional; without it `/ai/assist` answers 501 |
+| `LS_API_KEY` | secret | creates checkouts, reads and cancels subscriptions | Lemon Squeezy → Settings → API | production (test-mode key on staging) |
+| `LS_STORE_ID` | secret | the store checkouts belong to | Lemon Squeezy → Settings → Stores | with the API key |
+| `LS_VARIANT_CLOUD` | secret | the variant id of the Kiln Cloud plan | Lemon Squeezy → the product → variant | with the API key |
+| `LS_VARIANT_MANAGED` | secret | the variant id of the managed plan | same | with the API key |
+| `LS_WEBHOOK_SECRET` | secret | verifies that a webhook came from Lemon Squeezy | you choose it when creating the webhook | with the API key |
+
+Without the `LS_*` secrets the worker still runs: sites register as trialing
+and checkout answers "billing not configured".
+
+**The Lemon Squeezy webhook.** URL: `<worker>/cloud/webhook/ls`, signing secret:
+the value of `LS_WEBHOOK_SECRET`. Events: `subscription_created`,
+`subscription_updated`, `subscription_cancelled`, `subscription_resumed`,
+`subscription_expired`, `subscription_paused`, `subscription_unpaused`. The
+worker ignores everything else (order and payment events).
+
+**Addresses to register with the sign-in providers.** GitHub App callback URLs:
+`<worker>/auth/callback` (site owners) and `<worker>/cloud/callback` (the
+dashboard). Google OAuth redirect URI: `<worker>/google/callback`. For
+production `<worker>` is `https://auth.kilncms.com`.
+
+**A new database.** `npx wrangler d1 create <name>`, put its id under the
+environment's `[[d1_databases]]`, then
+`npx wrangler d1 migrations apply <name> --env <environment> --remote`
+(see "Database changes").
+
+---
+
 ## Resources (canonical instance)
 
 | Resource | dev | test | prod |

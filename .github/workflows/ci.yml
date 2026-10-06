@@ -66,6 +66,9 @@ jobs:
         working-directory: worker
       - run: npx wrangler deploy --dry-run --env production
         working-directory: worker
+      # The configuration self-hosters copy must stay deployable too.
+      - run: npx wrangler deploy --dry-run --config wrangler.example.toml
+        working-directory: worker
 
   packages:
     name: cli and mcp packages

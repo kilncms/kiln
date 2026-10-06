@@ -1,0 +1,52 @@
+# Kiln worker, self-hosted: a complete configuration for your own Cloudflare
+# account. (worker/wrangler.toml is the maintainers' file, with their staging
+# and production; you do not need it.)
+#
+#   cd worker
+#   npx wrangler kv namespace create KILN          # prints an id
+#   cp wrangler.example.toml wrangler.self.toml    # yours: git ignores it
+#   …set the three values marked CHANGE below…
+#   npx wrangler deploy --config wrangler.self.toml
+#
+# Then open https://<name>.<your-subdomain>.workers.dev/setup once to register
+# your GitHub App. Or skip all of this: `npx github:kilncms/kiln` in your
+# site's folder does every step here for you.
+
+name = "kiln-auth"                       # CHANGE if you like: it becomes the hostname
+main = "index.js"
+compatibility_date = "2026-06-01"
+workers_dev = true
+
+# Keeps what the worker prints (errors, the scheduled job's result) readable in
+# the Cloudflare dashboard afterwards.
+[observability]
+enabled = true
+
+[vars]
+# CHANGE: the address(es) of your site, comma-separated, no path and no
+# trailing slash. Sign-in from any other address is refused.
+ALLOWED_ORIGINS = "https://example.com"
+
+# Storage: the App's credentials, sign-ins, each site's list of people.
+[[kv_namespaces]]
+binding = "KILN"
+id = "00000000000000000000000000000000"   # CHANGE: the id `kv namespace create` printed
+
+# Scheduled publishing: commits posts that are due, every five minutes.
+# Remove if nobody will schedule a post.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# A per-address limit on the sign-in routes. Remove it and the worker simply
+# does not limit.
+[[unsafe.bindings]]
+name = "RL"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 20, period = 60 }
+
+# Optional, both as SECRETS (never in this file):
+#   npx wrangler secret put GOOGLE_CLIENT_ID --config wrangler.self.toml       Google sign-in for the people you invite
+#   npx wrangler secret put GOOGLE_CLIENT_SECRET --config wrangler.self.toml
+#   npx wrangler secret put AI_API_KEY --config wrangler.self.toml             AI assist, with your own key
+# Every name the worker reads is listed in ENVIRONMENTS.md.

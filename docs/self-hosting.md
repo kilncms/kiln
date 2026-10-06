@@ -44,28 +44,34 @@ cd worker
 npx wrangler kv namespace create KILN     # note the id it prints
 ```
 
-Now edit the top of `worker/wrangler.toml`. **This step is not optional.** The top
-level of the shipped file is a local-development configuration with placeholder
-ids, and cannot be deployed unchanged:
+Now make your own configuration from the example. **This step is not optional**:
+`worker/wrangler.toml` is the maintainers' file, and its top level holds
+placeholders that cannot be deployed.
 
-1. **Set `name`**, for example `kiln-auth`. Your worker lives at
+```bash
+cp wrangler.example.toml wrangler.self.toml      # your own config; git ignores it
+```
+
+In `wrangler.self.toml`, three values are marked `CHANGE`:
+
+1. **`name`**, for example `kiln-auth`. Your worker lives at
    `<name>.YOUR-SUBDOMAIN.workers.dev` (or a custom domain you own, if you add
    your own route later).
-2. **Set the KV namespace `id`** under `[[kv_namespaces]]` to the id from the create
+2. **The KV namespace `id`** under `[[kv_namespaces]]`: the id from the create
    command above.
-3. **Set `ALLOWED_ORIGINS`** to your site's origin(s), comma-separated, e.g.
-   `"https://example.com"`. Sign-in requests from any other origin are refused.
-4. **Delete the `[[d1_databases]]` block.** D1 stores Kiln Cloud billing state.
-   Self-host never touches it, and you don't have this database.
+3. **`ALLOWED_ORIGINS`**: your site's address(es), comma-separated, e.g.
+   `"https://example.com"`. Sign-in requests from any other address are refused.
 
-You can also delete the `[env.staging]` and `[env.production]` sections (the
-maintainer's own environments; a plain `npx wrangler deploy` does not use them)
-and, if you never schedule posts, the `[triggers]` cron. All are harmless to keep.
+The example has no database block (that is Kiln Cloud's billing state, which
+self-hosting never touches) and no route. If you never schedule posts you can
+delete its `[triggers]` cron.
+
+Every wrangler command below takes `--config wrangler.self.toml`.
 
 Then:
 
 ```bash
-npx wrangler deploy
+npx wrangler deploy --config wrangler.self.toml
 ```
 
 ## Register the GitHub App
@@ -93,9 +99,11 @@ version: create a Google OAuth 2.0 Client ID (Web application), add the redirect
 
 ```bash
 cd worker
-npx wrangler secret put GOOGLE_CLIENT_ID
-npx wrangler secret put GOOGLE_CLIENT_SECRET
+npx wrangler secret put GOOGLE_CLIENT_ID --config wrangler.self.toml
+npx wrangler secret put GOOGLE_CLIENT_SECRET --config wrangler.self.toml
 ```
+
+(If the setup wizard made your worker folder, it has its own `wrangler.toml`: leave `--config …` off.)
 
 ## Members area (optional)
 
@@ -135,8 +143,11 @@ npx github:kilncms/kiln update
 This re-copies the latest three bundles into your site (wherever your current
 `kiln.js` lives) and offers to commit and push. Your host redeploys and everyone gets
 the new editor. Upgrade the worker by pulling the Kiln repo and running
-`npx wrangler deploy` from `worker/` again; KV data (sessions, people lists, app
-credentials) survives redeploys untouched.
+`npx wrangler deploy --config wrangler.self.toml` from `worker/` again; KV data
+(sessions, people lists, app credentials) survives redeploys untouched. (A worker
+the setup wizard made lives in its own folder with a copy of the worker code:
+re-run the wizard there, or replace the files under its `worker/` and `src/` with
+the current ones, then `npx wrangler deploy`.)
 
 ## One worker, many sites
 
@@ -149,7 +160,7 @@ and it's mostly just configuration:
   ALLOWED_ORIGINS = "https://client-a.com,https://client-b.com,https://your-own-site.com"
   ```
 
-  Adding a site later means adding its origin here and running `npx wrangler deploy`.
+  Adding a site later means adding its origin here and deploying again.
 
 - **Each site's `kiln-config.js`** names its own repo and points `worker:` at the
   same worker URL.

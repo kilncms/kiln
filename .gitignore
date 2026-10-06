@@ -26,3 +26,4 @@ mcp/LICENSE
 integrations/astro/LICENSE
 mcp/*.tgz
 integrations/astro/*.tgz
+worker/wrangler.self.toml
