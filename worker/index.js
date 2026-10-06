@@ -3271,8 +3271,25 @@ async function idOnRecord(env, name) {
  * storage hiccup signs nobody out and stops no token.
  */
 async function answersAsAnother(env, name, madeFor) {
-  try { return (await whoAnswers(env, name, madeFor)).other; }
+  try { return (await whoAnswersSoon(env, name, madeFor)).other; }
   catch { return false; }
+}
+
+// How long a request waits to learn who a name is before it goes on without
+// knowing. Comments, presence and a members gate's check ask GitHub for
+// nothing else, and must not hang on the day it does not answer (a members
+// gate gives the worker five seconds).
+const ASK_WAIT_MS = 2500;
+
+/** whoAnswers, given up on after ASK_WAIT_MS: it then throws, as for any other trouble. */
+async function whoAnswersSoon(env, name, madeFor) {
+  let timer;
+  try {
+    return await Promise.race([
+      whoAnswers(env, name, madeFor),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('no answer in time about who a name is')), ASK_WAIT_MS); }),
+    ]);
+  } finally { clearTimeout(timer); }
 }
 
 /**
@@ -3284,7 +3301,7 @@ async function answersAsAnother(env, name, madeFor) {
  */
 async function stillItsRepo(env, key, record) {
   let who;
-  try { who = await whoAnswers(env, record.repo, record.rid); } catch { return true; }
+  try { who = await whoAnswersSoon(env, record.repo, record.rid); } catch { return true; }
   if (!Number.isInteger(record.rid) && who.id !== null) await takeId(env, key, record.repo, who.id);
   return !who.other;
 }

@@ -693,3 +693,27 @@ test('sign-in, normal and in trouble: one who is on the list is signed in, witho
   assert.equal(s.res.status, 302);
   assert.equal(s.record.rid, undefined);
 });
+
+// ─── When GitHub does not answer ─────────────────────────────────────────────
+
+test('GitHub does not answer who a name is: comments, a members gate\'s check and a token\'s request are not kept waiting for it, and go on as before', { timeout: 15000 }, async () => {
+  const w = world({ ...met(OLD), ...TOKEN(OLD), [`people:${OLD}`]: [ADA, BEA], [THREAD]: thread,
+    [`esess:${SESSION}`]: editorSession(OLD, ID), [`msess:${MEMBER}`]: memberSignIn(OLD, ID), [ATOK]: apiToken(OLD, ID) });
+  const gh = github(same());
+  const never = new Promise(() => {});
+  const started = Date.now();
+  await withFetch((url, init) => (url === `${GH}/repos/${OLD}` ? never : gh(url, init)), async () => {
+    const [comments, gate, script] = await Promise.all([
+      ask(w.env, 'GET', `/comments?repo=${OLD}&path=index.html`, { headers: AS }),
+      check(w.env),
+      readFields(w.env),
+    ]);
+    assert.equal(comments.status, 200);
+    assert.equal(comments.json.threads.length, 1);
+    assert.deepEqual(gate, YES);
+    assert.equal(script.status, 200);
+  });
+  const waited = Date.now() - started;
+  assert.ok(waited >= 2000 && waited < 4500, `each waited about two and a half seconds, not for ever: ${waited} ms`);
+  assert.equal(w.kv.map.has(`rsee:${OLD}`), false, 'and nothing was remembered that GitHub did not say');
+});
