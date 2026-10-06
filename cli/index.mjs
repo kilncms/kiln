@@ -210,9 +210,11 @@ async function detectSiteMode() {
   ok(`source mode: edits go to your content files and ${gen.displayName} rebuilds the site`);
   info('Three source-mode steps the wizard can\'t do for you:');
   console.log(`
-   1. Install the provenance helper so Kiln knows where each value on a page
-      lives (one line per field — the same mental model as data-cms):
-        npm install @kilncms/astro
+   1. Tell Kiln where each value on a page lives, one line per field (the
+      same mental model as data-cms). The helper for that is one file,
+      src/lib/kiln-astro.mjs, which this wizard adds below (the
+      @kilncms/astro package is not on npm yet):
+        import { kilnSource, kilnBody } from '../lib/kiln-astro.mjs';
         <h3 {...kilnSource(entry, 'title')}>{entry.data.title}</h3>
         <div {...kilnBody(entry)}><Content /></div>
    2. Verify your host builds + deploys this repo on every push (Cloudflare
@@ -590,6 +592,19 @@ ${isSource ? `  mode:   'source',\n  adapter: '${siteMode.adapter}',\n` : ''}  s
     ok(`wrote ${shown('_headers')} (security headers: other sites cannot frame yours, HTTPS only)`);
   } else {
     ok(`${shown('_headers')} already present (left untouched). The lines Kiln suggests: ${HEADERS_DOC}`);
+  }
+  // The Astro helper (kilnSource, kilnBody) is one file with no dependencies.
+  // Its package is not on npm yet, so it goes into the project itself.
+  if (isSource && siteMode.adapter === 'astro') {
+    const helper = path.join(PKG_ROOT, 'integrations', 'astro', 'index.mjs');
+    const dest = path.join('src', 'lib', 'kiln-astro.mjs');
+    if (existsSync(dest)) ok('src/lib/kiln-astro.mjs already present (left untouched)');
+    else if (existsSync(helper)) {
+      mkdirSync(path.dirname(dest), { recursive: true });
+      cpSync(helper, dest);
+      wrote.push(dest);
+      ok('wrote src/lib/kiln-astro.mjs (the kilnSource and kilnBody helpers)');
+    } else warn('could not add the helper file: copy integrations/astro/index.mjs from https://github.com/kilncms/kiln into your project as src/lib/kiln-astro.mjs');
   }
   // What an earlier run left where the build never looks: name it, delete nothing.
   if (base) {

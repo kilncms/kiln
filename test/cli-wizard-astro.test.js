@@ -135,7 +135,20 @@ test('wizard on an Astro site: every file it wrote, and the template, go into it
   const r = await wizard(s.dir, { tags: 'y', commit: 'y' });   // the push has nowhere to go; the commit is what is checked
   assert.equal(r.code, 0, r.out);
   const committed = s.git('show', '--name-only', '--format=', 'HEAD').stdout.trim().split('\n').sort();
-  assert.deepEqual(committed, [...KILN_FILES.map(f => `public/${f}`), PAGE].sort());
+  assert.deepEqual(committed, [...KILN_FILES.map(f => `public/${f}`), PAGE, 'src/lib/kiln-astro.mjs'].sort());
+});
+
+test('wizard on an Astro site: the helper that marks fields is added as a file, since its package is not on npm', async () => {
+  const s = astroSite();
+  const r = await wizard(s.dir);
+  assert.equal(s.read('src/lib/kiln-astro.mjs'), readFileSync(path.join(ROOT, 'integrations', 'astro', 'index.mjs'), 'utf8'));
+  assert.match(r.out, /wrote src\/lib\/kiln-astro\.mjs \(the kilnSource and kilnBody helpers\)/);
+  assert.doesNotMatch(r.out, /npm install @kilncms\/astro/, 'no instruction that ends in a 404');
+  // One the project already has is the project's.
+  const own = astroSite({ 'src/lib/kiln-astro.mjs': '// mine\n' });
+  const again = await wizard(own.dir);
+  assert.equal(own.read('src/lib/kiln-astro.mjs'), '// mine\n');
+  assert.match(again.out, /src\/lib\/kiln-astro\.mjs already present \(left untouched\)/);
 });
 
 test('wizard on an Astro site: a publicDir named in astro.config is used instead of public/', async () => {

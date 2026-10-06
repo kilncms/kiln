@@ -267,6 +267,9 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The setup wizard told Astro owners to `npm install @kilncms/astro`**, a
+  package that is not on npm. It now adds the helper to the project as one
+  file, `src/lib/kiln-astro.mjs`, and shows the import to use.
 - **On an Astro site the setup wizard put Kiln's files where the build never
   looked.** It wrote `assets/` and `kiln.html` at the top of the repository and
   printed a hint. It now writes the editor, the config (`mode: 'source',

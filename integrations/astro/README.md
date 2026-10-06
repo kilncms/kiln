@@ -8,10 +8,11 @@ the same mental model as annotating a hand-written page with `data-cms`.
 
 ## Install
 
-The package is not on npm yet. Until it is, copy
-[`index.mjs`](index.mjs) from this folder into your project (it is one file
-with no dependencies), for example as `src/lib/kiln-astro.mjs`, and import from
-that path wherever the examples below say `'@kilncms/astro'`. Once published:
+The package is not on npm yet. Until it is, the helper lives in your project as
+one file with no dependencies, `src/lib/kiln-astro.mjs`: the setup wizard puts
+it there, or copy [`index.mjs`](index.mjs) from this folder yourself. Import
+from that path wherever the examples below say `'@kilncms/astro'`. Once
+published:
 
 ```sh
 npm install @kilncms/astro

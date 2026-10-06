@@ -106,8 +106,8 @@ per field:
 <div {...kilnBody(entry)}><Content /></div>
 ```
 
-(The package reaches npm this week; until then the helper is used from this repo's
-`integrations/astro/` — the wizard prints the steps.)
+(The package is not on npm yet. Until it is, the wizard copies the helper into your
+project as `src/lib/kiln-astro.mjs`, and you import from that path.)
 
 The wizard does the rest: run `npx github:kilncms/kiln#release` in a generator-built repo
 and it detects the generator, shows what it found ("Found astro.config.mjs and 63
