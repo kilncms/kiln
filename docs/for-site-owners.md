@@ -37,8 +37,22 @@ npx github:kilncms/kiln
 The wizard deploys the worker (or points you at Kiln Cloud), creates the KV
 namespace, registers the GitHub App, copies the editor bundles and the `/kiln` entry
 page into your site, writes `assets/kiln-config.js`, and adds a `_headers` file with
-a few [security headers](#security-headers) if the site has none. When it's done,
+a few [security headers](#security-headers) if the site has none. It then lists the
+pages that do not load the editor yet and offers to add the two script tags to
+each, just before `</body>`:
+
+```html
+<script src="/assets/kiln-config.js"></script>
+<script src="/assets/kiln.js" defer></script>
+```
+
+A page without those two lines has no editor: you would sign in at `/kiln` and
+land back on a plain page. Pages you add later need them too; running the wizard
+again adds them to any page that lacks them and changes nothing else, and
+`kiln doctor` fails if your home page does not load `kiln.js`. When it's done,
 push, visit `yoursite.com/kiln`, and sign in with GitHub.
+
+`npx github:kilncms/kiln --help` lists every command.
 
 There is deliberately no edit button on the site itself. `/kiln` is the only door in,
 and visitors never see any of this — they get your plain site plus a ~3 KB script.

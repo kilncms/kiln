@@ -36,8 +36,21 @@ if (NODE_MAJOR < 20) {
 const CLI_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = existsSync(path.join(CLI_DIR, 'dist', 'kiln.js')) ? CLI_DIR : path.resolve(CLI_DIR, '..');
 const rl = createInterface({ input: process.stdin, output: process.stdout });
+// If input ends while a question is waiting (no terminal, a pipe that ran
+// dry), nothing more can be decided: say so and exit 1. Left alone, Node would
+// exit 0 with the work half done, and a script would read that as success.
+let waitingForAnswer = false;
+let inputEnded = false;
+const inputGone = () => {
+  console.error('\n  ❌ Input ended while Kiln was waiting for an answer. Run it in a terminal, or see: npx github:kilncms/kiln --help');
+  process.exit(1);
+};
+rl.on('close', () => { inputEnded = true; if (waitingForAnswer) inputGone(); });
 const ask = async (q, dflt) => {
+  if (inputEnded) inputGone();
+  waitingForAnswer = true;
   const a = (await rl.question(`${q}${dflt !== undefined ? ` [${dflt}]` : ''}: `)).trim();
+  waitingForAnswer = false;
   return a || dflt || '';
 };
 const yes = async (q, dflt = 'y') => /^y/i.test(await ask(`${q} (y/n)`, dflt));
@@ -229,7 +242,8 @@ async function doctor(args) {
     worker ||= src.match(/worker:\s*'([^']+)'/)?.[1];
     mode = src.match(/\bmode\s*:\s*['"]([^'"]+)['"]/)?.[1] || 'html';
     adapterId = src.match(/\badapter\s*:\s*['"]([^'"]+)['"]/)?.[1] || null;
-    ok(`read ${cfgPath} (repo=${repo}, worker=${worker}${mode === 'source' ? `, mode=source/${adapterId || '?'}` : ''})`);
+    ok(`read ${cfgPath} (repo=${repo || 'not set'}, worker=${worker || 'not set'}${mode === 'source' ? `, mode=source/${adapterId || '?'}` : ''})`);
+    if (!worker) info('this site is not connected to a worker yet — run the setup wizard here first: npx github:kilncms/kiln');
   }
   site ||= await ask('Site URL (https://…)');
   repo ||= await ask('GitHub repo (owner/name)');
@@ -297,7 +311,7 @@ async function doctor(args) {
 
   if (repo) {
     const inst = await fetchJson(`${worker}/setup/install-check?repo=${repo}`).catch(() => ({ json: {} }));
-    check(`App installed on ${repo}`, !!inst.json.installed, inst.json.installed ? '' : `install: https://github.com/apps/${status.json.slug}/installations/new`);
+    check(`App installed on ${repo}`, !!inst.json.installed, inst.json.installed ? '' : status.json.slug ? `install: https://github.com/apps/${status.json.slug}/installations/new` : 'the worker has no GitHub App yet — register it first (visit the worker\'s /setup)');
     // Rename/transfer tripwire: editor allowlists + Cloud registration are keyed to the
     // exact repo string, and they do NOT follow a GitHub rename or transfer. A FAILING
     // check, not a warning: GitHub keeps answering for the old name, so everything
@@ -621,7 +635,60 @@ async function cloudPrep(repo, siteMode = null) {
   process.exit(0);
 }
 
+// ─── help ────────────────────────────────────────────────────────────────────
+
+function versionLine() {
+  const read = (f) => { try { return readFileSync(path.join(PKG_ROOT, f), 'utf8'); } catch { return ''; } };
+  let version = 'unknown';
+  try { version = JSON.parse(read('package.json')).version || version; } catch { /* keep */ }
+  return `kiln ${version} (editor build ${read(path.join('dist', 'VERSION')).trim() || 'unknown'})`;
+}
+
+/** One line per command that exists. test/cli-help.test.js holds this to the dispatch at the bottom of the file. */
+function helpText() {
+  return `${versionLine()} — click-to-edit for static sites
+
+  Usage: npx github:kilncms/kiln [command] [options]      Run it in your site's folder.
+
+  (no command)     Set Kiln up for the site in this folder. Asks a few questions,
+                   copies the editor in, adds it to your pages, offers to commit.
+  doctor           Check a set-up site and say what is wrong.
+                     --site <url>  --repo <owner/name>  --worker <url>
+  update           Copy the current editor into this site (and the members gate,
+                   if the site has one).
+  tag              Mark headings, text and images editable, as a first pass.
+                     --dry  show what would change, write nothing
+  add-site         Add this site to Kiln Cloud.
+  new [dir]        Start a new site from a template.
+                     --from <owner/repo>  --name <title>  --dry
+  rescue <url>     Copy a site out of a website builder into plain HTML.
+                     --out <dir>  --max-pages <n>  --delay <ms>  --dry  --no-tag  --keep-scripts
+
+  --help, -h       This text. With a command too: nothing is run, nothing is changed.
+  --version        The version of this tool.
+
+  Words you will see:
+    repo       your site's files on GitHub, written owner/name
+    worker     the small sign-in service the editor talks to. Kiln Cloud runs one
+               for you; a self-hosted setup deploys its own on Cloudflare
+    origin     your site's address without a path, like https://example.com. A
+               worker only answers the origins on its list (ALLOWED_ORIGINS)
+    KV         the worker's storage (a Cloudflare "KV namespace"): sign-ins and
+               each site's list of people
+    wrangler   Cloudflare's command-line tool; wrangler.toml is its settings file
+
+  Guides: https://github.com/kilncms/kiln#readme`;
+}
+
 async function wizard() {
+  // Reached when no command was given. Anything else that falls through to
+  // here is a word Kiln does not know: say so, and never start setting up a
+  // site because of a typo.
+  if (cmd !== undefined) {
+    console.error(`\n  ❌ Unknown command "${cmd}".\n`);
+    console.log(helpText());
+    process.exit(2);
+  }
   hr('Kiln setup');
 
   // 0. prerequisites
@@ -1051,7 +1118,7 @@ async function addSiteCloud() {
 
 const [, , cmd, ...rest] = process.argv;
 // Flags accept --flag=value AND --flag value; bare flags become true.
-const VALUE_FLAGS = new Set(['site', 'repo', 'worker', 'from', 'name', 'out', 'delay']);
+const VALUE_FLAGS = new Set(['site', 'repo', 'worker', 'from', 'name', 'out', 'delay', 'max-pages']);
 const args = {};
 const positional = [];
 for (let i = 0; i < rest.length; i++) {
@@ -1062,6 +1129,22 @@ for (let i = 0; i < rest.length; i++) {
   const k = a.slice(2);
   if (VALUE_FLAGS.has(k) && i + 1 < rest.length && !rest[i + 1].startsWith('--')) args[k] = rest[++i];
   else args[k] = true;
+}
+// Help and version never run a command: `kiln tag --help` must not tag anything.
+const wantsHelp = cmd === 'help' || cmd === '--help' || cmd === '-h' || args.help === true || rest.includes('-h');
+if (wantsHelp || cmd === '--version' || args.version === true) {
+  console.log(wantsHelp ? helpText() : versionLine());
+  process.exit(0);
+}
+// An option a command does not have is refused by name, not silently ignored:
+// `kiln tag --dry-run` would otherwise rewrite the pages it was asked to preview.
+// (Commands that are not in this table check their own options.)
+const KNOWN_FLAGS = { '': [], doctor: ['site', 'repo', 'worker'], tag: ['dry'], update: [], 'add-site': [], new: ['from', 'name', 'dry'] };
+const takes = KNOWN_FLAGS[cmd === undefined ? '' : cmd];
+const unknownFlag = takes && Object.keys(args).find(k => !takes.includes(k));
+if (unknownFlag) {
+  console.error(`\n  ❌ ${cmd ? `kiln ${cmd}` : 'The setup wizard'} has no option --${unknownFlag}. ${takes.length ? `It takes: ${takes.map(f => `--${f}`).join(', ')}.` : 'It takes no options.'} See: npx github:kilncms/kiln --help\n`);
+  process.exit(2);
 }
 if (cmd === 'doctor') doctor(args);
 else if (cmd === 'tag') tagCmd(args);

@@ -14,10 +14,33 @@
  * no network or prompts there.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+
+// Same rule as index.mjs: assets one level up in the checkout, vendored beside
+// this file in the published package.
+const CLI_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PKG_ROOT = existsSync(path.join(CLI_DIR, 'dist', 'kiln.js')) ? CLI_DIR : path.resolve(CLI_DIR, '..');
+const BUNDLES = ['kiln.js', 'kiln-editor.js', 'kiln-features.js'];
+
+/**
+ * A template carries the editor it was last refreshed with, which can be
+ * months old. Replace each bundle it has with this tool's own, so a site made
+ * today starts on today's editor (and `kiln doctor` does not call a site made
+ * a second ago out of date). Returns the files replaced.
+ */
+export function refreshBundles(dir, pkgRoot = PKG_ROOT) {
+  const replaced = [];
+  for (const f of BUNDLES) {
+    const mine = path.join(pkgRoot, 'dist', f);
+    const theirs = path.join(dir, 'assets', f);
+    if (existsSync(mine) && existsSync(theirs)) { cpSync(mine, theirs); replaced.push(path.join('assets', f)); }
+  }
+  return replaced;
+}
 
 const DEFAULT_TEMPLATE = 'kilncms/kiln-demo';
 export const REPO_PLACEHOLDER = 'YOUR-GITHUB-USER/YOUR-REPO';
@@ -207,6 +230,7 @@ export async function newCmd(dirArg, args = {}) {
     info(`reset      assets/kiln-config.js: repo → '${REPO_PLACEHOLDER}', worker → '', drop sandbox: true`);
     info('rename     <title> + header/menu brand strings → your site title');
     info(`git        ${haveGit ? 'init + one initial commit' : 'skipped (git not found)'}`);
+    info('editor     replace the template\'s kiln*.js with this tool\'s current build');
     info('then       create a GitHub repo, push, and run the setup wizard (printed at the end)');
     process.exit(0);
   }
@@ -240,6 +264,9 @@ export async function newCmd(dirArg, args = {}) {
     dep.changes.forEach((c) => ok(`kiln-config.js: ${c}`));
     if (!dep.changes.length) info('kiln-config.js: already un-personalized — nothing to reset');
   } else warn('assets/kiln-config.js not found in this template — the setup wizard will create it');
+
+  const fresh = refreshBundles(dir);
+  if (fresh.length) ok(`replaced the template's copy of the editor with the current one (${fresh.length} files in assets/)`);
 
   // ── stamp the new site title ──
   const indexPath = path.join(dir, 'index.html');
@@ -285,9 +312,12 @@ export async function newCmd(dirArg, args = {}) {
        git remote add origin https://github.com/YOUR-GITHUB-USER/${repoName}.git
        git push -u origin main
 
-  2. Run the setup wizard — it deploys your worker, registers the GitHub App,
-     sets the editor allowlist, and connects free hosting (Cloudflare Pages):
+  2. Run the setup wizard:
        cd ${dir} && npx github:kilncms/kiln
+     It first asks how you want to run Kiln. Kiln Cloud (the default, paid):
+     we run the sign-in service, and the wizard only wires your site to it.
+     Self-hosted (free): the wizard deploys your own sign-in service on
+     Cloudflare, registers a GitHub App for it and connects free hosting.
 `);
   process.exit(0);
 }

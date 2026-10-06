@@ -29,8 +29,9 @@ npx github:kilncms/kiln
 The wizard walks the whole setup: it deploys the worker to your Cloudflare account,
 creates the KV namespace, sets `ALLOWED_ORIGINS` to your site, runs the GitHub App
 registration, copies `kiln.js` + `kiln-editor.js` + `kiln-features.js` and the
-`kiln.html` entry page into your site, writes `assets/kiln-config.js`, and offers a
-first-pass auto-tag of your HTML. It writes a config the manual steps below would
+`kiln.html` entry page into your site, writes `assets/kiln-config.js`, offers to add
+the two script tags to every page that lacks them, and offers a first-pass auto-tag
+of your HTML. It writes a config the manual steps below would
 have produced by hand — so if the wizard worked, you can skip straight to
 [Google sign-in](#google-sign-in) and [verifying](#verify-with-kiln-doctor).
 
