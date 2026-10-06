@@ -5,6 +5,8 @@
  * lazily on open.
  */
 
+import { readableName } from './names.js';
+
 const ACTIONS = [
   { id: 'kiln-publish', label: 'Publish' },
   { id: 'kiln-history', label: 'History & restore' },
@@ -122,9 +124,22 @@ function fuzzy(q, s) {
   return qi === q.length ? score - s.length / 50 : -1;
 }
 
+/**
+ * How well a row answers what was typed, or -1. The typed words found as
+ * they stand anywhere in the row (its name, its key, its text) come first.
+ * Failing that the letters may be spread out, but only across the row's short
+ * name: spread across a whole sentence nearly anything matches, which is how
+ * typing "history" used to bring up "hero img".
+ */
+export function rowScore(q, row) {
+  const at = String(row.text).toLowerCase().indexOf(q.toLowerCase());
+  if (at !== -1) return 1000 - Math.min(at, 500);
+  return fuzzy(q, row.name);
+}
+
 function matchSort(q, rows) {
   if (!q) return rows;
-  return rows.map(r => ({ r, s: fuzzy(q, r.text) })).filter(x => x.s >= 0)
+  return rows.map(r => ({ r, s: rowScore(q, r) })).filter(x => x.s >= 0)
     .sort((a, b) => b.s - a.s).map(x => x.r);
 }
 
@@ -160,7 +175,7 @@ function fieldRows() {
     seen.add(key);
     let snip = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 42);
     if (!snip && el.tagName === 'IMG') snip = el.getAttribute('alt') || '(image)';
-    const name = deps.humanizeKey(key);
+    const name = readableName(key);
     rows.push({ name, text: `${name} ${key} ${snip}`, hint: snip, run: () => flashTo(el) });
   }
   return rows;

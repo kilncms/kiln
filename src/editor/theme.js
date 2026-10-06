@@ -15,6 +15,7 @@
 
 import { whyNot } from './plain-failure.js';
 import { demoSays } from './tryout.js';
+import { tokenName } from './names.js';
 import { editFile } from '../github.js';
 
 let deps = null;
@@ -257,10 +258,10 @@ function fontStackFor(family, currentValue) {
 }
 
 export async function openThemePanel() {
-  const { state, cfg, modal, setStatus, escapeHtml, journalAdd, djb2 } = deps;
+  const { state, cfg, mode, modal, setStatus, escapeHtml, journalAdd, djb2 } = deps;
   const m = modal(`<h3>Theme</h3>
-<p class="kiln-dim">The site's brand kit — its <code>:root</code> CSS custom properties.
-Changes preview instantly; <strong>Apply</strong> commits them site-wide.</p>
+<p class="kiln-dim">The site’s colours and type sizes. A change shows on this page at once;
+<strong>Apply</strong> puts it on every page.${mode === 'admin' ? ' <small>For the owner: these are the custom properties on <code>:root</code> in the site’s stylesheet.</small>' : ''}</p>
 <div id="kiln-th-body"><p class="kiln-dim">Reading stylesheets…</p></div>
 <div class="kiln-modal-actions">
 <button class="kiln-btn-ghost" id="kiln-th-revert">Revert</button>
@@ -300,6 +301,12 @@ Changes preview instantly; <strong>Apply</strong> commits them site-wide.</p>
   function render() {
     const tokens = [...winningTokens(sheets).values()];
     body.textContent = '';
+    if (!tokens.length && mode !== 'admin') {
+      body.innerHTML = '<p class="kiln-dim">This site’s colours and type sizes are not set up to be changed here yet. The site’s owner can set that up.</p>';
+      applyBtn.disabled = true;
+      revertBtn.style.display = 'none';
+      return;
+    }
     if (!tokens.length) {
       body.innerHTML = `<p class="kiln-dim">No design tokens found. Declare your brand as custom
 properties on <code>:root</code> in your stylesheet and this panel becomes controls:</p>
@@ -323,8 +330,9 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
       if (multiFile) wrap.appendChild(el('div', 'kiln-th-src', [...new Set(group.map(t => t.path))].join(' · ')));
       for (const token of group) wrap.appendChild(row(token));
       if (kind === 'font') {
-        wrap.appendChild(el('p', 'kiln-th-hint',
-          'To use a new font, add its <link> or @font-face to the site first.'));
+        wrap.appendChild(el('p', 'kiln-th-hint', mode === 'admin'
+          ? 'To use a new font, add its <link> or @font-face to the site first.'
+          : 'These are the fonts the site has. Its owner can add another.'));
       }
       body.appendChild(wrap);
     }
@@ -336,7 +344,9 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
     const r = el('div', 'kiln-th-row');
     // Staged-but-uncommitted value (panel reopened mid-edit) shows, not the file's.
     const cur = dirty.get(token.name)?.value ?? token.value;
-    const name = `<span class="kiln-th-name">${escapeHtml(token.name)}</span>`;
+    // The name as a person reads it; the stylesheet's own name is the row's title, and small print for the owner.
+    const name = `<span class="kiln-th-name" title="${escapeHtml(token.name)}">${escapeHtml(tokenName(token.name, token.kind))}${
+      mode === 'admin' ? `<small class="kiln-th-raw">${escapeHtml(token.name)}</small>` : ''}</span>`;
     if (token.kind === 'color') {
       const hex = hexForPicker(cur);   // non-hex keeps a raw text input — never lossily convert
       // The native picker shows its color itself; text-input colors get a swatch.

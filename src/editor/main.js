@@ -40,6 +40,7 @@ import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publi
 import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
 import { notDone, whyNot, said } from './plain-failure.js';
+import { plainName, readableName } from './names.js';
 import { demoSays, demoShort, DEMO_DRAFT_SAVED, DEMO_HISTORY_EMPTY, DEMO_HISTORY_NOTE,
   historyEntry, withEntry, undoChanges, goBackChanges, partVersions } from './tryout.js';
 
@@ -991,7 +992,7 @@ function decorateField(el, key) {
   if (decorated.has(el)) return;
   decorated.add(el);
   el.classList.add('kiln-field');
-  el.title = `Edit: ${key}`;
+  el.title = fieldHint(key);
   // Seed the undo baseline with the pre-edit state (first decoration wins;
   // keys inside repeats stage via their container, so their entry is unused).
   if (!el.closest('[data-cms-repeat]') && !state.undoBase.has(key)) state.undoBase.set(key, el.innerHTML);
@@ -1019,6 +1020,14 @@ function decorateField(el, key) {
     // inline images un-resizable once their insert-time popover closed.
     if (state.active === el && e.target.tagName === 'IMG' && e.target !== el) inlineImgPopover(e.target);
   });
+}
+
+/**
+ * What hovering an editable part says: its name as a person reads it. The
+ * owner, who gave the field its name, sees that name beside it.
+ */
+function fieldHint(key) {
+  return mode === 'admin' ? `Edit: ${readableName(key)} (${key})` : `Edit: ${readableName(key)}`;
 }
 
 // ─── Repeatable blocks ───────────────────────────────────────────────────────
@@ -1810,7 +1819,7 @@ function imageToolbar(img, key) {
   tb.id = 'kiln-toolbar';
   tb.innerHTML = `
     ${TB_GRIP}
-    <span class="kiln-tb-label">${escapeHtml(key)}</span>
+    <span class="kiln-tb-label" title="${escapeHtml(key)}">${escapeHtml(readableName(key))}</span>
     <button class="kiln-tb-fmt kiln-tb-attach" data-act="replace">Replace image…</button>
     <span class="kiln-tb-hint">drag the ● corner to resize</span>
     <input class="kiln-href-input" data-act="alt" type="text" value="${escapeHtml(img.getAttribute('alt') || '')}"
@@ -2473,17 +2482,17 @@ function publishItems() {
         if (!document.getElementById(id) && !document.getElementsByName(id).length) warnings.push({ kind: 'link', text: `The link “${l.text}” points to a part of this page that is not there.` });
       }
     }
-    items.push({ id: key, key, label: humanizeKey(key), parts, warnings, links: links.filter(l => l.problem === 'check'), drop: () => dropPending(key) });
+    items.push({ id: key, key, label: readableName(key), parts, warnings, links: links.filter(l => l.problem === 'check'), drop: () => dropPending(key) });
   }
   for (const [ref, v] of state.pendingSource) {
-    items.push({ id: 'source:' + ref, key: null, sourceRef: ref, label: humanizeKey(String(ref).split('#').pop().split(':').pop()),
+    items.push({ id: 'source:' + ref, key: null, sourceRef: ref, label: readableName(String(ref).split('#').pop().split(':').pop()),
       parts: [{ type: 'text', before: state.sourceBase.get(ref) ?? '', after: v.value }], warnings: [],
       drop: () => { state.pendingSource.delete(ref); syncSourceDom(ref); refreshPublishButton(); } });
   }
   state.pendingStructural.forEach((op, i) => {
     const [word, tone] = STRUCTURAL_WORDS[op.op] || ['Changed', 'plain'];
     const at = editHistory.undo.findIndex(e => e.steps.some(st => st.structural && st.structural.op === op));
-    items.push({ id: 'structure:' + i, key: op.key, label: humanizeKey(op.key) || 'a section',
+    items.push({ id: 'structure:' + i, key: op.key, label: readableName(op.key),
       parts: [{ type: 'note', tone, text: `${word}: ${humanizeKey(op.key) || 'a section'}` }], warnings: [],
       drop: at === -1 ? null : () => {
         const [entry] = editHistory.undo.splice(at, 1);
@@ -3067,7 +3076,7 @@ function renderSourceToolbar(el, ref, parsed) {
   tb.id = 'kiln-toolbar';
   tb.innerHTML = `
     ${TB_GRIP}
-    <span class="kiln-tb-label">${escapeHtml(parsed.pointer[parsed.pointer.length - 1])}</span>
+    <span class="kiln-tb-label" title="${escapeHtml(String(parsed.pointer[parsed.pointer.length - 1]))}">${escapeHtml(readableName(parsed.pointer[parsed.pointer.length - 1]))}</span>
     <button class="kiln-tb-fmt kiln-src-where" title="${escapeHtml(`${parsed.path}#${parsed.rawPointer}`)}">Where does this come from?</button>
     <span class="kiln-tb-gap"></span>
     <button class="kiln-tb-save" title="Keep this edit (staged for Publish)">Done</button>
@@ -4308,10 +4317,9 @@ async function histFile(sha) {
   return histCache.get(sha);
 }
 
-/** "hero_headline" → "hero headline"; strips leading +/- and generated suffixes. */
+/** "hero_headline" → "hero headline", for the middle of a sentence (names.js). */
 function humanizeKey(k) {
-  if (k === undefined || k === null || k === 'undefined') return 'a section';
-  return String(k).replace(/^[+-]/, '').replace(/_[a-z0-9]{5,}$/i, '').replace(/[_-]+/g, ' ').trim() || k;
+  return plainName(k);
 }
 
 /** Turn a commit message into something a layperson can read in a history list. */
@@ -4737,8 +4745,8 @@ async function fieldHistoryPanel(key, isRepeat = false) {
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
   const m = modal(`
     <h3>History for this section</h3>
-    <p class="kiln-dim"><code>${escapeHtml(key)}</code> — pick an earlier version to preview it in the
-    page, then keep or undo. ${isRepeat
+    <p class="kiln-dim"><strong title="${escapeHtml(key)}">${escapeHtml(readableName(key))}</strong>: pick an earlier version to see it on
+    the page, then keep it or cancel. ${isRepeat
       ? 'This is a set of blocks (rows share their fields), so history covers the whole set.'
       : 'Only this section changes.'}</p>
     <div id="kiln-fh" class="kiln-inv-list">Loading…</div>`);
@@ -4766,7 +4774,7 @@ async function fieldHistoryPanel(key, isRepeat = false) {
         if (rows[0] && rows[0].v !== undefined && rows[0].v !== null) applyKeyDom(key, rows[0].v);
         document.querySelectorAll(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`).forEach(n => n.classList.remove('kiln-modified'));
         refreshPublishButton(); m.remove();
-        setStatus(`Undid the unpublished edit to “${key}”`, 'saved');
+        setStatus(`Your unpublished edit to “${readableName(key)}” is undone.`, 'saved');
       };
       box.appendChild(r);
     }
@@ -5097,7 +5105,7 @@ function schedulePanel(at) {
   const inOneHour = new Date(Date.now() + 3600000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   const m = modal(`
     <h3>Schedule these ${state.pending.size} edit${state.pending.size > 1 ? 's' : ''}</h3>
-    <p class="kiln-dim">Kiln commits them automatically at the time you pick (checked every 5 minutes), then the site rebuilds.</p>
+    <p class="kiln-dim">Kiln publishes them at the time you pick (it checks every 5 minutes), and the site rebuilds.</p>
     <label>Publish at <input type="datetime-local" id="kiln-sc-at" value="${typeof at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(at) ? at : inOneHour}"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
@@ -6162,7 +6170,7 @@ function renderToolbar(el, key) {
   const HIST_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>';
   tb.innerHTML = `
     ${TB_GRIP}
-    <span class="kiln-tb-label">${escapeHtml(key)}</span>
+    <span class="kiln-tb-label" title="${escapeHtml(key)}">${escapeHtml(readableName(key))}</span>
     ${plain ? '' : `
       <select class="kiln-style-select" title="Text format and site styles">
         <option value="">Style</option>
@@ -6503,7 +6511,7 @@ function offerPendingRestore() {
   // The demo starts over after a day, and what was not published goes with it.
   if (cfg.sandbox && Date.now() - ts > SANDBOX_TTL) { clearSavedPending(); return; }
   if (back) { restoreSaved(saved, kept, true); return; }
-  const names = [...Object.keys(saved.edits), ...Object.keys(saved.source).map(ref => friendlyRef(state.sourceFields.get(ref).parsed))];
+  const names = [...Object.keys(saved.edits).map(readableName), ...Object.keys(saved.source).map(ref => friendlyRef(state.sourceFields.get(ref).parsed))];
   const when = new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   // What was being typed when a sign-in ended (a comment, a note, a time) is offered back with the edits, or on its own.
   const typedName = saved.typed ? TYPED[saved.typed.where] : '';
@@ -6903,6 +6911,7 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-th-row{display:flex;align-items:center;gap:10px;padding:6px 2px;border-bottom:1px solid #f3f4f6}
 .kiln-th-name,.kiln-th-val{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .kiln-th-name{flex:1;min-width:0;font:600 13px var(--kiln-font);color:#374151}
+.kiln-th-raw{display:block;font:400 10.5px ui-monospace,Menlo,monospace;color:#9ca3af;overflow:hidden;text-overflow:ellipsis}
 .kiln-th-swatch{flex:none;width:26px;height:26px;border-radius:8px;border:1px solid rgba(0,0,0,.14)}
 .kiln-th-row input,.kiln-th-select{margin:0;border:1.5px solid #e5e7eb;border-radius:8px;background:#fff}
 .kiln-th-row input[type=color]{flex:none;width:46px;height:30px;padding:1px 2px;cursor:pointer}

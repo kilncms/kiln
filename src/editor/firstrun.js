@@ -147,6 +147,10 @@ let published = null;   // { before, after, message } once the visitor has publi
 let undone = 0;         // …and then took that publish back with Undo: how many edits came back
 let tip = null;         // the step 1 / step 2 bubble
 let tipStep = 0;
+let cardTimer = null;   // the last card puts itself away after a while
+
+/** How long the last card stays when nobody touches it. Long enough to read twice. */
+export const CARD_STAYS = 20000;
 
 /**
  * Start the guide. In the public demo (cfg.sandbox), and for an invited
@@ -207,8 +211,23 @@ export function guideUndone(edits = 1) {
 
 function finish() {
   done = true;
+  clearTimeout(cardTimer);
   removeTip();
   document.getElementById('kiln-guide-card')?.remove();
+}
+
+/**
+ * The last card says what happened and then gets out of the way: it used to
+ * sit over the page until someone dismissed it. A pointer moving over it
+ * means it is being read, and it waits a little longer. (A pointer resting
+ * where it last clicked says nothing: the card opens right under it.)
+ */
+function closeCardLater(card, wait = CARD_STAYS) {
+  clearTimeout(cardTimer);
+  cardTimer = setTimeout(() => {
+    if (!card.isConnected) return;
+    if (Date.now() - (card._kilnMoved || 0) < 5000) closeCardLater(card, 5000); else finish();
+  }, wait);
 }
 
 function removeTip() {
@@ -295,6 +314,7 @@ function showCard() {
   const fresh = !card;
   if (fresh) {
     card = el('div');
+    card.addEventListener('pointermove', () => { card._kilnMoved = Date.now(); });
     card.id = 'kiln-guide-card';
     card.setAttribute('role', 'dialog');
     card.setAttribute('aria-labelledby', 'kiln-guide-title');
@@ -331,6 +351,7 @@ function showCard() {
   card.replaceChildren(...parts);
   if (fresh) document.body.appendChild(card);
   stay.focus({ preventScroll: true });
+  closeCardLater(card);
 }
 
 function guideCss(mobileMq) {
