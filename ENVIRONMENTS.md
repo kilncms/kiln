@@ -114,6 +114,22 @@ KILN_E2E_REPO=<owner>/kiln-e2e GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   
 KILN_E2E_REPO=<owner>/kiln-e2e-astro GH_TOKEN=$(gh auth token) node scripts/e2e-source.mjs   # a site Astro builds (source mode)
 ```
 
+**The release runs both by itself** once it knows the two test repositories.
+Set them in the shell the release is run from:
+
+```bash
+export KILN_E2E_REPO=<owner>/kiln-e2e
+export KILN_E2E_SOURCE_REPO=<owner>/kiln-e2e-astro
+export GH_TOKEN=$(gh auth token)
+export KILN_E2E_RENAME=1     # optional: also rename the test repository and back (the token needs admin on it)
+```
+
+`npm run deploy:test` then runs them against staging as soon as the new worker
+answers, and `npm run deploy:prod` runs them against staging once more before
+anything of production is touched: a failure stops the release with production
+as it was. Without the two names the step says, in its own line, that the
+end-to-end tests did NOT run, and the release goes on: read the output.
+
 `e2e-source.mjs` is the same idea for source mode: it publishes two fields of
 one content file through `/source/commit`, checks on GitHub that this was one
 commit by the editor touching only that file and that exactly the two edited

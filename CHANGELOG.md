@@ -8,6 +8,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The release runs the end-to-end tests itself.** With the two test
+  repositories named (`KILN_E2E_REPO`, `KILN_E2E_SOURCE_REPO`),
+  `npm run deploy:test` runs both tests on staging after the deploy, and
+  `npm run deploy:prod` runs them on staging again before production is
+  touched. Without them the output says the tests did not run. The migrations
+  step is asked once more when Cloudflare refuses it the first time.
 - **`kiln update --worker`** — for self-hosters. Brings the worker the setup
   wizard made (`kiln-worker/`) up to the current version: it lists the files
   that differ, asks, replaces them, adds any dependency the worker now needs,

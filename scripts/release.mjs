@@ -51,9 +51,9 @@ export function realIo() {
       if (!res.ok) throw new Error(`${url} answered ${res.status}`);
       return res.json();
     },
-    /** Run a command from `cwd` (relative to the repo), inheriting the terminal. Throws when it fails. */
-    run: (cmd, args, cwd = '.') => {
-      const r = spawnSync(cmd, args, { cwd: path.join(ROOT, cwd), stdio: 'inherit' });
+    /** Run a command from `cwd` (relative to the repo), inheriting the terminal, with `env` added to the environment. Throws when it fails. */
+    run: (cmd, args, cwd = '.', env = {}) => {
+      const r = spawnSync(cmd, args, { cwd: path.join(ROOT, cwd), stdio: 'inherit', env: { ...process.env, ...env } });
       if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} failed (exit ${r.status})`);
     },
     /** Rebuild with the committed stamp in a scratch copy; return the names of dist/ files that differ. */
@@ -160,11 +160,21 @@ export async function release(io, { target = 'production', dryRun = false, hotfi
   const message = `${tag}: ${c.subject}`.slice(0, 100);
   const url = target === 'production' ? PRODUCTION_URL : STAGING_URL;
   const wrangler = (...args) => ['npx', ['wrangler', ...args], 'worker'];
+  // The end-to-end tests drive a real site on real GitHub through the staging
+  // worker (scripts/e2e.mjs, scripts/e2e-source.mjs). Staging runs them right
+  // after its deploy; production runs them again, on staging, before anything
+  // of production is touched: the check that staging runs this commit says the
+  // worker started, this says it works.
+  const e2e = { say: 'run the end-to-end tests on staging (scripts/e2e.mjs, scripts/e2e-source.mjs)', e2e: true };
   const steps = [
-    { say: `apply database migrations to ${target}`, cmd: wrangler('d1', 'migrations', 'apply', D1[target], '--env', target, '--remote') },
+    ...(target === 'production' ? [e2e] : []),
+    // Asking twice is safe (a migration already applied is skipped), and the
+    // first ask is sometimes refused while Cloudflare renews the sign-in.
+    { say: `apply database migrations to ${target}`, cmd: wrangler('d1', 'migrations', 'apply', D1[target], '--env', target, '--remote'), retry: true },
     ...(target === 'production' ? [{ say: `tag this commit ${tag}`, git: ['tag', '-a', tag, '-m', `Production release of ${c.short}: ${c.subject}`] }] : []),
     { say: `deploy ${c.short} to ${target}`, cmd: wrangler('deploy', '--env', target, '--var', `KILN_BUILD:${c.short}`, '--tag', tag, '--message', message) },
     { say: `confirm ${url}/healthz reports build ${c.short}`, verify: true },
+    ...(target === 'staging' ? [e2e] : []),
     ...(target === 'production' ? [{ say: `push the tag ${tag}`, git: ['push', 'origin', tag] }] : []),
     // `release` is the branch that always points at what production runs: the
     // channel `kiln doctor` compares a site's editor against. A plain push, so
@@ -183,7 +193,26 @@ export async function release(io, { target = 'production', dryRun = false, hotfi
   try {
     for (const s of steps) {
       io.log(`→ ${s.say}`);
-      if (s.cmd) { io.run(...s.cmd); if (s.cmd[1][1] === 'deploy') deployed = true; }
+      if (s.e2e) {
+        const html = io.env.KILN_E2E_REPO;
+        const source = io.env.KILN_E2E_SOURCE_REPO;
+        if (!html || !source) {
+          io.log('  skipped: KILN_E2E_REPO and KILN_E2E_SOURCE_REPO are not both set, so the end-to-end tests did NOT run. ENVIRONMENTS.md says what they need.');
+        } else {
+          io.run('node', ['scripts/e2e.mjs', ...(io.env.KILN_E2E_RENAME ? ['--rename'] : [])], '.', { KILN_E2E_WORKER: STAGING_URL, KILN_E2E_REPO: html });
+          io.run('node', ['scripts/e2e-source.mjs'], '.', { KILN_E2E_WORKER: STAGING_URL, KILN_E2E_REPO: source });
+        }
+      }
+      if (s.cmd) {
+        try { io.run(...s.cmd); }
+        catch (err) {
+          if (!s.retry) throw err;
+          io.log(`  that failed once (${String(err.message).split('\n')[0]}); asking again in a few seconds`);
+          if (io.sleep) await io.sleep(5000);
+          io.run(...s.cmd);
+        }
+        if (s.cmd[1][1] === 'deploy') deployed = true;
+      }
       if (s.git && s.optional) {
         try { io.git(...s.git); }
         catch (err) { io.log(`  ! could not ${s.say} (${String(err.message).split('\n')[0]}). Production is released; move the branch by hand: git push origin ${c.sha}:refs/heads/release`); }

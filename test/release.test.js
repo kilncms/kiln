@@ -22,10 +22,12 @@ function world(over = {}) {
     branch: 'main', dirty: '', remote: SHA, origin: 'https://github.com/kilncms/kiln.git',
     ciRuns: [{ head_sha: SHA, event: 'push', status: 'completed', conclusion: 'success' }],
     drift: [], staging: { ok: true, build: 'abc1234' }, production: { ok: true, build: 'abc1234' },
-    tags: [], failOn: null, ...over,
+    tags: [], failOn: null, failOnce: null, env: {}, ...over,
   };
   const ran = [];      // every git write and every command, in order
+  const envs = [];     // the environment each command was given, beside its line
   const lines = [];
+  let failedOnce = false;
   const io = {
     git: (...a) => {
       const cmd = a.join(' ');
@@ -46,17 +48,19 @@ function world(over = {}) {
       if (url === `${PRODUCTION_URL}/healthz`) return w.production;
       throw new Error(`unexpected fetch ${url}`);
     },
-    run: (cmd, args, cwd) => {
+    run: (cmd, args, cwd, env = {}) => {
       const line = `${cwd}$ ${cmd} ${args.join(' ')}`;
       ran.push(line);
+      envs.push({ line, env });
       if (w.failOn && line.includes(w.failOn)) throw new Error(`${args[1]} failed (exit 1)`);
+      if (w.failOnce && !failedOnce && line.includes(w.failOnce)) { failedOnce = true; throw new Error(`${args[1]} failed (exit 1)`); }
     },
     distDrift: () => w.drift,
     log: (l) => lines.push(l),
     now: () => new Date('2026-10-06T15:00:00Z'),
-    env: {},
+    env: w.env,
   };
-  return { io, ran, lines };
+  return { io, ran, lines, envs };
 }
 async function refusal(over, opts = {}) {
   const { io, ran } = world(over);
@@ -132,6 +136,7 @@ test('KLR-01 --dry-run with every check passing lists the steps and changes noth
   assert.match(lines.join('\n'), /Every check passed for abc1234 on main/);
   assert.match(lines.join('\n'), /Dry run: nothing was changed\./);
   assert.deepEqual(r.steps, [
+    'run the end-to-end tests on staging (scripts/e2e.mjs, scripts/e2e-source.mjs)',
     'apply database migrations to production', 'tag this commit prod-2026-10-06', 'deploy abc1234 to production',
     'confirm https://auth.kilncms.com/healthz reports build abc1234', 'push the tag prod-2026-10-06', 'fast-forward the release branch to abc1234']);
 });
@@ -173,7 +178,8 @@ test('KLR-01 a second release on the same day gets its own tag', async () => {
 test('KLR-01 when a step fails: before the deploy nothing is left behind; after it the message says how to go back', async () => {
   const mig = world({ failOn: 'd1 migrations apply' });
   await assert.rejects(release(mig.io, {}), /stopped at a failing step.*Nothing was deployed to production\./s);
-  assert.equal(mig.ran.length, 1, 'no tag, no deploy');
+  assert.equal(mig.ran.length, 2, 'asked twice, then no tag, no deploy');
+  assert.ok(mig.ran.every(l => l.includes('d1 migrations apply')));
   const dep = world({ failOn: 'wrangler deploy' });
   await assert.rejects(release(dep.io, {}), /Nothing was deployed to production\./);
   assert.deepEqual(dep.ran.slice(-1), ['git tag -d prod-2026-10-06'], 'the tag is taken back');
@@ -257,3 +263,63 @@ test('KLR-01 a deploy that takes a few seconds to answer everywhere is not calle
   assert.deepEqual(waits, [5000, 5000]);
   assert.equal(w.ran.some(l => l.startsWith('git push')), true, 'the verified release is tagged on origin');
 });
+
+// The end-to-end tests are part of the release, not something remembered between two commands.
+const E2E = { KILN_E2E_REPO: 'someone/html-test-site', KILN_E2E_SOURCE_REPO: 'someone/astro-test-site' };
+
+test('staging: after the deploy answers, both end-to-end tests run against staging, each with its own test site', async () => {
+  const { io, ran, envs } = world({ branch: 'work', remote: '', ciRuns: [], env: E2E });
+  await release(io, { target: 'staging' });
+  assert.deepEqual(ran, [
+    'worker$ npx wrangler d1 migrations apply kiln-cloud-staging --env staging --remote',
+    'worker$ npx wrangler deploy --env staging --var KILN_BUILD:abc1234 --tag staging-abc1234 --message staging-abc1234: worker: a fix',
+    '.$ node scripts/e2e.mjs',
+    '.$ node scripts/e2e-source.mjs',
+  ]);
+  assert.deepEqual(envs[2].env, { KILN_E2E_WORKER: STAGING_URL, KILN_E2E_REPO: 'someone/html-test-site' });
+  assert.deepEqual(envs[3].env, { KILN_E2E_WORKER: STAGING_URL, KILN_E2E_REPO: 'someone/astro-test-site' });
+});
+
+test('staging: KILN_E2E_RENAME adds the rename step; a failing test fails the release', async () => {
+  const withRename = world({ branch: 'work', remote: '', ciRuns: [], env: { ...E2E, KILN_E2E_RENAME: '1' } });
+  await release(withRename.io, { target: 'staging' });
+  assert.ok(withRename.ran.includes('.$ node scripts/e2e.mjs --rename'));
+  const failing = world({ branch: 'work', remote: '', ciRuns: [], env: E2E, failOn: 'scripts/e2e-source.mjs' });
+  await assert.rejects(release(failing.io, { target: 'staging' }), /stopped at a failing step.*The staging worker WAS replaced/s);
+});
+
+test('without the two test sites named, the release says plainly that the end-to-end tests did not run', async () => {
+  const { io, ran, lines } = world({ branch: 'work', remote: '', ciRuns: [] });
+  await release(io, { target: 'staging' });
+  assert.equal(ran.some(l => l.includes('e2e')), false);
+  assert.match(lines.join('\n'), /the end-to-end tests did NOT run/);
+  const half = world({ branch: 'work', remote: '', ciRuns: [], env: { KILN_E2E_REPO: 'someone/html-test-site' } });
+  await release(half.io, { target: 'staging' });
+  assert.equal(half.ran.some(l => l.includes('e2e')), false, 'one test site is not both');
+});
+
+test('production: the end-to-end tests run on staging first, and a failure there leaves production untouched', async () => {
+  const ok = world({ env: E2E });
+  await release(ok.io, {});
+  assert.deepEqual(ok.ran.slice(0, 3), [
+    '.$ node scripts/e2e.mjs',
+    '.$ node scripts/e2e-source.mjs',
+    'worker$ npx wrangler d1 migrations apply kiln-cloud --env production --remote',
+  ]);
+  assert.equal(ok.envs[0].env.KILN_E2E_WORKER, STAGING_URL, 'never against production');
+  const bad = world({ env: E2E, failOn: 'scripts/e2e.mjs' });
+  await assert.rejects(release(bad.io, {}), /stopped at a failing step.*Nothing was deployed to production\./s);
+  assert.deepEqual(bad.ran, ['.$ node scripts/e2e.mjs'], 'no migration, no tag, no deploy, no push');
+});
+
+test('the migrations step is asked once more when Cloudflare refuses it the first time, and nothing else is', async () => {
+  const { io, ran, lines } = world({ failOnce: 'd1 migrations apply' });
+  await release(io, {});
+  assert.equal(ran.filter(l => l.includes('d1 migrations apply')).length, 2);
+  assert.equal(ran.filter(l => l.includes('wrangler deploy')).length, 1);
+  assert.match(lines.join('\n'), /that failed once .*asking again/);
+  const deployRefused = world({ failOnce: 'wrangler deploy' });
+  await assert.rejects(release(deployRefused.io, {}), /Nothing was deployed to production\./);
+  assert.equal(deployRefused.ran.filter(l => l.includes('wrangler deploy')).length, 1, 'a deploy is never asked twice');
+});
+
