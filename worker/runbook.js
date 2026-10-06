@@ -228,7 +228,7 @@ export const RUNBOOK_HTML = `<!doctype html>
       <div class="tw"><table>
         <thead><tr><th>What broke</th><th>How to roll it back</th></tr></thead>
         <tbody>
-          <tr><td><strong>The Worker</strong> (sign-in/save/billing down)</td><td><code>cd kiln/worker &amp;&amp; npx wrangler rollback</code> — reverts to the previous version in seconds.</td></tr>
+          <tr><td><strong>The Worker</strong> (sign-in/save/billing down)</td><td><code>cd kiln/worker &amp;&amp; npx wrangler deployments list --env production</code>, then <code>npx wrangler rollback &lt;version id&gt; --env production</code> with the id of the version to return to. Seconds. <strong>Always name the version.</strong> A rollback with no id goes back one step, and until the first release made by <code>npm run deploy:prod</code> that step is a build whose admin check trusts a GitHub username anyone can now register.</td></tr>
           <tr><td><strong>A customer's editor bundle</strong></td><td>In their repo: <code>git revert &lt;the update commit&gt;</code>, push.</td></tr>
           <tr><td><strong>A customer's page content</strong></td><td>They fix it in Kiln: <strong>History → Go back to this / Undo this change</strong>. Every publish is a git commit — nothing is lost.</td></tr>
           <tr><td><strong>Marketing site / dashboard</strong></td><td><code>git revert</code> in that repo, push. Pages redeploys in ~10s.</td></tr>
@@ -280,7 +280,7 @@ export const RUNBOOK_HTML = `<!doctype html>
       <p>Work top to bottom. Stop when you find it.</p>
       <ol class="steps">
         <li><strong>One customer or everyone?</strong> One → probably <em>their</em> repo/host; run <code>doctor</code> on their site. Everyone → it's the Worker or a deploy; continue.</li>
-        <li><strong>Did we just deploy?</strong> Yes → <strong>roll back the Worker</strong> (<code>wrangler rollback</code>) and see if it fixes it. Most likely cause, fastest fix.</li>
+        <li><strong>Did we just deploy?</strong> Yes → <strong>roll back the Worker</strong> (<code>wrangler rollback &lt;version id&gt; --env production</code>, see the table above for the id) and see if it fixes it. Most likely cause, fastest fix.</li>
         <li><strong>Is the Worker up?</strong> <code>curl https://auth.kilncms.com/healthz</code> should answer <code>{"ok":true,…}</code>. If not, redeploy the last known-good version.</li>
         <li><strong>Is billing the problem?</strong> Check the admin and Lemon Squeezy dashboards. A site stuck "trialing" after payment is usually a delayed webhook — it self-corrects, or re-send it from Lemon Squeezy.</li>
         <li><strong>Still stuck?</strong> Write down exactly what you see (URL, error, screenshot), send it to me, and stop changing things — one change at a time.</li>

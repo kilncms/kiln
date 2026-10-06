@@ -1,16 +1,32 @@
-name = "kiln-auth"
+# Kiln's worker, in three configurations.
+#
+#   (top level)        local development, and the slot a self-hoster fills in.
+#                      It names NO production resource: no route, no production
+#                      KV or D1 id. `npx wrangler deploy` with no --env cannot
+#                      reach production from here.
+#   [env.staging]      kiln-auth-staging: its own KV and D1. `npm run deploy:test`.
+#   [env.production]   kiln-auth on auth.kilncms.com: the live product.
+#                      Reached only through `npm run deploy:prod`
+#                      (scripts/release.mjs), which refuses unless the commit is
+#                      on main, pushed, green in CI and already on staging.
+#
+# vars, KV, D1 and the rate limiter are NOT inherited by an environment: each
+# one states its own. See ENVIRONMENTS.md.
+#
+# SELF-HOSTERS: the top level is yours. Set `name`, put the id of a KV namespace
+# you created in [[kv_namespaces]], set ALLOWED_ORIGINS, delete the
+# [[d1_databases]] block, then `npx wrangler deploy`. Or run
+# `npx github:kilncms/kiln` and the wizard writes its own file for you.
+
+name = "kiln-auth-local"
 main = "index.js"
 compatibility_date = "2026-06-01"
-workers_dev = true   # keep kiln-auth.erikkwilder.workers.dev live alongside the custom domain
+workers_dev = true
 
 # Site origins allowed to authenticate through this worker (comma-separated).
-# localhost entries are for `wrangler pages dev` testing.
-# SELF-HOSTERS: replace the value below with your OWN site origin(s), or just
-# run `npx github:kilncms/kiln` and the wizard will set this for you.
 [vars]
-ALLOWED_ORIGINS = "https://demo.kilncms.com,https://kiln-demo.pages.dev,https://kiln-demo-mr.pages.dev,https://npu-i.pages.dev,https://npu-i-site.pages.dev,https://app.kilncms.com,http://localhost:8788,http://127.0.0.1:8788"
-CLOUD_DASHBOARD = "https://app.kilncms.com"   # where /cloud/callback returns the customer
-CLOUD_ADMIN = "erikkwilder"                      # GitHub login allowed to hit /admin/cloud/*
+ALLOWED_ORIGINS = "http://localhost:8788,http://127.0.0.1:8788,http://localhost:8787"
+CLOUD_DASHBOARD = "http://localhost:8788"
 
 # AI assist (optional, bring-your-own-key): store your Anthropic API key as a
 # SECRET — never a [vars] entry — with `npx wrangler secret put AI_API_KEY`.
@@ -18,18 +34,18 @@ CLOUD_ADMIN = "erikkwilder"                      # GitHub login allowed to hit /
 # Optional: set AI_MODEL in [vars] to override the default small/fast model.
 
 # KV: app credentials, OAuth state nonces, sessions, the People allowlist, installation-token cache.
-# SELF-HOSTERS: replace this `id` with the id of a KV namespace YOU created
-# (`npx wrangler kv namespace create KILN`), or let `npx github:kilncms/kiln` do it.
+# The id below is a placeholder that exists in no account: `wrangler dev --local`
+# does not need a real one, and a deploy with it fails instead of landing anywhere.
 [[kv_namespaces]]
 binding = "KILN"
-id = "376ca9e637724d9fabebbc24ba149814"
+id = "00000000000000000000000000000000"
 
 # D1: Kiln Cloud accounts, sites, and subscription status (the hosted tier).
-# Only the canonical Kiln Cloud instance needs this; self-host/demo never touch it.
+# Local development only at this level; a self-hosted worker has no database.
 [[d1_databases]]
 binding = "kiln_cloud"
-database_name = "kiln-cloud"
-database_id = "a00713f4-3838-49fd-9e53-58961b1feb2e"
+database_name = "kiln-cloud-local"
+database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"   # every schema change is a numbered file here; see ENVIRONMENTS.md
 
 # Scheduled publishing: commit due posts every 5 minutes.
@@ -46,28 +62,17 @@ type = "ratelimit"
 namespace_id = "1001"          # any unique number across your worker's limiters
 simple = { limit = 20, period = 60 }   # 20 requests per 60s per IP
 
-# Canonical instance only: branded custom domain for the worker (so the Google
-# redirect is auth.kilncms.com). SELF-HOSTERS: delete this [[routes]] block — you
-# don't own kilncms.com. The setup wizard never includes it.
-[[routes]]
-pattern = "auth.kilncms.com"
-custom_domain = true
-
 # ─────────────────────────────────────────────────────────────────────────────
-# TEST / STAGING ENVIRONMENT (kiln-auth-staging.erikkwilder.workers.dev)
+# STAGING (kiln-auth-staging.erikkwilder.workers.dev)
 #
 # A fully isolated copy of the backend: its OWN KV namespace and D1 database, so
-# nothing here touches production data, real customers, or real money. Deploy to
-# it with `npm run deploy:test` (from the repo root). Use it to click through
-# changes on real infrastructure before promoting to prod with `npm run deploy:prod`.
-# See ENVIRONMENTS.md.
+# nothing here touches production data, real customers, or real money.
 # ─────────────────────────────────────────────────────────────────────────────
 [env.staging]
 name = "kiln-auth-staging"
 workers_dev = true
-# CRITICAL: explicitly no routes. Without this, a named env inherits the
-# top-level [[routes]] (auth.kilncms.com custom domain) and a staging deploy
-# would hijack the production domain. Keep this empty.
+# No routes: staging lives on the free workers.dev hostname and never on the
+# branded production domain.
 routes = []
 
 [env.staging.vars]
@@ -89,6 +94,51 @@ migrations_dir = "migrations"
 [env.staging.triggers]
 crons = ["*/5 * * * *"]
 
-# NOTE: staging has no [[routes]] block on purpose — it lives on the free
-# kiln-auth-staging.erikkwilder.workers.dev hostname, so it never collides with
-# the branded auth.kilncms.com production domain.
+# The same rate limiter as production, so limits can be tried here first.
+[[env.staging.unsafe.bindings]]
+name = "RL"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 20, period = 60 }
+
+# Cloudflare's record of this upload (id, tag, time), shown by /healthz.
+[env.staging.version_metadata]
+binding = "CF_VERSION_METADATA"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PRODUCTION (auth.kilncms.com) — every hosted customer depends on this worker.
+#
+# Do not deploy this by hand. `npm run deploy:prod` is the way in.
+# ─────────────────────────────────────────────────────────────────────────────
+[env.production]
+name = "kiln-auth"
+workers_dev = true   # keep kiln-auth.erikkwilder.workers.dev live alongside the custom domain
+# Branded custom domain for the worker (so the Google redirect is auth.kilncms.com).
+routes = [{ pattern = "auth.kilncms.com", custom_domain = true }]
+
+[env.production.vars]
+ALLOWED_ORIGINS = "https://demo.kilncms.com,https://kiln-demo.pages.dev,https://kiln-demo-mr.pages.dev,https://npu-i.pages.dev,https://npu-i-site.pages.dev,https://app.kilncms.com,http://localhost:8788,http://127.0.0.1:8788"
+CLOUD_DASHBOARD = "https://app.kilncms.com"   # where /cloud/callback returns the customer
+CLOUD_ADMIN = "erikkwilder"                      # GitHub login allowed to hit /admin/cloud/*
+
+[[env.production.kv_namespaces]]
+binding = "KILN"
+id = "376ca9e637724d9fabebbc24ba149814"
+
+[[env.production.d1_databases]]
+binding = "kiln_cloud"
+database_name = "kiln-cloud"
+database_id = "a00713f4-3838-49fd-9e53-58961b1feb2e"
+migrations_dir = "migrations"
+
+[env.production.triggers]
+crons = ["*/5 * * * *"]
+
+[[env.production.unsafe.bindings]]
+name = "RL"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 20, period = 60 }
+
+[env.production.version_metadata]
+binding = "CF_VERSION_METADATA"

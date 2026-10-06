@@ -86,7 +86,8 @@ Toolbar / menu features (each grantable per-editor to invited editors):
 - `tag` — conservative auto-annotation of an existing site (headings, paragraphs, images, card lists, menu)
 - Worker deploy, KV namespace creation, GitHub App manifest flow, config wiring
 - `scripts/managed-onboard.mjs` — managed-customer onboarding
-- `scripts/propagate-bundles.mjs` — pushes built bundles to consumer site repos on `deploy:prod`
+- `scripts/release.mjs` — the only way to staging and production (`deploy:test`, `deploy:prod`)
+- `scripts/propagate-bundles.mjs` — copies built bundles into consumer site repos (`npm run propagate`, a separate step)
 
 ## 8. Marketing site (`kilncms.com`)
 

@@ -43,24 +43,23 @@ cd worker
 npx wrangler kv namespace create KILN     # note the id it prints
 ```
 
-Now edit `worker/wrangler.toml`. **This step is not optional.** The shipped file is
-the maintainer's production config, and a different Cloudflare account cannot deploy
-it unchanged:
+Now edit the top of `worker/wrangler.toml`. **This step is not optional.** The top
+level of the shipped file is a local-development configuration with placeholder
+ids, and cannot be deployed unchanged:
 
-1. **Delete the `[[routes]]` block.** It binds the `auth.kilncms.com` custom domain,
-   which you don't own; Cloudflare will refuse the deploy. Your worker lives at
-   `kiln-auth.YOUR-SUBDOMAIN.workers.dev` (or a custom domain you own, if you add
+1. **Set `name`**, for example `kiln-auth`. Your worker lives at
+   `<name>.YOUR-SUBDOMAIN.workers.dev` (or a custom domain you own, if you add
    your own route later).
-2. **Delete the `[[d1_databases]]` block.** D1 stores Kiln Cloud billing state.
-   Self-host never touches it, and you don't have this database.
-3. **Set the KV namespace `id`** under `[[kv_namespaces]]` to the id from the create
+2. **Set the KV namespace `id`** under `[[kv_namespaces]]` to the id from the create
    command above.
-4. **Set `ALLOWED_ORIGINS`** to your site's origin(s), comma-separated, e.g.
+3. **Set `ALLOWED_ORIGINS`** to your site's origin(s), comma-separated, e.g.
    `"https://example.com"`. Sign-in requests from any other origin are refused.
+4. **Delete the `[[d1_databases]]` block.** D1 stores Kiln Cloud billing state.
+   Self-host never touches it, and you don't have this database.
 
-You can also delete the `[env.staging]` section (the maintainer's isolated test
-environment) and, if you never schedule posts, the `[triggers]` cron. Both are
-harmless to keep.
+You can also delete the `[env.staging]` and `[env.production]` sections (the
+maintainer's own environments; a plain `npx wrangler deploy` does not use them)
+and, if you never schedule posts, the `[triggers]` cron. All are harmless to keep.
 
 Then:
 

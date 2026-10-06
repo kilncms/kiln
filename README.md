@@ -148,16 +148,18 @@ npx wrangler kv namespace create KILN     # put the id in wrangler.toml
 npx wrangler deploy
 ```
 
-The manual path requires editing `worker/wrangler.toml` before `wrangler deploy`. The
-shipped file is the maintainer's production config, so a fresh account cannot deploy it
-as-is:
+The manual path requires editing the top of `worker/wrangler.toml` before
+`wrangler deploy`. The top level of that file is a local-development
+configuration with placeholder ids, so it cannot be deployed as it is:
 
-- **Delete the `[[routes]]` block** (the `auth.kilncms.com` custom domain — you don't
-  own it, and Cloudflare will reject the deploy).
-- **Delete the `[[d1_databases]]` block** (Kiln Cloud billing only; self-host never
-  touches D1).
+- **Set `name`** to what your worker should be called (for example `kiln-auth`).
 - **Set the KV namespace `id`** to one you created (`npx wrangler kv namespace create KILN`).
 - **Set `ALLOWED_ORIGINS`** to your own site origin(s).
+- **Delete the `[[d1_databases]]` block** (Kiln Cloud billing only; self-host never
+  touches D1).
+
+Leave the `[env.staging]` and `[env.production]` sections alone or delete them:
+they are the maintainer's, and a plain `npx wrangler deploy` does not use them.
 
 The fastest path skips all of this: `npx github:kilncms/kiln` automates the worker
 deploy, KV namespace, and config wiring for you. Full walkthrough in
