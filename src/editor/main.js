@@ -1078,6 +1078,10 @@ function attachItemControls(container, key, item) {
     + (isEvents ? '<button title="Edit event details (date, time, location…)">📅</button>' : '')
     + `<button title="Tags — visitors get filter buttons for tagged lists">🏷</button>`
     + `<button title="Remove this block">✕</button>`;
+  // A block is often a link (a product card that opens its page). Pressing one
+  // of its buttons must not follow that link too: stopping the click on its
+  // way up does not stop the browser from opening the address.
+  ctl.addEventListener('click', (e) => e.preventDefault(), true);
   const btns = ctl.querySelectorAll('button');
   const [up, down, dup] = btns;
   const evBtn = isEvents ? btns[3] : null;
