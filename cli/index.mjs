@@ -998,7 +998,7 @@ crons = ["*/5 * * * *"]
       spawnSync('npx', ['wrangler', 'secret', 'put', 'GOOGLE_CLIENT_SECRET'], { input: csec, cwd: workerDir, encoding: 'utf8' });
       const g = await fetch(`${workerUrl}/google/login`, { redirect: 'manual' }).then(r => r.status);
       if (g !== 503) ok('Google sign-in is live');
-      else warn('secrets set but worker still reports unconfigured — rerun: npx kiln doctor');
+      else warn('secrets set but worker still reports unconfigured — rerun: npx github:kilncms/kiln doctor');
     }
   }
 

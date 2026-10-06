@@ -3,6 +3,15 @@
   "version": "0.4.0",
   "description": "Click-to-edit CMS for static sites. GitHub as the backend. Free hosting as the host.",
   "license": "AGPL-3.0-only",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kilncms/kiln.git"
+  },
+  "homepage": "https://kilncms.com",
+  "bugs": {
+    "url": "https://github.com/kilncms/kiln/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=20"

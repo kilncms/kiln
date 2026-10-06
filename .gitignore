@@ -21,3 +21,8 @@ cli/worker/
 cli/src/
 cli/templates/
 cli/*.tgz
+cli/LICENSE
+mcp/LICENSE
+integrations/astro/LICENSE
+mcp/*.tgz
+integrations/astro/*.tgz

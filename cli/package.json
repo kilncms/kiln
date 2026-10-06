@@ -15,13 +15,16 @@
     "rescue.mjs",
     "new.mjs",
     "prepack.mjs",
+    "README.md",
+    "LICENSE",
     "dist",
     "worker",
     "src",
     "templates"
   ],
   "scripts": {
-    "prepack": "node prepack.mjs"
+    "prepack": "node prepack.mjs",
+    "postpack": "node prepack.mjs --clean"
   },
   "dependencies": {
     "parse5": "^8.0.0",

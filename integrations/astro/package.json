@@ -10,7 +10,8 @@
   },
   "files": [
     "index.mjs",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "repository": {
     "type": "git",
@@ -28,5 +29,18 @@
     "kiln",
     "provenance",
     "static-site"
-  ]
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "astro": ">=4.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pack-license.mjs",
+    "postpack": "node ../../scripts/pack-license.mjs --clean"
+  }
 }

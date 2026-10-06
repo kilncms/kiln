@@ -10,13 +10,16 @@
   "files": [
     "index.mjs",
     "lib.mjs",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "prepack": "node ../scripts/pack-license.mjs",
+    "postpack": "node ../scripts/pack-license.mjs --clean"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0"
@@ -28,5 +31,14 @@
     "kiln",
     "ai-agents",
     "website"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kilncms/kiln.git",
+    "directory": "mcp"
+  },
+  "homepage": "https://kilncms.com",
+  "bugs": {
+    "url": "https://github.com/kilncms/kiln/issues"
+  }
 }

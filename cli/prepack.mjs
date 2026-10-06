@@ -25,11 +25,19 @@ const items = [
   ['worker/runbook.js', 'worker/runbook.js'],
   ['worker/sanitize-guard.js', 'worker/sanitize-guard.js'], // imported by worker/index.js — wizard deploy fails without it
   ['worker/source.js', 'worker/source.js'],                 // ditto — source-mode endpoints
+  ['LICENSE', 'LICENSE'],
 ];
 
-for (const dir of ['dist', 'templates', 'src', 'worker']) {
+// What this script puts into cli/. All of it is generated and gitignored.
+const VENDORED = ['dist', 'templates', 'src', 'worker', 'LICENSE'];
+for (const dir of VENDORED) {
   rmSync(path.join(HERE, dir), { recursive: true, force: true });
 }
+// `node prepack.mjs --clean` (npm runs it as postpack) only removes them.
+// Left in place they would shadow the repository's own dist/, worker/ and
+// templates/ for anyone running cli/index.mjs from this checkout afterwards.
+if (process.argv.includes('--clean')) process.exit(0);
+
 for (const [from, to] of items) {
   const src = path.join(ROOT, from);
   if (!existsSync(src)) {
