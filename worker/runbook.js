@@ -186,9 +186,9 @@ export const RUNBOOK_HTML = `<!doctype html>
       <div class="call caution"><span class="tag">The golden rule (learned the hard way)</span><p>The staging Worker <strong>must</strong> keep <code>routes = []</code> in its config. Without it, a staging deploy inherits production's domain and takes over production — this caused a real outage once. It's already there; never remove it.</p></div>
       <h3 class="sub">How a change gets tested before customers see it</h3>
       <ol class="steps">
-        <li><strong>Unit tests</strong> — <code>npm test</code> runs the engine/transport/tagger suite (56 tests). Seconds; catches most logic bugs.</li>
+        <li><strong>Tests</strong> — <code>npm test</code> runs every suite: the editing engine, the Worker's request handlers against stand-ins for GitHub, KV and the database, the CLI, the release, propagation and backup scripts, and the whole end-to-end run. Under a minute; CI runs it on every push.</li>
         <li><strong>Build check</strong> — <code>npm run build</code> re-bundles the editor; if it fails, nothing ships.</li>
-        <li><strong>Staging deploy</strong> — for Worker changes, deploy to staging first, then confirm sign-in, save, and billing still work.</li>
+        <li><strong>Staging deploy</strong> — for Worker changes, <code>npm run deploy:test</code>, then <code>node scripts/e2e.mjs</code>: it publishes as three invited editors through the staging Worker and tries every write that must be refused. Google sign-in and billing cannot be tried on staging until it is given a Google client and test-mode billing keys; check those by hand.</li>
         <li><strong>Live dogfooding</strong> — the NPU site and the demo are real Kiln sites we click through after a change, catching what tests can't.</li>
         <li><strong>Production deploy</strong> — only after all of the above.</li>
       </ol>

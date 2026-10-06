@@ -397,7 +397,10 @@ npx github:kilncms/kiln update
 
 It copies the latest `kiln.js`, `kiln-editor.js`, and `kiln-features.js` into your
 site wherever the current ones live, and offers to commit and push. That's the whole
-upgrade. Cloud and managed sites receive updates automatically.
+upgrade. Who does it depends on the plan. Self-hosted: you, for the site, and you
+also redeploy your worker. Kiln Cloud: you, for the site (the same command); the
+worker is ours and is updated for you. Fully managed: we update both.
+`kiln doctor` and the editor tell you when a newer editor exists.
 
 ## Leaving
 

@@ -80,10 +80,17 @@ scripts/             build, release, propagate, backup and restore, e2e (maintai
 
 ## Releases (maintainers)
 
-Kiln follows [Semantic Versioning](https://semver.org/). To cut a release: move the
-`[Unreleased]` items in `CHANGELOG.md` under a new `## [x.y.z]` heading, bump `version`
-in `package.json`, tag it (`git tag vX.Y.Z && git push --tags`), and create a GitHub
-Release from that tag with the CHANGELOG section as the notes.
+What runs in production is marked by a git tag, `prod-YYYY-MM-DD`, which
+`npm run deploy:prod` (`scripts/release.mjs`) creates and pushes when it deploys
+the worker; it refuses unless the commit is on `main`, pushed, green in CI and
+already on staging. `ENVIRONMENTS.md` has the whole procedure, including
+hotfixes and how sites get a new editor.
+
+Version numbers follow [Semantic Versioning](https://semver.org/). To name a
+version: move the `[Unreleased]` items in `CHANGELOG.md` under a new
+`## [x.y.z]` heading, bump `version` in `package.json` and `WORKER_VERSION` in
+`worker/index.js`, commit, release, and tag that commit `vX.Y.Z`. So far
+`v0.4.0` is the only such tag, and no GitHub Release has been published.
 
 ## Licensing of contributions
 

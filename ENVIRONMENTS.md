@@ -16,11 +16,11 @@ TL;DR of what to say:
 
 | | **dev (local)** | **test (staging)** | **prod (live)** |
 |---|---|---|---|
-| Worker | `wrangler dev` on `localhost:8787` (in-memory KV/D1) | `kiln-auth-staging.erikkwilder.workers.dev` | `auth.kilncms.com` |
+| Worker | `wrangler dev` on `localhost:8787` (KV and D1 are files under `worker/.wrangler/state`) | `kiln-auth-staging.erikkwilder.workers.dev` | `auth.kilncms.com` |
 | KV / D1 | local, disposable | **own** KV `KILN_STAGING` + D1 `kiln-cloud-staging` | prod KV `KILN` + D1 `kiln-cloud` |
 | Sites | `python3 -m http.server` locally | CF Pages **preview** branch (e.g. `staging.kilncms.com`) | `kilncms.com`, `app.kilncms.com` (git-connected); `demo.kilncms.com` (uploaded by hand) |
 | GitHub App | prod app, or a test app | its own staging app (one-click `/setup`) | prod `kiln-cms` app |
-| Lemon Squeezy | off | test mode | **live** |
+| Lemon Squeezy | off | off, until test-mode keys are put on staging | **live** |
 | Real customers / money | never | never | yes |
 | How you get there | `npm run dev` | `npm run deploy:test` | `npm run deploy:prod` (from `main` only) |
 
@@ -39,7 +39,11 @@ Everything runs on your Mac. Use this for 95% of work: fast, free, zero risk.
 # 1. Build the editor bundles
 npm run build
 
-# 2. Run the worker locally (in-memory KV/D1 — no cloud resources touched)
+# 2. Run the worker locally (no cloud resources touched)
+#    Its KV and D1 are files under worker/.wrangler/state and survive restarts.
+#    The local database starts with no tables: create them once, or every
+#    /cloud/* route and the scheduled job fail.
+(cd worker && npx wrangler d1 migrations apply kiln-cloud-local --local)
 npm run dev            # → http://localhost:8787
 
 # 3. Serve a site locally, pointed at the local worker
@@ -448,8 +452,8 @@ environment's `[[d1_databases]]`, then
 | Resource | dev | test | prod |
 |---|---|---|---|
 | Worker name | `kiln-auth-local` (never deployed) | `kiln-auth-staging` | `kiln-auth` |
-| KV namespace | in-memory | `KILN_STAGING` `5900a59cba9e48568d9886d975571fd9` | `KILN` `376ca9e637724d9fabebbc24ba149814` |
-| D1 database | in-memory | `kiln-cloud-staging` `153c3353-6e1e-4d18-a2b8-9f7b50f517ba` | `kiln-cloud` `a00713f4-3838-49fd-9e53-58961b1feb2e` |
+| KV namespace | a file under `worker/.wrangler/state` | `KILN_STAGING` `5900a59cba9e48568d9886d975571fd9` | `KILN` `376ca9e637724d9fabebbc24ba149814` |
+| D1 database | `kiln-cloud-local`, a file under `worker/.wrangler/state` | `kiln-cloud-staging` `153c3353-6e1e-4d18-a2b8-9f7b50f517ba` | `kiln-cloud` `a00713f4-3838-49fd-9e53-58961b1feb2e` |
 
 > **Hard-won note:** a staging deploy once took over the production domain, because
 > wrangler named environments inherit top-level `[[routes]]`. The top level of

@@ -61,8 +61,10 @@ button in the corner of the screen. It says how many edits are waiting ("Publish
 edits"). When you're happy, click it. (The same Publish is also the first item in the
 pencil's menu.) All your staged changes go out together, and
 the live site updates about a minute later (that minute is the site rebuilding, which
-is normal). If the button hasn't been pressed, nothing has changed for visitors — you
-can close the tab and your unpublished edits are simply gone.
+is normal). If the button hasn't been pressed, nothing has changed for visitors. You
+can close the tab: your unpublished edits are kept in that browser, and the next
+time you open the page there the editor offers to bring them back. They are not
+on the site, and not on any other device.
 
 Every publish is saved in the site's history with your name on it. The owner can see
 who changed what and can restore any earlier version, so you can't permanently break

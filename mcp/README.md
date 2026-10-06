@@ -58,8 +58,12 @@ sets expiry (omit for no expiry). Revoke anytime with
 claude mcp add kiln-mcp \
   -e KILN_WORKER_URL=https://auth.kilncms.com \
   -e KILN_API_TOKEN=<your 64-hex token> \
-  -- npx kiln-mcp
+  -- node /path/to/kiln/mcp/index.mjs
 ```
+
+`kiln-mcp` is not on npm yet, so point the client at the file in a checkout of
+this repository (`git clone https://github.com/kilncms/kiln && cd kiln/mcp &&
+npm ci`). Once it is published, `npx kiln-mcp` replaces the `node …` part.
 
 ### Claude Desktop
 
@@ -69,8 +73,8 @@ Add to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "kiln-mcp": {
-      "command": "npx",
-      "args": ["kiln-mcp"],
+      "command": "node",
+      "args": ["/path/to/kiln/mcp/index.mjs"],
       "env": {
         "KILN_WORKER_URL": "https://auth.kilncms.com",
         "KILN_API_TOKEN": "<your 64-hex token>"

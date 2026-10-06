@@ -107,6 +107,28 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   deploys the bytes it built.
 - **Database migrations** — the Kiln Cloud schema lives in
   `worker/migrations/` and is applied with `wrangler d1 migrations apply`.
+- **The setup wizard adds the two script tags** — it lists the pages that do
+  not load the editor and offers to add the tags before `</body>`. A page that
+  already loads `kiln.js` is never touched and a second run changes nothing.
+  `kiln doctor` fails when the home page does not load `kiln.js`.
+- **`kiln --help`** — one line per command, the options each takes, and the
+  five words a newcomer meets. `--help` with a command runs nothing; an unknown
+  command prints the help and exits 2; an option a command does not have is
+  refused by name; `--version` prints one line.
+- **`/healthz?deep=1`** — asks KV, the database and GitHub, and answers 503
+  naming the part that failed. A plain `/healthz` is unchanged.
+- **Backups** — `scripts/backup-cloud.mjs` copies the Kiln Cloud database and
+  the KV keys that cannot be recreated into one owner-only archive outside the
+  repository (14 kept); `scripts/restore-kv.mjs` puts KV back and refuses
+  production without `--i-mean-production`. A launchd template runs it nightly.
+- **`worker/wrangler.example.toml`** — a complete configuration for a
+  self-hosted worker, with the three values to change marked.
+- **CI on every push** — tests on Node 20 and 22, a rebuild that fails when
+  `dist/` does not match the sources, the worker bundled in every
+  configuration, `npm audit`, and a markdown link check. A monitor workflow
+  checks the production worker and the demo sites every 30 minutes.
+- **`docs/PUBLISHING.md`** — the three npm packages are one command from
+  publishable; nothing is published yet.
 
 ### Changed
 
@@ -129,7 +151,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of five buttons on every card.
 - **The status line wraps** instead of cutting a long message off, and on a
   phone it leaves after four seconds or on a tap.
-- Editor bundle grows to ~482 KB raw / ~145 KB gzip (still loaded only after
+- Editor bundle grows to ~484 KB raw / ~146 KB gzip (still loaded only after
   sign-in; the visitor shim is unchanged at ~3 KB gzip).
 - **`worker/wrangler.toml`** — production moved under `[env.production]`. The
   top level is a local-development configuration with placeholder ids, so
@@ -158,6 +180,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Schedule cannot schedule, and without Comments cannot comment (a review
   seat still can). These were hidden buttons before; a refused write answers
   403 with `code: "grant_required"`.
+- **Presence writes** — an open editor wrote to KV every 30 seconds, enough to
+  use up a free Cloudflare account's 1,000 daily writes in one working day and
+  stop sign-in. It now writes on arrival, on a page change and every five
+  minutes. Someone who leaves is listed for up to six and a half minutes.
+- **`scripts/e2e.mjs`** — runs against the staging worker and a marked test
+  repository, as invited editors, and puts the repository back as it found
+  it. It no longer touches the public demo or the production worker.
+- **dompurify 3.4.16** (from 3.4.9, inside the range of published
+  advisories), now listed under `dependencies`. wrangler 4.147.
 
 ### Fixed
 
@@ -177,6 +208,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`kiln update` ran its git commands through a shell** with a folder name
   read from the site's own HTML; a name with a space broke the commit. git now
   gets its arguments directly.
+- When input ends while the CLI is waiting for an answer it exits 1 instead of
+  a quiet 0.
+- `kiln rescue --max-pages 5` (with a space) crawled one page.
+- `kiln new` started a site on the editor its template last shipped; it now
+  uses the current one.
+- One CLI message told users to run `npx kiln doctor`, which is someone else's
+  package on npm.
+- The two scheduled jobs shared one unguarded call: a failure in the first
+  silently skipped the second.
 
 ### Security
 

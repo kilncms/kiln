@@ -74,7 +74,7 @@ edit layer your client was missing.
 |---|---|---|
 | `kiln.js` | boot shim every visitor loads | ~7 KB raw / ~3 KB gzip |
 | `kiln-features.js` | visitor runtime for galleries/filters/calendars, loaded only on pages that use them | ~16 KB raw / ~5 KB gzip |
-| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~482 KB raw / ~145 KB gzip, editors only |
+| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~484 KB raw / ~146 KB gzip, editors only |
 | `kiln-auth` worker | sign-in (GitHub App + Google) and the commit pipeline every edit flows through | Cloudflare Workers free plan for a few editors (1,000 storage writes a day; see [self-hosting](docs/self-hosting.md)) |
 | your repo | the content database (with full version history) | free |
 | Cloudflare Pages | hosting + members-area functions | free, commercial use allowed |
@@ -182,8 +182,8 @@ on the site itself; `/kiln` is the only way in.
 
 ### The CLI
 
-`npx github:kilncms/kiln` with no arguments runs the setup wizard. Three more commands
-cover the rest of the lifecycle:
+`npx github:kilncms/kiln` with no arguments runs the setup wizard. Six more commands
+cover the rest of the lifecycle (`--help` lists them with their options):
 
 ```bash
 npx github:kilncms/kiln doctor     # health-check an install: worker, app, CORS, bundles, members gate
@@ -397,7 +397,7 @@ src/editor/main.js   editor UI bundle source
 cli/index.mjs        the setup wizard + doctor + tag commands
 worker/              kiln-auth Cloudflare Worker (sign-in + commit pipeline)
 templates/           members-area scaffolding the wizard copies into a new site
-test/                engine + transport + autotag tests
+test/                every suite: engine, worker handlers, CLI, release, propagation, backup, end to end
 scripts/             build, release, propagate, backup and restore, e2e, link check
 ```
 
