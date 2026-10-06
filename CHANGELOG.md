@@ -316,6 +316,39 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   beside page edits, and "Pick up where you left off?" offers them back. An
   ended sign-in at Publish (the worker's `/source/commit` answering 401) gets
   the same dialog as a page edit, where it used to say "unauthorized".
+- **An ended sign-in was said only on page load and at Publish.** History and
+  going back to a version, naming a version, Save as draft, Schedule and its
+  cancel, comments, suggestions, the list of the site's pictures, AI assist,
+  page settings, the site menu, a new page, find and replace, Theme, People
+  and the undo after a publish each showed a line of their own ("Failed:
+  GitHub 401", "Comment failed: unauthorized", "Failed: forbidden") or
+  nothing. Each now opens the dialog Publish shows, naming what was not done
+  ("Nothing was scheduled."); a 403 says the sign-in does not allow it, with
+  the answer's reason; no answer, a 5xx and a 429 say nothing was lost and to
+  try again. When the editor finds out by itself (asking who else is editing),
+  one line in the status bar says so and offers **Sign in again**. Schedules,
+  presence and People answer 403 to someone the worker does not know, so a
+  403 from those is checked once against the route that answers 401 on every
+  worker: an older self-hosted worker needs no change.
+- **What was being typed when a sign-in ended went with the panel it was typed
+  in.** The dialog now opens over the panel and gives it back as it was. A
+  comment, a reply, the note under "What changed?", the time for a schedule
+  and the name for a version are also kept in the browser beside the
+  unpublished edits, and are back in their boxes after **Sign in again**: the
+  comment where it was pinned, the schedule panel open with the time. For
+  boxes that cannot be kept (page settings, the site menu, a new page, find
+  and replace) the dialog says they will need typing again and puts **Copy my
+  text** first. A new page that did not go through keeps its form.
+- **A sign-in that ran out by the browser's own clock left the plain site,
+  with no word of why the editor was gone.** The next page now says "Your
+  sign-in to edit this site has ended, so please sign in again with Google."
+  once, in the same card. The sentence is in the editor's bundle; the script
+  every visitor loads grows by 82 bytes (36 gzipped) for the marker.
+- **For the owner, People said Google sign-in was not set up once the GitHub
+  token was eight hours old**, and schedules, comments and suggestions failed
+  until a reload. The editor renewed the token for GitHub but not for the
+  worker's own routes. It now renews it for those too and sends the request
+  again.
 - **The setup wizard told Astro owners to `npm install @kilncms/astro`**, a
   package that is not on npm. It now adds the helper to the project as one
   file, `src/lib/kiln-astro.mjs`, and shows the import to use.

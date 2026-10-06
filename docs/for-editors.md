@@ -141,4 +141,8 @@ your access may have lapsed — ask the owner to renew it.
 **It says my sign-in has ended.** The site no longer accepts the sign-in this browser
 was holding: the time the owner gave you ran out, or the owner changed your access or
 the site's setup. Press **Sign in again** and sign in with Google as before; edits you
-had not published are kept in this browser and put back on the page.
+had not published are kept in this browser and put back on the page. The message can
+come up wherever you are, not only at Publish, and whatever you were typing is still
+there when you close it: a comment, a reply, the note for a publish, the time for a
+schedule or the name for a version also comes back after you sign in, and for anything
+else the message says so and offers **Copy my text** first.
