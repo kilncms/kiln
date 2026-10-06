@@ -30,6 +30,7 @@ import { initBlocks } from './blocks.js';
 import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished, guideWaiting } from './firstrun.js';
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { hasGrant, offersMakeEditable, helpUrl } from './grants.js';
+import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
@@ -5799,6 +5800,12 @@ function pendingStorageKey() {
 }
 
 function savePendingToStorage() {
+  // Not before the restore offer has read what an earlier visit left. An
+  // invited editor's first presence answer refreshes the Publish button during
+  // boot, with nothing staged yet, and that used to erase the saved edits
+  // before they could be offered back.
+  if (!keptReady) return;
+  syncKeptFiles();
   try {
     if (!state.pending.size) { localStorage.removeItem(pendingStorageKey()); return; }
     localStorage.setItem(pendingStorageKey(),
@@ -5808,10 +5815,36 @@ function savePendingToStorage() {
 
 function clearSavedPending() {
   try { localStorage.removeItem(pendingStorageKey()); } catch { /* ignore */ }
+  keptHere.clear();
+  if (keptReady && !cfg.sandbox) forgetFiles(pendingStorageKey()).catch(() => {});
+}
+
+// Uploads waiting for Publish are kept beside the saved edits (pending-files.js),
+// so "Pick up where you left off?" brings the pictures back too.
+const keptHere = new Set();   // repo paths this page load has written to the browser's store
+let keptReady = false;        // true once offerPendingRestore has read what an earlier visit left
+
+/** Make what is kept match what is queued. With no edits staged, a queued file is an orphan: keep none. */
+function syncKeptFiles() {
+  if (!keptReady || cfg.sandbox) return;
+  const page = pendingStorageKey();
+  const queued = state.pending.size ? [...state.pendingBinaries.keys()] : [];
+  const { add, remove } = syncPlan(queued, [...keptHere]);
+  for (const path of add) {
+    keptHere.add(path);
+    keepFile(page, path, state.pendingBinaries.get(path)).catch(() => keptHere.delete(path));
+  }
+  if (remove.length) {
+    for (const path of remove) keptHere.delete(path);
+    forgetFiles(page, remove).catch(() => {});
+  }
 }
 
 /** If the tab crashed/closed with staged edits, offer to bring them back. */
 function offerPendingRestore() {
+  // Read the uploads an earlier visit left before anything here can tidy them away.
+  const kept = cfg.sandbox ? Promise.resolve([]) : keptFiles(pendingStorageKey()).catch(() => []);
+  keptReady = true;
   let saved;
   try { saved = JSON.parse(localStorage.getItem(pendingStorageKey())); } catch { return; }
   if (!saved || !saved.edits || Date.now() - saved.ts > 7 * 24 * 3600 * 1000) return;
@@ -5827,7 +5860,11 @@ function offerPendingRestore() {
       <button class="kiln-btn-publish" id="kiln-rest-yes">Restore edits</button>
     </div>`);
   m.querySelector('#kiln-rest-no').onclick = () => { clearSavedPending(); m.remove(); };
-  m.querySelector('#kiln-rest-yes').onclick = () => {
+  m.querySelector('#kiln-rest-yes').onclick = async () => {
+    // The pictures and files those edits added: queue them again, and show each
+    // picture from the kept bytes (its address on the site does not exist yet).
+    const files = filesToRestore(await kept, saved.edits);
+    for (const f of files) { state.pendingBinaries.set(f.path, f.base64); keptHere.add(f.path); }
     for (const [key, edit] of Object.entries(saved.edits)) {
       state.pending.set(key, edit);
       const esc = CSS.escape(key);
@@ -5844,8 +5881,23 @@ function offerPendingRestore() {
       document.querySelectorAll(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`)
         .forEach(n => n.classList.add('kiln-modified'));
     }
+    for (const f of files) {
+      const url = siteAddress(f.path, cfg.root || '');
+      const ext = (f.path.split('.').pop() || '').toLowerCase();
+      if (!/^(png|jpe?g|webp|avif|gif)$/.test(ext)) continue;
+      let preview = null;
+      for (const img of document.querySelectorAll('img')) {
+        if (img.closest(KILN_CHROME) || img.getAttribute('src') !== url) continue;
+        if (!preview) {
+          try { preview = URL.createObjectURL(new Blob([Uint8Array.from(atob(f.base64), c => c.charCodeAt(0))], { type: `image/${ext === 'jpg' ? 'jpeg' : ext}` })); }
+          catch { break; }
+        }
+        img.setAttribute('data-kiln-src', url);
+        img.src = preview;
+      }
+    }
     refreshPublishButton();
-    setStatus(`${keys.length} edit${keys.length > 1 ? 's' : ''} restored — Publish when ready`, 'saved');
+    setStatus(`${keys.length} edit${keys.length > 1 ? 's' : ''} restored${files.length ? ', with the files they added' : ''} — Publish when ready`, 'saved');
     m.remove();
   };
 }
