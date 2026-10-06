@@ -28,6 +28,7 @@ import { initComments, openComments, commentsTick } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 import { initBlocks } from './blocks.js';
 import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished } from './firstrun.js';
+import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
 
@@ -2231,6 +2232,11 @@ async function publish(opts = {}) {
       for (const { path } of files) state.pendingBinaries.delete(path);
     }
     let result = null;
+    // What Undo needs: the page file exactly as it was when this commit was made.
+    let textBefore = null;
+    const hadSource = state.pendingSource.size > 0;
+    const pageMessage = noteMsg || editCommitMessage(state.page.path, localEdits.map(e => e.key));
+    const record = publishRecord({ path: state.page.path, branch: cfg.branch || 'main', message: pageMessage });
     // Track which keys actually made it into the commit vs. were skipped (e.g. a
     // key another editor un-annotated between load and publish). The final callback
     // run wins (editFile re-runs it on a sha-conflict retry).
@@ -2245,6 +2251,7 @@ async function publish(opts = {}) {
       result = await editFile(
         state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
         (text) => {
+          textBefore = text;
           // Structural changes (make/unmake editable) first, so field edits can
           // reference newly-annotated keys; then splice the field edits.
           const t = applyStructural(text, structuralOps);
@@ -2259,6 +2266,7 @@ async function publish(opts = {}) {
       // Drop only the structural ops we sent (they're appended, so the sent ones are
       // at the front); anything added mid-publish stays queued for the next Publish.
       state.pendingStructural.splice(0, structuralOps.length);
+      record.structural = structuralOps;
     }
     if (partialEdits.length) await publishPartials(partialEdits, noteMsg);
     // Retire only the keys we published and that are unchanged since the snapshot.
@@ -2272,6 +2280,11 @@ async function publish(opts = {}) {
       if (state.pending.has(key) && JSON.stringify(state.pending.get(key)) === snap) {
         state.pending.delete(key);
         state.originals.delete(key);
+        if (!partialKeys.has(key)) {
+          record.entries.set(key, snap);
+          record.prevBase.set(key, state.undoBase.get(key));
+          record.prevBaseAttrs.set(key, state.undoBaseAttrs.get(key));
+        }
         // The published value is the new "unedited" state for session undo.
         try {
           const v = JSON.parse(snap);
@@ -2300,6 +2313,10 @@ async function publish(opts = {}) {
       return;
     }
     if (result && result.unchanged && !partialEdits.length && !state.pendingSource.size) { setStatus('Nothing changed', 'idle'); return; }
+    // One page file, one commit: that can be taken back. Shared content (many
+    // files) and source files go through History instead.
+    const canUndo = result && !result.unchanged && result.commit?.sha && textBefore !== null && !partialEdits.length && !hadSource;
+    if (canUndo) offerUndo({ ...record, before: textBefore, after: result.text, sha: result.commit.sha });
     watchDeploy(result?.commit?.sha, result?.text);
     // A mixed publish (page edits + source-file edits from the same screen):
     // commit the source half now, sequentially, with its own §11 states.
@@ -2316,6 +2333,89 @@ async function publish(opts = {}) {
     // check is `!state.pending.size`); refreshPublishButton counts those too.
     refreshPublishButton();
   }
+}
+
+// ─── "Published. Undo": ten seconds to take a publish back ───────────────────
+
+let undoOffer = null;   // { timer, held } while the offer is on screen
+
+/** Show "Published." with an Undo button for ten seconds. Other status lines wait their turn. */
+function offerUndo(rec) {
+  endUndoOffer(false);
+  undoOffer = { held: null, timer: setTimeout(() => endUndoOffer(true), 10000) };
+  setStatus(rec.sandbox ? 'Published to your private demo.' : 'Published.', 'saved', {
+    offer: true, sticky: true,
+    action: { label: 'Undo', title: 'Take this publish back', run: () => (rec.sandbox ? undoSandboxPublish(rec) : undoPublish(rec)) },
+  });
+}
+
+function endUndoOffer(showHeld) {
+  if (!undoOffer) return;
+  const { held, timer } = undoOffer;
+  clearTimeout(timer);
+  undoOffer = null;
+  if (!showHeld) return;
+  if (held) setStatus(...held);
+  else { const el = document.getElementById('kiln-status'); if (el) el.hidden = true; }
+}
+
+/** After an undo: the edits are staged again and marked as such. */
+function restageRecord(rec) {
+  const back = restage(rec, { pending: state.pending, undoBase: state.undoBase, undoBaseAttrs: state.undoBaseAttrs, structural: state.pendingStructural });
+  for (const key of back) elementForKey(key)?.classList.add('kiln-modified');
+  refreshPublishButton();
+  return back.length + rec.structural.length;
+}
+
+const editsWaiting = (n) => (n === 1 ? 'your edit is here again, not published' : `your ${n} edits are here again, not published`);
+
+async function undoPublish(rec) {
+  endUndoOffer(false);
+  setStatus('Undoing that publish…', 'saving');
+  try {
+    const r = await revertPublish({ gh: state.gh, repo: cfg.repo, branch: rec.branch, path: rec.path, before: rec.before, after: rec.after, message: rec.message });
+    if (!r.ok) { undoBlocked(); return; }
+    // Stop waiting for the undone commit to appear on the site.
+    journalSave(journalAll().filter(e => e.sha !== rec.sha));
+    const n = restageRecord(rec);
+    await loadPageSource();
+    setStatus(`Undone. The site is back as it was, and ${editsWaiting(n)}.`, 'saved');
+  } catch (err) {
+    console.error('[kiln] undo publish', err);
+    setStatus('Undo did not go through, so nothing changed. History can take the page back.', 'error');
+  }
+}
+
+/** Someone else published to this page after us: undoing would take their work with it. */
+function undoBlocked() {
+  const el = document.getElementById('kiln-status');
+  if (el) el.hidden = true;
+  const canHistory = hasFeature('history') && !!document.getElementById('kiln-history');
+  const m = modal(`
+    <h3>Someone else has published since</h3>
+    <p class="kiln-dim">This page was published again after your change, so Undo would remove their work too. Nothing was changed, and your publish is still live.</p>
+    <p class="kiln-dim">${canHistory ? 'History can put back just the parts you changed.' : 'Ask the site owner to put it back from History.'}</p>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Close</button>
+      ${canHistory ? '<button class="kiln-btn-publish" id="kiln-undo-history">Open History</button>' : ''}
+    </div>`);
+  const go = m.querySelector('#kiln-undo-history');
+  if (go) go.onclick = () => { m.remove(); historyPanel(); };
+}
+
+function undoSandboxPublish(rec) {
+  endUndoOffer(false);
+  const s = sandboxStore();
+  s.pages = s.pages || {};
+  if (rec.prevPage) s.pages[sandboxPath()] = rec.prevPage; else delete s.pages[sandboxPath()];
+  sandboxSave(s);
+  for (const [ref, v] of rec.source || []) {
+    state.sourceBase.set(ref, v.base);
+    if (!state.pendingSource.has(ref)) state.pendingSource.set(ref, v.entry);
+    syncSourceDom(ref);
+  }
+  const n = restageRecord(rec) + (rec.source?.length || 0);
+  setStatus(`Undone: ${editsWaiting(n)}.`, 'saved');
 }
 
 /**
@@ -2883,6 +2983,15 @@ function publishSandbox(noteMsg = '') {
   const s = sandboxStore();
   s._createdAt = s._createdAt || Date.now();
   s.pages = s.pages || {};
+  const prevPage = s.pages[sandboxPath()] ? JSON.parse(JSON.stringify(s.pages[sandboxPath()])) : null;
+  const record = publishRecord({ sandbox: true, prevPage, source: [] });
+  for (const [key, v] of state.pending) {
+    record.entries.set(key, JSON.stringify(v));
+    record.prevBase.set(key, state.undoBase.get(key));
+    record.prevBaseAttrs.set(key, state.undoBaseAttrs.get(key));
+  }
+  for (const [ref, v] of state.pendingSource) record.source.push({ ref, entry: { ...v }, base: state.sourceBase.get(ref) });
+  record.source = record.source.map(x => [x.ref, x]);
   const page = s.pages[sandboxPath()] || {};
   for (const [key, v] of state.pending) {
     const cur = page[key] || {};
@@ -2912,7 +3021,7 @@ function publishSandbox(noteMsg = '') {
   updateUndoUi();
   document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
   refreshPublishButton();
-  setStatus('Saved to your private demo. Only you can see it.', 'saved');
+  offerUndo(record);
   guidePublished(told);
 }
 
@@ -4980,7 +5089,7 @@ function renderAdminBar() {
   fab.querySelector('#kiln-publish-quick').onclick = (e) => { e.stopPropagation(); requestPublish(); };
   // A toast you have read is in the way: tap it to put it away.
   fab.querySelector('#kiln-status').addEventListener('click', (e) => {
-    if (!e.target.closest('a')) e.currentTarget.hidden = true;
+    if (!e.target.closest('a, button')) e.currentTarget.hidden = true;
   });
 
   // Restore position (default: bottom-right).
@@ -5594,16 +5703,25 @@ let statusHideTimer = null;
 function setStatus(text, kind, opts) {
   const el = document.getElementById('kiln-status');
   if (!el) return;
+  // "Published. Undo" keeps the line for its ten seconds. News that arrives
+  // meanwhile is shown when it ends; a failure is shown at once.
+  if (undoOffer && !opts?.offer) {
+    if (kind !== 'error') { undoOffer.held = [text, kind, opts]; return; }
+    endUndoOffer(false);
+  }
   // A spinner rides alongside busy ('saving') states so publishing/uploading
   // reads as active work, not a frozen label. opts.href turns the whole line
   // into a link (e.g. "Live ✓ — view site", "Build failed — open commit").
   el.innerHTML = (kind === 'saving' ? '<span class="kiln-spin" aria-hidden="true"></span>' : '')
     + (opts?.href
       ? `<a class="kiln-status-link" href="${escapeHtml(opts.href)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`
-      : `<span>${escapeHtml(text)}</span>`);
-  el.className = `kiln-status kiln-status--${kind}`;
+      : `<span>${escapeHtml(text)}</span>`)
+    + (opts?.action ? `<button type="button" class="kiln-status-act" title="${escapeHtml(opts.action.title || '')}">${escapeHtml(opts.action.label)}</button>` : '');
+  if (opts?.action) el.querySelector('.kiln-status-act').onclick = (e) => { e.stopPropagation(); opts.action.run(); };
+  el.className = `kiln-status kiln-status--${kind}${opts?.action ? ' kiln-status--act' : ''}`;
   el.hidden = false;
   clearTimeout(statusHideTimer);
+  if (opts?.sticky) return;
   // Busy/error states stay visible; calm states fade away on their own. On a
   // phone the toast sits over the top of the page, so it leaves sooner.
   if (kind === 'idle' || kind === 'saved') {
@@ -5779,6 +5897,11 @@ function injectStyles() {
 .kiln-status--error{color:var(--kiln-err)}
 .kiln-status-link{color:inherit;font-weight:600;text-decoration:underline;text-underline-offset:2px}
 .kiln-status-link:hover{opacity:.85}
+/* "Published. Undo": the one status line with something to press. */
+.kiln-status--act{padding:6px 6px 6px 14px;gap:12px;font-size:13px;font-weight:600;color:#fff}
+.kiln-status-act{flex:none;background:#fff;color:#1c1c28;border:none;border-radius:8px;padding:6px 14px;
+  font:700 12.5px var(--kiln-font);cursor:pointer}
+.kiln-status-act:hover,.kiln-status-act:focus-visible{background:#e0e7ff;outline:2px solid var(--kiln-accent);outline-offset:1px}
 .kiln-btn-publish{background:var(--kiln-accent);color:#fff;border:none;padding:7px 16px;border-radius:9px;
   cursor:pointer;font-size:13px;font-weight:600;font-family:var(--kiln-font);transition:background .15s,transform .1s}
 .kiln-btn-publish:hover:not(:disabled){background:var(--kiln-accent-h);transform:translateY(-1px)}
@@ -6183,6 +6306,8 @@ body:has(#kiln-topbar){padding-top:46px!important}
    setStatus() takes it away after a few seconds, and a tap dismisses it. */
 #kiln-fab-wrap .kiln-status{position:fixed;left:50%;right:auto;bottom:auto;
   top:calc(10px + env(safe-area-inset-top,0px));transform:translateX(-50%);max-width:92vw;font-size:13px}
+#kiln-fab-wrap .kiln-status--act{font-size:14.5px;padding:6px 6px 6px 16px}
+.kiln-status-act{min-height:40px;padding:6px 20px;font-size:14.5px}
 /* Top-bar mode: same bar, thumb-height targets, finger-scrollable. */
 #kiln-topbar{height:56px;-webkit-overflow-scrolling:touch}
 body:has(#kiln-topbar){padding-top:56px!important}
