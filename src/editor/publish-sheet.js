@@ -370,6 +370,8 @@ export function publishSheetCss(mobileMq) {
 .kiln-pubsheet .kiln-ps-notefield input{font-weight:400}
 .kiln-pubsheet .kiln-ps-actions{margin:14px -22px 0;padding:12px 22px;border-top:1px solid #eef0f3;background:#fafafb}
 .kiln-pubsheet #kiln-pubsheet-go{min-width:150px;padding:9px 18px;font-size:14px}
+/* The first-visit guide points at the button from above: leave it a strip of its own. */
+.kiln-pubsheet.kiln-guided .kiln-ps-notefield{margin-bottom:56px}
 @media ${mobileMq}{
 #kiln-modal.kiln-pubsheet{align-items:flex-end;padding-top:0}
 .kiln-pubsheet .kiln-modal-card{width:100%;max-width:none;border-radius:18px 18px 0 0;max-height:88vh;max-height:88dvh}

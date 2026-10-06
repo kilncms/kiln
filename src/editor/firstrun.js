@@ -195,6 +195,8 @@ function showTip(step, target) {
     tipStep = step;
     tip._inSheet = inSheet;
     tip.style.zIndex = inSheet ? '10000001' : '';
+    // the sheet makes room above its buttons, so the tip covers none of it
+    if (inSheet) target.closest('#kiln-modal').classList.add('kiln-guided');
     try { localStorage.setItem(GUIDE_KEY, '1'); } catch { /* storage blocked */ }
   }
   tip._target = target;

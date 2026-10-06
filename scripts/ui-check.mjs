@@ -364,6 +364,9 @@ async function run(browser, size, firstVisit) {
     check(scope, 'the sheet\'s Cancel can be pressed', ...Object.values(await hit(sheet.getByRole('button', { name: 'Cancel' }))));
     if (firstVisit) {
       check(scope, 'guide step 2 follows Publish into the sheet', ((await guide.locator('span').first().textContent().catch(() => '')) || '') === 'This is what changes. Publish it.' && await guide.isVisible());
+      await page.waitForTimeout(200);
+      const g = await box(guide);
+      check(scope, 'and covers neither the note nor the buttons', apart(g, await box(page.locator('#kiln-ps-note'))) && apart(g, await box(go)) && apart(g, await box(sheet.getByRole('button', { name: 'Cancel' }))));
       await shot('guide-2-sheet');
     } else await shot('publish-sheet');
     // Escape closes it and loses nothing
