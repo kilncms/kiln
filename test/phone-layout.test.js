@@ -76,3 +76,19 @@ test('laptop: a full menu takes the room on its side of the pencil and scrolls i
   assert.match(main, /menu\.style\.maxHeight = `\$\{Math\.max\(220, \(above \? br\.top : window\.innerHeight - br\.bottom\) - 18\)\}px`;/);
   assert.match(main, /max-height:calc\(100vh - 16px\);overflow-y:auto;box-sizing:border-box;overscroll-behavior:contain;scroll-padding-bottom:48px\}/);
 });
+
+test('phone: the saved draft\'s choices are two to a row, each on one line, the plain primary one last', () => {
+  // four buttons in one row: "Resume draft" wrapped onto two lines, and on a 360 px screen "Later" ran off the card
+  const dialog = main.slice(main.indexOf('function draftDialog('), main.indexOf('function saveDraftSandbox('));
+  assert.match(dialog, /<div class="kiln-modal-actions kiln-acts-grid">/);
+  const phone = main.slice(main.indexOf('@media ${MOBILE_MQ}{\n/* No double-tap zoom'));
+  assert.match(phone, /\.kiln-modal-actions\.kiln-acts-grid\{flex-wrap:wrap\}/);
+  assert.match(phone, /\.kiln-acts-grid button\{flex:1 1 calc\(50% - 4px\);white-space:nowrap\}/);
+  // not on a laptop, where the four fit on one row
+  assert.equal(/kiln-acts-grid/.test(main.slice(main.indexOf('function injectStyles()'), main.indexOf('@media ${MOBILE_MQ}{\n/* No double-tap zoom'))), false);
+  // the order: the way out first, the one most people want last and the only primary
+  const buttons = [...dialog.matchAll(/<button class="(kiln-btn-[a-z]+)"[^>]*>([^<]+)<\/button>/g)].map(m => `${m[2]}:${m[1]}`);
+  assert.deepEqual(buttons, ['Later:kiln-btn-ghost', 'Delete draft:kiln-btn-ghost', 'Publish it now:kiln-btn-ghost', 'Resume draft:kiln-btn-publish']);
+  // one dialog for the demo and for a real site
+  assert.equal((main.match(/kiln-acts-grid">/g) || []).length, 1);
+});

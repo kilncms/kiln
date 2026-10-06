@@ -5037,7 +5037,7 @@ function draftDialog(canDelete) {
   return modal(`
     <h3>There's a saved draft of this page</h3>
     <p class="kiln-dim">It isn't live. Resume editing it, publish it as-is, or leave it for later.</p>
-    <div class="kiln-modal-actions">
+    <div class="kiln-modal-actions kiln-acts-grid">
       <button class="kiln-btn-ghost" data-close>Later</button>
       ${canDelete ? '<button class="kiln-btn-ghost" id="kiln-dr-del">Delete draft</button>' : ''}
       <button class="kiln-btn-ghost" id="kiln-dr-pub">Publish it now</button>
@@ -7251,6 +7251,11 @@ body:has(#kiln-topbar){padding-top:56px!important}
 .kiln-modal-body{padding:16px 16px calc(18px + env(safe-area-inset-bottom,0px))}
 .kiln-modal-actions{position:sticky;bottom:0;background:#fff;padding:10px 0 4px;margin-top:14px}
 .kiln-modal-actions button,.kiln-btn-pick{min-height:44px}
+/* A dialog with three or four choices (a saved draft) had them all in one row,
+   and the one most people want wrapped onto two lines. Two to a row, each on
+   one line, with the plain primary one last, under the thumb. */
+.kiln-modal-actions.kiln-acts-grid{flex-wrap:wrap}
+.kiln-acts-grid button{flex:1 1 calc(50% - 4px);white-space:nowrap}
 /* ⌘K palette: full screen instead — its input must stay top-anchored (keyboard). */
 #kiln-modal.kiln-palette-wrap{align-items:stretch}
 .kiln-palette-wrap .kiln-modal-card{max-width:none;height:100dvh;max-height:none;border-radius:0}
