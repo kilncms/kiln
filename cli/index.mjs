@@ -225,7 +225,22 @@ async function detectSiteMode() {
   warn('source mode is new: the editor bundle AND your worker must both be current —');
   console.log('     run `npx github:kilncms/kiln update` on the site and redeploy your worker');
   console.log('     from this kiln version, or source fields will be locked read-only.');
-  return { mode: 'source', adapter: adapter.id, generator: gen.displayName, hints };
+  return { mode: 'source', adapter: adapter.id, generator: gen.displayName, hints, publicDir: generatorPublicDir(hints, files) };
+}
+
+/** The folder a generator copies into the built site as it is: Astro's
+ *  public/, unless astro.config names another with a plain `publicDir: '…'`.
+ *  Kiln's own files have to be there, or the build leaves them behind.
+ *  '' when the generator has no such folder. */
+function generatorPublicDir(hints, files) {
+  const usual = hints.publicDir || '';
+  if (!usual) return '';
+  const cfg = files.find(f => /^astro\.config\.[cm]?[jt]s$/i.test(f));
+  let src = '';
+  try { if (cfg) src = readFileSync(cfg, 'utf8'); } catch { /* unreadable config: the usual folder */ }
+  const named = src.match(/\bpublicDir\s*:\s*['"`](?:\.\/)?([^'"`]+?)\/?['"`]/)?.[1];
+  // Only a plain folder inside the repository is taken from the config.
+  return named && /^[\w.-]+(\/[\w.-]+)*$/.test(named) && !named.split('/').includes('..') ? named : usual;
 }
 
 // ─── doctor ──────────────────────────────────────────────────────────────────
@@ -235,7 +250,8 @@ async function doctor(args) {
   // Pull defaults from the local kiln-config.js when run inside a site.
   let site = args.site, repo = args.repo, worker = args.worker;
   let mode = 'html', adapterId = null;   // absent mode ⇒ html (SOURCE-MODE-SPEC §13)
-  const cfgPath = 'assets/kiln-config.js';
+  // A generated site keeps it in the folder its build publishes as it is (Astro: public/).
+  const cfgPath = ['public/assets/kiln-config.js', 'assets/kiln-config.js'].find(f => existsSync(f)) || 'assets/kiln-config.js';
   const haveCfg = existsSync(cfgPath);
   if (haveCfg) {
     const src = readFileSync(cfgPath, 'utf8');
@@ -322,7 +338,7 @@ async function doctor(args) {
     if (gh.json.full_name) {
       const same = gh.json.full_name === repo;
       check('repo name matches GitHub', same, same ? repo
-        : `GitHub answers as ${gh.json.full_name} but the config says ${repo}. After a rename or transfer, editor access and Cloud registration stay tied to the OLD name: set repo to '${gh.json.full_name}' in assets/kiln-config.js, add your editors again in People & access, and register the site again`);
+        : `GitHub answers as ${gh.json.full_name} but the config says ${repo}. After a rename or transfer, editor access and Cloud registration stay tied to the OLD name: set repo to '${gh.json.full_name}' in ${cfgPath}, add your editors again in People & access, and register the site again`);
     }
   }
 
@@ -432,37 +448,52 @@ function commitAndPush(files, message) {
 /** Copy the bundle, write config + entry page, and check the scripts are wired.
  *  Shared by self-host and Cloud modes (they differ only in the worker URL).
  *  `siteMode` comes from detectSiteMode(); source mode adds mode/adapter lines
- *  to the generated config (absent mode ⇒ html, SOURCE-MODE-SPEC §13).
+ *  to the generated config (absent mode ⇒ html, SOURCE-MODE-SPEC §13), and
+ *  puts every file in the folder the generator publishes as it is (Astro:
+ *  public/), because a build leaves the top of the repository behind.
  *  Returns the list of files it created/updated (for the scoped commit). */
 function wireSite(repo, workerUrl, siteMode = null) {
   const isSource = siteMode?.mode === 'source';
+  const base = (isSource && siteMode.publicDir) || '';
+  const at = (...parts) => path.join(base, ...parts);
+  const shown = (name) => (base ? `${base}/${name}` : name);   // as a person reads it, forward slashes
   const wrote = [];
-  mkdirSync('assets', { recursive: true });
+  if (base) info(`${siteMode.generator} copies ${base}/ into the built site as it is, so Kiln's files go there: the editor is served from /assets/ and the sign-in page at /kiln.`);
+  mkdirSync(at('assets'), { recursive: true });
   for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) {
-    cpSync(path.join(PKG_ROOT, 'dist', f), path.join('assets', f));
-    wrote.push(path.join('assets', f));
+    cpSync(path.join(PKG_ROOT, 'dist', f), at('assets', f));
+    wrote.push(at('assets', f));
   }
-  ok('copied kiln.js + kiln-editor.js + kiln-features.js into assets/');
-  if (!existsSync('assets/kiln-config.js')) {
-    wrote.push('assets/kiln-config.js');
-    writeFileSync('assets/kiln-config.js', `window.KILN = {
+  ok(`copied kiln.js + kiln-editor.js + kiln-features.js into ${shown('assets/')}`);
+  const cfgFile = at('assets', 'kiln-config.js');
+  // A run of the wizard from before it knew about the public folder left the
+  // settings at the top of the repository. Carry them over; never lose them.
+  const stray = base && existsSync(path.join('assets', 'kiln-config.js'));
+  if (stray && !existsSync(cfgFile)) {
+    cpSync(path.join('assets', 'kiln-config.js'), cfgFile);
+    wrote.push(cfgFile);
+    ok(`copied your settings from assets/kiln-config.js to ${shown('assets/kiln-config.js')}`);
+  }
+  if (!existsSync(cfgFile)) {
+    wrote.push(cfgFile);
+    writeFileSync(cfgFile, `window.KILN = {
   repo:   '${repo}',
   branch: 'main',
   worker: '${workerUrl}',
 ${isSource ? `  mode:   'source',\n  adapter: '${siteMode.adapter}',\n` : ''}  styles: [],
 };
 `);
-    ok(`wrote assets/kiln-config.js${isSource ? " (mode: 'source')" : ''}`);
+    ok(`wrote ${shown('assets/kiln-config.js')}${isSource ? ` (mode: 'source', adapter: '${siteMode.adapter}')` : ''}`);
   } else {
-    ok('assets/kiln-config.js already present (left untouched)');
-    if (isSource && !/\bmode\s*:/.test(readFileSync('assets/kiln-config.js', 'utf8'))) {
-      warn('your existing kiln-config.js has no mode — add these two lines inside window.KILN for source mode:');
+    if (!wrote.includes(cfgFile)) ok(`${shown('assets/kiln-config.js')} already present (left untouched)`);
+    if (isSource && !/\bmode\s*:/.test(readFileSync(cfgFile, 'utf8'))) {
+      warn(`your existing ${shown('assets/kiln-config.js')} has no mode — add these two lines inside window.KILN for source mode:`);
       console.log(`      mode:   'source',\n      adapter: '${siteMode.adapter}',`);
     }
   }
-  if (!existsSync('kiln.html')) {
-    wrote.push('kiln.html');
-    writeFileSync('kiln.html', `<!doctype html>
+  if (!existsSync(at('kiln.html'))) {
+    wrote.push(at('kiln.html'));
+    writeFileSync(at('kiln.html'), `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex"><title>Sign in · Kiln</title>
@@ -472,27 +503,39 @@ ${isSource ? `  mode:   'source',\n  adapter: '${siteMode.adapter}',\n` : ''}  s
 <script src="/assets/kiln.js" defer></script>
 </body></html>
 `);
-    ok('wrote kiln.html (your /kiln sign-in page)');
-  } else ok('kiln.html already present (left untouched)');
+    ok(`wrote ${shown('kiln.html')} (your /kiln sign-in page)`);
+  } else ok(`${shown('kiln.html')} already present (left untouched)`);
   // Security headers: Cloudflare Pages and Netlify read a _headers file from
   // the root of what gets published. An existing file is the owner's — never
-  // touched. A generator copies only its own public folder, so there the file
-  // has to be placed by hand.
+  // touched. A generator publishes only its public folder as it is, so there
+  // the file goes into that folder; one with no such folder is told where.
   const HEADERS_DOC = 'https://github.com/kilncms/kiln/blob/main/docs/for-site-owners.md#security-headers';
-  if (isSource) {
-    info(`security headers: copy Kiln's _headers file into the folder your build publishes as-is (for Astro, public/). See ${HEADERS_DOC}`);
-  } else if (!existsSync('_headers')) {
-    cpSync(path.join(PKG_ROOT, 'templates', '_headers'), '_headers');
-    wrote.push('_headers');
-    ok('wrote _headers (security headers: other sites cannot frame yours, HTTPS only)');
+  if (isSource && !base) {
+    info(`security headers: copy Kiln's _headers file into the folder your build publishes as-is. See ${HEADERS_DOC}`);
+  } else if (!existsSync(at('_headers'))) {
+    cpSync(path.join(PKG_ROOT, 'templates', '_headers'), at('_headers'));
+    wrote.push(at('_headers'));
+    ok(`wrote ${shown('_headers')} (security headers: other sites cannot frame yours, HTTPS only)`);
   } else {
-    ok(`_headers already present (left untouched). The lines Kiln suggests: ${HEADERS_DOC}`);
+    ok(`${shown('_headers')} already present (left untouched). The lines Kiln suggests: ${HEADERS_DOC}`);
+  }
+  // What an earlier run left where the build never looks: name it, delete nothing.
+  if (base) {
+    const old = [...['kiln.js', 'kiln-editor.js', 'kiln-features.js', 'kiln-config.js'].map(f => `assets/${f}`), 'kiln.html'].filter(f => existsSync(f));
+    if (old.length) {
+      warn(`an earlier setup left Kiln's files at the top of the repository, where ${siteMode.generator} does not publish them. They are in ${base}/ now. Once you have checked, remove the old copies:`);
+      console.log(`      git rm ${old.join(' ')}`);
+    }
   }
   return wrote;
 }
 
 // The two lines every page needs, in the order they must load.
 const KILN_TAGS = ['<script src="/assets/kiln-config.js"></script>', '<script src="/assets/kiln.js" defer></script>'];
+// The same two in an Astro template. Astro bundles any script it can read;
+// `is:inline` tells it these are files served as they are, and is left out of
+// the built page.
+const ASTRO_TAGS = KILN_TAGS.map(t => t.replace('<script ', '<script is:inline '));
 const LOADS_KILN = /<script\b[^>]*\bsrc=["'][^"']*\bkiln\.js(?:\?[^"']*)?["']/i;
 
 /** The pages of a plain-HTML site: every .html file outside build and tool folders, Kiln's own two pages excepted. */
@@ -514,12 +557,12 @@ function sitePages(root = '.') {
  * already loads kiln.js is returned as it is ('already'); one with no </body>
  * cannot be done ('no-body'). The config tag is not repeated if it is there.
  */
-function withKilnTags(html) {
+function withKilnTags(html, lines = KILN_TAGS) {
   if (LOADS_KILN.test(html)) return { html, state: 'already' };
   const at = html.toLowerCase().lastIndexOf('</body>');
   if (at === -1) return { html, state: 'no-body' };
   const nl = html.includes('\r\n') ? '\r\n' : '\n';
-  const tags = KILN_TAGS.filter(t => !(t.includes('kiln-config.js') && /kiln-config\.js/.test(html)));
+  const tags = lines.filter(t => !(t.includes('kiln-config.js') && /kiln-config\.js/.test(html)));
   const lineStart = html.lastIndexOf('\n', at - 1) + 1;
   const before = html.slice(lineStart, at);
   // </body> on a line of its own: the tags take that line's indentation.
@@ -536,11 +579,7 @@ function withKilnTags(html) {
  */
 async function offerScriptTags(siteMode = null) {
   hr('Loading the editor on your pages');
-  if (siteMode?.mode === 'source') {
-    console.log(`  Every page needs these two lines before </body>:\n     ${KILN_TAGS.join('\n     ')}`);
-    info(`${siteMode.generator || 'Generator'} site: put them in your base layout so every generated page loads them (and make sure assets/ is copied into the build output — for Astro, keep these files under public/assets/).`);
-    return [];
-  }
+  if (siteMode?.mode === 'source') return siteMode.adapter === 'astro' ? offerAstroTags(siteMode) : tellWhereTagsGo(siteMode, KILN_TAGS);
   const pages = sitePages();
   const todo = [], noBody = [];
   let already = 0;
@@ -572,6 +611,60 @@ async function offerScriptTags(siteMode = null) {
   }
   if (noBody.length) warn(`${noBody.length} page${noBody.length === 1 ? ' has' : 's have'} no </body> to put them before — add the two lines by hand: ${noBody.join(', ')}`);
   if (already) info(`${already} page${already === 1 ? '' : 's'} already load${already === 1 ? 's' : ''} kiln.js — left untouched`);
+  return wrote;
+}
+
+/** A generated site whose templates the wizard does not edit: say what goes where. */
+function tellWhereTagsGo(siteMode, lines) {
+  console.log(`  Every page needs these two lines before </body>:\n     ${lines.join('\n     ')}`);
+  info(`${siteMode.generator || 'Generator'} site: put them in your base layout so every generated page loads them.`);
+  return [];
+}
+
+/** An Astro site's page shells: every .astro file under src/ that closes a <body>. Usually one layout. */
+function astroShells(root = 'src') {
+  const files = [];
+  (function walk(dir) {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      const f = path.join(dir, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (e.name.endsWith('.astro') && /<\/body>/i.test(readFileSync(f, 'utf8'))) files.push(f);
+    }
+  })(root);
+  return files.sort();
+}
+
+/**
+ * Astro builds its pages from templates, so the two script tags go into the
+ * template that closes <body> (the layout, as a rule), and every page built
+ * from it loads the editor. The files are named and nothing is written
+ * without a yes. Running it again changes nothing.
+ */
+async function offerAstroTags(siteMode) {
+  const shells = astroShells();
+  if (!shells.length) return tellWhereTagsGo(siteMode, ASTRO_TAGS);
+  const todo = [];
+  let already = 0;
+  for (const f of shells) {
+    const r = withKilnTags(readFileSync(f, 'utf8'), ASTRO_TAGS);
+    if (r.state === 'already') already++; else todo.push([f, r.html]);
+  }
+  if (!todo.length) { ok(`${already === 1 ? 'your layout already loads' : `all ${already} layouts already load`} kiln.js — nothing to add`); return []; }
+  console.log(`  The editor starts only on pages that load it. In an Astro template the two\n  lines are written like this, before </body>:\n     ${ASTRO_TAGS.join('\n     ')}\n`);
+  console.log(`  ${todo.length === 1 ? 'This template closes' : `These ${todo.length} templates close`} <body> and ${todo.length === 1 ? 'does' : 'do'} not have them yet:`);
+  for (const [f] of todo.slice(0, 20)) console.log(`     ${f.split(path.sep).join('/')}`);
+  if (todo.length > 20) console.log(`     … and ${todo.length - 20} more`);
+  const wrote = [];
+  if (await yes(`Add the two script tags to ${todo.length === 1 ? 'it' : `these ${todo.length} templates`} now?`, 'y')) {
+    for (const [f, html] of todo) { writeFileSync(f, html); wrote.push(f); }
+    ok(`added the two script tags to ${wrote.length} template${wrote.length === 1 ? '' : 's'} (review with: git diff). Every page built from ${wrote.length === 1 ? 'it' : 'them'} loads the editor after the next build.`);
+  } else {
+    warn('not added. Until the built pages have those two lines, signing in at /kiln brings you back to a page with no editor.');
+  }
+  if (already) info(`${already} template${already === 1 ? '' : 's'} already load${already === 1 ? 's' : ''} kiln.js — left untouched`);
   return wrote;
 }
 
@@ -1057,14 +1150,21 @@ async function tagCmd(args) {
 async function update() {
   hr('kiln update — refresh the on-page editor to this version');
   // Find where the site references kiln.js and drop the latest engine next to it.
-  const htmls = readdirSync('.').filter(f => f.endsWith('.html'));
-  let prefix = null;
-  for (const f of htmls) {
-    const m = readFileSync(f, 'utf8').match(/src="([^"]*?)kiln\.js"/);
-    if (m) { prefix = m[1]; break; }
+  // A generated site has no pages at the top of its repository: its sign-in
+  // page sits in the folder the build publishes as it is (Astro: public/), and
+  // the address that page names is inside that folder.
+  let prefix = null, root = '.';
+  for (const r of ['.', 'public']) {
+    let htmls = [];
+    try { htmls = readdirSync(r).filter(f => f.endsWith('.html')); } catch { /* no such folder */ }
+    for (const f of htmls) {
+      const m = readFileSync(path.join(r, f), 'utf8').match(/src="([^"]*?)kiln\.js"/);
+      if (m) { prefix = m[1]; root = r; break; }
+    }
+    if (prefix !== null) break;
   }
   if (prefix === null) { fail('No page here loads kiln.js — run the wizard first (npx github:kilncms/kiln).'); process.exit(1); }
-  const dir = prefix.replace(/^\//, '').replace(/\/$/, '') || '.';
+  const dir = path.join(root, prefix.replace(/^\//, '').replace(/\/$/, '')).split(path.sep).join('/') || '.';
   mkdirSync(dir, { recursive: true });
   for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) cpSync(path.join(PKG_ROOT, 'dist', f), path.join(dir, f));
   ok(`copied the latest kiln.js + kiln-editor.js + kiln-features.js into ${dir}/`);

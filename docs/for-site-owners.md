@@ -388,10 +388,11 @@ Netlify read it and send these headers with every page and file:
 | `Strict-Transport-Security: max-age=31536000` | A browser that has visited once uses HTTPS for the next year. |
 
 The wizard never overwrites a `_headers` file you already have. To add these lines to
-an existing one, copy them from [`templates/_headers`](../templates/_headers). On a
-site a generator builds, put the file in the folder that is published as-is (for
-Astro, `public/`). GitHub Pages does not read `_headers`; there the headers have to
-come from a proxy in front of the site, such as Cloudflare.
+an existing one, copy them from [`templates/_headers`](../templates/_headers). On an
+Astro site the wizard writes the file to `public/`, the folder Astro publishes as it
+is; with another generator, put it in that generator's folder of the same kind.
+GitHub Pages does not read `_headers`; there the headers have to come from a proxy
+in front of the site, such as Cloudflare.
 
 Two lines you may need to change:
 

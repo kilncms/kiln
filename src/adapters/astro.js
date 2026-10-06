@@ -170,7 +170,7 @@ export default {
 
   /** What Kiln should tell the host / the wizard should verify (§15). */
   buildHints() {
-    return { framework: 'Astro', buildCommand: 'astro build', minNodeVersion: 18, outputDir: 'dist' };
+    return { framework: 'Astro', buildCommand: 'astro build', minNodeVersion: 18, outputDir: 'dist', publicDir: 'public' };
   },
 
   /** Paths an editor may never reach, beyond the global refusal list (§8.4). */

@@ -240,6 +240,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **On an Astro site the setup wizard put Kiln's files where the build never
+  looked.** It wrote `assets/` and `kiln.html` at the top of the repository and
+  printed a hint. It now writes the editor, the config (`mode: 'source',
+  adapter: 'astro'`), the sign-in page and `_headers` under `public/` (or the
+  `publicDir` named in `astro.config`), says so, and offers to add the two
+  script tags to each template that closes `<body>`, written with `is:inline`
+  so Astro does not try to bundle them. Settings from an earlier run are
+  copied across and the old copies are named, not deleted. `kiln doctor` reads
+  the config from `public/`, and `kiln update` refreshes the editor there
+  (it used to stop with "No page here loads kiln.js").
 - **After Undo, the guide's last card still said the change was committed.**
   Pressing Undo while "That was a Git commit" (or, for an invited editor,
   "That is published") was on screen left it up. The card now says the edit is

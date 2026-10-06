@@ -115,7 +115,8 @@ test('wizard §7.2: generator tree asks the mode question; choosing source write
     assert.match(out, /auto-deploy/);
     assert.match(out, /Node 18\+/);
     assert.match(out, /source mode is new/);
-    const cfg = readFileSync(path.join(dir, 'assets', 'kiln-config.js'), 'utf8');
+    // Astro publishes public/ as it is, and nothing else from the top of the repository.
+    const cfg = readFileSync(path.join(dir, 'public', 'assets', 'kiln-config.js'), 'utf8');
     assert.match(cfg, /mode:\s*'source',/);
     assert.match(cfg, /adapter:\s*'astro',/);
     assert.match(cfg, /repo:\s*'example\/site',/);

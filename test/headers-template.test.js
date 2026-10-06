@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -116,13 +116,26 @@ test('KLN-07 wizard: a site that already has a _headers file keeps its own', asy
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('KLN-07 wizard: a generator-built site is told where the file goes instead of getting one at the repo root', async () => {
+test('KLN-07 wizard: an Astro site gets the file in public/, which its build publishes, and none at the repo root', async () => {
   const dir = scratchSite();
   writeFileSync(path.join(dir, 'astro.config.mjs'), 'export default {};\n');
   try {
     // answers: Cloud → pages are generated (source mode) → no autotag → no commit/push
     const out = await runWizard(dir, ['1', '2', 'n', 'n']);
-    assert.match(out, /security headers: copy Kiln's _headers file into the folder your build publishes/);
+    assert.match(out, /wrote public\/_headers \(security headers/);
     assert.equal(existsSync(path.join(dir, '_headers')), false);
+    assert.equal(readFileSync(path.join(dir, 'public', '_headers'), 'utf8'), readFileSync(path.join(ROOT, 'templates', '_headers'), 'utf8'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('KLN-07 wizard: an Astro site\'s own public/_headers is never overwritten', async () => {
+  const dir = scratchSite();
+  writeFileSync(path.join(dir, 'astro.config.mjs'), 'export default {};\n');
+  mkdirSync(path.join(dir, 'public'), { recursive: true });
+  writeFileSync(path.join(dir, 'public', '_headers'), '/*\n  X-Mine: yes\n');
+  try {
+    const out = await runWizard(dir, ['1', '2', 'n', 'n']);
+    assert.match(out, /public\/_headers already present \(left untouched\)/);
+    assert.equal(readFileSync(path.join(dir, 'public', '_headers'), 'utf8'), '/*\n  X-Mine: yes\n');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

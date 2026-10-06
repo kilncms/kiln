@@ -37,6 +37,29 @@ that you spread onto the element showing that value. When a signed-in Kiln
 editor opens the page, those elements become editable in place; saving commits
 to the underlying content file and your host rebuilds the site.
 
+## Loading the editor
+
+Astro builds the site from `src/` and copies `public/` into the result as it
+is. Nothing else in the repository reaches the built site, so Kiln's own files
+live under `public/`, and the template your pages are built from loads them.
+The setup wizard (`npx github:kilncms/kiln`, run in the repository) does both:
+
+- `public/assets/kiln.js`, `kiln-editor.js`, `kiln-features.js` and
+  `kiln-config.js` (with `mode: 'source', adapter: 'astro'`), `public/kiln.html`
+  (the sign-in page at `/kiln`) and `public/_headers`. If `astro.config` names
+  another `publicDir`, that folder is used.
+- These two lines before `</body>` in every `.astro` file that closes
+  `<body>`, usually one layout. It lists the files and asks first.
+
+```astro
+<script is:inline src="/assets/kiln-config.js"></script>
+<script is:inline src="/assets/kiln.js" defer></script>
+```
+
+`is:inline` matters: without it Astro tries to bundle the first script and the
+build stops with "references an asset in the public/ directory". The built
+page carries the plain tags, without `is:inline`.
+
 ## API
 
 ### `kilnSource(entry, field, opts?)`

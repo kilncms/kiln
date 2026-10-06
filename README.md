@@ -113,7 +113,10 @@ The wizard does the rest: run `npx github:kilncms/kiln` in a generator-built rep
 and it detects the generator, shows what it found ("Found astro.config.mjs and 63
 content files"), asks how the site is built in plain language, writes
 `mode: 'source', adapter: 'astro'` into the config, and deploys a worker that can
-commit to content files. An existing install needs `npx github:kilncms/kiln update`
+commit to content files. On an Astro site it puts the editor, the config, the
+sign-in page and the `_headers` file under `public/`, the folder Astro copies into
+the built site as it is, and offers to add the two script tags to the template
+that closes `<body>`. An existing install needs `npx github:kilncms/kiln update`
 plus a redeploy of its worker. `kiln doctor` warns when a repo looks generator-built
 but the site is still in HTML mode — the silent-data-loss trap this mode exists to
 close.
