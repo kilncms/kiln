@@ -6,7 +6,7 @@
  *   GET  /cloud/callback         → upsert account, set session cookie, → dashboard
  *   GET  /cloud/me               → { account, sites }
  *   POST /cloud/sites            → register a site (verify repo install) → checkout URL
- *   POST /cloud/sites/remove     → delete a site
+ *   POST /cloud/sites/remove     → cancel its subscription, then delete a site
  *   GET  /cloud/portal?site=     → Lemon Squeezy customer-portal link
  *   POST /cloud/webhook/ls       → Lemon Squeezy webhook (signed) → set site status
  *   GET  /admin/cloud/overview   → (owner only) accounts, sites, MRR
@@ -146,6 +146,39 @@ async function lsPortal(env, subscriptionId) {
   return d?.data?.attributes?.urls?.customer_portal || null;
 }
 
+/**
+ * End a subscription before its site is forgotten. `ok` is true only when no
+ * further charge can follow: the site never had a subscription, Lemon Squeezy
+ * says it has already ended, or Lemon Squeezy confirmed the cancellation just
+ * now. Anything else (billing not configured here, Lemon Squeezy not
+ * answering, a subscription this key cannot see) is "not known to be
+ * cancelled", and the caller keeps the site so the customer can still reach
+ * Manage billing.
+ */
+export async function lsCancel(env, subscriptionId) {
+  if (!subscriptionId) return { ok: true, state: 'none' };
+  if (!lsConfigured(env)) return { ok: false, state: 'billing_not_configured' };
+  const headers = { Authorization: `Bearer ${env.LS_API_KEY}`, Accept: 'application/vnd.api+json' };
+  const ended = (a) => !!a && (a.status === 'cancelled' || a.status === 'expired');
+  try {
+    const cur = await fetch(`${LS}/subscriptions/${subscriptionId}`, { headers });
+    // 404 is not "nothing to cancel": a key for the other mode (test/live)
+    // cannot see a subscription that is still charging.
+    if (!cur.ok) return { ok: false, state: cur.status === 404 ? 'subscription_not_found' : 'billing_unreachable' };
+    const before = (await cur.json())?.data?.attributes;
+    if (ended(before)) return { ok: true, state: 'already_cancelled', ends_at: before.ends_at || null };
+    const res = await fetch(`${LS}/subscriptions/${subscriptionId}`, { method: 'DELETE', headers });
+    if (!res.ok) return { ok: false, state: 'cancel_refused' };
+    const after = (await res.json())?.data?.attributes;
+    return ended(after) ? { ok: true, state: 'cancelled', ends_at: after.ends_at || null } : { ok: false, state: 'cancel_refused' };
+  } catch {
+    return { ok: false, state: 'billing_unreachable' };
+  }
+}
+
+const NOT_CANCELLED = 'This site has a subscription that could not be cancelled just now, so the site was not removed and nothing changed. '
+  + 'Open Manage billing, cancel the subscription there, then remove the site.';
+
 async function verifyLsSignature(request, bodyText, env) {
   const sig = request.headers.get('X-Signature');
   if (!sig || !env.LS_WEBHOOK_SECRET) return false;
@@ -266,8 +299,14 @@ export async function handleCloud(request, env, url, path) {
   if (path === '/cloud/sites/remove' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const { id } = await request.json().catch(() => ({}));
-    await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ?').bind(id, sess.account_id).run();
-    return json({ ok: true });
+    const site = await env.kiln_cloud.prepare('SELECT id, ls_subscription_id FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first();
+    if (!site) return json({ ok: true });   // not theirs, or already gone
+    // Removing the site removes Manage billing with it, so the subscription
+    // is cancelled first, and the site stays if that cannot be confirmed.
+    const cancel = await lsCancel(env, site.ls_subscription_id);
+    if (!cancel.ok) return json({ error: NOT_CANCELLED, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
+    await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).run();
+    return json({ ok: true, subscription: cancel.state, ...(cancel.ends_at ? { ends_at: cancel.ends_at } : {}) });
   }
 
   if (path === '/cloud/portal') {
@@ -354,9 +393,17 @@ export async function handleCloud(request, env, url, path) {
       return json({ ok: true });
     }
     if (path === '/admin/cloud/remove' && request.method === 'POST') {
-      const { site_id } = await request.json().catch(() => ({}));
-      await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ?').bind(site_id).run();
-      return json({ ok: true });
+      const { site_id, force } = await request.json().catch(() => ({}));
+      const site = await env.kiln_cloud.prepare('SELECT id, ls_subscription_id FROM sites WHERE id = ?').bind(site_id || '').first();
+      if (!site) return json({ ok: true });
+      // Same rule as the customer's own Remove. `force` is for the operator who
+      // has already ended the subscription in Lemon Squeezy by hand.
+      const cancel = force ? { ok: true, state: 'forced' } : await lsCancel(env, site.ls_subscription_id);
+      if (!cancel.ok) {
+        return json({ error: `subscription ${site.ls_subscription_id} could not be cancelled (${cancel.state}); cancel it in Lemon Squeezy, then remove with force`, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
+      }
+      await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ?').bind(site.id).run();
+      return json({ ok: true, subscription: cancel.state });
     }
     // Per-site troubleshooting: app-install check, live-site reachability, /kiln
     // entry check, editability (is the origin actually in the active/trialing
