@@ -164,7 +164,9 @@ function firstHeading() {
 }
 
 function showTip(step, target) {
-  if (!tip || tipStep !== step) {
+  // Step 2 follows Publish into the sheet that shows what will change.
+  const inSheet = step === 2 && !!target.closest('#kiln-modal');
+  if (!tip || tipStep !== step || tip._inSheet !== inSheet) {
     removeTip();
     tip = document.createElement('div');
     tip.id = 'kiln-guide';
@@ -172,7 +174,8 @@ function showTip(step, target) {
     const text = document.createElement('span');
     // A phone has no click.
     const touch = window.matchMedia('(hover: none)').matches;
-    text.textContent = step === 1 ? (touch ? 'Tap this and type.' : 'Click this and type.') : 'Now publish it.';
+    text.textContent = step === 1 ? (touch ? 'Tap this and type.' : 'Click this and type.')
+      : inSheet ? 'This is what changes. Publish it.' : 'Now publish it.';
     const skip = document.createElement('button');
     skip.type = 'button';
     skip.className = 'kiln-guide-skip';
@@ -184,6 +187,8 @@ function showTip(step, target) {
     tip.append(text, skip, arrow);
     document.body.appendChild(tip);
     tipStep = step;
+    tip._inSheet = inSheet;
+    tip.style.zIndex = inSheet ? '10000001' : '';
     try { localStorage.setItem(GUIDE_KEY, '1'); } catch { /* storage blocked */ }
   }
   tip._target = target;
