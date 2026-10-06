@@ -105,12 +105,13 @@ let tip = null;         // the step 1 / step 2 bubble
 let tipStep = 0;
 
 /**
- * Start the guide. Only ever in the public demo (cfg.sandbox), and only the
- * first time this browser sees it — a visitor who has had the tour is not
- * walked through it again on the next page.
+ * Start the guide. In the public demo (cfg.sandbox), and for an invited
+ * editor's first session on a real site (d.audience === 'editor'); never for
+ * the owner. Only the first time this browser sees it: someone who has had
+ * the tour is not walked through it again on the next page.
  */
 export function initGuide(d) {
-  if (deps || !d || !d.cfg || d.cfg.sandbox !== true) return;
+  if (deps || !d || !d.cfg || (d.cfg.sandbox !== true && d.audience !== 'editor')) return;
   try { if (localStorage.getItem(GUIDE_KEY)) return; } catch { /* storage blocked: show it, it just can't be remembered */ }
   deps = d;
   const st = document.createElement('style');
@@ -136,6 +137,11 @@ export function guideSync() {
   const target = step === 1 ? firstHeading() : deps.publishButton();
   if (!target || !target.getClientRects().length) { removeTip(); return; }
   showTip(step, target);
+}
+
+/** True while the guide is waiting to hear that the person has published. */
+export function guideWaiting() {
+  return !!deps && !done && !published;
 }
 
 /** The visitor published: `info` is { before, after, message } for the last card. */
@@ -164,7 +170,9 @@ function firstHeading() {
 }
 
 function showTip(step, target) {
-  if (!tip || tipStep !== step) {
+  // Step 2 follows Publish into the sheet that shows what will change.
+  const inSheet = step === 2 && !!target.closest('#kiln-modal');
+  if (!tip || tipStep !== step || tip._inSheet !== inSheet) {
     removeTip();
     tip = document.createElement('div');
     tip.id = 'kiln-guide';
@@ -172,7 +180,8 @@ function showTip(step, target) {
     const text = document.createElement('span');
     // A phone has no click.
     const touch = window.matchMedia('(hover: none)').matches;
-    text.textContent = step === 1 ? (touch ? 'Tap this and type.' : 'Click this and type.') : 'Now publish it.';
+    text.textContent = step === 1 ? (touch ? 'Tap this and type.' : 'Click this and type.')
+      : inSheet ? 'This is what changes. Publish it.' : 'Now publish it.';
     const skip = document.createElement('button');
     skip.type = 'button';
     skip.className = 'kiln-guide-skip';
@@ -184,6 +193,10 @@ function showTip(step, target) {
     tip.append(text, skip, arrow);
     document.body.appendChild(tip);
     tipStep = step;
+    tip._inSheet = inSheet;
+    tip.style.zIndex = inSheet ? '10000001' : '';
+    // the sheet makes room above its buttons, so the tip covers none of it
+    if (inSheet) target.closest('#kiln-modal').classList.add('kiln-guided');
     try { localStorage.setItem(GUIDE_KEY, '1'); } catch { /* storage blocked */ }
   }
   tip._target = target;
@@ -227,10 +240,14 @@ function showCard() {
   card.id = 'kiln-guide-card';
   card.setAttribute('role', 'dialog');
   card.setAttribute('aria-labelledby', 'kiln-guide-title');
-  const title = el('h3', null, 'That was a Git commit');
+  // An invited editor on a real site is told what happened to their change,
+  // not what Git is or where to get Kiln.
+  const invited = deps.audience === 'editor';
+  const title = el('h3', null, invited ? 'That is published' : 'That was a Git commit');
   title.id = 'kiln-guide-title';
-  const sub = el('p', 'kiln-guide-sub',
-    'A commit is a saved change with a note. On your own site, Kiln saves each edit to your GitHub repo this way, and your host puts it live in about a minute.');
+  const sub = el('p', 'kiln-guide-sub', invited
+    ? 'Your change is saved to the site and goes live in about a minute. For ten seconds you can undo it, and every version is kept, so nothing is lost for good.'
+    : 'A commit is a saved change with a note. On your own site, Kiln saves each edit to your GitHub repo this way, and your host puts it live in about a minute.');
   const diff = el('div', 'kiln-guide-diff');
   const snip = diffSnippet(published.before, published.after);
   diff.append(el('span', 'kiln-guide-label', 'Before'), el('span', 'kiln-guide-before', snip.before || '(empty)'),
@@ -238,16 +255,16 @@ function showCard() {
   const msg = el('div', 'kiln-guide-msg');
   msg.append(el('span', 'kiln-guide-label', 'Commit message'), el('code', null, published.message));
   const acts = el('div', 'kiln-guide-acts');
-  const go = el('a', 'kiln-btn-publish', 'Put Kiln on my site');
-  go.href = START_URL;
+  const go = el('a', invited ? 'kiln-btn-ghost' : 'kiln-btn-publish', invited ? 'Read the guide' : 'Put Kiln on my site');
+  go.href = invited ? (deps.guideUrl || 'https://kilncms.com/editors') : START_URL;
   go.target = '_blank';
   go.rel = 'noopener';
   go.addEventListener('click', finish);
-  const stay = el('button', 'kiln-btn-ghost', 'Keep exploring');
+  const stay = el('button', invited ? 'kiln-btn-publish' : 'kiln-btn-ghost', invited ? 'Got it' : 'Keep exploring');
   stay.type = 'button';
   stay.addEventListener('click', finish);
-  acts.append(go, stay);
-  card.append(title, sub, diff, msg, acts);
+  if (invited) { acts.append(stay, go); card.append(title, sub, diff, acts); }
+  else { acts.append(go, stay); card.append(title, sub, diff, msg, acts); }
   document.body.appendChild(card);
   stay.focus({ preventScroll: true });
 }
@@ -285,6 +302,7 @@ function guideCss(mobileMq) {
   font:12px/1.45 ui-monospace,Menlo,monospace;overflow-wrap:anywhere}
 .kiln-guide-acts{display:flex;flex-wrap:wrap;gap:8px}
 #kiln-guide-card a.kiln-btn-publish{display:inline-flex;align-items:center;color:#fff;text-decoration:none}
+#kiln-guide-card a.kiln-btn-ghost{display:inline-flex;align-items:center;text-decoration:none}
 #kiln-guide-card .kiln-btn-publish,#kiln-guide-card .kiln-btn-ghost{font-size:13px;padding:8px 16px}
 @media (prefers-reduced-motion: reduce){#kiln-guide,#kiln-guide-card{animation:none}}
 @media ${mobileMq}{

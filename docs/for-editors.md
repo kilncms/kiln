@@ -34,8 +34,10 @@ styles, so whatever you write matches the design.
 
 Some other things you can do, depending on what the owner has set up:
 
-- **Images**: click one to replace it. You'll be asked for the new file and alt text,
-  and you can drag the corner handle to resize it.
+- **Images**: click one, then **Replace image…**. **Upload** takes a picture from your
+  device. **From this site** shows the pictures the site already has, the ones on this
+  page first, with a search box: pick one and it is used as it is, with nothing new
+  added to the site. Write a description for it, and drag the corner handle to resize.
 - **Blocks**: lists of similar things (cards, table rows, gallery photos) have
   controls to duplicate, reorder, and remove items. On a phone, tap the **⋯** button
   on a block to open them.
@@ -59,12 +61,31 @@ one. Save the picture as a PNG instead, or ask the owner to add the SVG for you.
 As soon as you have made an edit, a **Publish** button appears beside the pencil
 button in the corner of the screen. It says how many edits are waiting ("Publish 3
 edits"). When you're happy, click it. (The same Publish is also the first item in the
-pencil's menu.) All your staged changes go out together, and
-the live site updates about a minute later (that minute is the site rebuilding, which
-is normal). If the button hasn't been pressed, nothing has changed for visitors. You
+pencil's menu.)
+
+Publish first shows you what is about to change. Each edit is listed as before and
+after: changed words are marked, a new picture sits beside the old one, and added or
+removed blocks are named. **Drop** leaves one edit out and puts that part of the page
+back. A yellow line is a warning, not a stop: a picture with no description, a link
+that goes nowhere, an empty heading. **Show me** takes you to it. You can write a line
+under **What changed?**, and it is saved with the change so History reads well. Then
+press the one button at the bottom. Escape or Cancel closes the sheet and keeps
+everything. Ctrl+Enter (Cmd+Enter on a Mac) publishes.
+
+All your staged changes go out together, and the live site updates about a minute
+later (that minute is the site rebuilding, which is normal). If you never press it,
+nothing has changed for visitors. You
 can close the tab: your unpublished edits are kept in that browser, and the next
 time you open the page there the editor offers to bring them back. They are not
 on the site, and not on any other device.
+
+For ten seconds afterwards the confirmation reads **Published. Undo**. Undo takes
+exactly that publish back and puts your edits on the page again, unpublished, so
+nothing you typed is lost. If someone else published the same page in those seconds,
+Undo does nothing and tells you so, because it would take their work with it.
+
+If you publish all day and would rather skip the sheet, the menu's **Settings** has
+**Publish without the preview**. It is remembered in that browser only.
 
 Every publish is saved in the site's history with your name on it. The owner can see
 who changed what and can restore any earlier version, so you can't permanently break
@@ -94,6 +115,12 @@ one person and the menu page to another.
 
 If you think you should have access to something you don't, ask the owner — it's a
 ten-second change on their end.
+
+## Getting help
+
+**Help**, at the end of the pencil's menu, opens this guide's web version in a new
+tab. The first time you sign in, three short tips walk you through one edit: change a
+heading, publish it, see what happened. They are shown once.
 
 ## Common questions
 

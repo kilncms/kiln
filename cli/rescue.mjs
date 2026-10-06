@@ -8,11 +8,19 @@
  *
  *   npx github:kilncms/kiln rescue <url> [--out=dir] [--max-pages=N]
  *        [--delay=ms] [--keep-scripts] [--no-tag] [--dry]
+ *        [--render [--browser=path] [--menu-shim]] [--try]
+ *
+ * --render is for sites drawn by JavaScript (Lovable, v0, Bolt and other React
+ * apps): each page is opened in a browser already on this machine and saved as
+ * it looks once finished. See render.mjs. --try also writes a try-out config,
+ * so the copy can be served locally and edited at once.
  *
  * The pure helpers (pageIdentity, mapUrls, fileToHref, cleanPage,
- * rewriteCssUrls, extractRefs) are exported for tests — no network there.
+ * rewriteCssUrls, extractRefs, sitemapPages, lostLines, wireKiln, appScripts,
+ * looksLikeErrorPage) are exported
+ * for tests — no network there.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -26,7 +34,7 @@ const UA = 'kiln-rescue/0.1 (+https://kilncms.com)';
 const MAX_ASSET_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 // off-origin hosts that are really "the builder's disk" — localize these too
-const BUILDER_CDN_RE = /(^|\.)(squarespace-cdn\.com|squarespace\.com|wixstatic\.com|parastorage\.com|wp\.com|wordpress\.com|googleusercontent\.com|cloudfront\.net|fastly\.net|fastly\.com)$/i;
+const BUILDER_CDN_RE = /(^|\.)(squarespace-cdn\.com|squarespace\.com|wixstatic\.com|parastorage\.com|wp\.com|wordpress\.com|googleusercontent\.com|cloudfront\.net|fastly\.net|fastly\.com|lovable\.app|lovableproject\.com|lovable\.dev|vercel-storage\.com|supabase\.co)$/i;
 const TRACKER_RE = /googletagmanager\.com|google-analytics\.com|doubleclick\.net|googleadservices\.com|connect\.facebook\.net|facebook\.com\/tr|hotjar\.com|clarity\.ms|mc\.yandex|matomo|plausible\.io|segment\.com/i;
 // links that are clearly files, not pages — don't spend crawl budget fetching them
 const NON_PAGE_RE = /\.(pdf|jpe?g|png|gif|webp|avif|svg|ico|css|js|mjs|json|xml|txt|zip|gz|mp3|mp4|webm|mov|woff2?|ttf|otf|eot)$/i;
@@ -319,6 +327,117 @@ export function cleanPage(html, opts = {}) {
   return { html: serialize(doc), scripts, cruft, offOrigin: [...offOrigin] };
 }
 
+// ─── pure: sitemap, Kiln wiring, the "what was lost" report ──────────────────
+
+/** Same-origin page paths listed in a sitemap.xml (nested sitemaps are not followed). */
+export function sitemapPages(xml, origin) {
+  const out = [];
+  for (const m of String(xml).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) {
+    const id = pageIdentity(m[1].replace(/&amp;/g, '&'), origin);
+    if (id && !NON_PAGE_RE.test(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** The page's title when it reads like an error page, else ''. */
+export function looksLikeErrorPage(html) {
+  const title = (String(html).match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '').replace(/\s+/g, ' ').trim();
+  return /\b(not found|404|unavailable|no longer available|access denied|forbidden)\b/i.test(title) ? title : '';
+}
+
+const KILN_TAGS = ['<script src="/assets/kiln-config.js"></script>', '<script src="/assets/kiln.js" defer></script>'];
+
+/**
+ * Add Kiln's two script tags before </body> (opts.kiln), and the phone-menu
+ * script and its one style rule (opts.menuStyle). Adding twice is a no-op.
+ */
+export function wireKiln(html, opts = {}) {
+  let out = html;
+  const tags = [];
+  if (opts.menuStyle && !/assets\/kiln-menu\.js/.test(out)) {
+    const h = out.search(/<\/head>/i);
+    if (h !== -1) out = out.slice(0, h) + opts.menuStyle + out.slice(h);
+    tags.push('<script src="/assets/kiln-menu.js" defer></script>');
+  }
+  if (opts.kiln !== false && !/assets\/kiln\.js/.test(out)) tags.push(...KILN_TAGS);
+  if (!tags.length) return out;
+  const block = tags.join('\n') + '\n';
+  const i = out.toLowerCase().lastIndexOf('</body>');
+  return i === -1 ? out + '\n' + block : out.slice(0, i) + block + out.slice(i);
+}
+
+/** Scripts still in a page that are not structured data and not Kiln's own. */
+export function appScripts(html) {
+  let n = 0;
+  walkTree(parse(html), node => {
+    if (node.tagName !== 'script') return;
+    if ((getAttr(node, 'type') || '').toLowerCase().includes('ld+json')) return;
+    if (/^\/assets\/kiln(-config|-menu)?\.js$/.test(getAttr(node, 'src') || '')) return;
+    n++;
+  });
+  return n;
+}
+
+/**
+ * What stopped working when the pages were frozen, as report lines.
+ * pages: [{ href, rendered }] where rendered is what render.mjs returned.
+ */
+export function lostLines(pages) {
+  const list = pages.filter(p => p.rendered);
+  if (!list.length) return [];
+  const L = ['## What freezing cost', '',
+    'These pages are now plain HTML. Whatever the app did with script after a page was drawn has stopped. Check each item below.', ''];
+  const where = (hrefs) => { const u = [...new Set(hrefs)]; return u.length > 4 ? `${u.slice(0, 4).join(', ')} and ${u.length - 4} more` : u.join(', '); };
+  const group = (items, keyOf) => { const m = new Map(); for (const it of items) { const k = keyOf(it); if (!m.has(k)) m.set(k, []); m.get(k).push(it.href); } return m; };
+
+  const forms = list.flatMap(p => p.rendered.lost.forms.map(f => ({ ...f, href: p.href })));
+  if (forms.length) {
+    L.push(`- Forms: ${forms.length}. A form the app sent by script now sends nowhere. Point each one at a form service, or replace it with an email link.`);
+    for (const [k, hrefs] of group(forms, f => `"${f.label}" (${f.fields} field${f.fields === 1 ? '' : 's'}${f.action ? `, posts to ${f.action}` : ''})`)) L.push(`  - ${k} on ${where(hrefs)}`);
+  } else L.push('- Forms: none.');
+
+  const controls = list.flatMap(p => p.rendered.lost.controls.filter(c => c.kind !== 'the phone menu button').map(c => ({ ...c, href: p.href })));
+  if (controls.length) {
+    const g = group(controls, c => `${c.kind} "${c.label}"`);
+    L.push(`- Controls that needed script: ${g.size}. They are still drawn and no longer do anything.`);
+    let n = 0;
+    for (const [k, hrefs] of g) { if (n++ === 40) { L.push(`  - and ${g.size - 40} more`); break; } L.push(`  - ${k} on ${where(hrefs)}`); }
+  } else L.push('- Controls that needed script: none.');
+
+  const withMenu = list.filter(p => p.rendered.menu?.found);
+  const shimmed = withMenu.filter(p => p.rendered.menu.shimmed);
+  if (!withMenu.length) L.push('- Phone menu: no menu button found.');
+  else if (shimmed.length === withMenu.length) L.push(`- Phone menu: works. The button "${withMenu[0].rendered.menu.label}" opens it through assets/kiln-menu.js, a small script with no dependencies, on ${where(shimmed.map(p => p.href))}.`);
+  else if (shimmed.length) L.push(`- Phone menu: works on ${where(shimmed.map(p => p.href))}. On ${where(withMenu.filter(p => !p.rendered.menu.shimmed).map(p => p.href))} the button could not be made to work: add the links to the page by hand.`);
+  else if (list.some(p => p.rendered.menu?.tried)) L.push(`- Phone menu: the button "${withMenu[0].rendered.menu.label}" does not open, and --menu-shim could not work out what it shows. Add the links to the page by hand.`);
+  else L.push(`- Phone menu: the button "${withMenu[0].rendered.menu.label}" does not open. Run again with --menu-shim to add a small script that opens it.`);
+
+  const nav = list.flatMap(p => (p.rendered.navButtons || []).map(b => ({ ...b, href: p.href })));
+  for (const b of nav) L.push(`- The button "${b.label}" changed page by script (it went to ${new URL(b.url).pathname}). Replace it with a link.`);
+
+  const changed = list.filter(p => p.rendered.changed);
+  if (changed.length) {
+    L.push(`- Pages that came out differently on a second visit: ${changed.length}. The copy keeps what the first visit showed.`);
+    for (const p of changed) L.push(`  - ${p.href}: "${p.rendered.changed.was}" then "${p.rendered.changed.now}"`);
+  } else L.push('- Pages that came out differently on a second visit: none.');
+
+  const invisible = list.filter(p => p.rendered.lost.invisible.length);
+  if (invisible.length) {
+    L.push(`- Text that was invisible when frozen (it was waiting for an animation) on ${where(invisible.map(p => p.href))}:`);
+    for (const p of invisible) for (const t of p.rendered.lost.invisible) L.push(`  - "${t}"`);
+  }
+  const count = (key) => list.filter(p => p.rendered.lost[key] > 0).map(p => p.href);
+  if (count('canvases').length) L.push(`- Drawn on a canvas by script, so not copied: ${where(count('canvases'))}.`);
+  if (count('blobs').length) L.push(`- Pictures or video that existed only in the browser's memory, so not copied: ${where(count('blobs'))}.`);
+  if (count('shadow').length) L.push(`- Custom elements that draw their own insides, now empty: ${where(count('shadow'))}.`);
+  const scripted = list.filter(p => p.rendered.scripted).map(p => p.href);
+  if (scripted.length) L.push(`- Phone layout chosen by script on ${where(scripted)}: the copy keeps the desktop version at every width. Look at it on a phone.`);
+  const styles = list.reduce((n, p) => n + p.rendered.lost.styles, 0);
+  if (styles) L.push(`- Styles that existed only in memory and are now written into the pages: ${styles}.`);
+  L.push('');
+  return L;
+}
+
 // ─── crawl + download + write ────────────────────────────────────────────────
 
 const get = (url) => fetch(url, {
@@ -341,49 +460,98 @@ export async function rescueCmd(startUrl, args = {}) {
   try {
     if (!startUrl) throw new Error('missing url');
     start = new URL(/^https?:\/\//i.test(startUrl) ? startUrl : `https://${startUrl}`);
-  } catch { fail('Usage: kiln rescue <url> [--out=dir] [--max-pages=N] [--delay=ms] [--keep-scripts] [--no-tag] [--dry]'); process.exit(1); }
-  const origin = start.origin;
+  } catch { fail('Usage: kiln rescue <url> [--out=dir] [--max-pages=N] [--delay=ms] [--keep-scripts] [--no-tag] [--dry] [--render [--browser=path] [--menu-shim]] [--try]'); process.exit(1); }
+  let origin = start.origin;
   const out = args.out || `rescued-${start.hostname}`;
   const maxPages = Math.max(1, Number(args['max-pages']) || 50);
   const delay = args.delay !== undefined ? Math.max(0, Number(args.delay) || 0) : 250;
   const keepScripts = !!args['keep-scripts'];
   const dry = !!args.dry;
 
+  // ── --render: a real browser draws each page before it is saved ──
+  let renderer = null;
+  if (args.render) {
+    if (keepScripts) { fail('--keep-scripts cannot be used with --render. A frozen page that still ran the app would be redrawn by it, and edits would be lost.'); process.exit(1); }
+    const { openRenderer } = await import('./render.mjs');
+    renderer = await openRenderer({ browser: args.browser, menuShim: !!args['menu-shim'], maxAssetBytes: MAX_ASSET_BYTES, maxTotalBytes: MAX_TOTAL_BYTES });
+    if (renderer.error) { fail(renderer.error); process.exit(1); }
+    info(`rendering with ${renderer.browserPath}`);
+  }
+
   // ── crawl: same-origin BFS, sequential + polite ──
-  hr(`Crawling ${origin} (max ${maxPages} pages, ${delay}ms delay)`);
+  hr(`${renderer ? 'Rendering' : 'Crawling'} ${origin} (max ${maxPages} pages, ${delay}ms delay)`);
   const startId = pageIdentity(start.href, origin) || '/';
   const queue = [startId], seen = new Set(queue);
   const pages = new Map();          // identity → { html, url }
   const aliases = new Map();        // redirect-target identity → crawled identity
   const failedPages = [];           // { path, reason }
   const assetRefs = new Set();      // assetKey strings, discovery order
+  // The address given may only forward to the real one (a builder's subdomain
+  // to the owner's domain, or to www). Follow that once, for the first page.
+  const moved = (landedUrl) => {
+    if (pages.size || failedPages.length) return false;
+    origin = new URL(landedUrl).origin;
+    info(`${start.origin} forwards to ${origin}: copying that site`);
+    return true;
+  };
   while (queue.length && pages.size < maxPages) {
     const id = queue.shift();
     if (pages.size || failedPages.length) await sleep(delay);
     console.log(`  [${pages.size + 1}/${maxPages}] ${id}`);
-    let res;
-    try { res = await get(origin + id); }
-    catch (e) { failedPages.push({ path: id, reason: e.name === 'TimeoutError' ? 'timeout' : String(e.cause?.code || e.message) }); continue; }
-    const landed = new URL(res.url);
-    if (landed.origin !== origin) { failedPages.push({ path: id, reason: `redirected off-origin → ${landed.origin}` }); continue; }
-    if (!res.ok) { failedPages.push({ path: id, reason: `HTTP ${res.status}` }); continue; }
-    const ct = (res.headers.get('content-type') || '').toLowerCase();
-    if (ct && !ct.includes('text/html')) { failedPages.push({ path: id, reason: `not HTML (${ct.split(';')[0]})` }); continue; }
-    const html = await res.text();
-    const finalId = pageIdentity(res.url, origin);
+    let html, landedUrl, rendered = null;
+    if (renderer) {
+      let r;
+      try { r = await renderer.render(origin + id, { first: !pages.size && !failedPages.length }); }
+      catch (e) { failedPages.push({ path: id, reason: String(e.message).split('\n')[0] }); continue; }
+      if (r.reason) { failedPages.push({ path: id, reason: r.reason }); continue; }
+      if (new URL(r.url).origin !== origin) {
+        if (!moved(r.url)) { failedPages.push({ path: id, reason: `redirected off-origin → ${new URL(r.url).origin}` }); continue; }
+      }
+      if (r.status >= 400) { failedPages.push({ path: id, reason: `HTTP ${r.status}` }); continue; }
+      if (r.html === undefined) { failedPages.push({ path: id, reason: `not HTML (${(r.contentType || '').split(';')[0]})` }); continue; }
+      html = r.html; landedUrl = r.url; rendered = r;
+    } else {
+      let res;
+      try { res = await get(origin + id); }
+      catch (e) { failedPages.push({ path: id, reason: e.name === 'TimeoutError' ? 'timeout' : String(e.cause?.code || e.message) }); continue; }
+      const landed = new URL(res.url);
+      if (landed.origin !== origin && !moved(res.url)) { failedPages.push({ path: id, reason: `redirected off-origin → ${landed.origin}` }); continue; }
+      if (!res.ok) { failedPages.push({ path: id, reason: `HTTP ${res.status}` }); continue; }
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (ct && !ct.includes('text/html')) { failedPages.push({ path: id, reason: `not HTML (${ct.split(';')[0]})` }); continue; }
+      html = await res.text(); landedUrl = res.url;
+    }
+    const finalId = pageIdentity(landedUrl, origin);
     if (finalId && finalId !== id) {
       // redirected within the origin: same page under two paths — keep one copy
       if (pages.has(finalId)) { aliases.set(id, finalId); continue; }
       aliases.set(finalId, id);
     }
-    pages.set(id, { html, url: res.url });
-    const refs = extractRefs(html, res.url);
-    for (const p of refs.pages) if (!seen.has(p)) { seen.add(p); queue.push(p); }
+    const firstPage = !pages.size;
+    pages.set(id, { html, url: landedUrl, rendered });
+    const refs = extractRefs(html, landedUrl);
+    const found = [...refs.pages];
+    // addresses the app moved to by script, and (after the first page) the sitemap
+    for (const r of rendered?.routes || []) { const p = pageIdentity(r, origin); if (p && !NON_PAGE_RE.test(p)) found.push(p); }
+    if (renderer && firstPage) {
+      try { const sm = await get(origin + '/sitemap.xml'); if (sm.ok) found.push(...sitemapPages(await sm.text(), origin)); }
+      catch { /* no sitemap */ }
+    }
+    for (const p of found) if (!seen.has(p)) { seen.add(p); queue.push(p); }
     for (const a of refs.assets) assetRefs.add(a);
   }
+  if (renderer) await renderer.close();
   const unvisited = queue.length;
   ok(`crawled ${pages.size} page${pages.size === 1 ? '' : 's'}${failedPages.length ? `, ${failedPages.length} failed` : ''}${unvisited ? ` (${unvisited} more found beyond --max-pages)` : ''}`);
-  if (!pages.size) { fail('nothing crawled — check the URL and try again'); process.exit(1); }
+  if (!pages.size) {
+    for (const f of failedPages) fail(`${f.path}: ${f.reason}`);
+    fail('nothing crawled — check the URL and try again'); process.exit(1);
+  }
+
+  // A host that answers "no such site" with a normal page cannot be told from
+  // a real one by its status. Its title usually gives it away.
+  const firstTitle = looksLikeErrorPage([...pages.values()][0].html);
+  if (firstTitle) warn(`the first page is titled "${firstTitle}". If that is an error page, the address is wrong or the site is not published`);
 
   // ── decide which assets to localize ──
   // same-origin always; off-origin when it's a known builder CDN, or when one
@@ -404,7 +572,7 @@ export async function rescueCmd(startUrl, args = {}) {
     for (const [, p] of pages) scripts += cleanPage(p.html, { baseUrl: p.url, pageMap, keepScripts }).scripts;
     printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry, scripts, cruft: 0,
       localized: [], localizedBytes: 0, planned: localize.length, offOrigin: [...assetRefs].filter(k => !localize.includes(k)),
-      skippedAssets: [], tally: null });
+      skippedAssets: [], tally: null, firstTitle });
     process.exit(0);
   }
 
@@ -418,16 +586,22 @@ export async function rescueCmd(startUrl, args = {}) {
     const { key, scan } = dlQueue.shift();
     if (downloads.has(key)) continue;
     if (capped) { skippedAssets.push({ url: key, reason: '25 MB total cap reached' }); continue; }
-    await sleep(delay);
-    let res;
-    try { res = await get(key); }
-    catch (e) { skippedAssets.push({ url: key, reason: e.name === 'TimeoutError' ? 'timeout' : String(e.cause?.code || e.message) }); continue; }
-    if (!res.ok) { skippedAssets.push({ url: key, reason: `HTTP ${res.status}` }); continue; }
-    const len = Number(res.headers.get('content-length') || 0);
-    if (len > MAX_ASSET_BYTES) { skippedAssets.push({ url: key, reason: `${mb(len)} > 5 MB` }); res.body?.cancel?.(); continue; }
-    let buf;
-    try { buf = Buffer.from(await res.arrayBuffer()); }
-    catch { skippedAssets.push({ url: key, reason: 'download failed' }); continue; }
+    // the browser already fetched most of these while rendering: no second request
+    const held = renderer?.cache.get(key);
+    let buf, ct;
+    if (held) { buf = held.buf; ct = held.ct; }
+    else {
+      await sleep(delay);
+      let res;
+      try { res = await get(key); }
+      catch (e) { skippedAssets.push({ url: key, reason: e.name === 'TimeoutError' ? 'timeout' : String(e.cause?.code || e.message) }); continue; }
+      if (!res.ok) { skippedAssets.push({ url: key, reason: `HTTP ${res.status}` }); continue; }
+      const len = Number(res.headers.get('content-length') || 0);
+      if (len > MAX_ASSET_BYTES) { skippedAssets.push({ url: key, reason: `${mb(len)} > 5 MB` }); res.body?.cancel?.(); continue; }
+      try { buf = Buffer.from(await res.arrayBuffer()); }
+      catch { skippedAssets.push({ url: key, reason: 'download failed' }); continue; }
+      ct = (res.headers.get('content-type') || '').toLowerCase();
+    }
     if (buf.length > MAX_ASSET_BYTES) { skippedAssets.push({ url: key, reason: `${mb(buf.length)} > 5 MB` }); continue; }
     if (totalBytes + buf.length > MAX_TOTAL_BYTES) {
       capped = true;
@@ -436,7 +610,6 @@ export async function rescueCmd(startUrl, args = {}) {
       continue;
     }
     totalBytes += buf.length;
-    const ct = (res.headers.get('content-type') || '').toLowerCase();
     downloads.set(key, { buf, ct });
     process.stdout.write(`\r  ${downloads.size}/${localize.length}+ downloaded (${mb(totalBytes)})   `);
     // one level deep: fonts/images referenced by a stylesheet we just localized
@@ -492,11 +665,55 @@ export async function rescueCmd(startUrl, args = {}) {
     ok(`tagged ${tally.fields} text fields · ${tally.images} images · ${tally.repeats} block lists · ${tally.menu} menus`);
   }
 
+  // ── Kiln's script tags and bundles, so the copy is ready to edit once pushed ──
+  const wantKiln = !args['no-tag'];
+  const shimmed = [...pages.values()].some(p => p.rendered?.menu?.shimmed);
+  let menuStyle = '', left = 0;
+  if (shimmed) {
+    const { MENU_SHIM, MENU_STYLE } = await import('./render.mjs');
+    menuStyle = MENU_STYLE;
+    writeFileSync(path.join(out, 'assets', 'kiln-menu.js'), MENU_SHIM);
+  }
+  for (const [id, p] of pages) {
+    const fp = path.join(out, pageMap.get(id));
+    const raw = readFileSync(fp, 'utf8');
+    const wired = wireKiln(raw, { kiln: wantKiln, menuStyle: p.rendered?.menu?.shimmed ? menuStyle : '' });
+    if (wired !== raw) writeFileSync(fp, wired);
+    if (!keepScripts) left += appScripts(wired);
+  }
+  let tryOut = false;
+  if (wantKiln) {
+    const bundles = ['kiln.js', 'kiln-editor.js', 'kiln-features.js'];
+    if (bundles.every(f => existsSync(path.join(PKG_ROOT, 'dist', f)))) {
+      for (const f of bundles) cpSync(path.join(PKG_ROOT, 'dist', f), path.join(out, 'assets', f));
+      ok('added Kiln\'s two script tags to every page and its files to assets/');
+    } else warn('Kiln\'s script tags were added, but its files were not found to copy. The setup wizard will add them.');
+    const cfgFile = path.join(out, 'assets', 'kiln-config.js');
+    if (args.try && !existsSync(cfgFile)) {
+      writeFileSync(cfgFile, TRY_CONFIG);
+      tryOut = true;
+      ok('wrote a try-out config: serve this folder and click a word (edits stay in your browser)');
+    }
+  }
+
   printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry: false, scripts, cruft,
     localized: [...downloads.keys()], localizedBytes: totalBytes, planned: localize.length,
-    offOrigin: [...offOrigin], skippedAssets, tally });
+    offOrigin: [...offOrigin], skippedAssets, tally, rendered: !!args.render, left, wantKiln, tryOut, firstTitle,
+    requests: renderer?.requests });
   process.exit(0);
 }
+
+const TRY_CONFIG = `// Try-out copy written by "kiln rescue --try": edits stay in this browser and
+// nothing is published. Delete this file before running the setup wizard
+// (npx github:kilncms/kiln), which writes the real one.
+window.KILN = {
+  repo:   'local/try-out',
+  branch: 'main',
+  worker: '',
+  sandbox: true,
+  styles: [],
+};
+`;
 
 function printReport(r) {
   const written = new Set(r.pageMap.values()).size;
@@ -508,6 +725,8 @@ function printReport(r) {
     ? `- Assets to localize: ${r.planned}`
     : `- Assets localized: ${r.localized.length} (${mb(r.localizedBytes)})`);
   lines.push(`- Scripts stripped: ${r.scripts}${r.cruft ? ` (+ ${r.cruft} builder cruft tags removed)` : ''}`);
+  if (r.firstTitle) lines.push(`- Check this first: the first page is titled "${r.firstTitle}". If that is an error page, the address is wrong or the site is not published, and this is a copy of the error.`);
+  if (r.rendered && !r.dry) lines.push(`- Rendered in a browser: every page was opened, scrolled to the end and saved as it looked. App scripts left in the pages: ${r.left}. Requests the browser made to do it: ${r.requests}`);
   if (r.tally) lines.push(`- Kiln-tagged: ${r.tally.fields} text fields · ${r.tally.images} images · ${r.tally.repeats} block lists · ${r.tally.menu} menus`);
   if (r.failedPages.length) {
     lines.push(`- Pages that failed:`);
@@ -526,15 +745,25 @@ function printReport(r) {
     if (skipped.length > 20) lines.push(`  - …and ${skipped.length - 20} more`);
   }
   lines.push('');
+  if (r.rendered) {
+    lines.push(...lostLines([...r.pages].map(([id, p]) => ({ href: fileToHref(r.pageMap.get(id)), rendered: p.rendered }))));
+  }
   lines.push('## Next steps');
   lines.push('');
+  if (r.tryOut) {
+    lines.push('To try editing now: serve this folder (`npx serve .`), open it and click a word. Nothing is published from a try-out copy.');
+    lines.push('Before step 3, delete `assets/kiln-config.js`: the wizard writes the real one.');
+    lines.push('');
+  }
   lines.push('```');
   lines.push(`cd ${r.out} && git init -b main && git add -A && git commit -m "Rescued from ${r.origin}"`);
   lines.push('```');
   lines.push('');
   lines.push('1. Create a GitHub repo and push (`gh repo create my-site --private --source . --push`).');
   lines.push('2. Deploy on Cloudflare Pages: Connect to Git, build command EMPTY, output directory `/`.');
-  lines.push('3. Wire up Kiln editing: `npx github:kilncms/kiln` in this folder.');
+  lines.push(r.wantKiln
+    ? '3. Connect Kiln: `npx github:kilncms/kiln` in this folder. Every page already loads Kiln, so after that you open `/kiln`, sign in and click a word.'
+    : '3. Wire up Kiln editing: `npx github:kilncms/kiln` in this folder.');
   lines.push('');
   const report = lines.join('\n');
   if (!r.dry) writeFileSync(path.join(r.out, 'RESCUE-REPORT.md'), report + '\n');

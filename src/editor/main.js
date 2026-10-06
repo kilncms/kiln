@@ -22,12 +22,18 @@ import {
   revertRequest, parseSourceCapabilities, saveSummary, friendlyRef, SOURCE_LOCKED_TIP, STILL_BUILDING_COPY,
 } from './source-fields.js';
 import { initPalette, openPalette } from './palette.js';
-import { initSuggest, suggestChanges, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
+import { initSuggest, suggestChanges, sendSuggestion, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
 import { initTheme, openThemePanel } from './theme.js';
 import { initComments, openComments, commentsTick } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 import { initBlocks } from './blocks.js';
-import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished } from './firstrun.js';
+import { publishLabel, editCommitMessage, initGuide, guideSync, guidePublished, guideWaiting } from './firstrun.js';
+import { revertPublish, publishRecord, restage } from './undo-publish.js';
+import { hasGrant, offersMakeEditable, helpUrl } from './grants.js';
+import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
+import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
+import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
+  imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -38,16 +44,11 @@ const PAUSE_KEY = 'kiln_pause';
 // before init() runs at module load — initSandbox reads them synchronously.
 const SANDBOX_KEY = 'kiln_sandbox';
 const SANDBOX_TTL = 24 * 3600 * 1000;
-// Default menu tools an invited editor gets when the admin hasn't customized them.
-// (Declared up here — used by hasFeature() which runs during the init() call below;
-// esbuild hoists const→var, so a later declaration would read undefined at boot.)
-const EDITOR_DEFAULT_FEATURES = ['pagesettings', 'history', 'draft'];
 const UNDO_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-8.4L3 7"/></svg>';
 // Phone-first chrome: ONE media query decides "phone" — shared verbatim by the
 // CSS in injectStyles() and the few JS behavior forks (menu/toolbar positioning,
 // FAB + toolbar dragging). Declared above the init() call because esbuild hoists
-// const→var, so anything read during boot must already be initialized (same
-// story as EDITOR_DEFAULT_FEATURES above).
+// const→var, so anything read during boot must already be initialized.
 const MOBILE_MQ = '(max-width: 700px), (pointer: coarse) and (max-width: 820px)';
 function isMobileEditor() { return window.matchMedia(MOBILE_MQ).matches; }
 
@@ -217,6 +218,13 @@ async function init() {
   startPresence();
   initComments(cfg, mode, state, workerAuthHeaders, modal, setStatus, hasFeature, KILN_CHROME);
   bootBlocks();
+  // An invited editor's first session: the same three steps the demo shows,
+  // once per browser. Only for someone who can publish this page themselves.
+  if (mode === 'editor' && !isSuggestMode() && state.scope?.mode !== 'review' && pageInScope()) {
+    initGuide({ cfg, audience: 'editor', mobileMq: MOBILE_MQ, guideUrl: helpLink(),
+      unpublished: () => state.pending.size + state.pendingSource.size + state.pendingBinaries.size + state.pendingStructural.length,
+      publishButton: () => document.getElementById('kiln-pubsheet-go') || document.getElementById('kiln-publish-quick') || document.getElementById('kiln-publish') });
+  }
   // Owner-only: quietly check whether a newer editor build exists.
   if (mode === 'admin' && !cfg.sandbox) checkForUpdate();
 
@@ -428,10 +436,21 @@ function isSuggestMode() {
 
 /** Whether the current editor may use a given menu feature. Admins get everything. */
 function hasFeature(feature) {
-  if (mode === 'admin' || cfg.sandbox) return true;   // sandbox demo showcases everything
-  const granted = state.scope?.features;
-  const list = Array.isArray(granted) ? granted : EDITOR_DEFAULT_FEATURES;
-  return list.includes(feature);
+  return hasGrant({ mode, sandbox: !!cfg.sandbox, features: state.scope?.features }, feature);
+}
+
+/** The guide for whoever is signed in, and the menu's "Help" that opens it in a new tab. */
+function helpLink() {
+  return helpUrl({ mode, sandbox: !!cfg.sandbox, role: state.scope?.role || null });
+}
+function openHelp() {
+  window.open(helpLink(), '_blank', 'noopener');
+}
+
+/** The two structure tools: granted, on a page this person can write, by someone who publishes. */
+function canMakeEditable() {
+  return offersMakeEditable({ mode, sandbox: !!cfg.sandbox, features: state.scope?.features,
+    scopeMode: state.scope?.mode || null, pageInScope: mode === 'editor' && !cfg.sandbox ? pageInScope() : true });
 }
 
 /** Hide menu items an invited editor hasn't been granted (applied after the bar renders). */
@@ -616,7 +635,11 @@ function decorateField(el, key) {
   if (!el.closest('[data-cms-repeat]') && !state.undoBase.has(key)) state.undoBase.set(key, el.innerHTML);
   const attrName = el.getAttribute('data-cms-attr');
   if (attrName && !state.undoBaseAttrs.has(key)) {
-    state.undoBaseAttrs.set(key, { [attrName]: el.getAttribute(attrName) || '' });
+    // A picture's description is edited beside it: its starting value is part
+    // of the baseline too, so Undo puts it back and the publish sheet can show it.
+    const base = { [attrName]: el.getAttribute(attrName) || '' };
+    if (el.tagName === 'IMG') base.alt = el.getAttribute('alt') || '';
+    state.undoBaseAttrs.set(key, base);
   }
   el.addEventListener('click', (e) => {
     // Cmd/Ctrl+click on a link follows it even in edit mode.
@@ -1426,7 +1449,7 @@ function imageToolbar(img, key) {
     }
     tb.remove();
   };
-  tb.querySelector('[data-act="replace"]').onclick = (e) => { e.stopPropagation(); pickImage(img, key); };
+  tb.querySelector('[data-act="replace"]').onclick = (e) => { e.stopPropagation(); replaceImage(img, key); };
   const aiAltBtn = tb.querySelector('[data-act="ai-alt"]');
   if (aiAltBtn) aiAltBtn.onclick = (e) => { e.stopPropagation(); assistAltText(img, key, altInput); };
 
@@ -1437,7 +1460,8 @@ function imageToolbar(img, key) {
   const removeHandles = () => document.querySelectorAll('.kiln-img-handle').forEach(h => h.remove());
   tb.querySelector('[data-act="done"]').onclick = (e) => { e.stopPropagation(); finish(); removeHandles(); };
   const away = (e) => {
-    if (!tb.contains(e.target) && e.target !== img && !e.target.closest('.kiln-img-handle')) {
+    // the picture chooser is part of this toolbar's work: it stays for the description
+    if (!tb.contains(e.target) && e.target !== img && !e.target.closest('.kiln-img-handle, #kiln-modal')) {
       finish(); removeHandles(); document.removeEventListener('click', away);
     }
   };
@@ -1587,6 +1611,37 @@ function stageImageEl(img, key) {
   if (cfg.sandbox) attrs.src = img.getAttribute('src');
   else attrs.src = safeUrl(img.getAttribute('data-kiln-src') || img.getAttribute('src'));
   stagePending(key, { attrs });
+}
+
+/** The pictures on this page that live on this site: their address, name and size. */
+function pageImages() {
+  const seen = new Set(), out = [];
+  for (const i of document.images) {
+    if (i.closest(KILN_CHROME)) continue;
+    let u;
+    try { u = new URL(i.currentSrc || i.src, location.href); } catch { continue; }
+    if (u.origin !== location.origin || !/^https?:$/.test(u.protocol) || seen.has(u.pathname)) continue;
+    seen.add(u.pathname);
+    out.push({ url: u.pathname, path: u.pathname.slice(1), name: decodeURIComponent(u.pathname.split('/').pop() || 'picture'),
+      size: performance.getEntriesByName(u.href)[0]?.encodedBodySize || 0 });
+  }
+  return out;
+}
+
+/** "Replace image…": upload a new picture, or choose one that is already on the site. */
+function replaceImage(img, key) {
+  openImagePicker({
+    modal,
+    upload: () => pickImage(img, key),
+    choose: (image) => {
+      if (!chooseSiteImage(img, key, image.url, { stagePending, stageContainer, safeUrl })) return;
+      setStatus(cfg.sandbox ? `“${image.name}” is in place. Publish to save it to your demo` : `“${image.name}” is in place. Publish to put it live`, 'saved');
+    },
+    request: cfg.sandbox ? null : (method, path) => state.gh.request(method, path),
+    repo: cfg.repo, branch: cfg.branch || 'main', root: cfg.root || '',
+    paths: mode === 'editor' ? (state.scope?.paths || null) : null,
+    pageImages,
+  });
 }
 
 function pickImage(img, key) {
@@ -1950,21 +2005,208 @@ function retireStaged() {
   refreshPublishButton();
 }
 
-async function publish() {
+// ─── The publish sheet: what will change, before it changes ──────────────────
+
+/** The value an attribute had before this session touched it. */
+function attrBefore(key, attr) {
+  for (const entry of editHistory.undo) {
+    for (const st of entry.steps) if (st.key === key && st.attrsBefore && attr in st.attrsBefore) return st.attrsBefore[attr];
+  }
+  return state.undoBaseAttrs.get(key)?.[attr];
+}
+
+/** Leave one staged edit out: the page goes back, and Undo brings the edit back. */
+function dropPending(key) {
+  const entry = state.pending.get(key);
+  if (!entry) return;
+  const step = { key, prevEntry: JSON.parse(JSON.stringify(entry)), nextEntry: undefined };
+  if (entry.html !== undefined) { step.beforeHtml = entry.html; step.afterHtml = state.undoBase.get(key); }
+  if (entry.attrs) {
+    step.attrsBefore = { ...entry.attrs };
+    step.attrsAfter = {};
+    for (const a of Object.keys(entry.attrs)) step.attrsAfter[a] = attrBefore(key, a);
+  }
+  applyUndoStep(step, 'after');
+  pushUndoEntry({ steps: [step] });
+  refreshPublishButton();
+}
+
+const STRUCTURAL_WORDS = {
+  annotate: ['Made editable', 'plain'], remove: ['No longer editable', 'plain'],
+  removeSection: ['Removed', 'remove'], insertAfter: ['Added', 'add'], appendMain: ['Added', 'add'],
+};
+
+/** One row per unpublished edit, for the publish sheet. Reads state, changes nothing. */
+function publishItems() {
+  const items = [];
+  const blocksOf = (html) => [...new DOMParser().parseFromString(`<body>${html ?? ''}</body>`, 'text/html').body.children].map(c => c.outerHTML);
+  for (const [key, v] of state.pending) {
+    const el = elementForKey(key);
+    const isList = !!el && el.getAttribute('data-cms-repeat') === key;
+    const parts = [], images = [], warnings = [], links = [];
+    let afterText = null;
+    if (v.html !== undefined) {
+      const baseHtml = state.undoBase.get(key) ?? '';
+      let listChanged = false;
+      if (isList) {
+        const ch = blockChange(blockNames(blocksOf(baseHtml)), blockNames(blocksOf(v.html)));
+        for (const n of ch.added) parts.push({ type: 'note', tone: 'add', text: `Added: ${n}` });
+        for (const n of ch.removed) parts.push({ type: 'note', tone: 'remove', text: `Removed: ${n}` });
+        if (ch.moved) parts.push({ type: 'note', text: 'The order changed.' });
+        listChanged = ch.added.length || ch.removed.length || ch.moved;
+      }
+      const before = renderedText(key, baseHtml);
+      afterText = renderedText(key, v.html);
+      if (!listChanged && before !== afterText) parts.push({ type: 'text', before, after: afterText });
+      // pictures inside the edited HTML: the same slot, a different picture
+      const was = imageSources(baseHtml), now = imageSources(v.html);
+      const live = el ? [...el.querySelectorAll('img')].filter(i => !i.closest(KILN_CHROME)) : [];
+      now.forEach((img, i) => {
+        const changed = was.length === now.length ? was[i].src !== img.src : !was.some(w => w.src === img.src);
+        if (changed && was.length === now.length) parts.push({ type: 'image', before: was[i].src, after: live[i]?.currentSrc || live[i]?.src || img.src });
+        images.push({ alt: img.alt, changed });
+      });
+      links.push(...linkProblems(v.html, location.origin));
+    }
+    if (v.attrs) {
+      const a = v.attrs;
+      if ('src' in a) {
+        parts.push({ type: 'image', before: attrBefore(key, 'src') || '', after: el?.currentSrc || el?.getAttribute('src') || a.src });
+        images.push({ alt: a.alt ?? el?.getAttribute('alt'), changed: true });
+      }
+      if ('alt' in a && (attrBefore(key, 'alt') ?? '') !== a.alt) parts.push({ type: 'text', name: 'Picture description', before: attrBefore(key, 'alt') ?? '', after: a.alt });
+      if ('href' in a) {
+        parts.push({ type: 'text', name: 'Link goes to', before: attrBefore(key, 'href') ?? '', after: a.href });
+        links.push(...linkProblems(`<a href="${escapeHtml(a.href)}">${escapeHtml(el?.innerText || 'this link')}</a>`, location.origin));
+      }
+      // a resize on its own; a new picture brings its own size along and needs no second line
+      if (!('src' in a) && Object.keys(a).some(n => !['alt', 'href', 'data-kiln-src'].includes(n))) parts.push({ type: 'note', text: 'Size or layout changed.' });
+    }
+    if (!parts.length) parts.push({ type: 'note', text: 'Changed.' });
+    warnings.push(...itemWarnings({ tag: isList ? '' : el?.tagName, afterText, images }));
+    for (const l of links) {
+      if (l.problem === 'empty') warnings.push({ kind: 'link', text: `The link “${l.text}” goes nowhere.` });
+      else if (l.problem === 'anchor') {
+        const id = decodeURIComponent(l.href.slice(1));
+        if (!document.getElementById(id) && !document.getElementsByName(id).length) warnings.push({ kind: 'link', text: `The link “${l.text}” points to a part of this page that is not there.` });
+      }
+    }
+    items.push({ id: key, key, label: humanizeKey(key), parts, warnings, links: links.filter(l => l.problem === 'check'), drop: () => dropPending(key) });
+  }
+  for (const [ref, v] of state.pendingSource) {
+    items.push({ id: 'source:' + ref, key: null, sourceRef: ref, label: humanizeKey(String(ref).split('#').pop().split(':').pop()),
+      parts: [{ type: 'text', before: state.sourceBase.get(ref) ?? '', after: v.value }], warnings: [],
+      drop: () => { state.pendingSource.delete(ref); syncSourceDom(ref); refreshPublishButton(); } });
+  }
+  state.pendingStructural.forEach((op, i) => {
+    const [word, tone] = STRUCTURAL_WORDS[op.op] || ['Changed', 'plain'];
+    const at = editHistory.undo.findIndex(e => e.steps.some(st => st.structural && st.structural.op === op));
+    items.push({ id: 'structure:' + i, key: op.key, label: humanizeKey(op.key) || 'a section',
+      parts: [{ type: 'note', tone, text: `${word}: ${humanizeKey(op.key) || 'a section'}` }], warnings: [],
+      drop: at === -1 ? null : () => {
+        const [entry] = editHistory.undo.splice(at, 1);
+        for (const st of [...entry.steps].reverse()) applyUndoStep(st, 'before');
+        updateUndoUi();
+        refreshPublishButton();
+      } });
+  });
+  return items;
+}
+
+const linkSeen = new Map();   // address → true (answers) | false (404), for this page load
+/** Slow warnings: ask this site whether each internal link in an edit exists. */
+function checkEditedLinks(items, add) {
+  let budget = 8;
+  for (const item of items) {
+    for (const l of item.links || []) {
+      let url;
+      try { url = new URL(l.href, location.href); } catch { continue; }
+      if (url.origin !== location.origin) continue;
+      const key = url.origin + url.pathname;
+      const say = () => add(item.id, { kind: 'link', text: `The link “${l.text}” goes to ${url.pathname}, which is not on this site.` });
+      if (linkSeen.has(key)) { if (!linkSeen.get(key)) say(); continue; }
+      if (budget-- <= 0) return;
+      fetch(key, { method: 'HEAD', cache: 'no-store' }).then(res => {
+        linkSeen.set(key, res.status !== 404);
+        if (res.status === 404) say();
+      }).catch(() => { /* offline or blocked: say nothing rather than guess */ });
+    }
+  }
+}
+
+/** Every Publish control comes here: show what will change, then publish it. */
+function requestPublish() {
+  if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+  if (sourceActive) commitSourceEdit();
+  const count = () => state.pending.size + state.pendingSource.size;
+  const anything = () => count() || state.pendingBinaries.size || state.pendingStructural.length;
+  if (!anything()) return;
+  if (mode === 'editor' && state.scope?.mode === 'review') return;
+  if (previewOff(localStorage)) return publish();
+  const suggest = isSuggestMode();
+  openPublishSheet({
+    modal, suggest,
+    items: publishItems,
+    count,
+    label: (n) => (suggest ? 'Send for review' : publishLabel(n)),
+    extra: () => {
+      const rows = state.pending.size + state.pendingSource.size + state.pendingStructural.length;
+      const n = state.pendingBinaries.size;
+      if (suggest && (n || state.pendingStructural.length)) return 'A suggestion carries text edits only. New pictures and added sections stay here until an owner publishes them.';
+      return n && !rows ? `${n} uploaded file${n > 1 ? 's' : ''} will be added to the site.` : '';
+    },
+    checks: checkEditedLinks,
+    jump: (item) => {
+      document.querySelector('#kiln-modal [data-close]')?.click();
+      const el = item.key ? elementForKey(item.key) : state.sourceFields?.get(item.sourceRef)?.els[0];
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('kiln-flash');
+      setTimeout(() => el.classList.remove('kiln-flash'), 1600);
+      setTimeout(() => { try { el.click(); } catch { /* not clickable: the flash shows where it is */ } }, 350);
+    },
+    publish: (note) => publish({ note }),
+    onChange: guideSync,
+  });
+}
+
+/** A suggest-only editor pressed "Send for review" in the sheet. */
+async function sendSuggestionFromSheet(note) {
+  if (state.pendingBinaries.size || state.pendingStructural.length) {
+    setStatus('Suggestions carry text edits only. Undo new pictures and added sections first.', 'error');
+    return;
+  }
+  setStatus('Sending your suggestion…', 'saving');
+  try {
+    const r = await sendSuggestion(note, (text) => setStatus(text, 'saving'));
+    setStatus(r.previewSkipped ? 'Sent for review. The preview was skipped.' : 'Sent for review. Nothing is live until an owner approves it.', 'saved');
+  } catch (err) {
+    console.error('[kiln] suggest', err);
+    setStatus(`That did not send: ${err.message}. Your edits are still here.`, 'error');
+  }
+}
+
+async function publish(opts = {}) {
   // Still typing in a field? That text is part of what the person is publishing:
   // stage it first (the click-away that normally does this runs after us).
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
   if (sourceActive) commitSourceEdit();
   if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length
     && !state.pendingSource.size) return;
-  if (cfg.sandbox) return publishSandbox();
+  // The note from the publish sheet, already cleaned to one line of plain text.
+  // Empty: every commit keeps the message it has always had.
+  const noteMsg = noteMessage(opts.note);
+  if (cfg.sandbox) return publishSandbox(noteMsg);
+  // An invited editor's first publish ends the first-session guide: note what
+  // changed now, while the edits are still staged.
+  const told = guideWaiting() ? describePublish() : null;
   // Suggest-mode editors don't publish — their Publish proposes. (The worker's
   // proxy guard enforces this server-side; the reroute here is the good UX.)
   // Source edits aren't pre-blocked client-side: /source/commit answers suggest
   // sessions with its own 403 copy, which publishSource surfaces as-is.
   if (isSuggestMode()) {
     if (state.pendingSource.size) await publishSource();
-    if (state.pending.size) return suggestChanges();
+    if (state.pending.size) return opts.note !== undefined ? sendSuggestionFromSheet(opts.note) : suggestChanges();
     return;
   }
   // Only source-file edits staged: skip the HTML flow entirely — there may not
@@ -2039,8 +2281,14 @@ async function publish() {
         `Upload ${files.length} file${files.length > 1 ? 's' : ''} (via Kiln)`);
       // Retire only the paths we sent; a file queued during the commit survives.
       for (const { path } of files) state.pendingBinaries.delete(path);
+      clearImageCache();   // "From this site" should list what was just added
     }
     let result = null;
+    // What Undo needs: the page file exactly as it was when this commit was made.
+    let textBefore = null;
+    const hadSource = state.pendingSource.size > 0;
+    const pageMessage = noteMsg || editCommitMessage(state.page.path, localEdits.map(e => e.key));
+    const record = publishRecord({ path: state.page.path, branch: cfg.branch || 'main', message: pageMessage });
     // Track which keys actually made it into the commit vs. were skipped (e.g. a
     // key another editor un-annotated between load and publish). The final callback
     // run wins (editFile re-runs it on a sha-conflict retry).
@@ -2055,6 +2303,7 @@ async function publish() {
       result = await editFile(
         state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
         (text) => {
+          textBefore = text;
           // Structural changes (make/unmake editable) first, so field edits can
           // reference newly-annotated keys; then splice the field edits.
           const t = applyStructural(text, structuralOps);
@@ -2064,13 +2313,14 @@ async function publish() {
           for (const s of skipped) console.warn('[kiln] skipped:', s);
           return html;
         },
-        editCommitMessage(state.page.path, [...localEdits.map(e => e.key), ...structDesc])
+        noteMsg || editCommitMessage(state.page.path, [...localEdits.map(e => e.key), ...structDesc])
       );
       // Drop only the structural ops we sent (they're appended, so the sent ones are
       // at the front); anything added mid-publish stays queued for the next Publish.
       state.pendingStructural.splice(0, structuralOps.length);
+      record.structural = structuralOps;
     }
-    if (partialEdits.length) await publishPartials(partialEdits);
+    if (partialEdits.length) await publishPartials(partialEdits, noteMsg);
     // Retire only the keys we published and that are unchanged since the snapshot.
     // Anything the user edited (or added) during the commit stays pending and keeps
     // its "modified" marker, so the next Publish picks it up.
@@ -2082,6 +2332,11 @@ async function publish() {
       if (state.pending.has(key) && JSON.stringify(state.pending.get(key)) === snap) {
         state.pending.delete(key);
         state.originals.delete(key);
+        if (!partialKeys.has(key)) {
+          record.entries.set(key, snap);
+          record.prevBase.set(key, state.undoBase.get(key));
+          record.prevBaseAttrs.set(key, state.undoBaseAttrs.get(key));
+        }
         // The published value is the new "unedited" state for session undo.
         try {
           const v = JSON.parse(snap);
@@ -2110,6 +2365,11 @@ async function publish() {
       return;
     }
     if (result && result.unchanged && !partialEdits.length && !state.pendingSource.size) { setStatus('Nothing changed', 'idle'); return; }
+    // One page file, one commit: that can be taken back. Shared content (many
+    // files) and source files go through History instead.
+    const canUndo = result && !result.unchanged && result.commit?.sha && textBefore !== null && !partialEdits.length && !hadSource;
+    if (canUndo) offerUndo({ ...record, before: textBefore, after: result.text, sha: result.commit.sha });
+    if (told && result && !result.unchanged) guidePublished(told);
     watchDeploy(result?.commit?.sha, result?.text);
     // A mixed publish (page edits + source-file edits from the same screen):
     // commit the source half now, sequentially, with its own §11 states.
@@ -2126,6 +2386,89 @@ async function publish() {
     // check is `!state.pending.size`); refreshPublishButton counts those too.
     refreshPublishButton();
   }
+}
+
+// ─── "Published. Undo": ten seconds to take a publish back ───────────────────
+
+let undoOffer = null;   // { timer, held } while the offer is on screen
+
+/** Show "Published." with an Undo button for ten seconds. Other status lines wait their turn. */
+function offerUndo(rec) {
+  endUndoOffer(false);
+  undoOffer = { held: null, timer: setTimeout(() => endUndoOffer(true), 10000) };
+  setStatus(rec.sandbox ? 'Published to your private demo.' : 'Published.', 'saved', {
+    offer: true, sticky: true,
+    action: { label: 'Undo', title: 'Take this publish back', run: () => (rec.sandbox ? undoSandboxPublish(rec) : undoPublish(rec)) },
+  });
+}
+
+function endUndoOffer(showHeld) {
+  if (!undoOffer) return;
+  const { held, timer } = undoOffer;
+  clearTimeout(timer);
+  undoOffer = null;
+  if (!showHeld) return;
+  if (held) setStatus(...held);
+  else { const el = document.getElementById('kiln-status'); if (el) el.hidden = true; }
+}
+
+/** After an undo: the edits are staged again and marked as such. */
+function restageRecord(rec) {
+  const back = restage(rec, { pending: state.pending, undoBase: state.undoBase, undoBaseAttrs: state.undoBaseAttrs, structural: state.pendingStructural });
+  for (const key of back) elementForKey(key)?.classList.add('kiln-modified');
+  refreshPublishButton();
+  return back.length + rec.structural.length;
+}
+
+const editsWaiting = (n) => (n === 1 ? 'your edit is here again, not published' : `your ${n} edits are here again, not published`);
+
+async function undoPublish(rec) {
+  endUndoOffer(false);
+  setStatus('Undoing that publish…', 'saving');
+  try {
+    const r = await revertPublish({ gh: state.gh, repo: cfg.repo, branch: rec.branch, path: rec.path, before: rec.before, after: rec.after, message: rec.message });
+    if (!r.ok) { undoBlocked(); return; }
+    // Stop waiting for the undone commit to appear on the site.
+    journalSave(journalAll().filter(e => e.sha !== rec.sha));
+    const n = restageRecord(rec);
+    await loadPageSource();
+    setStatus(`Undone. The site is back as it was, and ${editsWaiting(n)}.`, 'saved');
+  } catch (err) {
+    console.error('[kiln] undo publish', err);
+    setStatus('Undo did not go through, so nothing changed. History can take the page back.', 'error');
+  }
+}
+
+/** Someone else published to this page after us: undoing would take their work with it. */
+function undoBlocked() {
+  const el = document.getElementById('kiln-status');
+  if (el) el.hidden = true;
+  const canHistory = hasFeature('history') && !!document.getElementById('kiln-history');
+  const m = modal(`
+    <h3>Someone else has published since</h3>
+    <p class="kiln-dim">This page was published again after your change, so Undo would remove their work too. Nothing was changed, and your publish is still live.</p>
+    <p class="kiln-dim">${canHistory ? 'History can put back just the parts you changed.' : 'Ask the site owner to put it back from History.'}</p>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Close</button>
+      ${canHistory ? '<button class="kiln-btn-publish" id="kiln-undo-history">Open History</button>' : ''}
+    </div>`);
+  const go = m.querySelector('#kiln-undo-history');
+  if (go) go.onclick = () => { m.remove(); historyPanel(); };
+}
+
+function undoSandboxPublish(rec) {
+  endUndoOffer(false);
+  const s = sandboxStore();
+  s.pages = s.pages || {};
+  if (rec.prevPage) s.pages[sandboxPath()] = rec.prevPage; else delete s.pages[sandboxPath()];
+  sandboxSave(s);
+  for (const [ref, v] of rec.source || []) {
+    state.sourceBase.set(ref, v.base);
+    if (!state.pendingSource.has(ref)) state.pendingSource.set(ref, v.entry);
+    syncSourceDom(ref);
+  }
+  const n = restageRecord(rec) + (rec.source?.length || 0);
+  setStatus(`Undone: ${editsWaiting(n)}.`, 'saved');
 }
 
 /**
@@ -2162,7 +2505,7 @@ async function confirmOverwrites(localEdits) {
 }
 
 /** Apply shared-partial edits to every page that carries those keys, in one commit. */
-async function publishPartials(edits) {
+async function publishPartials(edits, noteMsg = '') {
   const branch = cfg.branch || 'main';
   const tree = await state.gh.request('GET',
     `/repos/${cfg.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
@@ -2175,7 +2518,7 @@ async function publishPartials(edits) {
   }
   if (changed.length) {
     await commitFiles(state.gh, cfg.repo, branch, changed,
-      `Update shared content on ${changed.length} page${changed.length > 1 ? 's' : ''} (via Kiln)`);
+      noteMsg || `Update shared content on ${changed.length} page${changed.length > 1 ? 's' : ''} (via Kiln)`);
   }
 }
 
@@ -2641,23 +2984,31 @@ function restoreSandboxPage() {
  * What the demo guide's last card says about a publish: one edit's text before
  * and after, and the commit message the same publish gets on a real site.
  */
+/** The element on the page that a key names: a field, or a list of blocks. */
+function elementForKey(key) {
+  try { return document.querySelector(`[data-cms="${CSS.escape(key)}"], [data-cms-repeat="${CSS.escape(key)}"]`); } catch { return null; }
+}
+
+/**
+ * Text the way a person reads it on the page: lay the HTML out in a throwaway
+ * copy of the field (same tag, classes and parent, so the site's CSS applies)
+ * and take its rendered text. Reading the live element would pick up Kiln's
+ * own block controls, and plain textContent runs lines together.
+ */
+function renderedText(key, html) {
+  const el = elementForKey(key);
+  const copy = el ? el.cloneNode(false) : document.createElement('div');
+  copy.removeAttribute('id');
+  copy.innerHTML = html ?? '';
+  copy.style.cssText += ';position:absolute!important;left:-99999px!important;top:0!important;opacity:0!important;pointer-events:none!important';
+  (el || document.body.lastChild).after(copy);
+  const out = copy.innerText;
+  copy.remove();
+  return out;
+}
+
 function describePublish() {
-  // Text the way a person reads it on the page: lay the HTML out in a throwaway
-  // copy of the field (same tag, classes and parent, so the site's CSS applies)
-  // and take its rendered text. Reading the live element would pick up Kiln's
-  // own block controls, and plain textContent runs lines together.
-  const text = (key, html) => {
-    let el = null;
-    try { el = document.querySelector(`[data-cms="${CSS.escape(key)}"], [data-cms-repeat="${CSS.escape(key)}"]`); } catch { el = null; }
-    const copy = el ? el.cloneNode(false) : document.createElement('div');
-    copy.removeAttribute('id');
-    copy.innerHTML = html ?? '';
-    copy.style.cssText += ';position:absolute!important;left:-99999px!important;top:0!important;opacity:0!important;pointer-events:none!important';
-    (el || document.body.lastChild).after(copy);
-    const out = copy.innerText;
-    copy.remove();
-    return out;
-  };
+  const text = renderedText;
   let before = '', after = '';
   const html = [...state.pending].find(([, v]) => v.html !== undefined);
   const attr = [...state.pending].find(([, v]) => v.attrs);
@@ -2679,11 +3030,21 @@ function describePublish() {
   return { before, after, message: editCommitMessage(file, [...flattenPending().map(e => e.key), ...state.pendingSource.keys()]) };
 }
 
-function publishSandbox() {
+function publishSandbox(noteMsg = '') {
   const told = describePublish();
+  if (noteMsg) told.message = noteMsg;
   const s = sandboxStore();
   s._createdAt = s._createdAt || Date.now();
   s.pages = s.pages || {};
+  const prevPage = s.pages[sandboxPath()] ? JSON.parse(JSON.stringify(s.pages[sandboxPath()])) : null;
+  const record = publishRecord({ sandbox: true, prevPage, source: [] });
+  for (const [key, v] of state.pending) {
+    record.entries.set(key, JSON.stringify(v));
+    record.prevBase.set(key, state.undoBase.get(key));
+    record.prevBaseAttrs.set(key, state.undoBaseAttrs.get(key));
+  }
+  for (const [ref, v] of state.pendingSource) record.source.push({ ref, entry: { ...v }, base: state.sourceBase.get(ref) });
+  record.source = record.source.map(x => [x.ref, x]);
   const page = s.pages[sandboxPath()] || {};
   for (const [key, v] of state.pending) {
     const cur = page[key] || {};
@@ -2713,7 +3074,7 @@ function publishSandbox() {
   updateUndoUi();
   document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
   refreshPublishButton();
-  setStatus('Saved to your private demo. Only you can see it.', 'saved');
+  offerUndo(record);
   guidePublished(told);
 }
 
@@ -2778,7 +3139,7 @@ async function initSandbox() {
   // First visit to the demo: point at a heading, then at Publish, then say what happened.
   initGuide({ cfg, mobileMq: MOBILE_MQ,
     unpublished: () => state.pending.size + state.pendingSource.size + state.pendingBinaries.size + state.pendingStructural.length,
-    publishButton: () => document.getElementById('kiln-publish-quick') });
+    publishButton: () => document.getElementById('kiln-pubsheet-go') || document.getElementById('kiln-publish-quick') });
 }
 
 /**
@@ -4228,6 +4589,8 @@ function settingsPanel() {
         <span><strong>Floating button</strong><br><small>Draggable circle; hover for the menu.</small></span></label>
       <label class="kiln-role"><input type="radio" name="kiln-uimode" value="bar" ${ui === 'bar' ? 'checked' : ''}>
         <span><strong>Top bar</strong><br><small>Fixed bar with all actions visible.</small></span></label>
+      <label class="kiln-role"><input type="checkbox" id="kiln-set-nopreview" ${previewOff(localStorage) ? 'checked' : ''}>
+        <span><strong>Publish without the preview</strong><br><small>Publish goes live at once, without first showing what will change.</small></span></label>
     </div>
     ${isAdmin ? `
     <h4>This site (applies to everyone, committed to the repo)</h4>
@@ -4242,6 +4605,7 @@ function settingsPanel() {
   m.querySelector('#kiln-set-save').onclick = async () => {
     const newUi = m.querySelector('input[name="kiln-uimode"]:checked').value;
     const uiChanged = newUi !== ui;
+    setPreviewOff(localStorage, m.querySelector('#kiln-set-nopreview').checked);
     localStorage.setItem('kiln_ui_mode', newUi);
     const google = isAdmin ? m.querySelector('#kiln-set-google').checked : (cfg.auth?.google !== false);
     const siteChanged = isAdmin && google !== (cfg.auth?.google !== false);
@@ -4434,6 +4798,12 @@ function stageSectionInsert({ node, html, key, anchor }) {
 function bootBlocks() {
   initBlocks({ state, cfg, mode, hasFeature, pageInScope, keyInScope, modal, setStatus, escapeHtml,
     isKilnChrome, decorateField, setupRepeat, pushUndoEntry, refreshPublishButton, stageSectionInsert,
+    // The screen space Kiln's fixed controls are using right now: a section
+    // divider that scrolls under any of them steps aside.
+    heldBoxes: () => ['#kiln-quick', '#kiln-fab', '#kiln-sandbox-banner', '#kiln-topbar', ...(isMobileEditor() ? ['#kiln-toolbar'] : [])].map(sel => {
+      const r = document.querySelector(sel)?.getBoundingClientRect();
+      return r && r.width && r.height ? { top: r.top, bottom: r.bottom } : null;
+    }).filter(Boolean),
     sanitizeBlock: (html) => DOMPurify.sanitize(html, BLOCK_SANITIZE),
     ghRequest: (method, path, body) => state.gh.request(method, path, body),
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
@@ -4740,8 +5110,8 @@ function renderAdminBar() {
         <button id="kiln-pagesettings" class="kiln-fab-item">Page settings</button>
         <button id="kiln-history" class="kiln-fab-item">History &amp; restore</button>
         <button id="kiln-comments" class="kiln-fab-item">💬 Comments</button>
-        ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-addsection" class="kiln-fab-item">＋ Add a gallery or events</button>' : ''}
-      ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-makeblock" class="kiln-fab-item">✨ Make text/images editable</button>' : ''}
+        ${canMakeEditable() ? '<button id="kiln-addsection" class="kiln-fab-item">＋ Add a gallery or events</button>' : ''}
+      ${canMakeEditable() ? '<button id="kiln-makeblock" class="kiln-fab-item">✨ Make text/images editable</button>' : ''}
       </div>
       <div class="kiln-fab-group">
         <div class="kiln-fab-label">Whole site</div>
@@ -4752,6 +5122,7 @@ function renderAdminBar() {
         ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-fab-item">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}
         ${mode === 'admin' ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
         <button id="kiln-settings" class="kiln-fab-item">Settings</button>
+        <button id="kiln-help" class="kiln-fab-item" data-href="${escapeHtml(helpLink())}" title="Opens the guide in a new tab">Help <span class="kiln-pal-kbd" aria-hidden="true">↗</span></button>
       </div>
       <div class="kiln-fab-foot">
         <button id="kiln-done" title="Hide Kiln and browse normally (stays signed in — return via the Resume button or yoursite.com/kiln)">Done editing</button>
@@ -4775,10 +5146,10 @@ function renderAdminBar() {
   fab.querySelector('#kiln-redo-btn').onclick = (e) => { e.stopPropagation(); redoEdit(); };
   // Publish, in the open: the same function as the menu's first item, shown
   // beside the pencil whenever there is something unpublished.
-  fab.querySelector('#kiln-publish-quick').onclick = (e) => { e.stopPropagation(); publish(); };
+  fab.querySelector('#kiln-publish-quick').onclick = (e) => { e.stopPropagation(); requestPublish(); };
   // A toast you have read is in the way: tap it to put it away.
   fab.querySelector('#kiln-status').addEventListener('click', (e) => {
-    if (!e.target.closest('a')) e.currentTarget.hidden = true;
+    if (!e.target.closest('a, button')) e.currentTarget.hidden = true;
   });
 
   // Restore position (default: bottom-right).
@@ -4945,7 +5316,7 @@ function renderAdminBar() {
   watchToolbar(() => { if (menuOpen()) setMenu(false); });
 
   const close = (fn) => () => { setMenu(false); fn(); };
-  fab.querySelector('#kiln-publish').onclick = close(publish);
+  fab.querySelector('#kiln-publish').onclick = close(requestPublish);
   fab.querySelector('#kiln-newpost').onclick = close(newContent);
   fab.querySelector('#kiln-menu').onclick = close(menuEditor);
   fab.querySelector('#kiln-theme').onclick = close(openThemePanel);
@@ -4963,6 +5334,7 @@ function renderAdminBar() {
   fab.querySelector('#kiln-comments').onclick = close(openComments);
   const settingsBtn = fab.querySelector('#kiln-settings');
   if (settingsBtn) settingsBtn.onclick = close(settingsPanel);
+  fab.querySelector('#kiln-help').onclick = close(openHelp);
   fab.querySelector('#kiln-signout').onclick = () => {
     if (state.pending.size && !confirm('Discard your unpublished edits and sign out?')) return;
     clearSavedPending();
@@ -4993,6 +5365,7 @@ function placeQuickRow() {
   const fab = document.getElementById('kiln-fab-wrap');
   const row = document.getElementById('kiln-quick');
   if (!fab || !row) return;
+  window.dispatchEvent(new Event('kiln:chrome'));   // the row grew, shrank or emptied: section dividers re-check
   fab.classList.remove('kiln-flip-x', 'kiln-flip-y');
   const r = row.getBoundingClientRect();
   if (!r.width) return;   // nothing in it right now
@@ -5036,8 +5409,9 @@ function renderTopBar() {
     <button id="kiln-findreplace" class="kiln-btn-ghost">Replace</button>
     <button id="kiln-history" class="kiln-btn-ghost">History</button>
     <button id="kiln-comments" class="kiln-btn-ghost">💬 Comments</button>
-    ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button><button id="kiln-suggestions" class="kiln-btn-ghost" title="Review suggested changes">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
+    ${canMakeEditable() ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button>' : ''}${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-btn-ghost" title="Review suggested changes">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}${mode === 'admin' ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
     <button id="kiln-settings" class="kiln-btn-ghost">Settings</button>
+    <button id="kiln-help" class="kiln-btn-ghost" data-href="${escapeHtml(helpLink())}" title="Opens the guide in a new tab">Help</button>
     <button id="kiln-draft" class="kiln-btn-ghost" hidden>Draft</button>
     <button id="kiln-sharepreview" class="kiln-btn-ghost" hidden title="Save a draft, get a shareable link">Preview link</button>
     <button id="kiln-schedule" class="kiln-btn-ghost" hidden>Schedule</button>
@@ -5048,7 +5422,7 @@ function renderTopBar() {
   document.body.prepend(bar);
   bar.querySelector('#kiln-undo-btn').onclick = undoEdit;
   bar.querySelector('#kiln-redo-btn').onclick = redoEdit;
-  bar.querySelector('#kiln-publish').onclick = publish;
+  bar.querySelector('#kiln-publish').onclick = requestPublish;
   bar.querySelector('#kiln-newpost').onclick = newContent;
   bar.querySelector('#kiln-menu').onclick = menuEditor;
   bar.querySelector('#kiln-theme').onclick = openThemePanel;
@@ -5075,6 +5449,7 @@ function renderTopBar() {
   if (makeBtn) makeBtn.onclick = makeEditableMode;
   const addSecBtn = bar.querySelector('#kiln-addsection');
   if (addSecBtn) addSecBtn.onclick = addSectionFlow;
+  bar.querySelector('#kiln-help').onclick = openHelp;
   const settingsBtn = bar.querySelector('#kiln-settings');
   if (settingsBtn) settingsBtn.onclick = settingsPanel;
   applyFeatureGating();
@@ -5392,16 +5767,25 @@ let statusHideTimer = null;
 function setStatus(text, kind, opts) {
   const el = document.getElementById('kiln-status');
   if (!el) return;
+  // "Published. Undo" keeps the line for its ten seconds. News that arrives
+  // meanwhile is shown when it ends; a failure is shown at once.
+  if (undoOffer && !opts?.offer) {
+    if (kind !== 'error') { undoOffer.held = [text, kind, opts]; return; }
+    endUndoOffer(false);
+  }
   // A spinner rides alongside busy ('saving') states so publishing/uploading
   // reads as active work, not a frozen label. opts.href turns the whole line
   // into a link (e.g. "Live ✓ — view site", "Build failed — open commit").
   el.innerHTML = (kind === 'saving' ? '<span class="kiln-spin" aria-hidden="true"></span>' : '')
     + (opts?.href
       ? `<a class="kiln-status-link" href="${escapeHtml(opts.href)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`
-      : `<span>${escapeHtml(text)}</span>`);
-  el.className = `kiln-status kiln-status--${kind}`;
+      : `<span>${escapeHtml(text)}</span>`)
+    + (opts?.action ? `<button type="button" class="kiln-status-act" title="${escapeHtml(opts.action.title || '')}">${escapeHtml(opts.action.label)}</button>` : '');
+  if (opts?.action) el.querySelector('.kiln-status-act').onclick = (e) => { e.stopPropagation(); opts.action.run(); };
+  el.className = `kiln-status kiln-status--${kind}${opts?.action ? ' kiln-status--act' : ''}`;
   el.hidden = false;
   clearTimeout(statusHideTimer);
+  if (opts?.sticky) return;
   // Busy/error states stay visible; calm states fade away on their own. On a
   // phone the toast sits over the top of the page, so it leaves sooner.
   if (kind === 'idle' || kind === 'saved') {
@@ -5416,6 +5800,12 @@ function pendingStorageKey() {
 }
 
 function savePendingToStorage() {
+  // Not before the restore offer has read what an earlier visit left. An
+  // invited editor's first presence answer refreshes the Publish button during
+  // boot, with nothing staged yet, and that used to erase the saved edits
+  // before they could be offered back.
+  if (!keptReady) return;
+  syncKeptFiles();
   try {
     if (!state.pending.size) { localStorage.removeItem(pendingStorageKey()); return; }
     localStorage.setItem(pendingStorageKey(),
@@ -5425,10 +5815,36 @@ function savePendingToStorage() {
 
 function clearSavedPending() {
   try { localStorage.removeItem(pendingStorageKey()); } catch { /* ignore */ }
+  keptHere.clear();
+  if (keptReady && !cfg.sandbox) forgetFiles(pendingStorageKey()).catch(() => {});
+}
+
+// Uploads waiting for Publish are kept beside the saved edits (pending-files.js),
+// so "Pick up where you left off?" brings the pictures back too.
+const keptHere = new Set();   // repo paths this page load has written to the browser's store
+let keptReady = false;        // true once offerPendingRestore has read what an earlier visit left
+
+/** Make what is kept match what is queued. With no edits staged, a queued file is an orphan: keep none. */
+function syncKeptFiles() {
+  if (!keptReady || cfg.sandbox) return;
+  const page = pendingStorageKey();
+  const queued = state.pending.size ? [...state.pendingBinaries.keys()] : [];
+  const { add, remove } = syncPlan(queued, [...keptHere]);
+  for (const path of add) {
+    keptHere.add(path);
+    keepFile(page, path, state.pendingBinaries.get(path)).catch(() => keptHere.delete(path));
+  }
+  if (remove.length) {
+    for (const path of remove) keptHere.delete(path);
+    forgetFiles(page, remove).catch(() => {});
+  }
 }
 
 /** If the tab crashed/closed with staged edits, offer to bring them back. */
 function offerPendingRestore() {
+  // Read the uploads an earlier visit left before anything here can tidy them away.
+  const kept = cfg.sandbox ? Promise.resolve([]) : keptFiles(pendingStorageKey()).catch(() => []);
+  keptReady = true;
   let saved;
   try { saved = JSON.parse(localStorage.getItem(pendingStorageKey())); } catch { return; }
   if (!saved || !saved.edits || Date.now() - saved.ts > 7 * 24 * 3600 * 1000) return;
@@ -5444,7 +5860,11 @@ function offerPendingRestore() {
       <button class="kiln-btn-publish" id="kiln-rest-yes">Restore edits</button>
     </div>`);
   m.querySelector('#kiln-rest-no').onclick = () => { clearSavedPending(); m.remove(); };
-  m.querySelector('#kiln-rest-yes').onclick = () => {
+  m.querySelector('#kiln-rest-yes').onclick = async () => {
+    // The pictures and files those edits added: queue them again, and show each
+    // picture from the kept bytes (its address on the site does not exist yet).
+    const files = filesToRestore(await kept, saved.edits);
+    for (const f of files) { state.pendingBinaries.set(f.path, f.base64); keptHere.add(f.path); }
     for (const [key, edit] of Object.entries(saved.edits)) {
       state.pending.set(key, edit);
       const esc = CSS.escape(key);
@@ -5461,8 +5881,23 @@ function offerPendingRestore() {
       document.querySelectorAll(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`)
         .forEach(n => n.classList.add('kiln-modified'));
     }
+    for (const f of files) {
+      const url = siteAddress(f.path, cfg.root || '');
+      const ext = (f.path.split('.').pop() || '').toLowerCase();
+      if (!/^(png|jpe?g|webp|avif|gif)$/.test(ext)) continue;
+      let preview = null;
+      for (const img of document.querySelectorAll('img')) {
+        if (img.closest(KILN_CHROME) || img.getAttribute('src') !== url) continue;
+        if (!preview) {
+          try { preview = URL.createObjectURL(new Blob([Uint8Array.from(atob(f.base64), c => c.charCodeAt(0))], { type: `image/${ext === 'jpg' ? 'jpeg' : ext}` })); }
+          catch { break; }
+        }
+        img.setAttribute('data-kiln-src', url);
+        img.src = preview;
+      }
+    }
     refreshPublishButton();
-    setStatus(`${keys.length} edit${keys.length > 1 ? 's' : ''} restored — Publish when ready`, 'saved');
+    setStatus(`${keys.length} edit${keys.length > 1 ? 's' : ''} restored${files.length ? ', with the files they added' : ''} — Publish when ready`, 'saved');
     m.remove();
   };
 }
@@ -5577,6 +6012,11 @@ function injectStyles() {
 .kiln-status--error{color:var(--kiln-err)}
 .kiln-status-link{color:inherit;font-weight:600;text-decoration:underline;text-underline-offset:2px}
 .kiln-status-link:hover{opacity:.85}
+/* "Published. Undo": the one status line with something to press. */
+.kiln-status--act{padding:6px 6px 6px 14px;gap:12px;font-size:13px;font-weight:600;color:#fff}
+.kiln-status-act{flex:none;background:#fff;color:#1c1c28;border:none;border-radius:8px;padding:6px 14px;
+  font:700 12.5px var(--kiln-font);cursor:pointer}
+.kiln-status-act:hover,.kiln-status-act:focus-visible{background:#e0e7ff;outline:2px solid var(--kiln-accent);outline-offset:1px}
 .kiln-btn-publish{background:var(--kiln-accent);color:#fff;border:none;padding:7px 16px;border-radius:9px;
   cursor:pointer;font-size:13px;font-weight:600;font-family:var(--kiln-font);transition:background .15s,transform .1s}
 .kiln-btn-publish:hover:not(:disabled){background:var(--kiln-accent-h);transform:translateY(-1px)}
@@ -5921,6 +6361,8 @@ body:has(#kiln-topbar){padding-top:46px!important}
 #kiln-blocks-layer{position:absolute;top:0;left:0;width:100%;height:0;pointer-events:none;z-index:999997;font-family:var(--kiln-font)}
 .kiln-block-gap{position:absolute;height:24px;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;pointer-events:auto;opacity:0;transition:opacity .15s}
 .kiln-block-gap:hover,.kiln-block-gap:focus-within{opacity:1}
+/* Under the pencil, its Undo/Redo/Publish row or the demo banner: that strip is theirs. */
+.kiln-block-gap.kiln-gap-yield{visibility:hidden;pointer-events:none}
 .kiln-block-gap::before{content:"";position:absolute;left:8px;right:8px;top:50%;height:2px;margin-top:-1px;background:var(--kiln-accent);border-radius:2px;opacity:.85}
 .kiln-block-gap button{position:relative;background:var(--kiln-accent);color:#fff;border:none;border-radius:999px;padding:4px 14px;font:600 12px var(--kiln-font);cursor:pointer;box-shadow:0 3px 12px rgba(0,0,0,.28);white-space:nowrap}
 .kiln-block-gap button:hover{background:var(--kiln-accent-h)}
@@ -5981,6 +6423,8 @@ body:has(#kiln-topbar){padding-top:46px!important}
    setStatus() takes it away after a few seconds, and a tap dismisses it. */
 #kiln-fab-wrap .kiln-status{position:fixed;left:50%;right:auto;bottom:auto;
   top:calc(10px + env(safe-area-inset-top,0px));transform:translateX(-50%);max-width:92vw;font-size:13px}
+#kiln-fab-wrap .kiln-status--act{font-size:14.5px;padding:6px 6px 6px 16px}
+.kiln-status-act{min-height:40px;padding:6px 20px;font-size:14.5px}
 /* Top-bar mode: same bar, thumb-height targets, finger-scrollable. */
 #kiln-topbar{height:56px;-webkit-overflow-scrolling:touch}
 body:has(#kiln-topbar){padding-top:56px!important}
@@ -6047,7 +6491,10 @@ body:has(#kiln-topbar){padding-top:56px!important}
 #kiln-cmt-hint{flex-wrap:wrap;top:calc(10px + env(safe-area-inset-top,0px))}
 #kiln-cmt-hint button{min-height:40px}
 /* Section chrome: add-section dividers stay visible (no hover on touch). */
-.kiln-block-gap{opacity:1;height:44px}
+/* No hover on a phone, so dividers show by themselves: only the two around
+   the section last touched, not one between every pair of sections. */
+.kiln-block-gap{opacity:0;pointer-events:none;height:44px}
+.kiln-block-gap.kiln-gap-near{opacity:1;pointer-events:auto}
 .kiln-block-gap button{padding:10px 18px;font-size:13px}
 .kiln-block-remove{padding:11px 16px;font-size:12.5px}
 /* Image chrome: size buttons inherit .kiln-tb-fmt 40px; bigger drag handle. */
@@ -6058,6 +6505,6 @@ body:has(#kiln-topbar){padding-top:56px!important}
 #kiln-pickbar,#kiln-previewbar{flex-wrap:wrap;max-width:94vw;top:calc(10px + env(safe-area-inset-top,0px))}
 #kiln-pickbar button,#kiln-previewbar button{min-height:40px}
 #kiln-scope-note,#kiln-presence{max-width:60vw;bottom:calc(14px + env(safe-area-inset-bottom,0px))}
-}`;
+}` + publishSheetCss(MOBILE_MQ) + imagePickerCss(MOBILE_MQ);
   document.head.appendChild(style);
 }

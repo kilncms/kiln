@@ -32,6 +32,14 @@
     "parse5": "^8.0.0",
     "yaml": "^2.9.0"
   },
+  "peerDependencies": {
+    "playwright-core": ">=1.40"
+  },
+  "peerDependenciesMeta": {
+    "playwright-core": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "esbuild": "^0.25.0",
     "wrangler": "^4.0.0"

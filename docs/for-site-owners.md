@@ -67,6 +67,42 @@ If you rename the repo or move it to another account, run it again. Editor acces
 stored under the repo's exact name and does not follow a rename, so `doctor` fails
 that check and tells you what to change.
 
+### If your AI built a React app
+
+Kiln edits HTML files. A site made with Lovable, v0 or Bolt is usually a React
+app: its HTML file is an empty shell and the words are added by script in the
+visitor's browser. To use Kiln on a site like that, freeze it into HTML first:
+
+```bash
+npm install playwright-core
+npx github:kilncms/kiln rescue https://your-site.lovable.app --render --menu-shim --try
+```
+
+This opens each page in a browser you already have (Chrome, Edge, Brave or
+Chromium), lets the app finish, and saves the finished page as plain HTML with
+its pictures and styles. The app's scripts are left out, so the page can no
+longer redraw itself over your edits. `--try` lets you serve the folder and
+click a word at once, with nothing published. When you are happy, delete
+`assets/kiln-config.js`, push the folder to GitHub and run the wizard above.
+
+What you give up, said plainly:
+
+- **Anything that needed the app to keep running.** Forms sent by script,
+  sign-in, search, shopping carts, filters, tabs, carousels, animated counters,
+  and anything loaded from a database. They are still drawn and no longer work.
+  `RESCUE-REPORT.md` in the folder lists each one, page by page.
+- **The phone menu**, unless you pass `--menu-shim`, which adds one small
+  script (`assets/kiln-menu.js`) that opens and closes it.
+- **The way back.** From here on the site is changed in Kiln or by editing the
+  HTML. If you go back to the AI builder and export again, you freeze again and
+  your Kiln edits are not in the new export.
+- **Pages that are different every time** (a random headline, a live number)
+  keep whatever the first visit showed. The report names them.
+
+Good fits: a brochure site, a portfolio, a landing page, a restaurant or a
+trades site. Poor fits: anything with accounts, a cart, a dashboard, or content
+that comes from a database.
+
 ## Making things editable
 
 Kiln only lets people edit elements that carry a `data-cms` annotation. Three ways to
@@ -139,7 +175,9 @@ For each person you also set:
   what you're granting. Leave it blank for the whole page.
 - **Feature grants** (editors) — which menu tools they get: drafts, history, new
   posts, scheduling, the site menu, find & replace, AI assist, theme tokens,
-  adding sections from the [block library](#block-library).
+  adding sections from the [block library](#block-library), and **Make things
+  editable** (the two tools "Make text/images editable" and "Add a gallery or
+  events"; a suggest-only editor or a reviewer is never shown them).
 - **Suggest-only publishing** (editors) — see below.
 
 Removing someone ends their access, including a sign-in they already hold. An
@@ -261,8 +299,17 @@ Two things worth knowing:
 
 - **Publish** — edits stage on the page and go out together as one commit. As soon as
   something is staged, a **Publish** button showing the number of edits appears beside
-  the pencil (it is also the first item in the pencil's menu). The live site updates
-  when your host finishes redeploying, typically about a minute.
+  the pencil (it is also the first item in the pencil's menu). It opens a sheet that
+  lists every edit as before and after, lets one edit be dropped, warns about a
+  picture with no description, a link that goes nowhere or an empty heading, and
+  takes a one-line note that becomes the commit message. The live site updates when
+  your host finishes redeploying, typically about a minute. **Settings → Publish
+  without the preview** skips the sheet in that browser.
+- **Undo** — for ten seconds after a publish the confirmation offers Undo. It makes
+  one more ordinary commit that puts the page file back exactly as it was (never a
+  force push) and returns the edits to the page, unpublished. If the file has changed
+  since, it writes nothing and points to History. It covers a publish that changed
+  one page; shared headers and footers, and source-file edits, go through History.
 - **Drafts** — save work privately without publishing; come back to it later.
 - **Scheduling** — publish at a chosen time. The worker re-applies the edits at fire
   time (and re-checks the author still has access).

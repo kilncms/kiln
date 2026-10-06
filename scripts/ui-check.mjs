@@ -15,6 +15,8 @@
  * Then once more at 1440 and 390 as a signed-in editor on a real (not sandbox)
  * site, with the worker played by this script: the demo-only parts must be
  * absent, Publish must send the commit, and a refused upload must say why.
+ * Both passes go through the publish sheet (open it, drop one edit, publish)
+ * and press Undo; the signed-in pass also has someone else publish in between.
  * Exits non-zero if any check fails. `--shots <dir>` also saves a screenshot
  * of each step as <step>-<width>.png.
  *
@@ -305,12 +307,103 @@ async function run(browser, size, firstVisit) {
   s = await sideways(page);
   check(scope, 'page still does not scroll sideways', s.sw === s.cw, `scrollWidth ${s.sw}, clientWidth ${s.cw}${s.who ? `: ${s.who}` : ''}`);
 
-  // ── publish ────────────────────────────────────────────────────────────────
+  // ── section dividers keep out of the way ───────────────────────────────────
+  {
+    const shown = () => page.evaluate(() => [...document.querySelectorAll('.kiln-block-gap')].filter(g => {
+      const cs = getComputedStyle(g); return cs.opacity !== '0' && cs.visibility !== 'hidden';
+    }).length);
+    if (phone) check(scope, 'on a phone at most two "+ Add section" dividers show: the ones around the section last touched', (await shown()) <= 2, `${await shown()} showing`);
+    // walk the whole page with edits unpublished: no divider may sit under the Undo / Redo / Publish row, the pencil or the banner
+    const total = await page.evaluate(() => document.documentElement.scrollHeight);
+    let under = 0, where = -1;
+    for (let y = 0; y < total; y += 61) {
+      await page.evaluate((yy) => window.scrollTo({ top: yy, behavior: 'instant' }), y);
+      await page.waitForTimeout(35);
+      const n = await page.evaluate(() => {
+        const held = ['#kiln-quick', '#kiln-fab', '#kiln-sandbox-banner'].map(q => document.querySelector(q)?.getBoundingClientRect()).filter(r => r && r.width && r.height);
+        return [...document.querySelectorAll('.kiln-block-gap')].filter(g => {
+          const cs = getComputedStyle(g);
+          if (cs.visibility === 'hidden' || (cs.opacity === '0' && !g.matches(':hover'))) return false;
+          const r = g.getBoundingClientRect();
+          return held.some(h => r.top < h.bottom && r.bottom > h.top);
+        }).length;
+      });
+      if (n > under) { under = n; where = y; }
+    }
+    check(scope, 'no "+ Add section" divider ever sits under the Undo, Redo and Publish row, the pencil or the banner', under === 0, under ? `${under} at scroll ${where}` : '');
+  }
+
+  // ── the publish sheet: see it, drop one edit, publish ──────────────────────
+  // a second edit, so there is one to drop
+  const para = page.locator('p.kiln-field:not([data-cms-plain])').first();
+  const paraBefore = (await para.count()) ? await read(para) : '';
+  if (await para.count()) {
+    await para.scrollIntoViewIfNeeded();
+    await press(para);
+    await page.waitForTimeout(300);
+    await page.keyboard.type(' Extra');
+    await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(400);
+  }
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
   await page.waitForTimeout(250);
+  const sheet = page.locator('#kiln-modal.kiln-pubsheet .kiln-modal-card');
+  const go = page.locator('#kiln-pubsheet-go');
+  const rows = page.locator('.kiln-ps-item');
   if (name) await press(publish);
+  await page.waitForTimeout(500);
+  check(scope, 'Publish opens a sheet with one row per edit', (await sheet.count()) === 1 && (await rows.count()) === 2, `${await rows.count()} rows`);
+  if (await sheet.count()) {
+    const said = await read(sheet);
+    check(scope, 'the sheet shows the heading before and after', said.toLowerCase().includes(`before ${before} after ${before} hello`.toLowerCase()), said.slice(0, 140));
+    check(scope, 'the sheet has one primary action, named for the edits', (await go.textContent()).trim() === 'Publish 2 edits' && (await sheet.locator('.kiln-btn-publish').count()) === 1, (await go.textContent()).trim());
+    const c = await box(sheet);
+    check(scope, 'the sheet fits on screen', c.left >= 0 && c.top >= 0 && c.right <= size.width + 0.5 && c.bottom <= size.height + 0.5, `${Math.round(c.left)},${Math.round(c.top)} to ${Math.round(c.right)},${Math.round(c.bottom)}`);
+    if (phone) check(scope, 'on a phone the sheet sits along the bottom edge', Math.abs(c.bottom - size.height) <= 1 && Math.abs(c.right - c.left - size.width) <= 1);
+    check(scope, 'the sheet\'s Publish can be pressed', ...Object.values(await hit(go)));
+    check(scope, 'the sheet\'s Cancel can be pressed', ...Object.values(await hit(sheet.getByRole('button', { name: 'Cancel' }))));
+    if (firstVisit) {
+      check(scope, 'guide step 2 follows Publish into the sheet', ((await guide.locator('span').first().textContent().catch(() => '')) || '') === 'This is what changes. Publish it.' && await guide.isVisible());
+      await page.waitForTimeout(200);
+      const g = await box(guide);
+      check(scope, 'and covers neither the note nor the buttons', apart(g, await box(page.locator('#kiln-ps-note'))) && apart(g, await box(go)) && apart(g, await box(sheet.getByRole('button', { name: 'Cancel' }))));
+      await shot('guide-2-sheet');
+    } else await shot('publish-sheet');
+    // Escape closes it and loses nothing
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(250);
+    check(scope, 'Escape closes the sheet and keeps every edit', (await sheet.count()) === 0 && ((await publish.textContent().catch(() => '')) || '').trim() === 'Publish 2 edits');
+    await press(publish);
+    await page.waitForTimeout(400);
+    // drop the second edit
+    await press(rows.nth(1).locator('.kiln-ps-drop'));
+    await page.waitForTimeout(350);
+    check(scope, 'dropping one edit leaves the other', (await rows.count()) === 1 && (await go.textContent()).trim() === 'Publish 1 edit', `${await rows.count()} rows, "${(await go.textContent()).trim()}"`);
+    check(scope, 'the dropped edit is off the page', (await read(para)) === paraBefore, (await read(para)).slice(0, 60));
+    check(scope, 'the kept edit is still on the page', (await read(heading)) === `${before} Hello`);
+    await press(go);
+  }
   await page.waitForTimeout(600);
+  check(scope, 'the sheet closes on publish', (await sheet.count()) === 0);
   check(scope, 'Publish goes away once there is nothing unpublished', (await page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).count()) === 0);
+  const undoBtn = status.locator('.kiln-status-act');
+  check(scope, 'the confirmation says it is published and offers Undo', /^Published/.test((await status.innerText().catch(() => '')) || '') && (await undoBtn.count()) === 1 && (await undoBtn.textContent()).trim() === 'Undo',
+    ((await status.innerText().catch(() => '')) || '').replace(/\n/g, ' '));
+  if (!firstVisit && await undoBtn.count()) {
+    check(scope, 'Undo can be pressed', ...Object.values(await hit(undoBtn)));
+    await shot('published-undo');
+    await press(undoBtn);
+    await page.waitForTimeout(450);
+    const again = page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first();
+    check(scope, 'Undo brings the edit back as unpublished', (await again.count()) === 1 && (await again.textContent()).trim() === 'Publish 1 edit' && (await read(heading)) === `${before} Hello`,
+      ((await status.innerText().catch(() => '')) || '').replace(/\n/g, ' '));
+    check(scope, 'Undo says what it did', /^Undone/.test((await status.innerText().catch(() => '')) || ''));
+    // and the page keeps the undo across a reload: the edit is not in the saved copy
+    await press(again);
+    await page.waitForTimeout(400);
+    await press(go);
+    await page.waitForTimeout(500);
+  }
   if (firstVisit) {
     const card = page.locator('#kiln-guide-card');
     await card.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
@@ -339,6 +432,20 @@ async function run(browser, size, firstVisit) {
     await page.waitForTimeout(700);
     check(scope, 'the guide is not shown a second time', (await guide.count()) === 0 && (await page.locator('#kiln-guide-card').count()) === 0);
   }
+  // ── Help in the menu ───────────────────────────────────────────────────────
+  if (!firstVisit) {
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    if (!(await menu.isVisible())) await press(pencil);
+    await page.waitForTimeout(300);
+    const help = page.locator('#kiln-help');
+    check(scope, 'the menu has Help, and it can be pressed', (await help.isVisible().catch(() => false)) && (await hit(help)).ok);
+    await shot('help-in-menu');
+    const popup = context.waitForEvent('page', { timeout: 3000 }).catch(() => null);
+    if (await help.count()) await press(help);
+    const tab = await popup;
+    check(scope, 'Help opens the editors\' guide in a new tab', !!tab && (await help.getAttribute('data-href')) === 'https://kilncms.com/editors', tab ? tab.url() : 'no new tab');
+    if (tab) { blocked.length = 0; await tab.close().catch(() => {}); }
+  }
   check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
   check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
   await context.close();
@@ -349,20 +456,30 @@ async function run(browser, size, firstVisit) {
  * kiln-config.js is swapped for one that names a repo and a worker, and every
  * call to that worker (sign-in state, the GitHub proxy) is answered here.
  */
-async function runSignedIn(browser, size) {
+async function runSignedIn(browser, size, opts = {}) {
   const phone = size.width < 600;
-  const scope = `${size.width}x${size.height} signed in   `;
+  const scope = `${size.width}x${size.height} ${opts.features ? 'granted     ' : 'signed in   '}`;
   const WORKER = 'https://worker.invalid';
   const REPO = 'acme/site';
   const source = await (await fetch(URL_ARG)).text();
   const file = new URL(URL_ARG).pathname.replace(/^\/+/, '').replace(/(^|\/)$/, '$1index.html');
   const b64 = (text) => Buffer.from(text).toString('base64');
   const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
-  await context.addInitScript((repo) => {
-    try { localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' })); } catch { /* ignore */ }
-  }, REPO);
+  await context.addInitScript(([repo, seenGuide]) => {
+    try {
+      localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' }));
+      if (seenGuide) localStorage.setItem('kiln_guide', '1');
+    } catch { /* ignore */ }
+  }, [REPO, !!opts.features]);
   const puts = [];
   const blocked = [];
+  const gitWrites = [];
+  // the repository's files, as "From this site" reads them: the page's own pictures, and things that must not be listed
+  const pictures = [...new Set([...source.matchAll(/<img\b[^>]*\ssrc="(\/[^"?#]+\.(?:jpe?g|png|webp|avif|gif))"/gi)].map(m => m[1].slice(1)))];
+  const tree = [...pictures.map(path => ({ path, type: 'blob', size: 48 * 1024 })),
+    { path: 'img/archive/old-banner.jpg', type: 'blob', size: 300 * 1024 },
+    { path: 'assets/uploads/master-abc123.webp', type: 'blob', size: 900000 }, { path: 'docs/price-list.pdf', type: 'blob', size: 1000 },
+    { path: 'favicon.png', type: 'blob', size: 500 }, { path: file, type: 'blob', size: source.length }];
   let current = source, sha = 'sha0', commitAnswer = { status: 201, body: { sha: 'upload' } };
   await context.route('**/*', async (route) => {
     const req = route.request();
@@ -377,7 +494,7 @@ async function runSignedIn(browser, size) {
     if (req.method() === 'OPTIONS') {
       return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
     }
-    if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: null, mode: null } });
+    if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: opts.features || null, mode: null } });
     if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'] });
     if (p === `/gh/repos/${REPO}/contents/${file}`) {
       if (req.method() === 'GET') return json({ sha, content: b64(current) });
@@ -388,6 +505,8 @@ async function runSignedIn(browser, size) {
       return json({ commit: { sha: `commit${puts.length}` }, content: {} });
     }
     if (p === `/gh/repos/${REPO}/contents`) return json([{ path: 'index.html', type: 'file' }, { path: 'assets', type: 'dir' }]);
+    if (p.startsWith(`/gh/repos/${REPO}/git/`) && req.method() !== 'GET') gitWrites.push(`${req.method()} ${p}`);
+    if (p === `/gh/repos/${REPO}/git/trees/main` && req.method() === 'GET') return json({ sha: 'tree', tree, truncated: false });
     if (p === `/gh/repos/${REPO}/git/ref/heads/main`) return json({ object: { sha: 'head' } });
     if (p.startsWith(`/gh/repos/${REPO}/git/refs/`)) return json({ object: { sha: 'upload' } });
     if (p.startsWith(`/gh/repos/${REPO}/git/commits/`)) return json({ tree: { sha: 'tree' } });
@@ -402,14 +521,79 @@ async function runSignedIn(browser, size) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   const press = (locator) => (phone ? locator.tap() : locator.click());
+  const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
   const status = page.locator('#kiln-status');
   await page.goto(URL_ARG, { waitUntil: 'load' });
   await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
   await page.waitForTimeout(700);
   check(scope, 'not in sandbox mode', await page.evaluate(() => !window.KILN.sandbox));
   check(scope, 'no demo banner on a real site', (await page.locator('#kiln-sandbox-banner').count()) === 0);
-  check(scope, 'no demo guide on a real site', (await page.locator('#kiln-guide, #kiln-guide-card').count()) === 0
-    && (await page.evaluate(() => localStorage.getItem('kiln_guide'))) === null);
+  const guide = page.locator('#kiln-guide');
+  if (opts.features) check(scope, 'the guide is not shown to an editor who has had it', (await guide.count()) === 0);
+  else check(scope, 'an invited editor\'s first session starts the guide at the first heading', /^(Click|Tap) this and type\.$/.test((await guide.locator('span').first().textContent().catch(() => '')) || '')
+    && (await page.evaluate(() => localStorage.getItem('kiln_guide'))) === '1');
+
+  // ── the "Make things editable" grant ───────────────────────────────────────
+  if (!opts.features) {
+    check(scope, 'an editor without the grant is not offered "Make text/images editable"', (await page.locator('#kiln-makeblock, #kiln-addsection').count()) === 0);
+  } else {
+    page.on('dialog', (d) => d.accept());
+    await press(page.locator('#kiln-fab'));
+    await page.waitForTimeout(300);
+    const make = page.locator('#kiln-makeblock');
+    check(scope, 'an editor with the grant sees both tools in the menu', (await make.isVisible().catch(() => false)) && await page.locator('#kiln-addsection').isVisible().catch(() => false));
+    await shot('make-editable-granted');
+    await press(make);
+    await page.waitForTimeout(300);
+    check(scope, 'the tool starts: "Click anything to make it editable"', /Click anything to make it editable/.test((await page.locator('#kiln-pickbar').innerText().catch(() => '')) || ''));
+    // something on the page that is not editable yet: plain text outside every field
+    const found = await page.evaluate(() => {
+      for (const el of document.querySelectorAll('main p, main li, main span, footer p, footer span, footer li')) {
+        if (el.closest('[data-cms],[data-cms-repeat],[data-cms-menu],[id^="kiln-"]') || el.querySelector('[data-cms],[data-cms-repeat]')) continue;
+        if (el.children.length || (el.textContent || '').trim().length < 8 || !el.getClientRects().length) continue;
+        el.scrollIntoView({ block: 'center', behavior: 'instant' });
+        window.__uiCheckSpot = el;
+        return true;
+      }
+      return false;
+    });
+    await page.waitForTimeout(400);
+    const spot = found ? await page.evaluate(() => {
+      const el = window.__uiCheckSpot, r = el.getBoundingClientRect();
+      const x = r.left + Math.min(r.width / 2, 40), y = r.top + r.height / 2;
+      const top = document.elementFromPoint(x, y);
+      return { x, y, text: el.textContent.trim().slice(0, 40), reachable: top === el || el.contains(top) };
+    }) : null;
+    check(scope, 'the page has plain text that is not editable yet', !!spot);
+    if (spot) {
+      await page.mouse.click(spot.x, spot.y);
+      await page.waitForTimeout(400);
+      const mk = page.locator('#kiln-mk-go');
+      check(scope, 'clicking it asks how to make it editable', (await mk.count()) === 1, spot.text);
+      if (await mk.count()) await press(mk);
+      await page.waitForTimeout(700);
+      const exit = page.locator('#kiln-pick-exit');
+      if (await exit.count()) await press(exit);
+      await page.waitForTimeout(300);
+      const publish = page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first();
+      check(scope, 'it is staged like any other edit', (await publish.count()) === 1);
+      if (await publish.count()) {
+        await press(publish);
+        await page.waitForTimeout(500);
+        const said = ((await page.locator('#kiln-modal .kiln-modal-card').innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
+        check(scope, 'the publish sheet names it', /Made editable:/.test(said), said.slice(0, 100));
+        await press(page.locator('#kiln-pubsheet-go'));
+        await page.waitForTimeout(1800);
+        const count = (html) => (html.match(/\sdata-cms="/g) || []).length;
+        const sent = puts.length ? Buffer.from(puts[puts.length - 1].content, 'base64').toString() : '';
+        check(scope, 'publishing sends one page commit with one more editable field', puts.length === 1 && count(sent) === count(source) + 1, `${puts.length} writes, ${count(sent) - count(source)} added`);
+      }
+    }
+    check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+    check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
+    await context.close();
+    return;
+  }
 
   const heading = page.locator('h1.kiln-field, h2.kiln-field, h3.kiln-field').first();
   const key = await heading.getAttribute('data-cms');
@@ -447,6 +631,8 @@ async function runSignedIn(browser, size) {
     commitAnswer = { status: 415, body: { error: 'That file is named like a PDF, but it holds something else. Check the file and try again.', code: 'file_mismatch', path: 'assets/files/minutes.pdf' } };
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
     await press(publish);
+    await page.waitForTimeout(400);
+    await press(page.locator('#kiln-pubsheet-go'));
     await page.waitForTimeout(900);
     const said = await status.innerText();
     check(scope, 'an upload refused at publish shows the reason and the file\'s name', said === 'That file is named like a PDF, but it holds something else. Check the file and try again. (minutes.pdf)', said.slice(0, 120));
@@ -456,6 +642,10 @@ async function runSignedIn(browser, size) {
   }
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
   await press(publish);
+  await page.waitForTimeout(500);
+  const go = page.locator('#kiln-pubsheet-go');
+  check(scope, 'Publish opens the sheet first: nothing is sent yet', (await go.count()) === 1 && puts.length === 0, `${puts.length} writes`);
+  if (await go.count()) await press(go);
   await page.waitForTimeout(1800);
   check(scope, 'Publish sent one commit for the page', puts.length === 1, `${puts.length} writes`);
   if (puts.length) {
@@ -464,6 +654,144 @@ async function runSignedIn(browser, size) {
     check(scope, 'the commit carries the edit', Buffer.from(puts[0].content, 'base64').toString().includes(' Hello'));
   }
   check(scope, 'Publish goes away once there is nothing unpublished', (await page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).count()) === 0);
+  {
+    const card = page.locator('#kiln-guide-card');
+    const text = (await card.count()) ? (await card.innerText()).replace(/\s+/g, ' ') : '';
+    check(scope, 'the guide ends by saying what happened, in an editor\'s words', /^That is published Your change is saved to the site/.test(text) && !/Git|GitHub|Put Kiln on my site/.test(text), text.slice(0, 90));
+    const link = card.getByRole('link', { name: 'Read the guide' });
+    check(scope, 'it links to the editors\' guide', (await link.count()) === 1 && (await link.getAttribute('href')) === 'https://kilncms.com/editors');
+    await shot('editor-guide-3');
+    if (await card.count()) await press(card.getByRole('button', { name: 'Got it' }));
+    await page.waitForTimeout(200);
+    check(scope, '"Got it" closes the guide', (await card.count()) === 0 && (await guide.count()) === 0);
+  }
+
+  // ── Undo after publishing ──────────────────────────────────────────────────
+  const undoBtn = status.locator('.kiln-status-act');
+  const said = async () => ((await status.innerText().catch(() => '')) || '').replace(/\n/g, ' ');
+  check(scope, 'the confirmation says "Published." with an Undo button', /^Published\./.test(await said()) && (await undoBtn.count()) === 1, await said());
+  if (await undoBtn.count()) {
+    const before1 = puts.length;
+    await press(undoBtn);
+    await page.waitForTimeout(1500);
+    check(scope, 'Undo sent one more commit', puts.length === before1 + 1, `${puts.length - before1} writes`);
+    const undo = puts[before1] || {};
+    check(scope, 'the undo commit puts the file back exactly', Buffer.from(undo.content || '', 'base64').toString() === source);
+    check(scope, 'the undo commit is written against the published file, without force', undo.sha === `sha${before1}` && undo.force === undefined && /^Undo "Edit .*" \(via Kiln\)$/.test(undo.message || ''), `${undo.sha} ${undo.message}`);
+    check(scope, 'Undo says what it did', /^Undone\. The site is back as it was/.test(await said()), await said());
+    const again = page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first();
+    check(scope, 'the edit is unpublished again, still on the page', (await again.count()) === 1 && (await again.textContent()).trim() === `Publish ${staged ? 2 : 1} edit${staged ? 's' : ''}`
+      && (await heading.innerText()).includes('Hello'));
+    // publish it again, this time with a note, and let someone else publish before Undo is pressed
+    if (await again.count()) {
+      await press(again);
+      await page.waitForTimeout(400);
+      await page.locator('#kiln-ps-note').fill('Say hello <b>properly</b>');
+      await press(go);
+      await page.waitForTimeout(1800);
+      check(scope, 'the note becomes the commit message, as plain text', (puts[puts.length - 1] || {}).message === 'Say hello properly (via Kiln)', (puts[puts.length - 1] || {}).message);
+      const before2 = puts.length;
+      current += '\n<!-- published by someone else -->';
+      sha = 'someone-else';
+      if (await undoBtn.count()) await press(undoBtn);
+      await page.waitForTimeout(1200);
+      const dialog = page.locator('#kiln-modal .kiln-modal-card');
+      const text = (await dialog.count()) ? (await dialog.innerText()).replace(/\s+/g, ' ') : '';
+      check(scope, 'Undo after someone else published writes nothing', puts.length === before2, `${puts.length - before2} writes`);
+      check(scope, 'and explains, offering History', /Someone else has published since/.test(text) && /Nothing was changed/.test(text), text.slice(0, 120));
+      await shot('undo-blocked');
+      if (await dialog.count()) await press(dialog.getByRole('button', { name: 'Close' }).last());
+    }
+  }
+
+  // ── "From this site": choose a picture that is already there ───────────────
+  const picture = page.locator('img.kiln-field').first();
+  if ((await picture.count()) && pictures.length > 1) {
+    await picture.scrollIntoViewIfNeeded();
+    await press(picture);
+    await page.waitForTimeout(350);
+    await press(page.locator('#kiln-toolbar [data-act="replace"]'));
+    await page.waitForTimeout(300);
+    const picker = page.locator('#kiln-modal.kiln-imgpick .kiln-modal-card');
+    check(scope, '"Replace image…" offers Upload and From this site', (await picker.getByRole('tab').allTextContents()).join(' | ') === 'Upload | From this site');
+    await press(picker.getByRole('tab', { name: 'From this site' }));
+    await page.waitForTimeout(700);
+    const tiles = picker.locator('.kiln-pick-tile');
+    const names = await tiles.locator('.kiln-pick-name').allTextContents();
+    check(scope, 'it lists the site\'s pictures and nothing else', (await tiles.count()) === Math.min(24, pictures.length + 1)
+      && !names.some(n => /^master-|\.pdf$|^favicon/.test(n)), `${await tiles.count()} of ${pictures.length + 1}`);
+    check(scope, 'the pictures on this page come first, under their own label', (await picker.locator('#kiln-pick-grid > *').first().textContent()) === 'On this page'
+      && pictures.includes((await picture.getAttribute('src') || '').slice(1)) && names[0] === pictures[0].split('/').pop(), names[0]);
+    check(scope, 'each picture has a name and a size', /\.\w+$/.test(names[0] || '') && /48 KB$/.test((await tiles.first().locator('.kiln-pick-meta').textContent()) || ''));
+    const c = await box(picker);
+    check(scope, 'the chooser fits on screen', c.left >= 0 && c.top >= 0 && c.right <= size.width + 0.5 && c.bottom <= size.height + 0.5);
+    await shot('from-this-site');
+    // search, then choose a picture other than the one in place
+    const now = await picture.getAttribute('src');
+    const want = pictures.map(pth => '/' + pth).find(u => u !== now);
+    const wantName = want.split('/').pop();
+    await picker.locator('#kiln-pick-search').fill(wantName.replace(/\.\w+$/, ''));
+    await page.waitForTimeout(250);
+    check(scope, 'search narrows the list by name', (await tiles.count()) >= 1 && (await tiles.locator('.kiln-pick-name').allTextContents()).every(n => n.includes(wantName.replace(/\.\w+$/, ''))), `${await tiles.count()} left`);
+    const writesBefore = gitWrites.length, putsBefore = puts.length;
+    await press(picker.locator('.kiln-pick-tile', { hasText: wantName }).first());
+    await page.waitForTimeout(400);
+    check(scope, 'choosing a picture puts it on the page and closes the chooser', (await picture.getAttribute('src')) === want && (await picker.count()) === 0, await picture.getAttribute('src'));
+    if (await page.locator('#kiln-toolbar [data-act="done"]').count()) await press(page.locator('#kiln-toolbar [data-act="done"]'));
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await page.waitForTimeout(300);
+    await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+    await page.waitForTimeout(500);
+    const pics = page.locator('.kiln-ps-pics img');
+    check(scope, 'the publish sheet shows the old and the new picture', (await pics.count()) === 2 && (await pics.nth(1).getAttribute('src') || '').endsWith(want), `${await pics.count()} thumbnails`);
+    await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(1800);
+    const sent = puts.slice(putsBefore);
+    check(scope, 'publishing the chosen picture is one page commit', sent.length === 1 && Buffer.from(sent[0].content, 'base64').toString().includes(`src="${want}"`), `${sent.length} writes`);
+    check(scope, 'and no new file is committed', gitWrites.length === writesBefore, gitWrites.slice(writesBefore).join(', '));
+  }
+
+  // ── a picture uploaded but not yet published survives a closed tab ─────────
+  if (!phone && await picture.count()) {
+    const png = await page.screenshot({ clip: { x: 0, y: 0, width: 96, height: 64 } });
+    await picture.scrollIntoViewIfNeeded();
+    await press(picture);
+    await page.waitForTimeout(350);
+    const chooser = page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null);
+    await press(page.locator('#kiln-toolbar [data-act="replace"]'));
+    await page.waitForTimeout(300);
+    await press(page.locator('#kiln-pick-upload'));
+    const fc = await chooser;
+    if (fc) await fc.setFiles({ name: 'New sign.png', mimeType: 'image/png', buffer: png });
+    await page.waitForTimeout(1800);
+    const staged = (await picture.getAttribute('data-kiln-src')) || '';
+    check(scope, 'an uploaded picture waits for Publish', /^\/assets\/uploads\/img-/.test(staged), staged);
+    if (await page.locator('#kiln-toolbar [data-act="done"]').count()) await press(page.locator('#kiln-toolbar [data-act="done"]'));
+    await page.waitForTimeout(600);
+    await page.reload({ waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(800);
+    const offer = page.locator('#kiln-rest-yes');
+    check(scope, 'after the tab is closed and reopened, the edits are offered back', (await offer.count()) === 1);
+    if (await offer.count()) {
+      await press(offer);
+      await page.waitForTimeout(800);
+      const back = page.locator('img.kiln-field').first();
+      check(scope, 'the picture comes back with them, shown from the kept file', (await back.getAttribute('data-kiln-src')) === staged && ((await back.getAttribute('src')) || '').startsWith('blob:'),
+        `${await back.getAttribute('data-kiln-src')} ${((await back.getAttribute('src')) || '').slice(0, 24)}`);
+      check(scope, 'the picture is drawn, not broken', await back.evaluate((img) => img.complete && img.naturalWidth > 0));
+      const writes0 = gitWrites.length, puts0 = puts.length;
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+      await page.waitForTimeout(300);
+      await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+      await page.waitForTimeout(500);
+      await press(page.locator('#kiln-pubsheet-go'));
+      await page.waitForTimeout(2200);
+      const last = puts.length > puts0 ? Buffer.from(puts[puts.length - 1].content, 'base64').toString() : '';
+      check(scope, 'publishing commits the picture\'s file, then the page that uses it', gitWrites.slice(writes0).some(w => /git\/blobs$/.test(w)) && puts.length === puts0 + 1 && last.includes(staged),
+        `${gitWrites.length - writes0} file writes, ${puts.length - puts0} page writes`);
+    }
+  }
   check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
   check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
   await context.close();
@@ -480,6 +808,8 @@ try {
     }
   }
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
+  // an invited editor granted "Make things editable" on top of the defaults
+  await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
 } finally { await browser.close(); }
 
 console.log(lines.join('\n'));

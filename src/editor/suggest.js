@@ -99,33 +99,11 @@ export function suggestChanges() {
   const status = m.querySelector('#kiln-sug-status');
   m.querySelector('#kiln-sug-go').onclick = async () => {
     const note = m.querySelector('#kiln-sug-note').value.trim();
-    const edits = flattenPending();
     m.querySelector('#kiln-sug-go').disabled = true;
-    status.textContent = 'Sending your suggestion…';
-    // Best-effort preview branch: the suggestion must go through even when the
-    // scratch-branch write fails (no branch-deploy host, network blip, …).
-    let branch = null, baseSha = null, previewSkipped = false;
-    if (cfg.preview) {
-      status.textContent = 'Writing the preview branch…';
-      try { ({ branch, baseSha } = await writePreviewBranch(edits)); }
-      catch (err) { console.warn('[kiln] suggest preview', err); previewSkipped = true; }
-      status.textContent = 'Sending your suggestion…';
-    }
     try {
-      const body = { repo: cfg.repo, path: state.page.path, edits, note };
-      if (branch) { body.branch = branch; body.baseSha = baseSha; }
-      const res = await fetch(`${cfg.worker}/suggestions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.suggestion) throw new Error(data.error || `failed (${res.status})`);
-      // The edits now live in the suggestion on the worker — retire them here,
-      // exactly like a schedule handoff (stage + undo history + markers).
-      retireStaged();
+      const r = await sendSuggestion(note, (text) => { status.textContent = text; });
       m.remove();
-      setStatus(previewSkipped
+      setStatus(r.previewSkipped
         ? 'Suggested ✓ — awaiting approval (preview skipped)'
         : 'Suggested ✓ — awaiting approval', 'saved');
     } catch (err) {
@@ -134,6 +112,40 @@ export function suggestChanges() {
       status.textContent = `Failed: ${err.message} — your edits are still staged.`;
     }
   };
+}
+
+/**
+ * Send the staged field edits to the site owner as a suggestion. Used by the
+ * dialog above and by the publish sheet. Throws when it did not go through
+ * (the edits stay staged); on success the stage is retired.
+ * Returns { previewSkipped }.
+ */
+export async function sendSuggestion(note, onStatus = () => {}) {
+  const { state, cfg, flattenPending, workerAuthHeaders, retireStaged } = deps;
+  const edits = flattenPending();
+  onStatus('Sending your suggestion…');
+  // Best-effort preview branch: the suggestion must go through even when the
+  // scratch-branch write fails (no branch-deploy host, network blip, …).
+  let branch = null, baseSha = null, previewSkipped = false;
+  if (cfg.preview) {
+    onStatus('Writing the preview branch…');
+    try { ({ branch, baseSha } = await writePreviewBranch(edits)); }
+    catch (err) { console.warn('[kiln] suggest preview', err); previewSkipped = true; }
+    onStatus('Sending your suggestion…');
+  }
+  const body = { repo: cfg.repo, path: state.page.path, edits, note: String(note || '').slice(0, 200) };
+  if (branch) { body.branch = branch; body.baseSha = baseSha; }
+  const res = await fetch(`${cfg.worker}/suggestions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...workerAuthHeaders() },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.suggestion) throw new Error(data.error || `failed (${res.status})`);
+  // The edits now live in the suggestion on the worker — retire them here,
+  // exactly like a schedule handoff (stage + undo history + markers).
+  retireStaged();
+  return { previewSkipped };
 }
 
 /**

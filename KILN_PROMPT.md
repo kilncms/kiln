@@ -11,6 +11,27 @@ Kiln is a click-to-edit layer for static HTML sites. The HTML files ARE the cont
 database. You only need to (1) annotate which parts are editable, (2) add two script
 tags, (3) optionally add templates for blog posts/pages and a members area.
 
+## If your AI built a React app
+
+Kiln needs the words to be in the HTML files. If this project is a React, Vue or
+Svelte app that draws the page with script (a Vite app with `<div id="root">`,
+which is what Lovable and Bolt make by default), the annotations below have
+nothing to attach to. Two ways forward:
+
+- **Freeze the published site.** Run
+  `npx github:kilncms/kiln rescue <the site's address> --render --menu-shim`
+  (needs `npm install playwright-core` and Chrome, Edge, Brave or Chromium).
+  It saves every page as finished HTML, removes the app's scripts, tags the
+  content and adds the script tags from step 7. Tell the owner what this
+  costs: forms sent by script, sign-in, search, carts, tabs and carousels stop
+  working, and `RESCUE-REPORT.md` lists each one. The site is then edited in
+  Kiln, not regenerated from this project.
+- **Rebuild it as static HTML.** Write each page as its own `.html` file with
+  the content in the markup, then follow the steps below.
+
+Do not add Kiln's script tags to a page that React still draws: the app would
+redraw over every edit.
+
 ## 1. Annotate editable content
 
 Add these attributes to existing elements — do not restructure the page:
