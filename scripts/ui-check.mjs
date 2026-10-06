@@ -15,6 +15,8 @@
  * Then once more at 1440 and 390 as a signed-in editor on a real (not sandbox)
  * site, with the worker played by this script: the demo-only parts must be
  * absent, Publish must send the commit, and a refused upload must say why.
+ * Both passes go through the publish sheet (open it, drop one edit, publish)
+ * and press Undo; the signed-in pass also has someone else publish in between.
  * Exits non-zero if any check fails. `--shots <dir>` also saves a screenshot
  * of each step as <step>-<width>.png.
  *
@@ -305,12 +307,74 @@ async function run(browser, size, firstVisit) {
   s = await sideways(page);
   check(scope, 'page still does not scroll sideways', s.sw === s.cw, `scrollWidth ${s.sw}, clientWidth ${s.cw}${s.who ? `: ${s.who}` : ''}`);
 
-  // ── publish ────────────────────────────────────────────────────────────────
+  // ── the publish sheet: see it, drop one edit, publish ──────────────────────
+  // a second edit, so there is one to drop
+  const para = page.locator('p.kiln-field:not([data-cms-plain])').first();
+  const paraBefore = (await para.count()) ? await read(para) : '';
+  if (await para.count()) {
+    await para.scrollIntoViewIfNeeded();
+    await press(para);
+    await page.waitForTimeout(300);
+    await page.keyboard.type(' Extra');
+    await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(400);
+  }
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
   await page.waitForTimeout(250);
+  const sheet = page.locator('#kiln-modal.kiln-pubsheet .kiln-modal-card');
+  const go = page.locator('#kiln-pubsheet-go');
+  const rows = page.locator('.kiln-ps-item');
   if (name) await press(publish);
+  await page.waitForTimeout(500);
+  check(scope, 'Publish opens a sheet with one row per edit', (await sheet.count()) === 1 && (await rows.count()) === 2, `${await rows.count()} rows`);
+  if (await sheet.count()) {
+    const said = await read(sheet);
+    check(scope, 'the sheet shows the heading before and after', said.toLowerCase().includes(`before ${before} after ${before} hello`.toLowerCase()), said.slice(0, 140));
+    check(scope, 'the sheet has one primary action, named for the edits', (await go.textContent()).trim() === 'Publish 2 edits' && (await sheet.locator('.kiln-btn-publish').count()) === 1, (await go.textContent()).trim());
+    const c = await box(sheet);
+    check(scope, 'the sheet fits on screen', c.left >= 0 && c.top >= 0 && c.right <= size.width + 0.5 && c.bottom <= size.height + 0.5, `${Math.round(c.left)},${Math.round(c.top)} to ${Math.round(c.right)},${Math.round(c.bottom)}`);
+    if (phone) check(scope, 'on a phone the sheet sits along the bottom edge', Math.abs(c.bottom - size.height) <= 1 && Math.abs(c.right - c.left - size.width) <= 1);
+    check(scope, 'the sheet\'s Publish can be pressed', ...Object.values(await hit(go)));
+    check(scope, 'the sheet\'s Cancel can be pressed', ...Object.values(await hit(sheet.getByRole('button', { name: 'Cancel' }))));
+    if (firstVisit) {
+      check(scope, 'guide step 2 follows Publish into the sheet', ((await guide.locator('span').first().textContent().catch(() => '')) || '') === 'This is what changes. Publish it.' && await guide.isVisible());
+      await shot('guide-2-sheet');
+    } else await shot('publish-sheet');
+    // Escape closes it and loses nothing
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(250);
+    check(scope, 'Escape closes the sheet and keeps every edit', (await sheet.count()) === 0 && ((await publish.textContent().catch(() => '')) || '').trim() === 'Publish 2 edits');
+    await press(publish);
+    await page.waitForTimeout(400);
+    // drop the second edit
+    await press(rows.nth(1).locator('.kiln-ps-drop'));
+    await page.waitForTimeout(350);
+    check(scope, 'dropping one edit leaves the other', (await rows.count()) === 1 && (await go.textContent()).trim() === 'Publish 1 edit', `${await rows.count()} rows, "${(await go.textContent()).trim()}"`);
+    check(scope, 'the dropped edit is off the page', (await read(para)) === paraBefore, (await read(para)).slice(0, 60));
+    check(scope, 'the kept edit is still on the page', (await read(heading)) === `${before} Hello`);
+    await press(go);
+  }
   await page.waitForTimeout(600);
+  check(scope, 'the sheet closes on publish', (await sheet.count()) === 0);
   check(scope, 'Publish goes away once there is nothing unpublished', (await page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).count()) === 0);
+  const undoBtn = status.locator('.kiln-status-act');
+  check(scope, 'the confirmation says it is published and offers Undo', /^Published/.test((await status.innerText().catch(() => '')) || '') && (await undoBtn.count()) === 1 && (await undoBtn.textContent()).trim() === 'Undo',
+    ((await status.innerText().catch(() => '')) || '').replace(/\n/g, ' '));
+  if (!firstVisit && await undoBtn.count()) {
+    check(scope, 'Undo can be pressed', ...Object.values(await hit(undoBtn)));
+    await shot('published-undo');
+    await press(undoBtn);
+    await page.waitForTimeout(450);
+    const again = page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first();
+    check(scope, 'Undo brings the edit back as unpublished', (await again.count()) === 1 && (await again.textContent()).trim() === 'Publish 1 edit' && (await read(heading)) === `${before} Hello`,
+      ((await status.innerText().catch(() => '')) || '').replace(/\n/g, ' '));
+    check(scope, 'Undo says what it did', /^Undone/.test((await status.innerText().catch(() => '')) || ''));
+    // and the page keeps the undo across a reload: the edit is not in the saved copy
+    await press(again);
+    await page.waitForTimeout(400);
+    await press(go);
+    await page.waitForTimeout(500);
+  }
   if (firstVisit) {
     const card = page.locator('#kiln-guide-card');
     await card.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
@@ -402,6 +466,7 @@ async function runSignedIn(browser, size) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   const press = (locator) => (phone ? locator.tap() : locator.click());
+  const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
   const status = page.locator('#kiln-status');
   await page.goto(URL_ARG, { waitUntil: 'load' });
   await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
@@ -447,6 +512,8 @@ async function runSignedIn(browser, size) {
     commitAnswer = { status: 415, body: { error: 'That file is named like a PDF, but it holds something else. Check the file and try again.', code: 'file_mismatch', path: 'assets/files/minutes.pdf' } };
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
     await press(publish);
+    await page.waitForTimeout(400);
+    await press(page.locator('#kiln-pubsheet-go'));
     await page.waitForTimeout(900);
     const said = await status.innerText();
     check(scope, 'an upload refused at publish shows the reason and the file\'s name', said === 'That file is named like a PDF, but it holds something else. Check the file and try again. (minutes.pdf)', said.slice(0, 120));
@@ -456,6 +523,10 @@ async function runSignedIn(browser, size) {
   }
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
   await press(publish);
+  await page.waitForTimeout(500);
+  const go = page.locator('#kiln-pubsheet-go');
+  check(scope, 'Publish opens the sheet first: nothing is sent yet', (await go.count()) === 1 && puts.length === 0, `${puts.length} writes`);
+  if (await go.count()) await press(go);
   await page.waitForTimeout(1800);
   check(scope, 'Publish sent one commit for the page', puts.length === 1, `${puts.length} writes`);
   if (puts.length) {
@@ -464,6 +535,44 @@ async function runSignedIn(browser, size) {
     check(scope, 'the commit carries the edit', Buffer.from(puts[0].content, 'base64').toString().includes(' Hello'));
   }
   check(scope, 'Publish goes away once there is nothing unpublished', (await page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).count()) === 0);
+
+  // ── Undo after publishing ──────────────────────────────────────────────────
+  const undoBtn = status.locator('.kiln-status-act');
+  const said = async () => ((await status.innerText().catch(() => '')) || '').replace(/\n/g, ' ');
+  check(scope, 'the confirmation says "Published." with an Undo button', /^Published\./.test(await said()) && (await undoBtn.count()) === 1, await said());
+  if (await undoBtn.count()) {
+    const before1 = puts.length;
+    await press(undoBtn);
+    await page.waitForTimeout(1500);
+    check(scope, 'Undo sent one more commit', puts.length === before1 + 1, `${puts.length - before1} writes`);
+    const undo = puts[before1] || {};
+    check(scope, 'the undo commit puts the file back exactly', Buffer.from(undo.content || '', 'base64').toString() === source);
+    check(scope, 'the undo commit is written against the published file, without force', undo.sha === `sha${before1}` && undo.force === undefined && /^Undo "Edit .*" \(via Kiln\)$/.test(undo.message || ''), `${undo.sha} ${undo.message}`);
+    check(scope, 'Undo says what it did', /^Undone\. The site is back as it was/.test(await said()), await said());
+    const again = page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first();
+    check(scope, 'the edit is unpublished again, still on the page', (await again.count()) === 1 && (await again.textContent()).trim() === `Publish ${staged ? 2 : 1} edit${staged ? 's' : ''}`
+      && (await heading.innerText()).includes('Hello'));
+    // publish it again, this time with a note, and let someone else publish before Undo is pressed
+    if (await again.count()) {
+      await press(again);
+      await page.waitForTimeout(400);
+      await page.locator('#kiln-ps-note').fill('Say hello <b>properly</b>');
+      await press(go);
+      await page.waitForTimeout(1800);
+      check(scope, 'the note becomes the commit message, as plain text', (puts[puts.length - 1] || {}).message === 'Say hello properly (via Kiln)', (puts[puts.length - 1] || {}).message);
+      const before2 = puts.length;
+      current += '\n<!-- published by someone else -->';
+      sha = 'someone-else';
+      if (await undoBtn.count()) await press(undoBtn);
+      await page.waitForTimeout(1200);
+      const dialog = page.locator('#kiln-modal .kiln-modal-card');
+      const text = (await dialog.count()) ? (await dialog.innerText()).replace(/\s+/g, ' ') : '';
+      check(scope, 'Undo after someone else published writes nothing', puts.length === before2, `${puts.length - before2} writes`);
+      check(scope, 'and explains, offering History', /Someone else has published since/.test(text) && /Nothing was changed/.test(text), text.slice(0, 120));
+      await shot('undo-blocked');
+      if (await dialog.count()) await press(dialog.getByRole('button', { name: 'Close' }).last());
+    }
+  }
   check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
   check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
   await context.close();
