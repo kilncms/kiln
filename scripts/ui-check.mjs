@@ -439,9 +439,9 @@ async function run(browser, size, firstVisit) {
  * kiln-config.js is swapped for one that names a repo and a worker, and every
  * call to that worker (sign-in state, the GitHub proxy) is answered here.
  */
-async function runSignedIn(browser, size) {
+async function runSignedIn(browser, size, opts = {}) {
   const phone = size.width < 600;
-  const scope = `${size.width}x${size.height} signed in   `;
+  const scope = `${size.width}x${size.height} ${opts.features ? 'granted     ' : 'signed in   '}`;
   const WORKER = 'https://worker.invalid';
   const REPO = 'acme/site';
   const source = await (await fetch(URL_ARG)).text();
@@ -474,7 +474,7 @@ async function runSignedIn(browser, size) {
     if (req.method() === 'OPTIONS') {
       return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
     }
-    if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: null, mode: null } });
+    if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: opts.features || null, mode: null } });
     if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'] });
     if (p === `/gh/repos/${REPO}/contents/${file}`) {
       if (req.method() === 'GET') return json({ sha, content: b64(current) });
@@ -510,6 +510,68 @@ async function runSignedIn(browser, size) {
   check(scope, 'no demo banner on a real site', (await page.locator('#kiln-sandbox-banner').count()) === 0);
   check(scope, 'no demo guide on a real site', (await page.locator('#kiln-guide, #kiln-guide-card').count()) === 0
     && (await page.evaluate(() => localStorage.getItem('kiln_guide'))) === null);
+
+  // ── the "Make things editable" grant ───────────────────────────────────────
+  if (!opts.features) {
+    check(scope, 'an editor without the grant is not offered "Make text/images editable"', (await page.locator('#kiln-makeblock, #kiln-addsection').count()) === 0);
+  } else {
+    page.on('dialog', (d) => d.accept());
+    await press(page.locator('#kiln-fab'));
+    await page.waitForTimeout(300);
+    const make = page.locator('#kiln-makeblock');
+    check(scope, 'an editor with the grant sees both tools in the menu', (await make.isVisible().catch(() => false)) && await page.locator('#kiln-addsection').isVisible().catch(() => false));
+    await shot('make-editable-granted');
+    await press(make);
+    await page.waitForTimeout(300);
+    check(scope, 'the tool starts: "Click anything to make it editable"', /Click anything to make it editable/.test((await page.locator('#kiln-pickbar').innerText().catch(() => '')) || ''));
+    // something on the page that is not editable yet: plain text outside every field
+    const found = await page.evaluate(() => {
+      for (const el of document.querySelectorAll('main p, main li, main span, footer p, footer span, footer li')) {
+        if (el.closest('[data-cms],[data-cms-repeat],[data-cms-menu],[id^="kiln-"]') || el.querySelector('[data-cms],[data-cms-repeat]')) continue;
+        if (el.children.length || (el.textContent || '').trim().length < 8 || !el.getClientRects().length) continue;
+        el.scrollIntoView({ block: 'center', behavior: 'instant' });
+        window.__uiCheckSpot = el;
+        return true;
+      }
+      return false;
+    });
+    await page.waitForTimeout(400);
+    const spot = found ? await page.evaluate(() => {
+      const el = window.__uiCheckSpot, r = el.getBoundingClientRect();
+      const x = r.left + Math.min(r.width / 2, 40), y = r.top + r.height / 2;
+      const top = document.elementFromPoint(x, y);
+      return { x, y, text: el.textContent.trim().slice(0, 40), reachable: top === el || el.contains(top) };
+    }) : null;
+    check(scope, 'the page has plain text that is not editable yet', !!spot);
+    if (spot) {
+      await page.mouse.click(spot.x, spot.y);
+      await page.waitForTimeout(400);
+      const mk = page.locator('#kiln-mk-go');
+      check(scope, 'clicking it asks how to make it editable', (await mk.count()) === 1, spot.text);
+      if (await mk.count()) await press(mk);
+      await page.waitForTimeout(700);
+      const exit = page.locator('#kiln-pick-exit');
+      if (await exit.count()) await press(exit);
+      await page.waitForTimeout(300);
+      const publish = page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first();
+      check(scope, 'it is staged like any other edit', (await publish.count()) === 1);
+      if (await publish.count()) {
+        await press(publish);
+        await page.waitForTimeout(500);
+        const said = ((await page.locator('#kiln-modal .kiln-modal-card').innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
+        check(scope, 'the publish sheet names it', /Made editable:/.test(said), said.slice(0, 100));
+        await press(page.locator('#kiln-pubsheet-go'));
+        await page.waitForTimeout(1800);
+        const count = (html) => (html.match(/\sdata-cms="/g) || []).length;
+        const sent = puts.length ? Buffer.from(puts[puts.length - 1].content, 'base64').toString() : '';
+        check(scope, 'publishing sends one page commit with one more editable field', puts.length === 1 && count(sent) === count(source) + 1, `${puts.length} writes, ${count(sent) - count(source)} added`);
+      }
+    }
+    check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+    check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
+    await context.close();
+    return;
+  }
 
   const heading = page.locator('h1.kiln-field, h2.kiln-field, h3.kiln-field').first();
   const key = await heading.getAttribute('data-cms');
@@ -671,6 +733,8 @@ try {
     }
   }
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
+  // an invited editor granted "Make things editable" on top of the defaults
+  await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
 } finally { await browser.close(); }
 
 console.log(lines.join('\n'));
