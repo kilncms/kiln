@@ -35,6 +35,7 @@ import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
+import { draftRecord, readDraft, draftHolds } from './saved-edits.js';
 import { onLoadFailure, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 
 const cfg = window.KILN || {};
@@ -267,8 +268,7 @@ async function init() {
 function draftWaits() {
   try {
     for (const p of [...pageFileCandidates(location.pathname, cfg.root || ''), location.pathname]) {
-      const saved = JSON.parse(localStorage.getItem(`kiln_pending:${cfg.repo}:${p}`));
-      if (saved && saved.edits && Object.keys(saved.edits).length && Date.now() - saved.ts <= 7 * 24 * 3600 * 1000) return true;
+      if (readDraft(JSON.parse(localStorage.getItem(`kiln_pending:${cfg.repo}:${p}`)))) return true;
     }
   } catch { /* unreadable: nothing is promised */ }
   return false;
@@ -305,11 +305,7 @@ function notStarted(over) {
 /** The saved copy in this browser holds every text edit staged right now (written, then read back). */
 function draftSaved() {
   savePendingToStorage();
-  if (state.pendingSource.size) return false;   // edits to content files are not in the saved copy
-  try {
-    const saved = JSON.parse(localStorage.getItem(pendingStorageKey()));
-    return !!saved && JSON.stringify(saved.edits) === JSON.stringify(Object.fromEntries(state.pending));
-  } catch { return false; }
+  try { return draftHolds(JSON.parse(localStorage.getItem(pendingStorageKey())), state.pending, state.pendingSource); } catch { return false; }
 }
 
 /** The unpublished text, for "Copy my text": each edit as a person reads it on the page. */
@@ -2949,9 +2945,11 @@ async function publishSource() {
   const committed = [];
   let anyOk = false;
   let firstError = null;
+  let firstFailure = null;   // the first refusal as readFailure takes it: the thrown error, or { status, data }
   for (const g of groups) {
     let data = {};
     let ok = false;
+    let failure = null;
     try {
       const res = await fetch(`${cfg.worker}/source/commit`, {
         method: 'POST',
@@ -2960,10 +2958,13 @@ async function publishSource() {
       });
       data = await res.json().catch(() => ({}));
       ok = res.ok;
+      if (!ok) failure = { status: res.status, data };
     } catch (err) {
       data = { error: err.message };
+      failure = err;
     }
     if (!ok) {
+      firstFailure = firstFailure || failure;
       // The whole file's batch stays pending; the worker's own words surface
       // (suggest-mode 403s, vanished-file 404s, validation 422s — §8.1).
       firstError = firstError || data.error || 'save failed — see console';
@@ -3005,7 +3006,14 @@ async function publishSource() {
   }
   refreshPublishButton();
   if (!committed.length) {
-    if (firstError) setStatus(firstError, 'error');
+    // Nothing was saved. An ended sign-in (401), a change the sign-in does
+    // not allow (403: the worker's reason is shown) and trouble on the way
+    // are told as they are for a page edit: the edits stay staged and saved
+    // in this browser. Anything else keeps the worker's own words.
+    const f = firstFailure ? readFailure(firstFailure) : null;
+    if (f && (f.kind === 'ended' || f.kind === 'refused')) stoppedDialog(f, true);
+    else if (f && f.kind === 'trouble') setStatus(publishTrouble(f, { edits: state.pending.size, source: state.pendingSource.size }), 'error');
+    else if (firstError) setStatus(firstError, 'error');
     else if (anyOk) setStatus('Nothing changed', 'idle');
     return;
   }
@@ -6001,9 +6009,10 @@ function savePendingToStorage() {
   if (!keptReady) return;
   syncKeptFiles();
   try {
-    if (!state.pending.size) { localStorage.removeItem(pendingStorageKey()); return; }
-    localStorage.setItem(pendingStorageKey(),
-      JSON.stringify({ ts: Date.now(), edits: Object.fromEntries(state.pending) }));
+    // Edits to the page's own fields, and to the content files of a generated page.
+    const record = draftRecord(state.pending, state.pendingSource);
+    if (!record) { localStorage.removeItem(pendingStorageKey()); return; }
+    localStorage.setItem(pendingStorageKey(), JSON.stringify(record));
   } catch { /* storage full — nonfatal */ }
 }
 
@@ -6042,17 +6051,21 @@ function offerPendingRestore() {
   // Back from "Sign in again" in this tab: the edits are put back without asking.
   let back = false;
   try { back = sessionStorage.getItem(BACK_KEY) === '1'; sessionStorage.removeItem(BACK_KEY); } catch { /* private mode */ }
-  let saved;
-  try { saved = JSON.parse(localStorage.getItem(pendingStorageKey())); } catch { return; }
-  if (!saved || !saved.edits || Date.now() - saved.ts > 7 * 24 * 3600 * 1000) return;
-  const keys = Object.keys(saved.edits);
-  if (!keys.length) return;
+  let saved, ts;
+  try {
+    const stored = JSON.parse(localStorage.getItem(pendingStorageKey()));
+    // A content-file edit comes back only to a field that is on this page and can be edited now.
+    saved = readDraft(stored, { known: (ref) => !!state.sourceFields?.get(ref)?.els.some(el => el.classList.contains('kiln-source-field') && !el.classList.contains('kiln-source-locked')) });
+    ts = stored?.ts;
+  } catch { return; }
+  if (!saved) return;
   if (back) { restoreSaved(saved, kept, true); return; }
+  const names = [...Object.keys(saved.edits), ...Object.keys(saved.source).map(ref => friendlyRef(state.sourceFields.get(ref).parsed))];
   const m = modal(`
     <h3>Pick up where you left off?</h3>
-    <p class="kiln-dim">You have ${keys.length} unpublished edit${keys.length > 1 ? 's' : ''} from
-    ${new Date(saved.ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-    on this page (${keys.map(escapeHtml).join(', ')}).</p>
+    <p class="kiln-dim">You have ${saved.count} unpublished edit${saved.count > 1 ? 's' : ''} from
+    ${new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+    on this page (${names.map(escapeHtml).join(', ')}).</p>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" id="kiln-rest-no">Discard them</button>
       <button class="kiln-btn-publish" id="kiln-rest-yes">Restore edits</button>
@@ -6061,9 +6074,8 @@ function offerPendingRestore() {
   m.querySelector('#kiln-rest-yes').onclick = async () => { await restoreSaved(saved, kept, false); m.remove(); };
 }
 
-/** Put saved edits back on the page, staged as they were. `kept` resolves to the uploads kept beside them. */
+/** Put saved edits (what readDraft gives) back on the page, staged as they were. `kept` resolves to the uploads kept beside them. */
 async function restoreSaved(saved, kept, signedInAgain) {
-  const keys = Object.keys(saved.edits);
   // The pictures and files those edits added: queue them again, and show each
   // picture from the kept bytes (its address on the site does not exist yet).
   const files = filesToRestore(await kept, saved.edits);
@@ -6099,9 +6111,14 @@ async function restoreSaved(saved, kept, signedInAgain) {
       img.src = preview;
     }
   }
+  // Edits to content files: staged again, and shown in every place the value appears.
+  for (const [ref, entry] of Object.entries(saved.source)) {
+    state.pendingSource.set(ref, entry);
+    syncSourceDom(ref);
+  }
   refreshPublishButton();
-  if (signedInAgain) setStatus(backAfterSignIn(keys.length, files.length), 'saved');
-  else setStatus(`${keys.length} edit${keys.length > 1 ? 's' : ''} restored${files.length ? ', with the files they added' : ''} — Publish when ready`, 'saved');
+  if (signedInAgain) setStatus(backAfterSignIn(saved.count, files.length), 'saved');
+  else setStatus(`${saved.count} edit${saved.count > 1 ? 's' : ''} restored${files.length ? ', with the files they added' : ''} — Publish when ready`, 'saved');
 }
 
 function escapeHtml(s) {
