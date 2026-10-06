@@ -350,8 +350,12 @@ async function doctor(args) {
     // `kiln update`, not to fail the health check.
     if (bootText) {
       const mine = bootText.match(/KILN_VERSION\s*=\s*["']([\w.-]+)["']/)?.[1];
-      const latest = await fetch('https://raw.githubusercontent.com/kilncms/kiln/main/dist/VERSION', { cache: 'no-store' })
-        .then(r => r.ok ? r.text() : null).then(t => t && t.trim()).catch(() => null);
+      // "Latest" is what was released: the release branch points at the build
+      // production runs. Until that branch exists, main stands in for it. If
+      // neither answers, nothing is said: no false "update available".
+      const stampOn = (branch) => fetch(`https://raw.githubusercontent.com/kilncms/kiln/${branch}/dist/VERSION`, { cache: 'no-store' })
+        .then(r => r.ok ? r.text() : null).then(t => (t && /^[\w.-]{1,40}$/.test(t.trim()) ? t.trim() : null)).catch(() => null);
+      const latest = await stampOn('release') || await stampOn('main');
       if (mine && latest) {
         check('editor is up to date', mine === latest,
           mine === latest ? `version ${mine}` : `you have ${mine}, latest is ${latest} — run: npx github:kilncms/kiln update`, true);

@@ -18,8 +18,9 @@
  *
  * Then: database migrations on production, an annotated tag prod-YYYY-MM-DD,
  * `wrangler deploy --env production` carrying the commit, the tag and a
- * message, a check that production now reports this commit, and the tag is
- * pushed. Bundles go to sites separately: `npm run propagate`.
+ * message, a check that production now reports this commit, the tag is pushed
+ * and the `release` branch is moved forward to this commit. Bundles go to
+ * sites separately: `npm run propagate`.
  *
  * Everything that touches git, the network or wrangler goes through `io`, so
  * the tests drive this file with all three stubbed (test/release.test.js).
@@ -164,6 +165,11 @@ export async function release(io, { target = 'production', dryRun = false, hotfi
     { say: `deploy ${c.short} to ${target}`, cmd: wrangler('deploy', '--env', target, '--var', `KILN_BUILD:${c.short}`, '--tag', tag, '--message', message) },
     { say: `confirm ${url}/healthz reports build ${c.short}`, verify: true },
     ...(target === 'production' ? [{ say: `push the tag ${tag}`, git: ['push', 'origin', tag] }] : []),
+    // `release` is the branch that always points at what production runs: the
+    // channel `kiln doctor` compares a site's editor against. A plain push, so
+    // it only ever moves forward. Production is already updated by now, so a
+    // refusal here is reported and does not fail the release.
+    ...(target === 'production' ? [{ say: `fast-forward the release branch to ${c.short}`, git: ['push', 'origin', `${c.sha}:refs/heads/release`], optional: true }] : []),
   ];
   if (dryRun) {
     io.log(`Every check passed for ${c.short} on ${c.branch}. A real run would:`);
@@ -177,7 +183,10 @@ export async function release(io, { target = 'production', dryRun = false, hotfi
     for (const s of steps) {
       io.log(`→ ${s.say}`);
       if (s.cmd) { io.run(...s.cmd); if (s.cmd[1][1] === 'deploy') deployed = true; }
-      if (s.git) { io.git(...s.git); if (s.git[0] === 'tag') tagged = true; }
+      if (s.git && s.optional) {
+        try { io.git(...s.git); }
+        catch (err) { io.log(`  ! could not ${s.say} (${String(err.message).split('\n')[0]}). Production is released; move the branch by hand: git push origin ${c.sha}:refs/heads/release`); }
+      } else if (s.git) { io.git(...s.git); if (s.git[0] === 'tag') tagged = true; }
       if (s.verify) {
         const health = await io.fetchJson(`${url}/healthz`);
         if (!health.ok || !health.build || !c.sha.startsWith(health.build)) {

@@ -156,9 +156,19 @@ to do, unless all of these hold:
 
 Then it applies waiting database migrations to production, tags the commit
 `prod-YYYY-MM-DD`, deploys with the commit, the tag and a message attached,
-checks that `https://auth.kilncms.com/healthz` now reports the commit, and
-pushes the tag. If the deploy step fails nothing is left behind; if the check
-after it fails, the message names the command that goes back.
+checks that `https://auth.kilncms.com/healthz` now reports the commit, pushes
+the tag, and moves the `release` branch forward to the commit. If the deploy
+step fails nothing is left behind; if the check after it fails, the message
+names the command that goes back.
+
+**The `release` branch** always points at what production runs. `kiln doctor`
+compares a site's editor with `release/dist/VERSION`, so work on `main` that
+has not been released is not offered to anyone as an update. The branch does
+not exist until the first release made by the script; until then doctor falls
+back to `main`, quietly. Two things still read `main` and should move to
+`release` once the branch exists: the editor's own "a newer editor exists"
+notice, and the install and update commands in the guides
+(`npx github:kilncms/kiln#release …`).
 
 It does not touch any site. Bundles go out separately (`npm run propagate`).
 

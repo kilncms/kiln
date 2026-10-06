@@ -133,7 +133,7 @@ test('KLR-01 --dry-run with every check passing lists the steps and changes noth
   assert.match(lines.join('\n'), /Dry run: nothing was changed\./);
   assert.deepEqual(r.steps, [
     'apply database migrations to production', 'tag this commit prod-2026-10-06', 'deploy abc1234 to production',
-    'confirm https://auth.kilncms.com/healthz reports build abc1234', 'push the tag prod-2026-10-06']);
+    'confirm https://auth.kilncms.com/healthz reports build abc1234', 'push the tag prod-2026-10-06', 'fast-forward the release branch to abc1234']);
 });
 
 test('KLR-01 a release: migrations, tag, deploy with the commit, tag and message, verify, push the tag — in that order', async () => {
@@ -144,9 +144,24 @@ test('KLR-01 a release: migrations, tag, deploy with the commit, tag and message
     'git tag -a prod-2026-10-06 -m Production release of abc1234: worker: a fix',
     'worker$ npx wrangler deploy --env production --var KILN_BUILD:abc1234 --tag prod-2026-10-06 --message prod-2026-10-06: worker: a fix',
     'git push origin prod-2026-10-06',
+    `git push origin ${SHA}:refs/heads/release`,
   ]);
+  assert.equal(ran.at(-1).includes('--force') || ran.at(-1).includes('+'), false, 'the release branch only ever moves forward');
   assert.match(lines.join('\n'), /npm run propagate/);
   assert.equal(ran.some(l => /propagate|push origin main|--force/.test(l)), false, 'no site is touched and no branch is pushed');
+});
+
+test('KLR-07 the release branch: moved after the deploy; if origin refuses, the release still stands and says what to do', async () => {
+  const w = world({ failOn: `push origin ${SHA}:refs/heads/release` });
+  const r = await release(w.io, {});
+  assert.equal(r.dryRun, false);
+  assert.ok(w.ran.includes('git push origin prod-2026-10-06'), 'the tag was pushed first');
+  assert.match(w.lines.join('\n'), /could not fast-forward the release branch to abc1234 .*Production is released; move the branch by hand: git push origin abc1234def5678900000000000000000000000ff:refs\/heads\/release/);
+  assert.match(w.lines.join('\n'), /production now runs abc1234/);
+  // Staging never moves it.
+  const s = world({ branch: 'feature' });
+  await release(s.io, { target: 'staging' });
+  assert.equal(s.ran.some(l => l.includes('refs/heads/release')), false);
 });
 
 test('KLR-01 a second release on the same day gets its own tag', async () => {
