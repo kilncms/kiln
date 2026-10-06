@@ -35,7 +35,7 @@ import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
-import { onLoadFailure, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
+import { onLoadFailure, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -171,10 +171,10 @@ async function init() {
       // Only a real auth rejection should sign the owner out. A network or worker
       // blip (no HTTP status) must NOT nuke a valid session — that would log them
       // out every time their wifi hiccups. Surface it and let a reload recover.
-      const over = onLoadFailure(err, { mode, draft: draftWaits() });
+      const over = onLoadFailure(err, { mode, draft: draftWaits(), asking: 'who' });
       if (over) {
-        console.warn('[kiln] the sign-in has ended', err);
-        signInEndedOnLoad(over);
+        console.warn(over.drop ? '[kiln] the sign-in has ended' : '[kiln] could not verify session (offline?)', err);
+        notStarted(over);
         return;
       }
       console.warn('[kiln] could not verify session (offline?)', err);
@@ -188,7 +188,7 @@ async function init() {
       // The sign-in was made under another repository name than the one the
       // site's config has now (the owner corrected it after a rename or a
       // move). It is of no use here: say so, instead of a silent reload.
-      signInEndedOnLoad(onLoadFailure({ status: 401 }, { mode, draft: draftWaits() }));
+      notStarted(onLoadFailure({ status: 401 }, { mode, draft: draftWaits() }));
       return;
     }
     state.gh = makeGh({ mode: 'proxy', worker: cfg.worker, session: sess.session });
@@ -201,10 +201,12 @@ async function init() {
     // The worker no longer knows this sign-in (any 401, whatever it says).
     // The editor does not start: the stored sign-in is dropped, so /kiln
     // shows the sign-in again, and the page says what happened.
-    const over = mode === 'editor' ? onLoadFailure(err, { mode, draft: draftWaits() }) : null;
+    // Trouble (no answer, a 5xx, a 429) and a 403 drop nothing: the page says
+    // editing could not start and that the person is still signed in.
+    const over = onLoadFailure(err, { mode, draft: draftWaits() });
     if (over) {
-      console.warn('[kiln] the sign-in has ended', err);
-      signInEndedOnLoad(over);
+      console.warn(over.drop ? '[kiln] the sign-in has ended' : '[kiln] the page could not be read', err);
+      notStarted(over);
       return;
     }
     // Source-mode pages are GENERATED — the URL usually has no committed HTML
@@ -283,15 +285,16 @@ function signInAgain() {
 }
 
 /**
- * The page loaded with a sign-in that is over. The editor has drawn nothing
- * yet and draws nothing: the page is what a signed-out visitor sees, plus one
- * sentence at the bottom of the screen (clear of a site's own navigation)
- * that can be put away.
+ * The page loaded and the editor cannot start: the sign-in is over (it is
+ * dropped), or the page could not be read (it is kept). The editor has drawn
+ * nothing yet and draws nothing: the page is what a signed-out visitor sees,
+ * plus one sentence at the bottom of the screen (clear of a site's own
+ * navigation) that can be put away.
  */
-function signInEndedOnLoad(over) {
+function notStarted(over) {
   if (over.drop) localStorage.removeItem(mode === 'admin' ? ADMIN_KEY : EDITOR_KEY);
   document.querySelector('style[data-kiln]')?.remove();
-  showNotice(over.notice, signInAgain);
+  showNotice(over.notice, over.action === 'reload' ? () => location.reload() : signInAgain);
 }
 
 // ─── …found out while editing ────────────────────────────────────────────────
@@ -473,6 +476,7 @@ function withAutoRefresh(gh, stored) {
           // Sign out ONLY when the worker says the refresh token is dead (401).
           // A transient 5xx/network failure must not destroy a session that will
           // work again once the worker recovers — just fail this one request.
+          if (res.status >= 500 || res.status === 429) err.signIn = 'trouble';   // the renewal could not be had: not a sign-out
           if (res.status === 401) {
             err.signIn = 'ended';
             // While the editor is starting, init() says so on the page. Once it
@@ -2568,8 +2572,10 @@ async function publish(opts = {}) {
     refreshPublishButton();
     // The sign-in has ended (401), or it does not allow this change (403):
     // the edits stay as they are, and the person is told where they stand.
+    // Trouble on the way (no answer, a 5xx, a 429) is neither: it says so, and to try again.
     const f = why ? null : readFailure(err);
     if (f && (f.kind === 'ended' || f.kind === 'refused')) stoppedDialog(f, true);
+    else if (f && f.kind === 'trouble') setStatus(publishTrouble(f, { edits: state.pending.size, source: state.pendingSource.size }), 'error');
     else setStatus(why ? why + which : 'Publish failed — see console', 'error');
   }
 }

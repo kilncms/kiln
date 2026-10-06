@@ -12,8 +12,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import vm from 'node:vm';
 import {
-  readFailure, onLoadFailure, endedNotice, signInUrl,
-  whatSurvives, publishEnded, publishRefused, editsAsText, backAfterSignIn,
+  readFailure, onLoadFailure, endedNotice, notStartedNotice, signInUrl,
+  whatSurvives, publishEnded, publishRefused, publishTrouble, editsAsText, backAfterSignIn,
 } from '../src/editor/sign-in-ended.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -78,20 +78,23 @@ test('sign-in ended: on page load an invited editor\'s refused sign-in is droppe
   });
 });
 
+/** Whether the editor is told to remove the stored sign-in. */
+const dropped = (over) => !!over && over.drop === true;
+
 test('sign-in ended: on page load nothing but a 401 drops an invited editor\'s sign-in', () => {
-  for (const answer of NOT_ENDED) assert.equal(onLoadFailure(answer, { mode: 'editor' }), null, String(answer.status || answer));
+  for (const answer of NOT_ENDED) assert.equal(dropped(onLoadFailure(answer, { mode: 'editor' })), false, String(answer.status || answer));
 });
 
 test('sign-in ended: the owner is told to sign in with GitHub, when the token could not be renewed or GitHub refuses it', () => {
   const renewalRefused = Object.assign(new Error('GitHub 401: Bad credentials'), { status: 401, data: { message: 'Bad credentials' }, signIn: 'ended' });
   for (const err of [renewalRefused, { status: 401, data: { message: 'Bad credentials' } }, { status: 403, data: { message: 'Forbidden' } }]) {
-    const over = onLoadFailure(err, { mode: 'admin' });
+    const over = onLoadFailure(err, { mode: 'admin', asking: 'who' });
     assert.equal(over.drop, true);
     assert.equal(over.notice.text, 'Your sign-in to edit this site has ended, so please sign in again with GitHub.');
     assert.equal(over.notice.button, 'Sign in again');
   }
-  assert.equal(onLoadFailure(new TypeError('Failed to fetch'), { mode: 'admin' }), null, 'no answer at all is not a sign-out');
-  assert.equal(onLoadFailure({ status: 500 }, { mode: 'admin' }), null);
+  assert.equal(dropped(onLoadFailure(new TypeError('Failed to fetch'), { mode: 'admin', asking: 'who' })), false, 'no answer at all is not a sign-out');
+  assert.equal(dropped(onLoadFailure({ status: 500 }, { mode: 'admin', asking: 'who' })), false);
 });
 
 test('sign-in ended: when the owner has something to correct, the sentence says to ask them and shows what the worker said', () => {
@@ -285,7 +288,7 @@ test('publish refused: a 403 is not a sign-out, and its reason is the answer\'s 
   assert.notEqual(readFailure({ status: 403, data: { message: 'API rate limit exceeded for user ID 1.' } }).kind, 'refused');
   assert.notEqual(readFailure({ status: 403, data: { message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.' } }).kind, 'refused');
   // and on page load a 403 never drops an invited editor's sign-in
-  assert.equal(onLoadFailure({ status: 403, data: { error: 'path not allowed' } }, { mode: 'editor' }), null);
+  assert.equal(dropped(onLoadFailure({ status: 403, data: { error: 'path not allowed' } }, { mode: 'editor' })), false);
 });
 
 test('publish refused: the person is told the edits are still there, offered a copy, and not sent to sign in', () => {
@@ -332,4 +335,88 @@ test('publish: every sentence about an ended or refused sign-in is plain', () =>
     }
   }
   for (const text of all) assertPlain(text);
+});
+
+// ─── Trouble is not a sign-out ───────────────────────────────────────────────
+
+// What fetch throws when nothing answers, as Chrome, Safari, Firefox and node word it.
+const NO_ANSWER = ['Failed to fetch', 'Load failed', 'NetworkError when attempting to fetch resource.', 'fetch failed'].map(m => new TypeError(m));
+const FAILING = [500, 502, 503, 504, 408].map(status => ({ status, data: { error: 'internal error' } }));
+const BUSY = [
+  { status: 429, data: { error: 'rate limited, slow down' } },                                  // the worker's own limiter
+  { status: 429 },
+  { status: 403, data: { message: 'API rate limit exceeded for user ID 1.' } },                 // GitHub, asked too often
+  { status: 403, data: { message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.' } },
+];
+// The owner's token ran out and the worker could not be asked for a new one: GitHub's 401 says nothing yet.
+const RENEWAL_AWAY = Object.assign(new Error('GitHub 401: Bad credentials'), { status: 401, data: { message: 'Bad credentials' }, signIn: 'trouble' });
+const TROUBLE = [...NO_ANSWER, ...FAILING, ...BUSY, RENEWAL_AWAY];
+
+test('trouble: a failed request, a 5xx and a 429 are trouble, each told apart', () => {
+  for (const err of NO_ANSWER) assert.deepEqual([readFailure(err).kind, readFailure(err).trouble], ['trouble', 'unreachable'], err.message);
+  for (const err of FAILING) assert.deepEqual([readFailure(err).kind, readFailure(err).trouble], ['trouble', 'failing'], String(err.status));
+  for (const err of BUSY) assert.deepEqual([readFailure(err).kind, readFailure(err).trouble], ['trouble', 'busy'], JSON.stringify(err));
+  assert.equal(readFailure(RENEWAL_AWAY).kind, 'trouble');
+  // A mistake in the editor's own code is not "the site could not be reached".
+  assert.equal(readFailure(new TypeError("Cannot read properties of undefined (reading 'path')")).kind, 'other');
+  assert.equal(readFailure(new Error('This page isn’t UTF-8 encoded')).kind, 'other');
+});
+
+test('trouble: on page load the sign-in is kept, for an invited editor and for the owner, and the page says so', () => {
+  for (const mode of ['editor', 'admin']) {
+    for (const asking of ['who', 'page']) {
+      for (const err of TROUBLE) {
+        const over = onLoadFailure(err, { mode, asking, draft: true });
+        assert.equal(over.drop, false, `${mode} ${asking} ${err.status || err.message}`);
+        assert.equal(over.action, 'reload');
+        assert.deepEqual(over.notice, {
+          text: 'Editing could not start just now. You are still signed in, so please reload the page to try again.',
+          detail: '',
+          button: 'Reload',
+        });
+      }
+    }
+  }
+});
+
+test('trouble: at Publish the status line says nothing was lost and to try again, each kind in its own words', () => {
+  const one = { edits: 1, source: 0 };
+  assert.equal(publishTrouble(readFailure(NO_ANSWER[0]), one), 'Not published: the site could not be reached. Your edit is still here, so please check your connection and try again.');
+  assert.equal(publishTrouble(readFailure(FAILING[0]), { edits: 2, source: 1 }), 'Not published: the site had a problem just now. Your 3 edits are still here, so please try again in a moment.');
+  assert.equal(publishTrouble(readFailure(BUSY[0]), one), 'Not published: too much was asked of the site just now. Your edit is still here, so please try again in a minute.');
+  assert.equal(publishTrouble(readFailure(BUSY[2]), { edits: 0, source: 0 }), 'Not published: too much was asked of the site just now. Nothing was lost, so please try again in a minute.');
+  for (const err of TROUBLE) assertPlain(publishTrouble(readFailure(err), one));
+});
+
+test('trouble: none of it reads as an ended or a refused sign-in, so nothing offers to sign in again or says the edit is not allowed', () => {
+  for (const err of TROUBLE) {
+    const f = readFailure(err);
+    assert.notEqual(f.kind, 'ended', String(err.status || err.message));
+    assert.notEqual(f.kind, 'refused', String(err.status || err.message));
+  }
+});
+
+test('page load refused: a 403 on reading the page keeps the sign-in and says to ask, with the answer\'s reason', () => {
+  const over = onLoadFailure({ status: 403, data: { error: 'path not allowed', path: '/repos/acme/other/contents/index.html' } }, { mode: 'editor' });
+  assert.equal(over.drop, false);
+  assert.equal(over.action, '');
+  assert.deepEqual(over.notice, {
+    text: 'Editing could not start on this page because the site did not allow it. You are still signed in, so please ask the site’s owner.',
+    detail: 'The answer was: path not allowed',
+    button: '',
+  });
+  // The owner: GitHub refusing the page is not GitHub refusing the person.
+  const owner = onLoadFailure({ status: 403, data: { message: 'Resource not accessible by integration' } }, { mode: 'admin', asking: 'page' });
+  assert.equal(owner.drop, false);
+  assert.equal(owner.notice.text, 'Editing could not start on this page because the site did not allow it. You are still signed in, so please check that you can still read the repository on GitHub.');
+  assertPlain(over.notice.text);
+  assertPlain(owner.notice.text);
+  assertPlain(notStartedNotice({ way: 'google', f: readFailure(NO_ANSWER[0]) }).text);
+});
+
+test('page load: what is neither the sign-in nor trouble nor a refusal is left to the editor as before', () => {
+  for (const err of [{ status: 404, data: { message: 'Not Found' } }, { status: 409 }, { status: 422 }, new Error('This page isn’t UTF-8 encoded')]) {
+    assert.equal(onLoadFailure(err, { mode: 'editor' }), null);
+    assert.equal(onLoadFailure(err, { mode: 'admin', asking: 'page' }), null);
+  }
 });

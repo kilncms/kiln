@@ -27,10 +27,13 @@ const wayName = (way) => WAYS[way] || WAYS.google;
  *
  * `err` is what the GitHub transport throws ({ status, data }) or the same two
  * fields read off a worker answer. `err.signIn`, when set, is what the token
- * renewal already found out, and wins over the status.
+ * renewal already found out ('ended' or 'trouble'), and wins over the status.
  *
  *   kind 'ended'    the sign-in is over (a 401, whatever its body says)
  *   kind 'refused'  signed in, but this is not allowed (a 403)
+ *   kind 'trouble'  no answer at all, a 5xx, a 429, or GitHub's own "asked
+ *                   too often" 403: nothing about the person, and never a
+ *                   reason to drop a sign-in or an edit
  *   kind 'other'    anything else; nothing is concluded about the sign-in
  *
  * `ownerMust` is true when the worker says the site's owner has something to
@@ -42,7 +45,11 @@ export function readFailure(err) {
   const status = Number.isInteger(err?.status) ? err.status : 0;
   const data = err?.data && typeof err.data === 'object' ? err.data : {};
   const out = { kind: 'other', status, ownerMust: false, message: '', reason: '' };
-  if (err?.signIn === 'ended' || (!err?.signIn && status === 401)) {
+  const limited = status === 429 || (status === 403 && rateLimited(data));
+  if (err?.signIn === 'trouble' || (!err?.signIn && (noAnswer(err) || status >= 500 || status === 408 || limited))) {
+    out.kind = 'trouble';
+    out.trouble = noAnswer(err) ? 'unreachable' : limited ? 'busy' : 'failing';
+  } else if (err?.signIn === 'ended' || (!err?.signIn && status === 401)) {
     out.kind = 'ended';
     out.ownerMust = data.code === 'repo_changed';
     if (out.ownerMust && typeof data.message === 'string') out.message = data.message.trim();
@@ -52,6 +59,11 @@ export function readFailure(err) {
     out.reason = said ? said.trim().slice(0, 300) : '';
   }
   return out;
+}
+
+/** The request never got an answer: what fetch throws when the network or the worker is away. */
+function noAnswer(err) {
+  return !Number.isInteger(err?.status) && err?.name === 'TypeError' && /fetch|network|load failed/i.test(String(err?.message || ''));
 }
 
 /** GitHub answers 403 when it is asked too often: that is about the hour, not about the person. */
@@ -99,20 +111,46 @@ export function endedNotice({ way, ownerMust = false, message = '', draft = fals
 }
 
 /**
+ * What the page says when the editor could not start for a reason that is
+ * not the sign-in: the worker or GitHub could not be reached or is failing
+ * (`f.kind` 'trouble'), or answered 403 to reading the page ('refused').
+ * The sign-in is kept, and the sentence says so.
+ */
+export function notStartedNotice({ way, f }) {
+  if (f.kind === 'refused') {
+    const ask = way === 'github' ? 'check that you can still read the repository on GitHub' : 'ask the site’s owner';
+    return {
+      text: `Editing could not start on this page because the site did not allow it. You are still signed in, so please ${ask}.`,
+      detail: f.reason ? `The answer was: ${f.reason}` : '',
+      button: '',
+    };
+  }
+  return {
+    text: 'Editing could not start just now. You are still signed in, so please reload the page to try again.',
+    detail: '',
+    button: 'Reload',
+  };
+}
+
+/**
  * What the editor does when the page could not be read as it starts.
- * Returns null when this is not about the sign-in (the caller carries on as
- * before), or { drop, notice }: `drop` says the stored sign-in is to be
- * removed, `notice` is what endedNotice gives.
+ * Returns null when there is nothing to say about it here (the caller
+ * carries on as before), or { drop, notice, action }: `drop` says the stored
+ * sign-in is to be removed, `notice` is the sentence, and `action` is what
+ * its button does ('signin' or 'reload').
  *
  * An invited editor's sign-in is over on a 401. The owner's is over when the
- * token could not be renewed, or GitHub answers 401 or 403 to "who am I".
+ * token could not be renewed, or GitHub answers 401, or 403 to "who am I"
+ * (`asking: 'who'`). Trouble and a 403 on reading the page drop nothing.
  */
-export function onLoadFailure(err, { mode = 'editor', draft = false } = {}) {
+export function onLoadFailure(err, { mode = 'editor', draft = false, asking = 'page' } = {}) {
   const f = readFailure(err);
   const way = mode === 'admin' ? 'github' : 'google';
-  const over = f.kind === 'ended' || (mode === 'admin' && !err?.signIn && f.status === 403);
-  if (!over) return null;
-  return { drop: true, notice: endedNotice({ way, ownerMust: f.ownerMust, message: f.message, draft }) };
+  const over = f.kind === 'ended' || (mode === 'admin' && asking === 'who' && f.kind === 'refused');
+  if (over) return { drop: true, action: 'signin', notice: endedNotice({ way, ownerMust: f.ownerMust, message: f.message, draft }) };
+  if (f.kind === 'trouble') return { drop: false, action: 'reload', notice: notStartedNotice({ way, f }) };
+  if (f.kind === 'refused') return { drop: false, action: '', notice: notStartedNotice({ way, f }) };
+  return null;
 }
 
 // ─── At Publish ──────────────────────────────────────────────────────────────
@@ -207,6 +245,18 @@ export function publishRefused({ way, reason = '', counts }) {
     signIn: false,
     copy: n > 0,
   };
+}
+
+/**
+ * The status line when Publish met trouble that has nothing to do with the
+ * person (see readFailure): nothing is dropped, and it says so.
+ */
+export function publishTrouble(f, counts) {
+  const n = counts.edits + counts.source;
+  const here = n === 1 ? 'Your edit is still here' : n ? `Your ${n} edits are still here` : 'Nothing was lost';
+  if (f.trouble === 'unreachable') return `Not published: the site could not be reached. ${here}, so please check your connection and try again.`;
+  if (f.trouble === 'busy') return `Not published: too much was asked of the site just now. ${here}, so please try again in a minute.`;
+  return `Not published: the site had a problem just now. ${here}, so please try again in a moment.`;
 }
 
 /** The unpublished text as something to paste elsewhere: each edit's name, then its words. */
