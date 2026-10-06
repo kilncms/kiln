@@ -278,6 +278,38 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **An editor whose sign-in the worker had ended was left with an editor that
+  did not start, and no way back to the sign-in.** A 401 for the stored
+  sign-in (someone taken off People and added back, a repository renamed, a
+  session the worker no longer has) went to the console; the sign-in stayed in
+  the browser, so `/kiln` sent the person back to the same silent page. The
+  editor now drops that sign-in and the page says "Your sign-in to edit this
+  site has ended, so please sign in again with Google.", with a button to the
+  sign-in that returns to the same page. When the worker says the owner has
+  something to correct (`code: "repo_changed"`), the sentence says to ask them
+  and shows the worker's message. The owner is told the same way, with GitHub,
+  when the token cannot be renewed. It reads only what every worker's answer
+  carries, so an older self-hosted worker needs no change.
+- **Publish with an ended sign-in said "Publish failed — see console".** A
+  dialog now says that nothing was published and that the edits are saved in
+  this browser. After **Sign in again** they are back on the page without a
+  question, and Publish sends them. What the saved copy cannot hold (parts
+  made editable, sections added or removed, or everything when the browser
+  cannot save) is said before the person leaves, with **Copy my text**. A 403
+  keeps the edits too: it says the sign-in does not allow the change, shows
+  the answer's reason and offers the copy. The owner's page is no longer
+  reloaded under their edits.
+- **No answer, a 5xx or a 429 is not a sign-out.** None of them drops a
+  sign-in or an edit. On page load, where the editor used to fail without a
+  word, the page says editing could not start and that the person is still
+  signed in; at Publish the status line says nothing was lost and to try
+  again. GitHub's rate limit, and a token that ran out while the worker could
+  not be reached, no longer sign the owner out.
+- **Source mode: an unpublished edit to a content file was lost on any
+  reload.** The copy of unpublished edits the browser keeps now holds them
+  beside page edits, and "Pick up where you left off?" offers them back. An
+  ended sign-in at Publish (the worker's `/source/commit` answering 401) gets
+  the same dialog as a page edit, where it used to say "unauthorized".
 - **The setup wizard told Astro owners to `npm install @kilncms/astro`**, a
   package that is not on npm. It now adds the helper to the project as one
   file, `src/lib/kiln-astro.mjs`, and shows the import to use.

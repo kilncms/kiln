@@ -137,3 +137,8 @@ come back.
 **I got signed out.** Your access has an expiry the owner set. Go back to
 `yoursite.com/kiln` and sign in with Google again. If it says you're not on the list,
 your access may have lapsed — ask the owner to renew it.
+
+**It says my sign-in has ended.** The site no longer accepts the sign-in this browser
+was holding: the time the owner gave you ran out, or the owner changed your access or
+the site's setup. Press **Sign in again** and sign in with Google as before; edits you
+had not published are kept in this browser and put back on the page.
