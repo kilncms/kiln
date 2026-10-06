@@ -72,13 +72,54 @@ export function readConfig(env = process.env, argv = []) {
   return { worker, repo, branch: env.KILN_E2E_BRANCH || 'main', site: (env.KILN_E2E_SITE || '').replace(/\/+$/, ''), field: env.KILN_E2E_FIELD || '', token, smoke, local };
 }
 
+/**
+ * What to say when wrangler could not write an editor session into the
+ * worker's KV. The usual reason is not a broken worker: wrangler's browser
+ * sign-in may read a KV namespace it is not allowed to write to, and
+ * Cloudflare answers "Authentication error [code: 10000]". Say what to do.
+ */
+export function kvFailure(args, output) {
+  const text = String(output || '').replace(/\x1b\[[0-9;]*m/g, '');
+  const line = text.split('\n').map(l => l.trim()).filter(l => /error|not authori[sz]ed|permission|failed/i.test(l))[0] || text.trim().split('\n').pop() || 'no output';
+  const what = `wrangler ${args.slice(0, 3).join(' ')}`;
+  if (/authentication error|code: 10000|not authori[sz]ed|permission/i.test(text)) {
+    return `${what} was refused by Cloudflare (${line}). Wrangler's browser sign-in can be allowed to read this KV namespace and not to write it. `
+      + 'Give wrangler a credential that may write Workers KV for this run and run it again: either CLOUDFLARE_API_TOKEN (a token with "Workers KV Storage: Edit") and CLOUDFLARE_ACCOUNT_ID, '
+      + 'or CLOUDFLARE_API_KEY, CLOUDFLARE_EMAIL and CLOUDFLARE_ACCOUNT_ID, in the environment of this command. Nothing was written to the repository';
+  }
+  return `${what} failed: ${line}`;
+}
+
+/**
+ * A worker that answers 429 is asking the script to slow down; it is not a
+ * failed check. Wait (as long as Retry-After says, else 15 seconds) and ask
+ * again, up to six times. The staging limiter allows 20 requests a minute and
+ * a full run makes several times that.
+ */
+export function patient(io, cfg) {
+  const once = io.fetch;
+  return {
+    ...io,
+    fetch: async (url, init) => {
+      for (let attempt = 0; ; attempt++) {
+        const res = await once(url, init);
+        if (res.status !== 429 || !String(url).startsWith(cfg.worker) || attempt >= 6) return res;
+        const asked = Number(res.headers && res.headers.get && res.headers.get('Retry-After'));
+        const wait = Number.isFinite(asked) && asked > 0 && asked <= 120 ? asked * 1000 : 15000;
+        io.log(`   the worker asked to slow down (429): waiting ${Math.round(wait / 1000)} seconds`);
+        await io.sleep(wait);
+      }
+    },
+  };
+}
+
 /** The real network, clock and KV. Tests pass their own. */
 export function realIo(cfg) {
   const where = cfg.local ? ['--local'] : ['--env', 'staging', '--remote'];
   const wrangler = (...args) => {
     const r = spawnSync(process.execPath, [path.join(ROOT, 'node_modules', 'wrangler', 'bin', 'wrangler.js'), ...args, '--binding', 'KILN', ...where],
       { cwd: path.join(ROOT, 'worker'), encoding: 'utf8', env: { ...process.env, CI: 'true', WRANGLER_SEND_METRICS: 'false' } });
-    if (r.status !== 0) throw new Error(`wrangler ${args.slice(0, 3).join(' ')} failed: ${(r.stderr || r.stdout || '').trim().split('\n').pop()}`);
+    if (r.status !== 0) throw new Error(kvFailure(args, `${r.stderr || ''}\n${r.stdout || ''}`));
   };
   return {
     fetch: (url, init) => fetch(url, init),
@@ -91,7 +132,13 @@ export function realIo(cfg) {
   };
 }
 
-export async function run(cfg, io) {
+/**
+ * The bookkeeping both end-to-end scripts share (this one and e2e-source.mjs):
+ * a list of named checks, steps that must succeed, and requests that must be
+ * refused. A failed step or an unrefused request throws Stop, which the caller
+ * catches so that its cleanup still runs.
+ */
+export function checklist(io) {
   const checks = [];
   const record = (name, ok, detail = '') => { checks.push({ name, ok, detail }); io.log(`${ok ? '✅' : '❌'} ${name}${detail ? ` — ${detail}` : ''}`); };
   /** A step that must succeed. A failure is recorded and ends the run (cleanup still happens). */
@@ -109,13 +156,115 @@ export async function run(cfg, io) {
     record(name, ok, ok ? `${got.status}${got.body.code ? ` ${got.body.code}` : ''}` : `expected ${statuses.join(' or ')}${code ? ` ${code}` : ''}, got ${got.status} ${JSON.stringify(got.body).slice(0, 160)}`);
     if (!ok) throw new Stop(name);
   };
+  return { checks, record, step, refused };
+}
+
+/**
+ * The four things that must hold before either script writes anything: the
+ * worker has its App, the App is installed on the repository, the token can
+ * push to it, and the repository carries the marker file. Returns the
+ * maintainer's transport (direct to GitHub with GH_TOKEN).
+ */
+export async function repoReady(cfg, io, { step }) {
+  const W = cfg.worker;
+  const R = cfg.repo;
+  const getJson = async (url) => { const res = await io.fetch(url, {}); return { status: res.status, body: await res.json().catch(() => ({})) }; };
+  await step('worker has its GitHub App', async () => {
+    const s = await getJson(`${W}/setup/status`);
+    if (!s.body.configured) throw new Error(`no App registered: open ${W}/setup once and click the button`);
+    return s.body.slug || '';
+  });
+  await step(`the App is installed on ${R}`, async () => {
+    const s = await getJson(`${W}/setup/install-check?repo=${R}`);
+    if (!s.body.installed) throw new Error('not installed: install the App on this repository, then run this again');
+  });
+  const owner = makeGh({ mode: 'direct', token: () => cfg.token, fetchImpl: io.fetch });
+  await step('the token can push to the test repository', async () => {
+    const r = await owner.request('GET', `/repos/${R}`);
+    if (!(r.permissions && (r.permissions.push || r.permissions.admin))) throw new Error('GH_TOKEN has no push access to it');
+  });
+  await step(`the repository is marked as a test repository (${SENTINEL})`, async () => {
+    try { await owner.request('GET', `/repos/${R}/contents/${SENTINEL}?ref=${encodeURIComponent(cfg.branch)}`); }
+    catch { throw new Error(`there is no ${SENTINEL} file at its root, so this script will not write to it. Add an empty file with that name to a repository you are happy to have reset, then run this again`); }
+  });
+  return owner;
+}
+
+/**
+ * Short-lived editor sessions, written straight into the worker's KV (see the
+ * note at the top of this file). `make(label, extra)` returns the editor's
+ * transport through the worker; `keys` is what cleanup must delete.
+ */
+export function editorSessions(cfg, io) {
+  const keys = [];
+  const make = async (label, extra = {}) => {
+    const id = io.hex(32);
+    const key = `esess:${id}`;
+    keys.push(key);
+    await io.kvPut(key, JSON.stringify({ repo: cfg.repo, name: `Kiln E2E ${label}`, role: 'editor', email: `e2e-${label}@kilncms.invalid`, paths: [''], keys: [], features: null, mode: null, exp: io.now() + SESSION_TTL * 1000, ...extra }), SESSION_TTL);
+    const headers = { 'X-Kiln-Session': id, 'Content-Type': 'application/json' };
+    return {
+      id, name: `Kiln E2E ${label}`,
+      gh: makeGh({ mode: 'proxy', worker: cfg.worker, session: id, fetchImpl: io.fetch }),
+      /** A raw request through the /gh proxy. */
+      raw: (method, p, body) => io.fetch(`${cfg.worker}/gh${p}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }),
+      /** A POST to one of the worker's own routes, as this editor. */
+      post: (route, body) => io.fetch(`${cfg.worker}${route}`, { method: 'POST', headers, body: JSON.stringify(body) }),
+    };
+  };
+  /** KV may take a moment to show a new key at the edge: wait until the worker knows this session. */
+  const settle = async (editor) => {
+    for (let i = 0; i < 20; i++) {
+      const res = await editor.raw('GET', `/repos/${cfg.repo}`);
+      if (res.status !== 401) return;
+      await io.sleep(1500);
+    }
+    throw new Error('the worker still does not know the session after 30 seconds');
+  };
+  return { make, settle, keys };
+}
+
+/**
+ * Put everything back, whatever happened: end the sessions, delete the
+ * branches and tags the run made, and move the branch back to where it
+ * started, provided its head is a commit this run made. `same()` is the
+ * caller's own last look (is the content what it was?).
+ */
+export async function putBack({ cfg, io, record, owner, sessions, refsMade = [], start, lastOurs, wrote, run, same = async () => true }) {
+  const R = cfg.repo;
+  for (const key of sessions) {
+    try { await io.kvDelete(key); } catch (err) { record(`cleanup: end session ${key.slice(0, 14)}…`, false, `${err.message}; it expires by itself within 15 minutes`); }
+  }
+  if (sessions.length) io.log(`   ended ${sessions.length} editor session${sessions.length > 1 ? 's' : ''}`);
+  if (!(owner && start)) return;
+  for (const ref of refsMade) {
+    try { await owner.request('DELETE', `/repos/${R}/git/refs/${ref.split('/').map(encodeURIComponent).join('/')}`); }
+    catch (err) { record(`cleanup: delete ${ref}`, false, err.message); }
+  }
+  const name = 'cleanup: the repository is as it was found';
+  try {
+    const headRef = `/repos/${R}/git/ref/${encodeURIComponent('heads/' + cfg.branch)}`;
+    const now = (await owner.request('GET', headRef)).object.sha;
+    if (now === start) record(name, true, wrote ? '' : 'nothing had been written');
+    else if (now !== lastOurs) record(name, false, `${cfg.branch} is at ${now.slice(0, 7)}, which this run did not put there: someone else committed meanwhile, so nothing was reset. This run's commits are the ones whose message starts "E2E ${run}"`);
+    else {
+      await owner.request('PATCH', `/repos/${R}/git/refs/${encodeURIComponent('heads/' + cfg.branch)}`, { sha: start, force: true });
+      const back = (await owner.request('GET', headRef)).object.sha === start && await same();
+      record(name, back, back ? `${cfg.branch} back at ${start.slice(0, 7)}; ${refsMade.length} branch${refsMade.length === 1 ? '' : 'es'} and tags removed` : 'the reset did not take');
+    }
+  } catch (err) { record(name, false, err.message); }
+}
+
+export async function run(cfg, rawIo) {
+  const io = patient(rawIo, cfg);
+  const { checks, record, step, refused } = checklist(io);
   const W = cfg.worker;
   const R = cfg.repo;
   const json = (body, headers = {}) => ({ method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
   const getJson = async (url, headers = {}) => { const res = await io.fetch(url, { headers }); return { status: res.status, body: await res.json().catch(() => ({})) }; };
 
   const run = io.hex(4);
-  const sessions = [];       // KV keys to delete
+  const editors = editorSessions(cfg, io);   // their KV keys are deleted at the end
   const refsMade = [];       // 'heads/x' | 'tags/y' this run created
   let owner = null;          // direct transport with the maintainer's token
   let start = null;          // branch head before the first write
@@ -151,24 +300,7 @@ export async function run(cfg, io) {
     if (cfg.smoke) return finish();
 
     // ── The test repository is ready, and is a test repository ──
-    await step('worker has its GitHub App', async () => {
-      const s = await getJson(`${W}/setup/status`);
-      if (!s.body.configured) throw new Error(`no App registered: open ${W}/setup once and click the button`);
-      return s.body.slug || '';
-    });
-    await step(`the App is installed on ${R}`, async () => {
-      const s = await getJson(`${W}/setup/install-check?repo=${R}`);
-      if (!s.body.installed) throw new Error('not installed: install the App on this repository, then run this again');
-    });
-    owner = makeGh({ mode: 'direct', token: () => cfg.token, fetchImpl: io.fetch });
-    await step('the token can push to the test repository', async () => {
-      const r = await owner.request('GET', `/repos/${R}`);
-      if (!(r.permissions && (r.permissions.push || r.permissions.admin))) throw new Error('GH_TOKEN has no push access to it');
-    });
-    await step(`the repository is marked as a test repository (${SENTINEL})`, async () => {
-      try { await owner.request('GET', `/repos/${R}/contents/${SENTINEL}?ref=${encodeURIComponent(cfg.branch)}`); }
-      catch { throw new Error(`there is no ${SENTINEL} file at its root, so this script will not write to it. Add an empty file with that name to a repository you are happy to have reset, then run this again`); }
-    });
+    owner = await repoReady(cfg, io, { step });
     let field;
     await step('starting state recorded', async () => {
       start = (await owner.request('GET', `/repos/${R}/git/ref/${encodeURIComponent('heads/' + cfg.branch)}`)).object.sha;
@@ -180,25 +312,12 @@ export async function run(cfg, io) {
     });
 
     // ── Three editors, as People & access would make them ──
-    const editor = async (label, extra) => {
-      const id = io.hex(32);
-      const key = `esess:${id}`;
-      sessions.push(key);
-      await io.kvPut(key, JSON.stringify({ repo: R, name: `Kiln E2E ${label}`, role: 'editor', email: `e2e-${label}@kilncms.invalid`, paths: [''], keys: [], features: null, mode: null, exp: io.now() + SESSION_TTL * 1000, ...extra }), SESSION_TTL);
-      return { id, gh: makeGh({ mode: 'proxy', worker: W, session: id, fetchImpl: io.fetch }), raw: (method, p, body) => io.fetch(`${W}/gh${p}`, { method, headers: { 'X-Kiln-Session': id, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }) };
-    };
     let plain, granted, suggest;
     await step('three short-lived editor sessions made (default tools; New page + Theme; suggest-only)', async () => {
-      plain = await editor('default', {});
-      granted = await editor('granted', { features: ['newpost', 'theme', 'draft', 'pagesettings', 'history'] });
-      suggest = await editor('suggest', { mode: 'suggest' });
-      // KV may take a moment to show a new key at the edge.
-      for (let i = 0; i < 20; i++) {
-        const res = await plain.raw('GET', `/repos/${R}`);
-        if (res.status !== 401) return;
-        await io.sleep(1500);
-      }
-      throw new Error('the worker still does not know the session after 30 seconds');
+      plain = await editors.make('default');
+      granted = await editors.make('granted', { features: ['newpost', 'theme', 'draft', 'pagesettings', 'history'] });
+      suggest = await editors.make('suggest', { mode: 'suggest' });
+      await editors.settle(plain);
     });
     const head = async () => (await owner.request('GET', `/repos/${R}/git/ref/${encodeURIComponent('heads/' + cfg.branch)}`)).object.sha;
     const noted = async () => { lastOurs = await head(); wrote = true; };
@@ -306,27 +425,8 @@ export async function run(cfg, io) {
     if (!(err instanceof Stop)) record('the run itself', false, err.message);
   } finally {
     // ── Put everything back, whatever happened ──
-    for (const key of sessions) {
-      try { await io.kvDelete(key); } catch (err) { record(`cleanup: end session ${key.slice(0, 14)}…`, false, `${err.message}; it expires by itself within 15 minutes`); }
-    }
-    if (sessions.length) io.log(`   ended ${sessions.length} editor session${sessions.length > 1 ? 's' : ''}`);
-    if (owner && start) {
-      for (const ref of refsMade) {
-        try { await owner.request('DELETE', `/repos/${R}/git/refs/${ref.split('/').map(encodeURIComponent).join('/')}`); }
-        catch (err) { record(`cleanup: delete ${ref}`, false, err.message); }
-      }
-      try {
-        const now = (await owner.request('GET', `/repos/${R}/git/ref/${encodeURIComponent('heads/' + cfg.branch)}`)).object.sha;
-        if (now === start) record('cleanup: the repository is as it was found', true, wrote ? '' : 'nothing had been written');
-        else if (now !== lastOurs) record('cleanup: the repository is as it was found', false, `${cfg.branch} is at ${now.slice(0, 7)}, which this run did not put there: someone else committed meanwhile, so nothing was reset. This run's commits are the ones whose message starts "E2E ${run}"`);
-        else {
-          await owner.request('PATCH', `/repos/${R}/git/refs/${encodeURIComponent('heads/' + cfg.branch)}`, { sha: start, force: true });
-          const text = (await getFile(owner, R, 'index.html', cfg.branch)).text;
-          const back = (await owner.request('GET', `/repos/${R}/git/ref/${encodeURIComponent('heads/' + cfg.branch)}`)).object.sha === start && text === original;
-          record('cleanup: the repository is as it was found', back, back ? `${cfg.branch} back at ${start.slice(0, 7)}; ${refsMade.length} branch${refsMade.length === 1 ? '' : 'es'} and tags removed` : 'the reset did not take');
-        }
-      } catch (err) { record('cleanup: the repository is as it was found', false, err.message); }
-    }
+    await putBack({ cfg, io, record, owner, sessions: editors.keys, refsMade, start, lastOurs, wrote, run,
+      same: async () => (await getFile(owner, R, 'index.html', cfg.branch)).text === original });
   }
   return finish();
 

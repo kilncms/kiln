@@ -146,8 +146,17 @@ export function fakeGitHub({ repo = 'acme/site', files = {}, defaultBranch = 'ma
       if ((m = /^\/compare\/(.+?)\.\.\.(.+)$/.exec(path)) && method === 'GET') {
         const a = resolve(m[1]); const b = resolve(m[2]);
         if (!a || !b) return notFound();
-        if (a === b) return jsonRes({ status: 'identical', ahead_by: 0, behind_by: 0 });
-        if (isAncestor(a, b)) return jsonRes({ status: 'ahead', ahead_by: 1, behind_by: 0 });
+        if (a === b) return jsonRes({ status: 'identical', ahead_by: 0, behind_by: 0, total_commits: 0, commits: [], files: [] });
+        if (isAncestor(a, b)) {
+          // The commits on the way from a to b (first parents), oldest first, and the files that differ.
+          const chain = [];
+          for (let c = b; c && c !== a; c = commits.get(c).parents[0]) chain.unshift(c);
+          const ta = trees.get(commits.get(a).tree); const tb = trees.get(commits.get(b).tree);
+          const files = [...new Set([...ta.keys(), ...tb.keys()])].sort().filter(p => ta.get(p)?.sha !== tb.get(p)?.sha)
+            .map(p => ({ filename: p, status: !ta.has(p) ? 'added' : !tb.has(p) ? 'removed' : 'modified' }));
+          return jsonRes({ status: 'ahead', ahead_by: chain.length, behind_by: 0, total_commits: chain.length, files,
+            commits: chain.map(sha => ({ sha, parents: commits.get(sha).parents.map(p => ({ sha: p })), commit: { author: commits.get(sha).author, message: commits.get(sha).message } })) });
+        }
         return jsonRes({ status: isAncestor(b, a) ? 'behind' : 'diverged', ahead_by: isAncestor(b, a) ? 0 : 1, behind_by: 1 });
       }
       return notFound();
