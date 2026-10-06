@@ -88,6 +88,25 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   visible after one edit, nothing of the editor covers another part of it, the
   page never scrolls sideways. Needs Playwright (`PLAYWRIGHT_DIR`); not part of
   `npm test`.
+- **Member sign-ins can be ended** — removing a member, or changing their
+  entry, now ends a sign-in they already hold. The members gate asks the
+  worker (`POST /members/check`) at most every five minutes whether each
+  signed-in member is still on the list; if the worker cannot be reached the
+  last answer stands for up to an hour, then the gate closes. Sites set up
+  earlier get the new gate with `kiln update` (their worker must be current
+  first: `/healthz` reports `memberSessions`), and their members sign in once
+  more. `kiln doctor` fails on a site that still has the old gate.
+- **A release path** — `npm run deploy:prod` is now `scripts/release.mjs`, the
+  only way to production. It refuses, with one sentence saying what to do,
+  unless the commit is on `main`, pushed, green in CI, matches `dist/`, and is
+  already running on staging; then it applies database migrations, tags
+  `prod-YYYY-MM-DD`, deploys, and checks. `--dry-run` changes nothing.
+- **Version reporting** — `/healthz` adds `build` (the commit the worker was
+  deployed from). `kiln doctor` prints site bundle, worker and latest release
+  on one line. `KILN_BUILD_VERSION` fixes the build stamp, so a release
+  deploys the bytes it built.
+- **Database migrations** — the Kiln Cloud schema lives in
+  `worker/migrations/` and is applied with `wrangler d1 migrations apply`.
 
 ### Changed
 
@@ -112,6 +131,33 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   phone it leaves after four seconds or on a tap.
 - Editor bundle grows to ~482 KB raw / ~145 KB gzip (still loaded only after
   sign-in; the visitor shim is unchanged at ~3 KB gzip).
+- **`worker/wrangler.toml`** — production moved under `[env.production]`. The
+  top level is a local-development configuration with placeholder ids, so
+  `npx wrangler deploy` with no `--env` cannot reach production.
+  **Self-hosters who edit this file by hand:** set `name`, the KV id and
+  `ALLOWED_ORIGINS` at the top and delete the D1 block; there is no route
+  block to delete any more. Sites set up with the wizard are not affected.
+- **Bundle propagation is two steps** — `npm run propagate` updates the
+  canary (the demo) only. Customer sites are a second, explicit
+  `npm run propagate -- --customers`, refused unless the canary's live
+  `kiln.js` carries the new build. The run stops at the first failure, sends
+  only a released build, never publishes a checkout's own unpushed commits,
+  and prints the revert command for every commit it pushes. It is no longer
+  part of `deploy:prod`; `deploy:worker` is removed.
+- **Kiln Cloud: cancelling keeps editing until the paid period ends** — a
+  cancelled subscription used to switch editing off at once. The site now
+  edits until the end of the period already paid for. After a failed charge
+  (or paused billing) editing continues for 7 days while the card is retried.
+  Only an expired subscription ends access outright.
+- **Kiln Cloud: removing a site cancels its subscription** — in the same
+  request, before the site is removed. If the cancellation cannot be
+  confirmed, the site is kept and the answer says to cancel in Manage billing.
+- **Tool grants are enforced by the worker** — an editor without the Theme
+  grant cannot write a stylesheet, without New post cannot add a page to a
+  published branch, without Drafts cannot write to `kiln-drafts`, without
+  Schedule cannot schedule, and without Comments cannot comment (a review
+  seat still can). These were hidden buttons before; a refused write answers
+  403 with `code: "grant_required"`.
 
 ### Fixed
 
@@ -151,6 +197,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   scope.**
 - **Gated members pages and files are now served `private, no-store`** with
   `Vary: Cookie`, so no cache keeps a copy.
+- **A branch can only move to a commit the worker checked** — an editor
+  session could fast-forward a branch to any commit: another branch's head, or
+  one never created through the worker. A branch now moves only to a single
+  commit made on top of its current head through that session, and the commit
+  is checked again (paths, file types, page content) at that moment. A new
+  branch or tag must point at a commit the site already has.
+- **Editor sessions cannot delete files** — the "no deletes" rule held for
+  single files but not for multi-file commits, where a tree could drop any
+  file in the editor's paths. Refused at the tree, the commit and the branch
+  update.
+- **The Kiln Cloud operator is identified by numeric GitHub id** — set
+  `CLOUD_ADMIN_ID`; the login is compared only when no id is configured.
 
 ## [0.4.0] - 2026-08-19
 
