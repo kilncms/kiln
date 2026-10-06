@@ -14,6 +14,7 @@
  */
 
 import { whyNot } from './plain-failure.js';
+import { demoSays } from './tryout.js';
 import { editFile } from '../github.js';
 
 let deps = null;
@@ -382,9 +383,8 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
   // Apply = commit: one commit per touched stylesheet, journal-verified live.
   applyBtn.onclick = async () => {
     if (cfg.sandbox) {
-      const msg = 'The demo previews only in your browser — Apply needs a real Kiln site';
-      status.textContent = msg;
-      setStatus(msg, 'idle');
+      // the choices stay on screen as a preview: only this browser sees them
+      status.textContent = demoSays('theme');
       return;
     }
     const byFile = new Map();

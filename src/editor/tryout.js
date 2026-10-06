@@ -30,6 +30,11 @@ export function demoSays(what) {
   return `${here}. On a real site, ${there}.`;
 }
 
+/** The first half alone, for a second telling in the same place ("Nothing is scheduled in the demo."). */
+export function demoShort(what) {
+  return `${REAL[what][0]}.`;
+}
+
 /** Every item the demo has a sentence for (for the test that reads them all). */
 export const DEMO_ITEMS = Object.keys(REAL);
 

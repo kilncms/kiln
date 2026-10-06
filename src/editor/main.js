@@ -40,7 +40,7 @@ import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publi
 import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
 import { notDone, whyNot, said } from './plain-failure.js';
-import { demoSays, DEMO_DRAFT_SAVED } from './tryout.js';
+import { demoSays, demoShort, DEMO_DRAFT_SAVED } from './tryout.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -4993,6 +4993,9 @@ function schedulePanel(at) {
   const status = m.querySelector('#kiln-sc-status');
   async function refreshList() {
     const list = m.querySelector('#kiln-sc-list');
+    // Try-out mode has nobody to hand a schedule to. It says what a real site
+    // does and asks nothing of the worker, which could only answer "forbidden".
+    if (cfg.sandbox) { list.innerHTML = `<p class="kiln-dim">${escapeHtml(demoSays('schedule'))}</p>`; return; }
     try {
       const data = await ask(`/schedules?repo=${encodeURIComponent(cfg.repo)}`);
       list.innerHTML = (data.schedules || []).length ? '' : '<p class="kiln-dim">Nothing scheduled.</p>';
@@ -5021,6 +5024,7 @@ function schedulePanel(at) {
   m.querySelector('#kiln-sc-go').onclick = async () => {
     const at = m.querySelector('#kiln-sc-at').value;
     if (!at) return;
+    if (cfg.sandbox) { status.textContent = `${demoShort('schedule')} Your edit${state.pending.size > 1 ? 's are' : ' is'} still here, to publish now.`; return; }
     status.textContent = 'Scheduling…';
     try {
       // Send field-level edits (not a full-page snapshot): the worker re-applies
@@ -5232,7 +5236,9 @@ function insertNewSection(kind, anchor) {
   stageSectionInsert({ node, html, key, anchor });
   node.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
   setupRepeat(node.querySelector('[data-cms-repeat]'), key);
-  setStatus(`Added a ${kind} — click “+ Add ${kind === 'gallery' ? 'photos' : 'event'}”, then Publish`, 'saved');
+  setStatus(cfg.sandbox
+    ? `${kind === 'gallery' ? 'A gallery' : 'An events list'} is added for this visit to the demo. On a real site, Publish keeps it.`
+    : `Added a ${kind} — click “+ Add ${kind === 'gallery' ? 'photos' : 'event'}”, then Publish`, 'saved');
 }
 
 /**

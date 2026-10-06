@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { demoSays, DEMO_ITEMS, DEMO_DRAFT_SAVED } from '../src/editor/tryout.js';
+import { demoSays, demoShort, DEMO_ITEMS, DEMO_DRAFT_SAVED } from '../src/editor/tryout.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const read = (f) => readFileSync(path.join(ROOT, 'src', 'editor', f), 'utf8');
@@ -53,4 +53,31 @@ test('try-out: a draft saved in the demo is offered back as the page opens, with
   // one dialog for both: the demo shows what a real site shows
   assert.match(main, /const m = draftDialog\(mode === 'admin'\);/);
   assert.equal((main.match(/<h3>There's a saved draft of this page<\/h3>/g) || []).length, 1);
+});
+
+test('try-out: "Schedule for later" asks nothing of the worker, and says what a real site does', () => {
+  // the demo used to ask the real worker for its schedules and print the answer: "forbidden"
+  const panel = main.slice(main.indexOf('function schedulePanel('), main.indexOf('// ─── Settings (admin)'));
+  const demoList = panel.indexOf("if (cfg.sandbox) { list.innerHTML = `<p class=\"kiln-dim\">${escapeHtml(demoSays('schedule'))}</p>`; return; }");
+  assert.ok(demoList !== -1 && demoList < panel.indexOf('await ask(`/schedules'), 'the list is not asked for in the demo');
+  const go = panel.slice(panel.indexOf("#kiln-sc-go').onclick"));
+  assert.ok(go.indexOf('if (cfg.sandbox)') !== -1 && go.indexOf('if (cfg.sandbox)') < go.indexOf("await ask('/schedule'"), 'nothing is sent in the demo');
+  assert.equal(demoShort('schedule'), 'Nothing is scheduled in the demo.');
+  for (const item of DEMO_ITEMS) assert.equal(demoSays(item).startsWith(demoShort(item)), true);
+});
+
+test('try-out: every other item that cannot act in the demo says it in the same shape', () => {
+  const suggest = read('suggest.js'), theme = read('theme.js'), blocks = read('blocks.js');
+  // the sentences these had of their own, each in another shape, some with a developer's words
+  for (const [name, src] of [['suggest.js', suggest], ['theme.js', theme], ['blocks.js', blocks]]) {
+    assert.equal(/The demo (has no|lives only|previews only|publishes only)|Nothing here in the demo —/.test(src), false, `${name} still has a sentence of its own for the demo`);
+  }
+  assert.match(suggest, /demoSays\('preview'\)/);
+  assert.equal((suggest.match(/demoSays\('suggestions'\)/g) || []).length, 2);
+  assert.match(theme, /status\.textContent = demoSays\('theme'\);/);
+  // "+ Add section" opens the dialog a real site opens, with the sentence in it, where the person is looking
+  const picker = blocks.slice(blocks.indexOf('async function openPicker('), blocks.indexOf('let blocks;'));
+  assert.match(picker, /if \(cfg\.sandbox\) \{[\s\S]*modal\(`<h3>Add a section<\/h3>[\s\S]*demoSays\('blocks'\)/);
+  // a gallery added in the demo says how long it stays
+  assert.match(main, /is added for this visit to the demo\. On a real site, Publish keeps it\./);
 });

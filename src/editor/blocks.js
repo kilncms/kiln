@@ -18,6 +18,7 @@
  */
 
 import { notDone } from './plain-failure.js';
+import { demoSays } from './tryout.js';
 
 // ─── Pure helpers (node-testable — no DOM access here) ───────────────────────
 
@@ -410,7 +411,10 @@ function pageStyleHead() {
 async function openPicker(anchor) {
   const { cfg, modal, setStatus, escapeHtml } = deps;
   if (cfg.sandbox) {
-    setStatus('The demo has no repo — a real Kiln site lists its approved sections from _blocks/', 'idle');
+    // the dialog a real site opens, saying what it would hold
+    modal(`<h3>Add a section</h3>
+      <p class="kiln-dim">${escapeHtml(demoSays('blocks'))}</p>
+      <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
     return;
   }
   const m = modal(`

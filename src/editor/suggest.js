@@ -14,6 +14,7 @@
  */
 
 import { notDone, said } from './plain-failure.js';
+import { demoSays } from './tryout.js';
 import { applyEdits, readValues } from '../engine.js';
 import { editFile } from '../github.js';
 
@@ -76,7 +77,7 @@ function extLink(href, label) {
 export function suggestChanges() {
   const { state, cfg, modal, setStatus, stopped, noteTyped } = deps;
   if (cfg.sandbox) {
-    setStatus('The demo publishes only to your browser — suggesting needs a real Kiln site', 'idle');
+    setStatus(demoSays('suggestions'), 'idle');
     return;
   }
   // Suggestions carry field edits only (same limit as drafts/schedules): a
@@ -201,7 +202,7 @@ export async function suggestionsPanel() {
     <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
   if (cfg.sandbox) {
     m.querySelector('#kiln-sug-list').innerHTML =
-      '<p class="kiln-dim">Nothing here in the demo — on a real site, “suggest-only” editors’ changes wait here for your approval.</p>';
+      `<p class="kiln-dim">${deps.escapeHtml(demoSays('suggestions'))}</p>`;
     return;
   }
   await renderSuggestions(m);
@@ -378,8 +379,7 @@ export async function sharePreviewPanel() {
   const done = '<div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>';
   if (cfg.sandbox) {
     modal(`<h3>Share a preview link</h3>
-      <p class="kiln-dim">The demo lives only in your browser — a real Kiln site saves your edits to the
-      draft branch and hands you a link your host serves as a preview.</p>${done}`);
+      <p class="kiln-dim">${escapeHtml(demoSays('preview'))}</p>${done}`);
     return;
   }
   if (!cfg.preview) {
