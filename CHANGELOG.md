@@ -61,6 +61,96 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   throw, and `KILN_DISABLE=1` strips provenance from a build. The `kiln()`
   integration is a documented no-op in v1; automatic stamping and schema
   export land under the same entry point later.
+- **A Publish button beside the pencil** — as soon as there is an unpublished
+  edit, a labelled button ("Publish 1 edit", "Publish 3 edits") appears with
+  Undo and Redo above the pencil, at every screen size. It runs the same
+  publish as the menu item, which stays. Publishing while still typing in a
+  field now includes that field.
+- **Editable fields show themselves** — when editing starts, every editable
+  field shows its outline for a moment and fades back. On touch screens a faint
+  outline stays, since there is no hover to find fields with.
+  `prefers-reduced-motion` gets the outlines without the fade.
+- **A first-run guide in the demo** (sandbox mode only, once per browser,
+  skippable) — points at the first heading ("Click this and type."), then at
+  Publish ("Now publish it."), then shows a card titled "That was a Git commit"
+  with the text before and after and the commit message a real site would get.
+- **Keyboard support for the pencil menu** — Enter or Space opens and closes
+  it, the arrow keys move through its items, Escape closes it and returns
+  focus to the pencil.
+- **`templates/_headers`** — new sites get a small `_headers` file from the
+  wizard: `X-Content-Type-Options: nosniff`, a referrer policy,
+  `frame-ancestors 'self'` (so another site cannot frame the editor) and HSTS.
+  An existing `_headers` is never touched. No script-restricting
+  Content-Security-Policy is shipped; `docs/for-site-owners.md` explains how to
+  add one and what Kiln needs allowed.
+- **`scripts/ui-check.mjs`** — a browser check of the first minute of editing
+  against a locally served sandbox site, at three screen sizes: Publish is
+  visible after one edit, nothing of the editor covers another part of it, the
+  page never scrolls sideways. Needs Playwright (`PLAYWRIGHT_DIR`); not part of
+  `npm test`.
+
+### Changed
+
+- **Invited editors can upload a fixed list of file types** — pictures (JPG,
+  PNG, GIF, WebP, AVIF, ICO), PDF, Word / Excel / PowerPoint and OpenDocument
+  files, fonts, audio and video, up to 15 MB each, and the file's first bytes
+  must match its name. Everything else is refused with a plain message, in the
+  editor when the file is picked and by the worker on every write path. SVG is
+  refused outright. The owner, who commits with a GitHub sign-in, is not
+  affected.
+- **`.xhtml` pages are no longer editable by invited editors or API tokens** —
+  they are parsed as XML, where the HTML content guard cannot vouch for them.
+- **Scheduled edits and suggestions from editors are for HTML pages only.**
+- **Comments follow an editor's page scope** — an editor limited to some pages
+  reads, counts, posts and resolves comment threads on those pages only.
+- **`kiln doctor` fails on a renamed or transferred repo** — it used to warn
+  and still report "healthy". It also no longer reports Google sign-in as
+  configured when the worker does not answer.
+- **On phones a block's controls open from one "more" button** per block,
+  instead of five buttons on every card.
+- **The status line wraps** instead of cutting a long message off, and on a
+  phone it leaves after four seconds or on a tap.
+- Editor bundle grows to ~482 KB raw / ~145 KB gzip (still loaded only after
+  sign-in; the visitor shim is unchanged at ~3 KB gzip).
+
+### Fixed
+
+- **On a phone the demo banner covered the pencil and the editing toolbar** —
+  the menu could not be opened and the tap that tried hit "Start over". The
+  banner is now a one-line pill beside the pencil, and steps aside while the
+  toolbar or the menu sheet is open.
+- **Clicking the pencil after hovering it closed the menu** that the hover had
+  just opened. The click now keeps it open.
+- **The status pill never went away** on sites whose own CSS does not reset the
+  `hidden` attribute.
+- **A block's control bar ran off the left edge of the screen** on a two-column
+  phone grid and overlapped its neighbour's. It now stays inside its block.
+  Table rows' controls, invisible on touch screens, are visible again.
+- **The image resize handle made the page scroll sideways** on a full-width
+  image, and could be left behind on the page after its toolbar closed.
+- **`kiln update` ran its git commands through a shell** with a folder name
+  read from the site's own HTML; a name with a space broke the commit. git now
+  gets its arguments directly.
+
+### Security
+
+- **Invited editors could commit SVG, XML and XSL files**, which skip the HTML
+  content guard and run script in the site's origin, where the owner's GitHub
+  token is stored. Editor writes are now limited to an explicit list of inert
+  file types on every write path: the commit proxy, multi-file commits (regular
+  files only, no symlinks), scheduled edits, suggestions, API tokens and source
+  reverts. A source revert by an editor can no longer bring back a version that
+  adds scripts.
+- **Editor uploads had no server-side size or content check.** There is now a
+  15 MB ceiling, enforced before an oversized body is buffered, and uploads are
+  checked by their leading bytes.
+- **The AI-assist image fetch followed redirects to private addresses.** Every
+  redirect hop is now screened, and the screen covers IPv6, carrier-grade NAT,
+  reserved ranges and every spelling of an IPv4 address.
+- **Comment threads were readable and writable outside an editor's page
+  scope.**
+- **Gated members pages and files are now served `private, no-store`** with
+  `Vary: Cookie`, so no cache keeps a copy.
 
 ## [0.4.0] - 2026-08-19
 

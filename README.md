@@ -74,7 +74,7 @@ edit layer your client was missing.
 |---|---|---|
 | `kiln.js` | boot shim every visitor loads | ~7 KB raw / ~3 KB gzip |
 | `kiln-features.js` | visitor runtime for galleries/filters/calendars, loaded only on pages that use them | ~16 KB raw / ~5 KB gzip |
-| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~426 KB raw / ~128 KB gzip, editors only |
+| `kiln-editor.js` | editor UI, loaded **only** after sign-in | ~482 KB raw / ~145 KB gzip, editors only |
 | `kiln-auth` worker | sign-in (GitHub App + Google) and the commit pipeline every edit flows through | Cloudflare Workers free tier |
 | your repo | the content database (with full version history) | free |
 | Cloudflare Pages | hosting + members-area functions | free, commercial use allowed |
@@ -207,15 +207,18 @@ writes a report — a folder ready to push, host free, and edit with Kiln.
 where `kiln.js` lives, drops the latest `kiln.js` + `kiln-editor.js` + `kiln-features.js`
 next to it, and offers to commit and push. `kiln doctor` reads `assets/kiln-config.js`
 if present and checks the worker, GitHub App registration and install, site liveness,
-CORS, and the members gate.
+CORS, and the members gate. It also fails when the repo has been renamed or moved on
+GitHub, because editor access is stored under the repo's exact name.
 
 ## What editors can do
 
-Click any outlined text and type. The toolbar has **bold / italic / underline / lists /
-links / clear** and a **Style** menu listing the site's own CSS classes
+Click any outlined text and type. (Editable parts show their outline for a moment when
+the page opens, and keep a faint one on touch screens.) The toolbar has **bold / italic /
+underline / lists / links / clear** and a **Style** menu listing the site's own CSS classes
 (`window.KILN.styles`), so typography stays designed and editors pick from the palette.
-Everything stages on the page and publishes together as one commit — **⌘Z / Ctrl+Z**
-undoes any staged change, blocks and image swaps included.
+Everything stages on the page and publishes together as one commit: a **Publish** button
+showing the number of edits appears beside the pencil as soon as there is something to
+publish. **⌘Z / Ctrl+Z** undoes any staged change, blocks and image swaps included.
 
 - **Images** — click to replace (auto-compressed), write alt text, and drag the corner
   handle to resize the moment the image is added. Kiln keeps the full-resolution
@@ -223,7 +226,9 @@ undoes any staged change, blocks and image swaps included.
   never degrades.
 - **Documents** — insert a PDF or file into text as a link, a chip, or a card, and
   choose whether it opens in a new tab or downloads. Files land in `/assets/files/`
-  (or the gated `/members/files/` on a members page).
+  (or the gated `/members/files/` on a members page). Invited editors can add
+  pictures, PDFs, Office documents, fonts, audio and video, up to 15 MB each;
+  [the owner's guide](docs/for-site-owners.md#what-editors-can-upload) has the list.
 - **Blocks & tables** — anything in a `data-cms-repeat` gets duplicate / reorder /
   remove / tag controls, table rows included. Tag blocks and visitors get automatic
   filter buttons.
@@ -357,8 +362,17 @@ cookie, `KILN_WORKER` points the redeem function at your auth worker.
   proxies their commits through the App installation token behind a method+path allowlist
   (contents read/write, git-data create, deploy status; one repo only, scoped to the paths
   granted to that editor, never CNAME/_redirects/.github, no deletes).
+- **Editors write content, never code.** Their commits are limited to pages, stylesheets
+  and a short list of inert uploads (pictures, PDF, Office documents, fonts, audio, video),
+  each under 15 MB and checked by its leading bytes. SVG, XML, XSL and XHTML are refused,
+  because a browser runs script from them. Pages are checked server-side for added
+  scripts on every editor write path.
 - OAuth `state` nonces are single-use with a 10-minute TTL; abuse-prone sign-in routes are
-  rate-limited per IP; member cookies are HMAC-signed, HttpOnly, Secure.
+  rate-limited per IP; member cookies are HMAC-signed, HttpOnly, Secure, and gated
+  responses are sent `private, no-store`.
+- New sites get a `_headers` file: no framing by other sites, `nosniff`, a referrer
+  policy and HSTS. No script-restricting policy is shipped; the
+  [owner's guide](docs/for-site-owners.md#security-headers) explains how to add one.
 - Rich-text edits are sanitized with DOMPurify before they touch the repo;
   `data-cms-plain` fields are entity-escaped plain text.
 
@@ -366,8 +380,9 @@ cookie, `KILN_WORKER` points the redeem function at your auth worker.
 
 ```bash
 npm install
-npm test               # engine, transport, worker + source-mode suites — 254 tests (node --test)
+npm test               # engine, transport, worker + source-mode suites — 362 tests (node --test)
 npm run build          # dist/kiln.js + dist/kiln-editor.js + dist/kiln-features.js
+node scripts/ui-check.mjs http://localhost:8774/   # browser check of the editor against a local sandbox site (needs Playwright, see the file)
 GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   # full live-loop verification (5 legs)
 ```
 
@@ -375,6 +390,7 @@ Repo layout:
 
 ```
 src/engine.js        the splice engine (parse5 offsets, batch edits, attr edits)
+src/file-policy.js   which file types an invited editor may write (shared by worker and editor)
 src/github.js        transports (direct / proxied), conflict-retry edits, atomic commits
 src/autotag.js       the heuristic first-pass auto-tagger behind `kiln tag`
 src/kiln.js          boot shim

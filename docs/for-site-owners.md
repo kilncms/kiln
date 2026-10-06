@@ -49,6 +49,10 @@ Health-check an install any time:
 npx github:kilncms/kiln doctor
 ```
 
+If you rename the repo or move it to another account, run it again. Editor access is
+stored under the repo's exact name and does not follow a rename, so `doctor` fails
+that check and tells you what to change.
+
 ## Making things editable
 
 Kiln only lets people edit elements that carry a `data-cms` annotation. Three ways to
@@ -180,6 +184,30 @@ the paths granted to them, and never CNAME, `_redirects`, `.github/`, `functions
 other sensitive files. No deletes, no force-pushes. And because every edit is a
 commit, anything they do is visible in your repo history and reversible.
 
+### What editors can upload
+
+An editor writes content, never code, and the worker holds them to a short list of
+file types:
+
+- pages (`.html`) and stylesheets (`.css`), which is what the editor itself saves;
+- pictures: JPG, PNG, GIF, WebP, AVIF, ICO;
+- PDFs;
+- Word, Excel and PowerPoint files (`.docx`, `.xlsx`, `.pptx`) and their OpenDocument
+  equivalents;
+- fonts (WOFF, WOFF2, TTF, OTF);
+- audio and video (MP3, M4A, MP4, MOV, WebM, OGG, WAV).
+
+Each file can be up to 15 MB, and an upload has to be what its name says: the worker
+looks at the first bytes of the file, so a script saved as `photo.png` is refused.
+Everything else is refused too, with a plain message in the editor. That includes
+SVG, XML and XSL files and `.xhtml` pages (a browser can run script from all of them),
+Markdown and other content files a generator builds from (those are edited through
+source mode, not uploaded), and older `.doc`, `.xls` and `.ppt` files.
+
+None of this applies to you. As the owner you commit with your own GitHub sign-in,
+straight to GitHub, so you can still add an SVG logo or any other file, from the
+editor or from git.
+
 ## AI assist (optional)
 
 Bring your own Anthropic API key and Kiln adds three small AI surfaces to the
@@ -210,8 +238,10 @@ Two things worth knowing:
 
 ## Publishing, drafts, scheduling, history
 
-- **Publish** — edits stage on the page and go out together as one commit. The live
-  site updates when your host finishes redeploying, typically about a minute.
+- **Publish** — edits stage on the page and go out together as one commit. As soon as
+  something is staged, a **Publish** button showing the number of edits appears beside
+  the pencil (it is also the first item in the pencil's menu). The live site updates
+  when your host finishes redeploying, typically about a minute.
 - **Drafts** — save work privately without publishing; come back to it later.
 - **Scheduling** — publish at a chosen time. The worker re-applies the edits at fire
   time (and re-checks the author still has access).
@@ -271,6 +301,11 @@ Setup is copying one directory of Cloudflare Pages Functions into your site and
 setting two secrets; the [README section](../README.md#members-area--gated-documents)
 has the exact steps. After that, add members by email in People & access and point
 them at [for-members.md](for-members.md).
+
+Gated pages and files are sent with `Cache-Control: private, no-store`, so neither a
+shared cache nor the browser keeps a copy after a member signs out. If you set up the
+members area before this was added, copy `templates/functions/` into your site again
+to pick it up.
 
 ## Security headers
 

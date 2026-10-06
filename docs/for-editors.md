@@ -26,7 +26,9 @@ check whether they added a different address of yours, then try again.
 ## Editing
 
 Once you're in, the site looks like itself, with one difference: the parts you can
-edit have a light outline. Click any outlined text and type. A small toolbar gives you
+edit are outlined. When the page opens, every editable part shows a dashed outline for
+a moment. After that an outline appears when your pointer is over one, and on a phone
+or tablet a faint outline stays on all of them. Click any outlined text and type. A small toolbar gives you
 bold, italic, underline, lists, links, and a **Style** menu with the site's own text
 styles, so whatever you write matches the design.
 
@@ -35,15 +37,29 @@ Some other things you can do, depending on what the owner has set up:
 - **Images**: click one to replace it. You'll be asked for the new file and alt text,
   and you can drag the corner handle to resize it.
 - **Blocks**: lists of similar things (cards, table rows, gallery photos) have
-  controls to duplicate, reorder, and remove items.
+  controls to duplicate, reorder, and remove items. On a phone, tap the **⋯** button
+  on a block to open them.
 - **Undo**: Ctrl+Z (Cmd+Z on a Mac) undoes any staged change, including image swaps
   and block changes.
 
 Nothing goes live while you type. Your edits stage on the page.
 
+### Files you can add
+
+You can add pictures (JPG, PNG, GIF, WebP, AVIF), PDFs, Word, Excel and PowerPoint
+files (.docx, .xlsx, .pptx, and the OpenDocument kinds), fonts, and audio and video
+files. Each file can be up to 15 MB.
+
+Other kinds of file are turned away, and Kiln tells you so as soon as you pick one.
+That includes SVG pictures: an SVG can carry a script, so only the site owner can add
+one. Save the picture as a PNG instead, or ask the owner to add the SVG for you.
+
 ## Publishing
 
-When you're happy, click **Publish**. All your staged changes go out together, and
+As soon as you have made an edit, a **Publish** button appears beside the pencil
+button in the corner of the screen. It says how many edits are waiting ("Publish 3
+edits"). When you're happy, click it. (The same Publish is also the first item in the
+pencil's menu.) All your staged changes go out together, and
 the live site updates about a minute later (that minute is the site rebuilding, which
 is normal). If the button hasn't been pressed, nothing has changed for visitors — you
 can close the tab and your unpublished edits are simply gone.
@@ -85,8 +101,9 @@ any email address (many work emails are Google accounts already).
 **Where do my changes actually go?** Into the site's source on GitHub, as a change
 recorded under your name. You never touch GitHub yourself; Kiln handles it.
 
-**Can I edit from my phone?** Yes. The toolbar repositions itself to stay out of the
-way on small screens.
+**Can I edit from my phone?** Yes. While you type, the toolbar sits across the bottom
+of the screen, above the keyboard. Tap **Done** and the pencil and the Publish button
+come back.
 
 **I got signed out.** Your access has an expiry the owner set. Go back to
 `yoursite.com/kiln` and sign in with Google again. If it says you're not on the list,

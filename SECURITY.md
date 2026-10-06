@@ -40,9 +40,22 @@ If you are reviewing or reporting, these are the areas that matter most:
   token and proxies editor commits behind a strict method+path allowlist
   (one repo, content paths only, no deletes). Bypasses of that allowlist are
   high severity.
+- **What an editor session may write** — pages and stylesheets, plus an
+  explicit list of inert upload types (raster images, PDF, Office documents,
+  fonts, audio, video), each under 15 MB and checked by its leading bytes
+  (`src/file-policy.js`). SVG, XML, XSL and XHTML are refused outright: a
+  browser runs script from them in the site's origin, where the owner's
+  GitHub token is stored. HTML written by an editor may add no script, event
+  handler or framing that the committed page did not already have
+  (`worker/sanitize-guard.js`). Any way for an editor session or an API token
+  to land executable content on the site is high severity.
 - **Members HMAC gate** — the Cloudflare Pages Function under
   `functions/members/` that validates the HMAC-signed, HttpOnly, Secure cookie
-  protecting `/members/` pages and files.
+  protecting `/members/` pages and files, and marks what it serves
+  `private, no-store`.
+- **The worker's one outbound fetch** — AI assist fetches an image URL the
+  caller names. Only public hosts are allowed, on every redirect hop.
 
-Forged sessions, allowlist escapes, token leakage to the browser, and
-members-gate bypasses are the highest-priority classes of issue.
+Forged sessions, allowlist escapes, script execution by an invited editor,
+token leakage to the browser, and members-gate bypasses are the
+highest-priority classes of issue.
