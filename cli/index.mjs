@@ -322,6 +322,13 @@ async function doctor(args) {
     const kjUrl = kjMatch ? new URL(kjMatch[1], site).href : `${site.replace(/\/$/, '')}/assets/kiln.js`;
     const bootText = await fetch(kjUrl).then(r => r.ok ? r.text() : null).catch(() => null);
     check('kiln.js loads', !!bootText, kjMatch ? kjMatch[1] : 'no kiln.js <script> found on the homepage');
+    // The file being reachable is not the page loading it. Without the tag the
+    // editor never starts: sign-in at /kiln returns to a page with no editor.
+    // (An empty answer from the site says nothing either way.)
+    if (homeHtml.trim()) {
+      check('home page loads kiln.js', LOADS_KILN.test(homeHtml), LOADS_KILN.test(homeHtml) ? '' :
+        `the home page has no <script> for kiln.js, so the editor never starts. Add before </body>: ${KILN_TAGS.join(' ')} — or run the setup wizard again and let it add them`);
+    }
 
     // Is the deployed editor the latest? Read the build stamp off the live bundle
     // and compare it to raw dist/VERSION on GitHub. Optional check (network /
@@ -462,17 +469,90 @@ ${isSource ? `  mode:   'source',\n  adapter: '${siteMode.adapter}',\n` : ''}  s
   } else {
     ok(`_headers already present (left untouched). The lines Kiln suggests: ${HEADERS_DOC}`);
   }
-  // Exclude Kiln's own scaffold pages: kiln.html (just written) always references
-  // kiln.js, so counting it would falsely report the site as wired when the real
-  // content pages still aren't.
-  const wired = readdirSync('.').filter(f => f.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(f))
-    .some(f => readFileSync(f, 'utf8').includes('kiln.js'));
-  if (!wired) {
-    warn('No page loads kiln.js yet. Add to every page before </body>:');
-    console.log('     <script src="/assets/kiln-config.js"></script>\n     <script src="/assets/kiln.js" defer></script>');
-    if (isSource) info(`${siteMode.generator || 'Generator'} site: put those two tags in your base layout so every generated page loads them (and make sure assets/ is copied into the build output — for Astro, serve them from public/).`);
-    else info('Tip: paste KILN_PROMPT.md into your AI tool and it does this + data-cms annotations for you.');
-  } else ok('pages already load kiln.js');
+  return wrote;
+}
+
+// The two lines every page needs, in the order they must load.
+const KILN_TAGS = ['<script src="/assets/kiln-config.js"></script>', '<script src="/assets/kiln.js" defer></script>'];
+const LOADS_KILN = /<script\b[^>]*\bsrc=["'][^"']*\bkiln\.js(?:\?[^"']*)?["']/i;
+
+/** The pages of a plain-HTML site: every .html file outside build and tool folders, Kiln's own two pages excepted. */
+function sitePages(root = '.') {
+  const files = [];
+  (function walk(dir) {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name.startsWith('.') || ['node_modules', '_templates', 'functions', 'assets', 'dist', 'build', 'public', 'out', '_site', '.git'].includes(e.name)) continue;
+      const f = path.join(dir, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (e.name.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(e.name)) files.push(f);
+    }
+  })(root);
+  return files.sort();
+}
+
+/**
+ * A page with the two script tags before its last </body>. A page that
+ * already loads kiln.js is returned as it is ('already'); one with no </body>
+ * cannot be done ('no-body'). The config tag is not repeated if it is there.
+ */
+function withKilnTags(html) {
+  if (LOADS_KILN.test(html)) return { html, state: 'already' };
+  const at = html.toLowerCase().lastIndexOf('</body>');
+  if (at === -1) return { html, state: 'no-body' };
+  const nl = html.includes('\r\n') ? '\r\n' : '\n';
+  const tags = KILN_TAGS.filter(t => !(t.includes('kiln-config.js') && /kiln-config\.js/.test(html)));
+  const lineStart = html.lastIndexOf('\n', at - 1) + 1;
+  const before = html.slice(lineStart, at);
+  // </body> on a line of its own: the tags take that line's indentation.
+  if (/^[ \t]*$/.test(before)) {
+    return { html: html.slice(0, lineStart) + tags.map(t => before + t + nl).join('') + html.slice(lineStart), state: 'added' };
+  }
+  return { html: html.slice(0, at) + nl + tags.join(nl) + nl + html.slice(at), state: 'added' };
+}
+
+/**
+ * The editor only starts on a page that loads it. Offer to add the two script
+ * tags to every page that lacks them, name the files, and return the ones
+ * written (for the scoped commit). Running it again changes nothing.
+ */
+async function offerScriptTags(siteMode = null) {
+  hr('Loading the editor on your pages');
+  if (siteMode?.mode === 'source') {
+    console.log(`  Every page needs these two lines before </body>:\n     ${KILN_TAGS.join('\n     ')}`);
+    info(`${siteMode.generator || 'Generator'} site: put them in your base layout so every generated page loads them (and make sure assets/ is copied into the build output — for Astro, keep these files under public/assets/).`);
+    return [];
+  }
+  const pages = sitePages();
+  const todo = [], noBody = [];
+  let already = 0;
+  for (const f of pages) {
+    const r = withKilnTags(readFileSync(f, 'utf8'));
+    if (r.state === 'already') already++;
+    else if (r.state === 'no-body') noBody.push(f);
+    else todo.push([f, r.html]);
+  }
+  if (!pages.length) {
+    warn('no .html pages found here yet. When you add one, it needs these two lines before </body>:');
+    console.log(`     ${KILN_TAGS.join('\n     ')}`);
+    return [];
+  }
+  if (!todo.length && !noBody.length) { ok(`${already === 1 ? 'your page already loads' : `all ${already} pages already load`} kiln.js — nothing to add`); return []; }
+  console.log(`  The editor starts only on pages that load it. Each page needs these two\n  lines before </body>:\n     ${KILN_TAGS.join('\n     ')}\n`);
+  const wrote = [];
+  if (todo.length) {
+    console.log(`  ${todo.length === 1 ? 'This page does' : `These ${todo.length} pages do`} not have them yet:`);
+    for (const [f] of todo.slice(0, 20)) console.log(`     ${f}`);
+    if (todo.length > 20) console.log(`     … and ${todo.length - 20} more`);
+    if (await yes(`Add the two script tags to ${todo.length === 1 ? 'it' : `these ${todo.length} pages`} now?`, 'y')) {
+      for (const [f, html] of todo) { writeFileSync(f, html); wrote.push(f); }
+      ok(`added the two script tags to ${wrote.length} page${wrote.length === 1 ? '' : 's'} (review with: git diff)`);
+    } else {
+      warn('not added. Until a page has those two lines, signing in at /kiln brings you back to it with no editor.');
+      info('Tip: paste KILN_PROMPT.md into your AI tool and it adds them along with the data-cms annotations.');
+    }
+  }
+  if (noBody.length) warn(`${noBody.length} page${noBody.length === 1 ? ' has' : 's have'} no </body> to put them before — add the two lines by hand: ${noBody.join(', ')}`);
+  if (already) info(`${already} page${already === 1 ? '' : 's'} already load${already === 1 ? 's' : ''} kiln.js — left untouched`);
   return wrote;
 }
 
@@ -521,6 +601,7 @@ async function cloudPrep(repo, siteMode = null) {
   info('your repo at them and wires the editor files. No Cloudflare login needed.\n');
 
   const kilnFiles = wireSite(repo, WORKER, siteMode);
+  kilnFiles.push(...await offerScriptTags(siteMode));
   kilnFiles.push(...await offerAutotag());
 
   hr('Done — 2 clicks left (in your browser)');
@@ -807,6 +888,7 @@ crons = ["*/5 * * * *"]
   // 6. Site wiring
   hr('Step 7 · Wire the site');
   const kilnFiles = wireSite(repo, workerUrl, siteMode);
+  kilnFiles.push(...await offerScriptTags(siteMode));
 
   // 7. Making pages editable.
   kilnFiles.push(...await offerAutotag());
@@ -875,15 +957,7 @@ crons = ["*/5 * * * *"]
 async function tagCmd(args) {
   const { autotag } = await import(pathToFileURL(path.join(PKG_ROOT, 'src', 'autotag.js')).href);
   hr(args.dry ? 'Auto-tag (dry run)' : 'Auto-tag');
-  const files = [];
-  (function walk(dir) {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.name.startsWith('.') || ['node_modules', '_templates', 'functions', 'assets', 'dist', 'build', 'public', 'out', '_site', '.git'].includes(e.name)) continue;
-      const f = path.join(dir, e.name);
-      if (e.isDirectory()) walk(f);
-      else if (e.name.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(e.name)) files.push(f);
-    }
-  })('.');
+  const files = sitePages();
   if (!files.length) { warn('no .html pages found here'); process.exit(1); }
   const tot = { fields: 0, images: 0, repeats: 0, menu: 0 };
   for (const f of files) {
