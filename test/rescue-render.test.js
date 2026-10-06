@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { sitemapPages, wireKiln, appScripts, lostLines } from '../cli/rescue.mjs';
+import { sitemapPages, wireKiln, appScripts, lostLines, looksLikeErrorPage } from '../cli/rescue.mjs';
 import { browserCandidates, findBrowser, firstDifference, applyMenu, loadPlaywright, MENU_STYLE, NO_BROWSER, NO_PLAYWRIGHT } from '../cli/render.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -102,6 +102,14 @@ test('render: wireKiln adds the two Kiln tags once, before </body>', () => {
   assert.equal(wireKiln(menu, { menuStyle: MENU_STYLE }), menu);
   assert.equal(appScripts(menu), 0, 'Kiln\'s own tags are not app scripts');
   assert.equal(appScripts('<script src="/assets/index-abc.js"></script><script type="application/ld+json">{}</script><script>x()</script>'), 2);
+});
+
+test('rescue: a first page titled like an error page is called out', () => {
+  assert.equal(looksLikeErrorPage('<html><head><title>Website Not Found - Bolt</title></head></html>'), 'Website Not Found - Bolt');
+  assert.equal(looksLikeErrorPage('<title>404</title>'), '404');
+  assert.equal(looksLikeErrorPage('<title>Crumb Bakery</title>'), '');
+  assert.equal(looksLikeErrorPage('<title>Lost and found office</title>'), '');
+  assert.equal(looksLikeErrorPage('<p>no title</p>'), '');
 });
 
 test('render: firstDifference names the line that changed', () => {

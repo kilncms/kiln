@@ -16,7 +16,8 @@
  * so the copy can be served locally and edited at once.
  *
  * The pure helpers (pageIdentity, mapUrls, fileToHref, cleanPage,
- * rewriteCssUrls, extractRefs, sitemapPages, lostLines, wireKiln) are exported
+ * rewriteCssUrls, extractRefs, sitemapPages, lostLines, wireKiln, appScripts,
+ * looksLikeErrorPage) are exported
  * for tests — no network there.
  */
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -338,6 +339,12 @@ export function sitemapPages(xml, origin) {
   return out;
 }
 
+/** The page's title when it reads like an error page, else ''. */
+export function looksLikeErrorPage(html) {
+  const title = (String(html).match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '').replace(/\s+/g, ' ').trim();
+  return /\b(not found|404|unavailable|no longer available|access denied|forbidden)\b/i.test(title) ? title : '';
+}
+
 const KILN_TAGS = ['<script src="/assets/kiln-config.js"></script>', '<script src="/assets/kiln.js" defer></script>'];
 
 /**
@@ -454,7 +461,7 @@ export async function rescueCmd(startUrl, args = {}) {
     if (!startUrl) throw new Error('missing url');
     start = new URL(/^https?:\/\//i.test(startUrl) ? startUrl : `https://${startUrl}`);
   } catch { fail('Usage: kiln rescue <url> [--out=dir] [--max-pages=N] [--delay=ms] [--keep-scripts] [--no-tag] [--dry] [--render [--browser=path] [--menu-shim]] [--try]'); process.exit(1); }
-  const origin = start.origin;
+  let origin = start.origin;
   const out = args.out || `rescued-${start.hostname}`;
   const maxPages = Math.max(1, Number(args['max-pages']) || 50);
   const delay = args.delay !== undefined ? Math.max(0, Number(args.delay) || 0) : 250;
@@ -479,6 +486,14 @@ export async function rescueCmd(startUrl, args = {}) {
   const aliases = new Map();        // redirect-target identity → crawled identity
   const failedPages = [];           // { path, reason }
   const assetRefs = new Set();      // assetKey strings, discovery order
+  // The address given may only forward to the real one (a builder's subdomain
+  // to the owner's domain, or to www). Follow that once, for the first page.
+  const moved = (landedUrl) => {
+    if (pages.size || failedPages.length) return false;
+    origin = new URL(landedUrl).origin;
+    info(`${start.origin} forwards to ${origin}: copying that site`);
+    return true;
+  };
   while (queue.length && pages.size < maxPages) {
     const id = queue.shift();
     if (pages.size || failedPages.length) await sleep(delay);
@@ -489,7 +504,9 @@ export async function rescueCmd(startUrl, args = {}) {
       try { r = await renderer.render(origin + id, { first: !pages.size && !failedPages.length }); }
       catch (e) { failedPages.push({ path: id, reason: String(e.message).split('\n')[0] }); continue; }
       if (r.reason) { failedPages.push({ path: id, reason: r.reason }); continue; }
-      if (new URL(r.url).origin !== origin) { failedPages.push({ path: id, reason: `redirected off-origin → ${new URL(r.url).origin}` }); continue; }
+      if (new URL(r.url).origin !== origin) {
+        if (!moved(r.url)) { failedPages.push({ path: id, reason: `redirected off-origin → ${new URL(r.url).origin}` }); continue; }
+      }
       if (r.status >= 400) { failedPages.push({ path: id, reason: `HTTP ${r.status}` }); continue; }
       if (r.html === undefined) { failedPages.push({ path: id, reason: `not HTML (${(r.contentType || '').split(';')[0]})` }); continue; }
       html = r.html; landedUrl = r.url; rendered = r;
@@ -498,7 +515,7 @@ export async function rescueCmd(startUrl, args = {}) {
       try { res = await get(origin + id); }
       catch (e) { failedPages.push({ path: id, reason: e.name === 'TimeoutError' ? 'timeout' : String(e.cause?.code || e.message) }); continue; }
       const landed = new URL(res.url);
-      if (landed.origin !== origin) { failedPages.push({ path: id, reason: `redirected off-origin → ${landed.origin}` }); continue; }
+      if (landed.origin !== origin && !moved(res.url)) { failedPages.push({ path: id, reason: `redirected off-origin → ${landed.origin}` }); continue; }
       if (!res.ok) { failedPages.push({ path: id, reason: `HTTP ${res.status}` }); continue; }
       const ct = (res.headers.get('content-type') || '').toLowerCase();
       if (ct && !ct.includes('text/html')) { failedPages.push({ path: id, reason: `not HTML (${ct.split(';')[0]})` }); continue; }
@@ -526,7 +543,15 @@ export async function rescueCmd(startUrl, args = {}) {
   if (renderer) await renderer.close();
   const unvisited = queue.length;
   ok(`crawled ${pages.size} page${pages.size === 1 ? '' : 's'}${failedPages.length ? `, ${failedPages.length} failed` : ''}${unvisited ? ` (${unvisited} more found beyond --max-pages)` : ''}`);
-  if (!pages.size) { fail('nothing crawled — check the URL and try again'); process.exit(1); }
+  if (!pages.size) {
+    for (const f of failedPages) fail(`${f.path}: ${f.reason}`);
+    fail('nothing crawled — check the URL and try again'); process.exit(1);
+  }
+
+  // A host that answers "no such site" with a normal page cannot be told from
+  // a real one by its status. Its title usually gives it away.
+  const firstTitle = looksLikeErrorPage([...pages.values()][0].html);
+  if (firstTitle) warn(`the first page is titled "${firstTitle}". If that is an error page, the address is wrong or the site is not published`);
 
   // ── decide which assets to localize ──
   // same-origin always; off-origin when it's a known builder CDN, or when one
@@ -547,7 +572,7 @@ export async function rescueCmd(startUrl, args = {}) {
     for (const [, p] of pages) scripts += cleanPage(p.html, { baseUrl: p.url, pageMap, keepScripts }).scripts;
     printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry, scripts, cruft: 0,
       localized: [], localizedBytes: 0, planned: localize.length, offOrigin: [...assetRefs].filter(k => !localize.includes(k)),
-      skippedAssets: [], tally: null });
+      skippedAssets: [], tally: null, firstTitle });
     process.exit(0);
   }
 
@@ -673,7 +698,7 @@ export async function rescueCmd(startUrl, args = {}) {
 
   printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry: false, scripts, cruft,
     localized: [...downloads.keys()], localizedBytes: totalBytes, planned: localize.length,
-    offOrigin: [...offOrigin], skippedAssets, tally, rendered: !!args.render, left, wantKiln, tryOut,
+    offOrigin: [...offOrigin], skippedAssets, tally, rendered: !!args.render, left, wantKiln, tryOut, firstTitle,
     requests: renderer?.requests });
   process.exit(0);
 }
@@ -700,7 +725,8 @@ function printReport(r) {
     ? `- Assets to localize: ${r.planned}`
     : `- Assets localized: ${r.localized.length} (${mb(r.localizedBytes)})`);
   lines.push(`- Scripts stripped: ${r.scripts}${r.cruft ? ` (+ ${r.cruft} builder cruft tags removed)` : ''}`);
-  if (r.rendered && !r.dry) lines.push(`- Rendered in a browser: every page was opened, scrolled to the end and saved as it looked. App scripts left in the pages: ${r.left}`);
+  if (r.firstTitle) lines.push(`- Check this first: the first page is titled "${r.firstTitle}". If that is an error page, the address is wrong or the site is not published, and this is a copy of the error.`);
+  if (r.rendered && !r.dry) lines.push(`- Rendered in a browser: every page was opened, scrolled to the end and saved as it looked. App scripts left in the pages: ${r.left}. Requests the browser made to do it: ${r.requests}`);
   if (r.tally) lines.push(`- Kiln-tagged: ${r.tally.fields} text fields · ${r.tally.images} images · ${r.tally.repeats} block lists · ${r.tally.menu} menus`);
   if (r.failedPages.length) {
     lines.push(`- Pages that failed:`);

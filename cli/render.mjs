@@ -337,8 +337,9 @@ function freeze() {
           : el.matches('[aria-expanded], [aria-haspopup]') ? 'opens something'
             : /^(input|select|textarea)$/.test(tag) ? 'input'
               : /^(button|a)$/.test(tag) || el.getAttribute('role') === 'button' ? 'button' : 'clickable area';
-    controls.push({ kind, label: label(el) || tag });
     reported.push(el);
+    if (kind === 'clickable area' && !label(el)) continue;   // a wrapper with nothing to name it by
+    controls.push({ kind, label: label(el) || tag });
   }
 
   const invisible = [];
@@ -532,10 +533,11 @@ export async function openRenderer(opts = {}) {
       const status = res ? res.status() : 200;
       const contentType = res ? (res.headers()['content-type'] || '').toLowerCase() : '';
       if (status >= 400 || (contentType && !contentType.includes('html'))) return { url: page.url(), status, contentType };
-      await settle(page);
-      const text = await page.evaluate(pageText);
-
-      // the phone menu button: the one that is only there on a narrow screen
+      // The phone menu button is the one that is only there on a narrow screen.
+      // Looked for before the page is scrolled: an app that redraws when the
+      // width changes starts its scroll-triggered animations over, and they
+      // must have run by the time the page is saved.
+      await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
       const wide = await page.evaluate(noteHiddenButtons);
       await page.setViewportSize(PHONE);
       await page.waitForTimeout(250);
@@ -543,6 +545,9 @@ export async function openRenderer(opts = {}) {
       await page.setViewportSize(DESKTOP);
       await page.waitForTimeout(250);
       const scripted = Math.abs(toggle.elements - wide) > 2;
+      await settle(page);
+      const text = await page.evaluate(pageText);
+      if (toggle.found && !(await page.locator('[data-kiln-menu-toggle]').count())) toggle.found = false;   // redrawn since
 
       if (opts.menuShim && toggle.found) await page.evaluate(stampElements);
       const frozen = await page.evaluate(freeze);
