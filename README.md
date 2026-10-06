@@ -385,7 +385,8 @@ npm install
 npm test               # engine, transport, worker + source-mode suites — 362 tests (node --test)
 npm run build          # dist/kiln.js + dist/kiln-editor.js + dist/kiln-features.js
 node scripts/ui-check.mjs http://localhost:8774/   # browser check of the editor against a local sandbox site (needs Playwright, see the file)
-GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   # full live-loop verification (5 legs)
+node scripts/e2e.mjs --smoke                     # maintainers: the staging worker refuses what it should (writes nothing)
+KILN_E2E_REPO=owner/test-repo GH_TOKEN=$(gh auth token) node scripts/e2e.mjs   # maintainers: the whole editing loop on staging
 ```
 
 Repo layout:
@@ -402,7 +403,7 @@ cli/index.mjs        the setup wizard + doctor + tag commands
 worker/              kiln-auth Cloudflare Worker (sign-in + commit pipeline)
 templates/           members-area scaffolding the wizard copies into a new site
 test/                engine + transport + autotag tests
-scripts/             build, live e2e, managed onboarding
+scripts/             build, release, propagate, backup and restore, e2e, link check
 ```
 
 ## Limitations (honest list)

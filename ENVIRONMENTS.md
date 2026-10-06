@@ -73,17 +73,57 @@ Wired in `worker/wrangler.toml` under `[env.staging]`:
   there is nothing to inherit.
 - its own `KILN_STAGING` KV (`5900a59c…`) and `kiln-cloud-staging` D1 (`153c3353…`)
 
-**One-time staging setup (you, ~1 min):** the staging worker starts with an empty KV, so
-it needs its own GitHub App. Visit
-`https://kiln-auth-staging.erikkwilder.workers.dev/setup` and click the one button — it
-registers a separate "Kiln CMS (staging)" app and stores its creds in the staging KV.
-Install that app on a throwaway test repo. (Google sign-in and Lemon Squeezy are optional
-on staging — GitHub admin sign-in and the editing loop work without them.)
+### What staging can and cannot exercise
 
-**Staging sites:** push the site repo to a `staging` branch. Cloudflare Pages builds a
-preview deployment automatically; point a stable alias (e.g. `staging.kilncms.com`) at it,
-or just use the `*.pages.dev` preview URL. The staging worker's `ALLOWED_ORIGINS` already
-lists staging + localhost origins.
+| | On staging |
+|---|---|
+| The worker's code, config, KV, D1 and cron | yes: the same code path as production, on its own data |
+| Database migrations | yes: `deploy:test` applies them to the staging database first |
+| Rate limits | yes: the same limiter binding as production |
+| Editing through the worker as invited editors (publish, uploads, drafts, versions, every refused write) | yes, as one command, once the two one-time steps below are done: `scripts/e2e.mjs` |
+| GitHub sign-in as the site owner | yes, once the staging App exists |
+| Google sign-in (editors and members) | no: staging has no Google client. A member being signed out after removal has to be checked by hand, with a Google client added to staging, or on production |
+| Kiln Cloud billing | no: staging has no Lemon Squeezy keys. Put test-mode keys on staging to try cancel and remove |
+| The Kiln Cloud dashboard | no: `app.kilncms.com` talks to the production worker only |
+| `staging.kilncms.com`, `staging-app.kilncms.com` | these names are in the staging config but have no DNS record. Use a `*.pages.dev` address and add it to `ALLOWED_ORIGINS` under `[env.staging.vars]` |
+
+### One-time staging setup (the owner, about 15 minutes)
+
+1. **Register the staging GitHub App.** The staging worker starts with an empty
+   KV, so it needs its own App. Open
+   `https://kiln-auth-staging.erikkwilder.workers.dev/setup` and click the one
+   button: it registers a separate "Kiln CMS (staging)" App and stores its
+   credentials in the staging KV.
+2. **Make a throwaway test repository.** `npx github:kilncms/kiln new kiln-e2e`,
+   push it to a private repository, install the staging App on it, and add an
+   empty file named `.kiln-e2e` at its root. That file is what allows the
+   end-to-end script to write to the repository and to reset it afterwards: a
+   repository without it is never written to.
+3. Optional: connect that repository to a Pages project so an edit can be
+   watched going live, and set `KILN_E2E_SITE` to its address.
+
+### The end-to-end run
+
+```bash
+node scripts/e2e.mjs --smoke          # 12 checks that write nothing; needs no setup
+KILN_E2E_REPO=<owner>/kiln-e2e GH_TOKEN=$(gh auth token) node scripts/e2e.mjs
+```
+
+The full run makes three editor sessions that last 15 minutes (default tools;
+New page and Theme granted; suggest-only), by writing them into the staging KV
+with wrangler, then drives the worker with them exactly as the editor does:
+a text edit and its exact restore, two pictures in one commit, a draft, a named
+version, a new page, a stylesheet. It then tries, for real, each write that
+must be refused (an SVG, a script in a page, a workflow file, a delete, a
+rollback, a forced update, a branch at an unknown commit, a stylesheet and a
+new page without their tools, a suggest-only editor publishing directly) and
+fails if any gets through. At the end, whatever happened, it ends the sessions,
+deletes the branches and tags it made and moves the branch back to where it
+started. If someone else committed to the branch meanwhile it resets nothing
+and says so. Exit code 0 only if every check passed.
+
+It refuses to run against any worker but staging or a local one (other workers
+get `--smoke` at most), and it has no default repository.
 
 ---
 

@@ -46,9 +46,13 @@ produces the shipped bundles.
 A weekly workflow also requests every web link and lists advisories of any
 severity.
 
-`scripts/e2e.mjs` is **maintainer-only**: it exercises a real GitHub round-trip
-against the live public demo repo, which external contributors' tokens can't
-write to. CI plus `npm test` is the expected verification path for outside PRs.
+`scripts/e2e.mjs` is **maintainer-only**: it drives the staging worker and a
+marked test repository as three invited editors would, publishes, tries every
+write that must be refused, and puts the repository back as it found it. It
+needs wrangler access to the staging worker, so it is not part of CI. Its
+whole flow runs in `npm test` against the real worker handlers and an
+in-memory GitHub (`test/e2e.test.js`), which is the verification path for
+outside PRs.
 
 ## Repo layout
 
@@ -63,7 +67,7 @@ cli/index.mjs        the setup wizard + doctor + tag + update commands
 worker/              kiln-auth Cloudflare Worker (sign-in + commit pipeline)
 templates/           members-area scaffolding the wizard copies into a new site
 test/                engine + transport + autotag tests
-scripts/             build, live e2e (maintainer-only), managed onboarding
+scripts/             build, release, propagate, backup and restore, e2e (maintainer-only), link check
 ```
 
 ## Pull request expectations
