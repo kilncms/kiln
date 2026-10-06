@@ -24,7 +24,12 @@
  * opens its dialog and says what a real site does, never an error), History
  * (publish twice, get the first one back), the ✨ button, and the names a
  * person reads. On a phone: nothing of Kiln's lies on the page's buttons, on
- * the menu's items or on a list's words.
+ * the menu's items or on a list's words. The link button opens the editor's
+ * own dialog (never the browser's box) and hands the cursor and the selection
+ * back, and a saved draft's choices are each on one line.
+ * Then the demo's way to get Kiln: once a visitor has published and the card
+ * that offers "Put Kiln on my site" has gone, the demo's pill carries the
+ * link, fitting beside the pencil.
  * Both passes go through the publish sheet (open it, drop one edit, publish)
  * and press Undo; the signed-in pass also has someone else publish in between.
  * A last pass has the worker end the editor's sign-in: on page load the page
@@ -717,19 +722,89 @@ async function runSafetyNet(browser, size) {
       check(scope, '"Got it" puts the note away and the edit stays open', (await note.count()) === 0 && (await page.locator('#kiln-toolbar').count()) === 1);
     }
   }
+  let said = '';
+  // the link button: the editor's own dialog, never the browser's box, and the edit stays open under it
+  const linkBtn = page.locator('#kiln-toolbar [data-cmd="link"]');
+  if (await linkBtn.count()) {
+    const picked = await heading.evaluate((el) => {
+      const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let n;
+      while ((n = walk.nextNode())) if (n.nodeValue.trim().length >= 4) break;
+      const at = n.nodeValue.indexOf(n.nodeValue.trim());
+      const r = document.createRange();
+      r.setStart(n, at); r.setEnd(n, at + 4);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      return s.toString();
+    });
+    const here = () => heading.evaluate((el) => ({ sel: getSelection().toString(), focus: document.activeElement === el, a: el.querySelector('a') ? `${el.querySelector('a').getAttribute('href')}|${el.querySelector('a').textContent}` : '' }));
+    const box2 = page.locator('#kiln-link-url');
+    await press(linkBtn);
+    await page.waitForTimeout(400);
+    said = await words(dialog);
+    check(scope, 'the link button opens the editor\'s own dialog: one box, "Add link", Cancel', /^(✕ )?Add a link/.test(said) && (await box2.count()) === 1 && (await dialog.getByRole('button', { name: 'Add link' }).count()) === 1
+      && (await dialog.getByRole('button', { name: 'Cancel' }).count()) === 1 && (await dialog.getByRole('button', { name: 'Remove link' }).count()) === 0, said.slice(0, 80));
+    check(scope, 'and never the browser\'s box', boxes.length === 0, (boxes[0] || '').slice(0, 50));
+    check(scope, 'the cursor is in the address box', await box2.evaluate((el) => document.activeElement === el).catch(() => false));
+    const c = (await dialog.count()) ? await box(dialog) : null;
+    check(scope, 'the link dialog fits on screen', !!c && c.left >= 0 && c.top >= 0 && c.right <= size.width + 0.5 && c.bottom <= size.height + 0.5);
+    await shot('link-dialog');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    let now = await here();
+    check(scope, 'Escape cancels: the edit is still open, the cursor is back in it and the selection is as it was', (await page.locator('#kiln-modal').count()) === 0 && (await page.locator('#kiln-toolbar').count()) === 1
+      && now.focus && now.sel === picked && now.a === '', JSON.stringify(now));
+    await press(linkBtn);
+    await page.waitForTimeout(350);
+    if (await box2.count()) { await box2.fill('/about'); await page.keyboard.press('Enter'); }
+    await page.waitForTimeout(350);
+    now = await here();
+    check(scope, 'an address and Enter make the selected words a link, with the selection kept and the edit open', now.a === `/about|${picked}` && now.focus && now.sel === picked && (await page.locator('#kiln-toolbar').count()) === 1, JSON.stringify(now));
+    // the cursor inside that link, nothing selected
+    await heading.evaluate((el) => { const a = el.querySelector('a'); if (!a) return; const r = document.createRange(); r.setStart(a.firstChild, 2); r.collapse(true); const s = getSelection(); s.removeAllRanges(); s.addRange(r); });
+    await press(linkBtn);
+    await page.waitForTimeout(350);
+    said = await words(dialog);
+    check(scope, 'with the cursor in a link the dialog holds its address and offers "Change link" and "Remove link"', /^(✕ )?Change this link/.test(said) && (await box2.inputValue().catch(() => '')) === '/about'
+      && (await dialog.getByRole('button', { name: 'Change link' }).count()) === 1 && (await dialog.getByRole('button', { name: 'Remove link' }).count()) === 1, said.slice(0, 80));
+    if (phone && await dialog.count()) {
+      const lines = await dialog.locator('.kiln-modal-actions button').evaluateAll((bs) => bs.map((b) => { const r = document.createRange(); r.selectNodeContents(b); return new Set([...r.getClientRects()].map(x => Math.round(x.top))).size; }));
+      check(scope, 'its three buttons are each on one line', lines.length === 3 && lines.every(n => n === 1), lines.join(','));
+    }
+    await shot('link-dialog-change');
+    if (await dialog.getByRole('button', { name: 'Remove link' }).count()) await press(dialog.getByRole('button', { name: 'Remove link' }));
+    await page.waitForTimeout(350);
+    now = await here();
+    check(scope, '"Remove link" takes the link off and keeps the words', now.a === '' && now.focus && (await read()).includes(picked) && (await page.locator('#kiln-toolbar').count()) === 1, JSON.stringify(now));
+  }
   if (await page.locator('#kiln-toolbar .kiln-tb-cancel').count()) await press(page.locator('#kiln-toolbar .kiln-tb-cancel'));
   await page.waitForTimeout(250);
 
   // Save as draft: kept in this browser, said so, offered back
   await retype('A draft of the heading');
   await item('kiln-draft');
-  let said = await words(status);
+  said = await words(status);
   check(scope, 'Save as draft works in the demo and says where the draft is', /^Draft saved in this browser\./.test(said) && plain(said), said.slice(0, 110));
   check(scope, 'the draft is put aside: nothing is waiting to be published', (await page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).count()) === 0);
   await shot('draft-saved');
   await page.reload({ waitUntil: 'load' });
   await started();
   check(scope, 'the next visit offers the draft back', /^(✕ )?There's a saved draft of this page/.test(await words(dialog)) && (await read()) === original, (await words(dialog)).slice(0, 60));
+  if (await dialog.count()) {
+    const lay = await dialog.evaluate((card) => {
+      const c = card.getBoundingClientRect();
+      const bs = [...card.querySelectorAll('.kiln-modal-actions button')].map((b) => {
+        const r = b.getBoundingClientRect();
+        const t = document.createRange(); t.selectNodeContents(b);
+        return { name: b.textContent.trim(), l: r.left, r: r.right, t: r.top, b: r.bottom, lines: new Set([...t.getClientRects()].map(x => Math.round(x.top))).size,
+          primary: b.classList.contains('kiln-btn-publish'), inside: r.left >= c.left - 0.5 && r.right <= c.right + 0.5 && r.bottom <= c.bottom + 0.5 };
+      });
+      const over = bs.some((a, i) => bs.some((o, j) => j > i && !(a.r <= o.l || o.r <= a.l || a.b <= o.t || o.b <= a.t)));
+      return { bs, over };
+    });
+    check(scope, 'the draft\'s choices are each on one line, inside the dialog, none on another', lay.bs.length >= 3 && lay.bs.every(b => b.lines === 1 && b.inside) && !lay.over,
+      lay.bs.map(b => `${b.name}:${b.lines}${b.inside ? '' : ' outside'}`).join(', '));
+    check(scope, '"Resume draft" is the one plain primary choice, and the last', lay.bs.filter(b => b.primary).map(b => b.name).join() === 'Resume draft' && lay.bs[lay.bs.length - 1].name === 'Resume draft');
+  }
   await shot('draft-offered');
   if (await page.locator('#kiln-dr-resume').count()) await press(page.locator('#kiln-dr-resume'));
   await page.waitForTimeout(500);
@@ -887,6 +962,146 @@ async function runSafetyNet(browser, size) {
   check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
   check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
   await context.close();
+}
+
+/**
+ * The demo keeps its way to get Kiln in sight. A first-time visitor publishes:
+ * while the card that offers "Put Kiln on my site" is up, the demo's pill does
+ * not repeat it; from the moment the card goes ("Keep exploring", and in a
+ * second visit by itself) the pill carries the same link, fits beside the
+ * pencil with nothing overlapping and nothing cut, opens a new tab, is still
+ * there after a reload, and goes with "Start over".
+ */
+async function runGetKiln(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} get Kiln    `;
+  const WANT = 'https://kilncms.com/get-started.html';
+  const fresh = async () => {
+    const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone, reducedMotion: 'no-preference' });
+    const asked = [];
+    await context.route('**/*', (route) => {
+      const url = route.request().url();
+      if (url.startsWith(ORIGIN) || url.startsWith('data:') || url.startsWith('blob:')) return route.continue();
+      asked.push(url);
+      return route.abort();
+    });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(600);
+    return { context, page, asked, errors };
+  };
+  const drive = (page) => {
+    const press = (locator) => (phone ? locator.tap() : locator.click());
+    const heading = page.locator('h1.kiln-field, h2.kiln-field, h3.kiln-field').first();
+    return {
+      press,
+      edit: async (text) => {
+        await heading.scrollIntoViewIfNeeded();
+        await press(heading);
+        await page.waitForTimeout(350);
+        await page.keyboard.type(text);
+        await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+        await page.waitForTimeout(400);
+        await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+      },
+      publish: async () => {
+        await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+        await page.waitForTimeout(450);
+        await press(page.locator('#kiln-pubsheet-go'));
+        await page.waitForTimeout(700);
+      },
+      shot: async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); },
+    };
+  };
+  /** The pill, its link, and whether they sit clear of everything else of Kiln's. */
+  const pillState = (page) => page.evaluate(() => {
+    const rect = (q) => { const el = document.querySelector(q); if (!el || !el.getClientRects().length) return null; const r = el.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
+    const apart = (a, o) => !a || !o || a.r <= o.l || o.r <= a.l || a.b <= o.t || o.b <= a.t;
+    const within = (a, o) => !!a && !!o && a.l >= o.l - 0.5 && a.r <= o.r + 0.5 && a.t >= o.t - 0.5 && a.b <= o.b + 0.5;
+    const pill = document.querySelector('#kiln-sandbox-banner'), link = document.querySelector('#kiln-sandbox-get');
+    const P = rect('#kiln-sandbox-banner'), L = rect('#kiln-sandbox-get'), S = rect('#kiln-sandbox-reset');
+    const lines = (el) => { const r = document.createRange(); r.selectNodeContents(el); return new Set([...r.getClientRects()].map(x => Math.round(x.top))).size; };
+    return { shown: !!L, text: L ? link.textContent.trim() : '', href: link ? link.getAttribute('href') : '', target: link ? link.getAttribute('target') : '', rel: link ? link.getAttribute('rel') : '',
+      onScreen: !!P && P.l >= 0 && P.r <= innerWidth && P.b <= innerHeight && P.t >= 0, cut: !!pill && pill.scrollWidth > pill.clientWidth + 1,
+      inPill: within(L, P) && within(S, P), sideBySide: apart(L, S), oneLine: !!L && lines(link) === 1 && lines(document.querySelector('#kiln-sandbox-reset')) === 1,
+      clear: apart(P, rect('#kiln-fab')) && apart(P, rect('#kiln-quick')) && apart(P, rect('#kiln-status')), pillText: pill ? pill.innerText.replace(/\s+/g, ' ').trim() : '' };
+  });
+  const fits = (s) => s.onScreen && !s.cut && s.inPill && s.sideBySide && s.oneLine && s.clear;
+  const why = (s) => `"${s.pillText}" onScreen ${s.onScreen} cut ${s.cut} inPill ${s.inPill} sideBySide ${s.sideBySide} oneLine ${s.oneLine} clear ${s.clear}`;
+
+  // ── "Keep exploring", the link, a reload, "Start over" ─────────────────────
+  {
+    const { context, page, asked, errors } = await fresh();
+    const { press, edit, publish, shot } = drive(page);
+    let s = await pillState(page);
+    check(scope, 'before any publish the pill has no link to Kiln', !s.shown, s.pillText);
+    await edit(' Hello');
+    await publish();
+    const card = page.locator('#kiln-guide-card');
+    await card.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+    const cardLink = card.getByRole('link', { name: 'Put Kiln on my site' });
+    s = await pillState(page);
+    check(scope, 'while the card offers "Put Kiln on my site" the pill does not repeat it', (await cardLink.count()) === 1 && !s.shown);
+    const keep = card.getByRole('button', { name: 'Keep exploring' });
+    if (await keep.count()) await press(keep);
+    await page.waitForTimeout(300);
+    s = await pillState(page);
+    check(scope, 'the moment the card goes, the pill carries the link', (await card.count()) === 0 && s.shown && s.text === 'Put Kiln on my site', s.pillText);
+    check(scope, 'it goes where the card\'s button went, in a new tab', s.href === WANT && s.target === '_blank' && /noopener/.test(s.rel || ''), `${s.href} ${s.target}`);
+    check(scope, 'the pill fits: on screen, nothing cut, the link and "Start over" side by side on one line each, clear of the pencil and the status line', fits(s), why(s));
+    await shot('get-kiln-pill');
+    await page.waitForTimeout(10500);   // "Published. Undo" has had its ten seconds
+    s = await pillState(page);
+    check(scope, 'it is still there when the page has settled', s.shown && fits(s), why(s));
+    const link = page.locator('#kiln-sandbox-get');
+    check(scope, 'the link can be pressed', ...Object.values((await link.count()) ? await hit(link) : { ok: false, why: 'no link' }));
+    const tab = context.waitForEvent('page', { timeout: 3000 }).catch(() => null);
+    if (await link.count()) await press(link);
+    const opened = await tab;
+    check(scope, 'pressing it opens the get-started page in a new tab', !!opened && asked.some(url => url.startsWith(WANT)), asked.slice(-1).join(''));
+    if (opened) await opened.close().catch(() => {});
+    asked.length = 0;
+    // with an edit waiting, the pill shares the foot of the screen with Undo, Redo and Publish
+    await edit(' Again');
+    s = await pillState(page);
+    check(scope, 'with an edit waiting it covers none of the pencil, Undo, Redo and Publish', s.shown && fits(s), why(s));
+    await shot('get-kiln-pill-with-edit');
+    check(scope, '"Start over" can still be pressed', ...Object.values(await hit(page.locator('#kiln-sandbox-reset'))));
+    await page.reload({ waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(800);
+    if (await page.locator('#kiln-rest-no').count()) { await press(page.locator('#kiln-rest-no')); await page.waitForTimeout(300); }
+    s = await pillState(page);
+    check(scope, 'on a later visit the link is there from the start', s.shown && s.href === WANT && fits(s), why(s));
+    await press(page.locator('#kiln-sandbox-reset'));
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(800);
+    s = await pillState(page);
+    check(scope, '"Start over" takes the link away with the rest of the demo\'s state', !s.shown, s.pillText);
+    check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+    check(scope, 'nothing outside the local server was needed, but the link', asked.length === 0, asked.slice(0, 3).join(', '));
+    await context.close();
+  }
+  // ── the card closes by itself ──────────────────────────────────────────────
+  {
+    const { context, page, errors } = await fresh();
+    const { edit, publish, shot } = drive(page);
+    await edit(' Hello');
+    await publish();
+    const card = page.locator('#kiln-guide-card');
+    await card.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+    check(scope, 'the card is up after a first publish, and the pill has no link yet', (await card.count()) === 1 && !(await pillState(page)).shown);
+    await card.waitFor({ state: 'detached', timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(300);
+    const s = await pillState(page);
+    check(scope, 'when the card closes by itself, the pill carries the link', (await card.count()) === 0 && s.shown && s.text === 'Put Kiln on my site' && s.href === WANT && fits(s), why(s));
+    await shot('get-kiln-after-card-closed');
+    check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+    await context.close();
+  }
 }
 
 /**
@@ -1995,6 +2210,8 @@ try {
   }
   // what a person tries after a first edit: Undo in a list, and the rest of the safety net
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} safety net  `, () => runSafetyNet(browser, size));
+  // the demo's own way to get Kiln stays in sight once the card that offered it has gone
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} get Kiln    `, () => runGetKiln(browser, size));
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
   // an invited editor granted "Make things editable" on top of the defaults
   await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
