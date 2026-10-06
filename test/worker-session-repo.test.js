@@ -138,19 +138,24 @@ const thread = { id: '0000000000a1', page: 'index.html', status: 'open', anchor:
 const getPage = (env, repo = OLD, headers = AS) => ask(env, 'GET', `/gh/repos/${repo}/contents/index.html?ref=main`, { headers });
 const putPage = (env, repo = OLD, headers = AS) => ask(env, 'PUT', `/gh/repos/${repo}/contents/index.html`, { headers, body: { message: 'edit', content: b64(PAGE.replace('Before', 'After')), sha: 'cur', branch: 'main' } });
 
-/** Sign Ada in with Google through a site whose config says `repo`. Returns the session id and its record. */
-async function signIn(w, repo, names) {
+/**
+ * Sign someone in with Google through a site whose config says `repo` (Ada,
+ * an editor, unless another address is given). Returns the worker's answer,
+ * and for an editor the session id and its record.
+ */
+async function signIn(w, repo, names, email = ADA.email) {
   w.kv.map.set('gstate:n1', JSON.stringify({ origin: ORIGIN, returnTo: '/', repo }));
   const gh = github(names);
   return withFetch(async (url, init) => {
     if (url === 'https://oauth2.googleapis.com/token') return jsonRes({ id_token: 'idt' });
-    if (url.startsWith('https://oauth2.googleapis.com/tokeninfo')) return jsonRes({ aud: 'gid', email_verified: 'true', email: ADA.email, name: 'Ada' });
+    if (url.startsWith('https://oauth2.googleapis.com/tokeninfo')) return jsonRes({ aud: 'gid', email_verified: 'true', email, name: 'Someone' });
     return gh(url, init);
-  }, async () => {
+  }, async (calls) => {
     const res = await worker.fetch(new Request('https://worker.example/google/callback?code=c&state=n1'), w.env);
-    const frag = new URLSearchParams(new URL(res.headers.get('Location') || 'https://x.example/').hash.slice(1));
+    const to = res.headers.get('Location') || '';
+    const frag = new URLSearchParams(to ? new URL(to).hash.slice(1) : '');
     const sid = frag.get('kiln-esession');
-    return { res, sid, record: sid ? w.json(`esess:${sid}`) : null, told: frag.get('kiln-repo') };
+    return { res, to, sid, record: sid ? w.json(`esess:${sid}`) : null, told: frag.get('kiln-repo'), page: to ? '' : await res.text(), github: calls.filter(c => c.url.startsWith(GH)) };
   });
 }
 const GOOGLE = { GOOGLE_CLIENT_ID: 'gid', GOOGLE_CLIENT_SECRET: 'gsecret' };
@@ -173,16 +178,6 @@ test('editor session: from the moment a sign-in makes it, it carries the id of t
   const c = await signIn(fresh, OLD, same());
   assert.equal(c.record.rid, ID);
   assert.equal(fresh.json(`rname:${OLD}`).id, ID);
-  // The id is the one on record for the name, not whoever answers to it
-  // today: Ada is on the first repository's list, so that is what she is
-  // signed in to, and the name's new holder gets no session out of it.
-  const held = world({ ...met(OLD), [`people:${OLD}`]: [ADA] }, GOOGLE);
-  const d = await quietly(() => signIn(held, OLD, taken()));
-  assert.equal(d.record.rid, ID);
-  await quietly(() => withFetch(github(taken()), async (calls) => {
-    assert.equal((await getPage(held.env, OLD, { 'X-Kiln-Session': d.sid })).status, 401);
-    assert.deepEqual(carriedOut(calls), []);
-  }));
 });
 
 test('editor session, takeover: when the name answers as another repository the session is refused as an ended one, nothing of the request reaches GitHub and nothing stored is shown', async () => {
@@ -652,4 +647,49 @@ test('API token, storage trouble: when the worker cannot read its records the re
     assert.equal((await readFields(deaf.env)).status, 200);
     assert.deepEqual(asks(calls), [`/repos/${OLD}`], 'it was tried');
   });
+});
+
+// ─── Signing in ──────────────────────────────────────────────────────────────
+
+test('sign-in: nobody is signed in under a name that answers as another repository: no session, no code for the members gate, and the person is told why', async () => {
+  // The site never corrected its config, and its old name is another
+  // repository's now. Ada and Bea are on the first repository's list, which
+  // is the repository a session would be made for: the id on record for the
+  // name, not whoever answers to it today.
+  for (const email of [ADA.email, BEA.email]) {
+    const w = world({ ...met(OLD), [`people:${OLD}`]: [ADA, BEA] }, GOOGLE);
+    const r = await quietly(() => signIn(w, OLD, taken(), email));
+    assert.equal(r.res.status, 403, email);
+    assert.match(r.page, /Nobody can be signed in to this site right now/);
+    assert.match(r.page, new RegExp(`You signed in as <strong>${email}</strong>, and that address is on the list`));
+    assert.match(r.page, /the name now belongs to a different repository/);
+    assert.match(r.page, /kiln doctor/);
+    assert.deepEqual([...w.kv.map.keys()].filter(k => /^(esess|msess|gcode):/.test(k)), [], 'nothing is made that could be used later');
+    assert.equal(w.json(`rname:${OLD}`).id, ID, 'and the name stays on record as the first repository');
+  }
+});
+
+test('sign-in, normal and in trouble: one who is on the list is signed in, without GitHub being asked when its answer is remembered, and when the records cannot be read', async () => {
+  const w = world({ ...met(OLD), ...heard(OLD), [`people:${OLD}`]: [ADA, BEA] }, GOOGLE);
+  const editor = await signIn(w, OLD, same());
+  assert.equal(editor.res.status, 302);
+  assert.equal(editor.record.rid, ID);
+  assert.deepEqual(editor.github, [], 'GitHub is not asked');
+  const member = await signIn(w, OLD, same(), BEA.email);
+  assert.equal(member.res.status, 302);
+  assert.match(member.to, /\/members-login\.html\?to=.*#kiln-gcode=[a-f0-9]{32}$/);
+  // A renamed repository whose site still has the old name: a rename is not a takeover.
+  const moved = world({ ...met(OLD), [`people:${OLD}`]: [ADA] }, GOOGLE);
+  assert.equal((await signIn(moved, OLD, renamed())).res.status, 302);
+  // Storage trouble: the remembered answer cannot be read. Nobody is kept out for that.
+  const hiccup = world({ ...met(OLD), ...heard(OLD), [`people:${OLD}`]: [ADA] }, GOOGLE);
+  hiccup.fail.push('get rsee:');
+  assert.equal((await signIn(hiccup, OLD, same())).res.status, 302);
+  assert.ok(hiccup.reads().includes(`rsee:${OLD}`), 'it was tried');
+  // The record of the name cannot be read: signed in, with a session that carries no id and is held to the record at each use.
+  const blind = world({ ...met(OLD), ...heard(OLD), [`people:${OLD}`]: [ADA] }, GOOGLE);
+  blind.fail.push('get rname:');
+  const s = await signIn(blind, OLD, same());
+  assert.equal(s.res.status, 302);
+  assert.equal(s.record.rid, undefined);
 });

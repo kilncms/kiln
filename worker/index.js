@@ -1926,17 +1926,32 @@ async function googleCallback(url, env) {
       <p><a class="btn" href="${esc(state.origin + state.returnTo)}">Back to the site</a></p>`, 403);
   }
 
+  // The list the person is on is one repository's: the one the name it is
+  // filed under is on record as. If that name now answers as another
+  // repository, nobody is signed in. A session made now would be refused at
+  // its first use, and the person is better told why here.
+  const { home } = await shelf(env, state.repo);
+  const rid = await idOnRecord(env, home);
+  if (rid !== null && await answersAsAnother(env, home, rid)) {
+    return html(`<h1>Nobody can be signed in to this site right now</h1>
+      <p>You signed in as <strong>${esc(email)}</strong>, and that address is on the list.
+      But this site is set up for a repository that is no longer the one its name
+      points to: the name now belongs to a different repository. Until the site's
+      owner corrects that, nobody is signed in here, so that nothing is saved to the
+      wrong place.</p>
+      <p>Ask the owner to run <code>kiln doctor</code>. It says what to change.</p>
+      <p><a class="btn" href="${esc(state.origin + state.returnTo)}">Back to the site</a></p>`, 403);
+  }
+
   const displayName = person.name || info.name || email.split('@')[0];
   if (person.role === 'editor') {
     const session = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
     const exp = person.days ? Date.now() + person.days * 24 * 3600 * 1000 : null;  // days:0 = never
-    // The session is filed under the name the repository's things are under,
-    // so there is never one that only an old name knows about. The site is
-    // told the name it asked with (below): that is what its editor compares.
-    const { home } = await shelf(env, state.repo);
-    // And it carries the id of the repository that name's things belong to:
-    // each use checks that the name still answers as that repository.
-    const rid = await idOnRecord(env, home);
+    // The session is filed under the name the repository's things are under
+    // (`home`), so there is never one that only an old name knows about, and
+    // it carries that repository's id: each use checks that the name still
+    // answers as it. The site is told the name it asked with (below): that
+    // is what its editor compares.
     await env.KILN.put(`esess:${session}`,
       JSON.stringify({ repo: home, name: displayName, role: 'editor', email, paths: person.paths || [''], keys: person.keys || [], features: person.features || null, mode: person.mode === 'suggest' || person.mode === 'review' ? person.mode : null, created: Date.now(), exp, ...(rid !== null && { rid }) }),
       person.days ? { expirationTtl: person.days * 24 * 3600 } : undefined);
