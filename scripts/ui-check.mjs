@@ -27,6 +27,12 @@
  * the menu's items or on a list's words. The link button opens the editor's
  * own dialog (never the browser's box) and hands the cursor and the selection
  * back, and a saved draft's choices are each on one line.
+ * Then Undo itself ("undo shows"): the page's first heading is edited as soon
+ * as the editor is up, while the site may still be animating in. After Undo,
+ * Redo, Esc, "Drop" in the publish sheet and both of History's ways back, the
+ * heading's words can be seen (the computed opacity of the heading and of
+ * every element inside it is 1), and what Publish writes for it holds no
+ * opacity, transform or style a script put there, before and after a reload.
  * Then the demo's way to get Kiln: once a visitor has published and the card
  * that offers "Put Kiln on my site" has gone, the demo's pill carries the
  * link, fitting beside the pencil.
@@ -999,6 +1005,170 @@ async function runSafetyNet(browser, size) {
  * pencil with nothing overlapping and nothing cut, opens a new tab, is still
  * there after a reload, and goes with "Start over".
  */
+/**
+ * Undo must never hide what it restores. The editor used to copy each field's
+ * markup as it started, while the site was still animating in, and Undo put
+ * that copy back: on a site whose heading slides in, the invisible start of
+ * the slide. History's "Undo this change" then published it.
+ */
+async function runUndoShows(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} undo shows  `;
+  const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone, reducedMotion: 'no-preference' });
+  await context.route('**/*', (route) => {
+    const u = route.request().url();
+    return (u.startsWith(ORIGIN) || u.startsWith('data:') || u.startsWith('blob:')) ? route.continue() : route.abort();
+  });
+  await context.addInitScript(() => { try { localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ } });
+  const page = await context.newPage();
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+  const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+  const started = async () => { await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 }); };
+  await page.goto(URL_ARG, { waitUntil: 'load' });
+  await started();
+  // The page's first heading that is a field of its own, with elements inside it if there is one (lines an animation moves).
+  const key = await page.evaluate(() => {
+    const own = [...document.querySelectorAll('h1[data-cms], h2[data-cms]')].filter(h => !h.closest('[data-cms-repeat]') && h.classList.contains('kiln-field'));
+    return (own.find(h => h.children.length) || own[0])?.getAttribute('data-cms') || null;
+  });
+  check(scope, 'the page has a heading to edit', !!key);
+  if (!key) { await context.close(); return; }
+  const heading = page.locator(`[data-cms="${key}"]`).first();
+  /** What a person can see of the heading: its words, and whether it and everything inside it is fully opaque. */
+  const look = () => heading.evaluate((h) => {
+    const all = [h, ...h.querySelectorAll('*')];
+    const dim = all.filter(e => getComputedStyle(e).opacity !== '1' || getComputedStyle(e).visibility === 'hidden').length;
+    return { words: h.innerText.replace(/\s+/g, ' ').trim(), dim, tall: h.getBoundingClientRect().height > 4 };
+  });
+  const seen = (l, words) => l.dim === 0 && l.tall && l.words === words;
+  const told = (l) => `"${l.words}", ${l.dim} not fully opaque`;
+  const staged = () => page.evaluate((k) => {
+    const at = Object.keys(localStorage).find(n => n.startsWith('kiln_pending:'));
+    try { return JSON.parse(localStorage.getItem(at))?.edits?.[k]?.html ?? null; } catch { return null; }
+  }, key);
+  const published = () => page.evaluate((k) => {
+    try { const s = JSON.parse(localStorage.getItem('kiln_sandbox')); return Object.values(s.pages || {}).map(p => p[k]?.html).find(h => typeof h === 'string') ?? null; } catch { return null; }
+  }, key);
+  const clean = (html) => typeof html === 'string' && !/opacity|transform|translate|style=|is-inview/.test(html);
+  const retype = async (text) => {
+    await heading.scrollIntoViewIfNeeded();
+    await press(heading);
+    await page.locator('#kiln-toolbar').waitFor({ state: 'visible', timeout: 5000 });
+    await page.keyboard.press('ControlOrMeta+a');
+    await page.keyboard.type(text);
+  };
+  const keep = async () => { await press(page.locator('#kiln-toolbar .kiln-tb-save')); await page.waitForTimeout(350); };
+  const publishNow = async () => {
+    await press(page.locator('#kiln-publish-quick'));
+    await page.locator('#kiln-pubsheet-go').waitFor({ state: 'visible', timeout: 5000 });
+    await page.waitForTimeout(200);
+    await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(600);
+  };
+  const history = async () => {
+    await press(page.locator('#kiln-fab'));
+    await page.waitForTimeout(350);
+    await press(page.locator('#kiln-history'));
+    await page.locator('#kiln-hist .kiln-hist-row').first().waitFor({ state: 'visible', timeout: 5000 });
+  };
+
+  // Edited at once: on a site with an entrance animation the heading is still arriving.
+  await retype('Big sale this Saturday.');
+  await keep();
+  await page.waitForTimeout(1500);   // whatever was animating has finished
+  const original = await page.evaluate(async (k) => {
+    const html = await (await fetch(location.pathname)).text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const h = doc.querySelector(`[data-cms="${k}"]`);
+    const copy = document.querySelector(`[data-cms="${k}"]`).cloneNode(false);
+    copy.innerHTML = h.innerHTML;
+    copy.style.cssText = 'position:absolute;left:-9999px;top:0';
+    document.body.appendChild(copy);
+    const words = copy.innerText.replace(/\s+/g, ' ').trim();
+    copy.remove();
+    return words;
+  }, key);
+  let l = await look();
+  check(scope, 'an edit made as the page arrives is kept, and can be seen', seen(l, 'Big sale this Saturday.'), told(l));
+  const first = await staged();
+  check(scope, 'what Publish would write for it holds the words and nothing a script put on the page', clean(first) && /Big sale this Saturday\./.test(first), String(first).slice(0, 160));
+  await press(page.locator('#kiln-undo-btn'));
+  await page.waitForTimeout(900);
+  l = await look();
+  check(scope, 'Undo: the old words are back and can be seen, every element inside fully opaque', seen(l, original), told(l));
+  await shot('undo-shows-undone');
+  await press(page.locator('#kiln-redo-btn'));
+  await page.waitForTimeout(900);
+  l = await look();
+  check(scope, 'Redo: the new words can be seen', seen(l, 'Big sale this Saturday.'), told(l));
+  // "Drop" in the publish sheet
+  await press(page.locator('#kiln-publish-quick'));
+  await page.locator('#kiln-pubsheet-go').waitFor({ state: 'visible', timeout: 5000 });
+  await press(page.locator('.kiln-ps-drop').first());
+  await page.waitForTimeout(400);
+  if (await page.locator('#kiln-modal').count()) { await page.keyboard.press('Escape'); await page.waitForTimeout(300); }
+  if (await page.locator('#kiln-modal').count()) await press(page.locator('#kiln-modal .kiln-modal-x').first());
+  await page.waitForTimeout(500);
+  l = await look();
+  check(scope, '"Drop" in the publish sheet: the old words can be seen', seen(l, original), told(l));
+  // Esc, or Revert where there is no keyboard, in the middle of typing
+  await retype('Typed and thrown away');
+  if (phone) await press(page.locator('#kiln-toolbar .kiln-tb-cancel')); else await page.keyboard.press('Escape');
+  await page.waitForTimeout(500);
+  l = await look();
+  check(scope, `${phone ? 'Revert' : 'Esc'} while typing: the old words can be seen`, seen(l, original), told(l));
+
+  // Published, and after a reload
+  await retype('Big sale this Saturday.');
+  await keep();
+  await publishNow();
+  let html = await published();
+  check(scope, 'what was published holds no opacity, transform or style', clean(html) && /Big sale/.test(html), String(html).slice(0, 160));
+  await page.reload({ waitUntil: 'load' });
+  await started();
+  await page.waitForTimeout(1800);
+  l = await look();
+  check(scope, 'after a reload the published words can be seen', seen(l, 'Big sale this Saturday.'), told(l));
+
+  // History: "Undo this change", Keep, Publish, reload
+  await history();
+  await press(page.locator('#kiln-hist [data-act="undo"]').first());
+  await page.locator('#kiln-previewbar').waitFor({ state: 'visible', timeout: 5000 });
+  await page.waitForTimeout(900);
+  l = await look();
+  check(scope, 'History, "Undo this change": the preview shows the old words where they can be seen', seen(l, original), told(l));
+  await shot('undo-shows-history-preview');
+  await press(page.locator('#kiln-pv-keep'));
+  await page.waitForTimeout(400);
+  await publishNow();
+  html = await published();
+  check(scope, 'kept and published, what was written holds no opacity, transform or style', clean(html), String(html).slice(0, 200));
+  l = await look();
+  check(scope, 'and the heading can be seen', seen(l, original), told(l));
+  await page.reload({ waitUntil: 'load' });
+  await started();
+  await page.waitForTimeout(1800);
+  l = await look();
+  check(scope, 'and still after a reload', seen(l, original), told(l));
+  await shot('undo-shows-history-reloaded');
+  // "Go back to this", then Cancel
+  await history();
+  const older = page.locator('#kiln-hist [data-act="restore"]').first();
+  check(scope, 'History has an older publish to go back to', (await older.count()) === 1);
+  if (await older.count()) {
+    await press(older);
+    await page.locator('#kiln-previewbar').waitFor({ state: 'visible', timeout: 5000 });
+    await page.waitForTimeout(900);
+    l = await look();
+    check(scope, 'History, "Go back to this": what it shows can be seen', seen(l, 'Big sale this Saturday.'), told(l));
+    await press(page.locator('#kiln-pv-cancel'));
+    await page.waitForTimeout(700);
+    l = await look();
+    check(scope, 'and Cancel puts the page back where it can be seen', seen(l, original), told(l));
+  }
+  await context.close();
+}
+
 async function runGetKiln(browser, size) {
   const phone = size.width < 600;
   const scope = `${size.width}x${size.height} get Kiln    `;
@@ -2735,6 +2905,8 @@ try {
   }
   // what a person tries after a first edit: Undo in a list, and the rest of the safety net
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} safety net  `, () => runSafetyNet(browser, size));
+  // Undo, Redo, Esc, Drop and History show the heading as it looked, and nothing of an animation is published
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} undo shows  `, () => runUndoShows(browser, size));
   // the demo's own way to get Kiln stays in sight once the card that offered it has gone
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} get Kiln    `, () => runGetKiln(browser, size));
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
