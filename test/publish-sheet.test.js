@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
-import { wordDiff, trimDiff, cleanNote, noteMessage, blockNames, blockChange, imageSources, linkProblems,
+import { wordDiff, trimDiff, cleanNote, noteMessage, blockNames, blockChange, listChanges, countChanges, imageSources, linkProblems,
   itemWarnings, previewOff, setPreviewOff } from '../src/editor/publish-sheet.js';
 
 const flat = (parts) => parts.map(p => (p.t === 'same' ? p.s : p.t === 'del' ? `[-${p.s}-]` : `{+${p.s}+}`)).join(' ');
@@ -63,6 +63,65 @@ test('publish sheet: added and removed blocks are named', () => {
   assert.deepEqual(blockChange(['Sourdough', 'Rye'], ['Rye', 'Sourdough']), { added: [], removed: [], moved: true });
   assert.deepEqual(blockChange(['Rye', 'Rye'], ['Rye', 'Rye', 'Rye']), { added: ['Rye'], removed: [], moved: false }, 'a duplicate counts once');
   assert.deepEqual(blockChange(['A', 'B'], ['A', 'B']), { added: [], removed: [], moved: false });
+});
+
+test('publish sheet: every change to a list is named, a changed block beside an added one', () => {
+  const card = (title, price, body = 'Some words') => `<a class="card" href="/${title.toLowerCase()}"><h3 data-cms="t">${title}</h3><span data-cms="p">${price}</span><p>${body}</p></a>`;
+  const before = [card('Mend', '$26.99'), card('Plant', '$26.99'), card('Odd', '$24.99')];
+  // a price changed, then a block added to the same list: both are said
+  let ch = listChanges(before, [card('Mend', '$19.99'), card('Plant', '$26.99'), card('Odd', '$24.99'), card('Odd', '$24.99')]);
+  assert.deepEqual(ch.added, ['Odd']);
+  assert.deepEqual(ch.removed, []);
+  assert.equal(ch.moved, false);
+  assert.equal(ch.changed.length, 1);
+  assert.equal(ch.changed[0].name, 'Mend');
+  assert.equal(before[ch.changed[0].from], card('Mend', '$26.99'));
+  assert.match(ch.changed[0].before, /\$26\.99/);
+  assert.match(ch.changed[0].after, /\$19\.99/);
+  // the changed block was the one copied: the copy is the addition, the original the change
+  ch = listChanges(before, [card('Mend', '$19.99'), card('Mend', '$19.99'), card('Plant', '$26.99'), card('Odd', '$24.99')]);
+  assert.deepEqual([ch.added, ch.removed, ch.changed.map(c => c.name), ch.moved], [['Mend'], [], ['Mend'], false]);
+  // a block renamed is a change, not one removed and another added
+  ch = listChanges(before, [card('Mend', '$26.99'), card('Plant (new)', '$26.99'), card('Odd', '$24.99')]);
+  assert.deepEqual([ch.added, ch.removed, ch.changed.map(c => c.name), ch.moved], [[], [], ['Plant (new)'], false]);
+  // one replaced by something else entirely is one removed and one added
+  ch = listChanges(before, [card('Mend', '$26.99'), card('Gift card', 'From $10', 'For someone who has everything'), card('Odd', '$24.99')]);
+  assert.deepEqual([ch.added, ch.removed, ch.changed.length], [['Gift card'], ['Plant'], 0]);
+  // a change, a move and a removal together
+  ch = listChanges(before, [card('Odd', '$24.99'), card('Mend', '$19.99')]);
+  assert.deepEqual([ch.added, ch.removed, ch.changed.map(c => c.name), ch.moved], [[], ['Plant'], ['Mend'], true]);
+  // added and taken away again: nothing is listed
+  ch = listChanges(before, [...before]);
+  assert.deepEqual(ch, { added: [], removed: [], moved: false, changed: [] });
+  // only what is not text changed (a picture, a link's address, a tag): the block is still named
+  ch = listChanges(before, [before[0].replace('href="/mend"', 'href="/mend-2"'), before[1], before[2]]);
+  assert.deepEqual([ch.added, ch.removed, ch.moved], [[], [], false]);
+  assert.equal(ch.changed.length, 1);
+  assert.equal(ch.changed[0].before, ch.changed[0].after, 'the words are the same');
+});
+
+test('publish sheet: the number on Publish is the number of things the sheet lists', () => {
+  const text = { type: 'text', before: 'a', after: 'b' }, note = { type: 'note', text: 'Added: Mend' };
+  assert.equal(countChanges([]), 0);
+  assert.equal(countChanges([{ parts: [text] }]), 1);
+  // one list with an addition, a removal, a move and a changed price is four things; a headline beside it makes five
+  assert.equal(countChanges([{ parts: [note, note, note, text] }, { parts: [text] }]), 5);
+  // an edit with nothing to show for it still counts once
+  assert.equal(countChanges([{ parts: [] }, { parts: [text] }]), 2);
+});
+
+test('publish sheet: the sheet and every Publish control count the same things', () => {
+  const main = readFileSync(new URL('../src/editor/main.js', import.meta.url), 'utf8');
+  // the one number: what publishItems lists
+  assert.match(main, /function changeCount\(\) \{\s*\n\s*try \{ return countChanges\(publishItems\(\{ light: true \}\)\); \}/);
+  const refresh = main.slice(main.indexOf('function refreshPublishButton('), main.indexOf('function disablePublish('));
+  assert.match(refresh, /const n = changeCount\(\);/);
+  const ask = main.slice(main.indexOf('function requestPublish('), main.indexOf('function noteTyped('));
+  assert.match(ask, /count: changeCount,/);
+  // a list's changes are worked out block by block, never hidden behind "Added"
+  const items = main.slice(main.indexOf('function publishItems('), main.indexOf('const linkSeen'));
+  assert.match(items, /listChanges\(/);
+  assert.equal(/!listChanged && before !== afterText/.test(items), false);
 });
 
 test('publish sheet: pictures in a piece of HTML are read with their descriptions', () => {

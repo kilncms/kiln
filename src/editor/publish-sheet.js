@@ -11,8 +11,8 @@
  * that came from the page is written with textContent, never innerHTML.
  *
  * wordDiff, trimDiff, cleanNote, noteMessage, blockNames, blockChange,
- * imageSources, linkProblems, itemWarnings and the preview setting are pure
- * and exported for tests.
+ * listChanges, countChanges, plainText, imageSources, linkProblems,
+ * itemWarnings and the preview setting are pure and exported for tests.
  */
 
 const NOTE_MAX = 140;
@@ -120,6 +120,70 @@ export function blockChange(beforeNames, afterNames) {
   const keptA = beforeNames.filter(n => B.has(n)), keptB = afterNames.filter(n => A.has(n));
   const moved = !added.length && !removed.length && keptA.join('\n') !== keptB.join('\n');
   return { added, removed, moved };
+}
+
+/** The words of a piece of HTML, as plain text on one line. */
+export function plainText(html) {
+  return stripTags(html);
+}
+
+/**
+ * What changed in a list, block by block. `before` and `after` hold each
+ * block's HTML, in order. A block written exactly as it was is unchanged. Of
+ * the rest, two that are the same block edited (the same name, or at least
+ * half of the same words) are one change; what is left over was added or
+ * removed. So a price changed in one block is still said when another block
+ * is added to the same list.
+ * Returns { added: [name], removed: [name], moved, changed: [{ name, from, to, before, after }] }:
+ * `from` and `to` are the block's places before and after, `before` and
+ * `after` its words (the same when only a picture, an address or a tag changed).
+ */
+export function listChanges(before, after) {
+  const namesA = blockNames(before), namesB = blockNames(after);
+  const textA = before.map(stripTags), textB = after.map(stripTags);
+  const was = new Map();   // a block's place after → its place before
+  const used = new Set();
+  const take = (j, i) => { was.set(j, i); used.add(i); };
+  // written exactly as it was: where it was first, then wherever it went
+  after.forEach((html, j) => { if (before[j] === html) take(j, j); });
+  after.forEach((html, j) => {
+    if (was.has(j)) return;
+    const i = before.findIndex((b, k) => b === html && !used.has(k));
+    if (i !== -1) take(j, i);
+  });
+  // the same block, edited
+  const bag = (text) => new Set(words(text));
+  const alike = (a, b) => { let both = 0; for (const w of a) if (b.has(w)) both++; const all = a.size + b.size - both; return all ? both / all : 1; };
+  const changed = [];
+  after.forEach((_, j) => {
+    if (was.has(j)) return;
+    let best = -1, score = 0;
+    before.forEach((__, i) => {
+      if (used.has(i)) return;
+      const same = namesA[i] === namesB[j], near = alike(bag(textA[i]), bag(textB[j]));
+      if (!same && near < 0.5) return;
+      const sc = (same ? 2 : 0) + near - Math.abs(i - j) / 1000;
+      if (best === -1 || sc > score) { best = i; score = sc; }
+    });
+    if (best === -1) return;
+    take(j, best);
+    changed.push({ name: namesB[j], from: best, to: j, before: textA[best], after: textB[j] });
+  });
+  const added = after.map((_, j) => j).filter(j => !was.has(j)).map(j => namesB[j]);
+  const removed = before.map((_, i) => i).filter(i => !used.has(i)).map(i => namesA[i]);
+  // the blocks that stayed, in the order they are in now: were they in that order before?
+  const order = [...was.keys()].sort((a, b) => a - b).map(j => was.get(j));
+  const moved = order.some((i, at) => at > 0 && i < order[at - 1]);
+  return { added, removed, moved, changed };
+}
+
+/**
+ * The number on every Publish control: how many things the sheet lists.
+ * `items` are the sheet's rows, each with its `parts`; a row with nothing to
+ * show for itself is still one thing.
+ */
+export function countChanges(items) {
+  return items.reduce((n, item) => n + Math.max(1, (item.parts || []).length), 0);
 }
 
 /** Every picture address in a piece of HTML, in order. */
@@ -235,6 +299,7 @@ function renderItem(item, deps, rerender) {
       if (part.name) card.append(el('div', 'kiln-ps-sub', part.name));
       card.append(diffLine('Before', parts, 'before'), diffLine('After', parts, 'after'));
     } else if (part.type === 'image') {
+      if (part.name) card.append(el('div', 'kiln-ps-sub', part.name));
       const pair = el('div', 'kiln-ps-pics');
       pair.append(thumb(part.before, 'Before'), el('span', 'kiln-ps-arrow', '→'), thumb(part.after, 'After'));
       card.append(pair);

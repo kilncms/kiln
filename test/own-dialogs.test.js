@@ -52,8 +52,25 @@ test('questions: each says what will happen, and its buttons say what they do', 
   assert.deepEqual(decline.input, { label: 'A note for them (optional)' });
   assert.deepEqual([decline.cancel, decline.go], ['Cancel', 'Decline']);
 
+  // "Start over" in the demo: everything this browser holds of it, named
+  const over = ownDialogCopy('start-over', { published: true, draft: true, unpublished: 2 });
+  assert.equal(over.title, 'Start the demo over?');
+  assert.equal(over.body, 'This clears your private demo in this browser: what you published, your saved draft and your 2 unpublished edits. Every page goes back to how it first was, and none of it can be brought back.');
+  assert.deepEqual([over.cancel, over.go], ['Keep my demo', 'Start over']);
+  assert.match(ownDialogCopy('start-over', { published: true }).body, /this browser: what you published\. Every page/);
+  assert.match(ownDialogCopy('start-over', { unpublished: 1 }).body, /this browser: your unpublished edit\. Every page/);
+  assert.match(ownDialogCopy('start-over', { draft: true, unpublished: 1 }).body, /your saved draft and your unpublished edit\./);
+
+  // "Delete draft": what goes, and what stays
+  const draft = ownDialogCopy('delete-draft', { changes: 3, demo: true });
+  assert.equal(draft.title, 'Delete this draft?');
+  assert.equal(draft.body, 'The draft and the 3 changes in it are thrown away, and can’t be brought back. What you have published stays as it is.');
+  assert.deepEqual([draft.cancel, draft.go], ['Keep the draft', 'Delete draft']);
+  assert.equal(ownDialogCopy('delete-draft', { changes: 1 }).body, 'The draft and the 1 change in it are thrown away, and can’t be brought back. The page that is live stays as it is.');
+  assert.equal(ownDialogCopy('delete-draft', {}).body, 'The draft is thrown away, and can’t be brought back. The page that is live stays as it is.');
+
   // plain words: nothing shouts, nothing uses a dash for punctuation, nothing says "OK"
-  for (const c of [thread, page, one, many, decline]) {
+  for (const c of [thread, page, one, many, decline, over, draft]) {
     const all = [c.title, c.body, c.go, c.cancel, c.input?.label || ''].join(' ');
     assert.equal(/[!—–]| - |\bOK\b/.test(all), false, all);
   }
@@ -101,4 +118,16 @@ test('history: a restore is shown on the page itself, not in two frames with the
   assert.equal((hist.match(/closeHistory\(\);\s*\n\s*const n = previewRestore\(/g) || []).length, 2);
   // the words in History no longer promise frames
   assert.match(hist, /Both show the result on the page first, with Cancel and Keep/);
+});
+
+test('questions: "Start over" and "Delete draft" ask first, and nothing is cleared until the answer', () => {
+  // the demo's pill: the question, then the reset
+  const reset = main.slice(main.indexOf('async function startOver('), main.indexOf('function syncSandboxLink('));
+  assert.match(reset, /await askFirst\(modal, ownDialogCopy\('start-over', lost\)\)/);
+  assert.ok(reset.indexOf("ownDialogCopy('start-over'") < reset.indexOf('sandboxReset();'), 'asked before anything is cleared');
+  // with nothing to lose there is nothing to ask
+  assert.match(reset, /if \(\(lost\.published \|\| lost\.draft \|\| lost\.unpublished\) && !\(await askFirst/);
+  assert.match(main, /#kiln-sandbox-reset'\)\.onclick = startOver;/);
+  // a draft, in the demo and on a real site
+  assert.equal((main.match(/ownDialogCopy\('delete-draft'/g) || []).length, 2);
 });

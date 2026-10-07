@@ -342,7 +342,8 @@ function enterPlaceMode() {
   closePopover();
   const hint = h('div');
   hint.id = 'kiln-cmt-hint';
-  hint.innerHTML = '<span>Click where you want the comment — <kbd>Esc</kbd> cancels</span>';  // static markup only
+  // static markup only; Esc is said where there is a keyboard, and the Cancel button is there either way
+  hint.innerHTML = `<span>${window.matchMedia('(hover: none)').matches ? 'Tap' : 'Click'} where you want the comment. <span class="kiln-keys-only"><kbd>Esc</kbd> cancels.</span></span>`;
   hint.appendChild(btn('', 'Cancel', () => exitPlaceMode()));
   document.body.appendChild(hint);
   document.documentElement.classList.add('kiln-cmt-placing');

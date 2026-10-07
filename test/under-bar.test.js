@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { coverBottom, isUnder } from '../src/editor/under-bar.js';
+import { coverBottom, isUnder, isSiteBar } from '../src/editor/under-bar.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const main = readFileSync(path.join(ROOT, 'src', 'editor', 'main.js'), 'utf8');
@@ -61,4 +61,28 @@ test('bar: looked at whenever the page moves', () => {
   assert.match(main, /window\.addEventListener\('resize', barSoon\);/);
   // hidden means neither seen nor pressed
   assert.match(main, /\.kiln-under-bar\{visibility:hidden!important;pointer-events:none!important\}/);
+});
+
+test('bar: on a phone the editor\'s line of words goes below the site\'s own bars, not on its logo', () => {
+  const phone = { width: 390, height: 844, atTop: false };
+  // a header the site keeps at the top
+  assert.equal(isSiteBar({ top: 0, bottom: 64, width: 390, pinned: true }, 0, phone), true);
+  // at the top of the page: a banner, an announcement under it, then the header, each a strip across the screen
+  const top = { ...phone, atTop: true };
+  assert.equal(isSiteBar({ top: 0, bottom: 52, width: 390 }, 0, top), true);
+  assert.equal(isSiteBar({ top: 52, bottom: 96, width: 390 }, 52, top), true);
+  assert.equal(isSiteBar({ top: 96, bottom: 160, width: 390, named: true }, 96, top), true);
+  // the picture under them is a section, not a bar
+  assert.equal(isSiteBar({ top: 160, bottom: 560, width: 390 }, 160, top), false);
+  // scrolled: a paragraph going by under the top of the screen is not a bar, a header that is not pinned has gone
+  assert.equal(isSiteBar({ top: -6, bottom: 40, width: 370 }, 0, phone), false);
+  assert.equal(isSiteBar({ top: -80, bottom: -16, width: 390, named: true }, 0, phone), false);
+  // a narrow thing at the top (a logo by itself, a chat bubble) is not a bar
+  assert.equal(isSiteBar({ top: 0, bottom: 50, width: 120, pinned: true }, 0, phone), false);
+  // nor is a pinned layer that covers much of the screen
+  assert.equal(isSiteBar({ top: 0, bottom: 500, width: 390, pinned: true }, 0, phone), false);
+  // main.js walks down the bars and tells the line where they end
+  const place = main.slice(main.indexOf('function siteBarsBottom('), main.indexOf('function placeStatus('));
+  assert.match(place, /isSiteBar\(/);
+  assert.match(main, /top:calc\(10px \+ var\(--kiln-under,0px\) \+ env\(safe-area-inset-top,0px\)\)/);
 });

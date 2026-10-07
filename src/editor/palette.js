@@ -67,7 +67,7 @@ export function openPalette() {
     <input id="kiln-pal-q" class="kiln-pal-input" type="text" placeholder="Jump to a page, section, or action — or search the site…"
       autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Search and jump">
     <div id="kiln-pal-list" class="kiln-pal-list" role="listbox"></div>
-    <div class="kiln-pal-foot">↑↓ choose · ↵ open · esc close</div></div>`);
+    <div class="kiln-pal-foot kiln-keys-only">↑↓ choose · ↵ open · esc close</div></div>`);
   wrap.classList.add('kiln-palette-wrap');
   input = wrap.querySelector('#kiln-pal-q');
   listEl = wrap.querySelector('#kiln-pal-list');
@@ -116,29 +116,67 @@ function paintSel() {
   });
 }
 
-/** Tiny subsequence scorer: consecutive-run + word-start bonuses; -1 = no match. */
-function fuzzy(q, s) {
-  q = q.toLowerCase(); s = String(s).toLowerCase();
-  let qi = 0, run = 0, score = 0;
-  for (let i = 0; i < s.length && qi < q.length; i++) {
-    if (s[i] !== q[qi]) { run = 0; continue; }
-    run++; qi++;
-    score += run + ((i === 0 || / |\/|_|-|\./.test(s[i - 1])) ? 3 : 0);
-  }
-  return qi === q.length ? score - s.length / 50 : -1;
+/**
+ * Whether what was typed is the beginnings of a name's words, in order: "hp"
+ * and "hpic" for "Hero picture", "fr" for "Find & replace". Returns a small
+ * score, or -1. Letters from the middle of a word do not count: picked out
+ * letter by letter, "sale" is in "Shirts headline" and in most other names.
+ */
+function initials(q, name) {
+  const parts = String(name).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const want = q.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  if (!want) return -1;
+  const from = (at, w) => {
+    if (at === want.length) return true;
+    for (let i = w; i < parts.length; i++) {
+      for (let k = 1; k <= parts[i].length && at + k <= want.length && parts[i].slice(0, k) === want.slice(at, at + k); k++) {
+        if (from(at + k, i + 1)) return true;
+      }
+    }
+    return false;
+  };
+  return from(0, 0) ? 10 - String(name).length / 50 : -1;
 }
 
 /**
  * How well a row answers what was typed, or -1. The typed words found as
- * they stand anywhere in the row (its name, its key, its text) come first.
- * Failing that the letters may be spread out, but only across the row's short
- * name: spread across a whole sentence nearly anything matches, which is how
- * typing "history" used to bring up "hero img".
+ * they stand anywhere in the row (its name, its key, all of its text) come
+ * first. Failing that, the first letters of the words of its short name.
+ * Nothing looser: a row is listed because it holds what was typed.
  */
 export function rowScore(q, row) {
   const at = String(row.text).toLowerCase().indexOf(q.toLowerCase());
   if (at !== -1) return 1000 - Math.min(at, 500);
-  return fuzzy(q, row.name);
+  return initials(q, row.name);
+}
+
+/** The words around a find: `at` and `length` say where it is in `text`. */
+export function snippetAt(text, at, length, each = 20) {
+  let a = Math.max(0, at - each), b = Math.min(text.length, at + length + each);
+  // whole words at both ends
+  while (a > 0 && text[a - 1] !== ' ') a--;
+  while (b < text.length && text[b] !== ' ') b++;
+  return (a > 0 ? '…' : '') + text.slice(a, b).trim() + (b < text.length ? '…' : '');
+}
+
+/**
+ * A site with no repository to read (try-out mode): its pages are the ones
+ * this page links to on the same site. `links` are { href, text } with full
+ * addresses; `here` is this page's path. Returns [{ url, title }], this page
+ * first.
+ */
+export function pagesFromLinks(links, origin, here) {
+  const out = [{ url: here, title: 'this page' }], seen = new Set([here]);
+  for (const l of links) {
+    let u;
+    try { u = new URL(l.href); } catch { continue; }
+    if (u.origin !== origin || !/^https?:$/.test(u.protocol)) continue;
+    const path = u.pathname;
+    if (seen.has(path) || /\/kiln(\.html)?\/?$/.test(path) || /\.(?!html?$)[a-z0-9]{2,5}$/i.test(path)) continue;
+    seen.add(path);
+    out.push({ url: path, title: String(l.text || '').replace(/\s+/g, ' ').trim() });
+  }
+  return out;
 }
 
 function matchSort(q, rows) {
@@ -160,6 +198,13 @@ function actionRows() {
 
 function pageRows() {
   if (!pages) return [];
+  if (!deps.state.gh) {
+    // No repository to list (try-out mode): the pages this one links to.
+    return linked().map((p) => {
+      const cur = p.url === location.pathname;
+      return { name: p.url, text: `${p.url} ${p.title}`, hint: cur ? 'this page' : p.title, run: cur ? () => {} : () => { location.href = p.url; } };
+    });
+  }
   return pages.map((p) => {
     const cur = isHere(p);
     const title = fileCache.get(p)?.title || '';
@@ -177,15 +222,72 @@ function fieldRows() {
     if (el.hasAttribute('data-cms') && el.closest('[data-cms-repeat]')) continue;   // reached via its container
     if (!deps.keyInScope(key)) continue;
     seen.add(key);
-    let snip = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 42);
+    // All of its words can be searched, not only the first few: a list is long.
+    const full = wordsOf(el);
+    let snip = full.slice(0, 42);
     if (!snip && el.tagName === 'IMG') snip = el.getAttribute('alt') || '(image)';
     const name = readableName(key);
-    rows.push({ name, text: `${name} ${key} ${snip}`, hint: snip, run: () => flashTo(el) });
+    rows.push({ name, text: `${name} ${key} ${full}`, full, el, hint: snip, run: () => flashTo(el) });
   }
   // What can be edited on a generated page: the fields that come from content files.
   for (const f of (deps.sourceFieldRows ? deps.sourceFieldRows() : [])) {
     const snip = (f.el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 42);
     rows.push({ name: f.name, text: `${f.name} ${snip}`, hint: snip, run: () => flashTo(f.el) });
+  }
+  return rows;
+}
+
+/** A part's words, piece by piece with a space between (a name, a price and a line of text are three things), the editor's own buttons left out. */
+function wordsOf(el) {
+  const out = [];
+  const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+    const text = node.nodeValue.replace(/\s+/g, ' ').trim();
+    if (text && !node.parentElement.closest('.kiln-item-ctl, .kiln-ctl-cell, .kiln-repeat-add')) out.push(text);
+  }
+  return out.join(' ').slice(0, 20000);
+}
+
+/** The pages this page links to (try-out mode). */
+function linked() {
+  // (a link's words without the editor's own buttons on it, and not a whole card's worth of them)
+  const links = [...document.querySelectorAll('a[href]')].filter(a => !a.closest(deps.chrome || '#kiln-fab-wrap'))
+    .map(a => ({ href: a.href, text: wordsOf(a).length <= 60 ? wordsOf(a) : (a.getAttribute('aria-label') || a.getAttribute('title') || '') }));
+  return pagesFromLinks(links, location.origin, location.pathname);
+}
+
+/**
+ * A row whose words hold what was typed says so: its hint is the words
+ * around the find, and choosing it goes to the smallest part that holds them
+ * (one card of a list, not the top of the list).
+ */
+function found(q, row) {
+  if (!q || !row.full) return row;
+  const at = row.full.toLowerCase().indexOf(q.toLowerCase());
+  if (at === -1) return row;
+  const inside = [...row.el.querySelectorAll('[data-cms], .kiln-repeat-item')]
+    .filter(n => (n.textContent || '').toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => a.textContent.length - b.textContent.length)[0];
+  return { ...row, hint: snippetAt(row.full, at, q.length), run: () => flashTo(inside || row.el) };
+}
+
+/**
+ * Words on this page that are in no editable part (the site's own menu, a
+ * footer, a part nobody marked): found too, and said to be what they are.
+ */
+function elsewhereRows(q) {
+  if (q.length < 3) return [];
+  const rows = [], seen = new Set(), ql = q.toLowerCase();
+  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walk.nextNode(); node && rows.length < 5; node = walk.nextNode()) {
+    const at = node.nodeValue.toLowerCase().indexOf(ql);
+    const el = node.parentElement;
+    if (at === -1 || !el || seen.has(el) || el.closest(`script, style, noscript, [data-cms], [data-cms-repeat], [data-kiln-source], ${deps.chrome || '#kiln-fab-wrap'}`)) continue;
+    if (!el.getClientRects().length) continue;   // not shown
+    seen.add(el);
+    const text = node.nodeValue.replace(/\s+/g, ' ');
+    rows.push({ name: snippetAt(text, Math.max(0, text.toLowerCase().indexOf(ql)), q.length), text, hint: 'not editable here',
+      run: () => { flashTo(el); deps.setStatus('These words are in a part of the page that is not set up to be changed here.', 'idle', { hold: 7000 }); } });
   }
   return rows;
 }
@@ -210,7 +312,8 @@ function render() {
   };
   add('Actions', matchSort(q, actionRows()).slice(0, 8));
   add('Pages', matchSort(q, pageRows()).slice(0, 8));
-  add('On this page', matchSort(q, fieldRows()).slice(0, 8));
+  add('On this page', matchSort(q, fieldRows()).slice(0, 8).map(r => found(q, r)));
+  if (q) add('Elsewhere on this page', elsewhereRows(q));
   if (q.length >= 3 && deps.state.gh) {
     items.push({ keep: true, run: () => runSearch(q) });
     html += `<div class="kiln-pal-sec">Site text</div>`

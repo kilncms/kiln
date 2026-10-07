@@ -37,7 +37,7 @@ import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
 import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
-import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
+import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
 import { draftRecord, readDraft, draftHolds, TYPED } from './saved-edits.js';
 import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
@@ -51,7 +51,10 @@ import { notDone, whyNot, said } from './plain-failure.js';
 import { plainName, readableName } from './names.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS } from './link-dialog.js';
 import { askFirst, askWhich, ownDialogCopy } from './own-dialogs.js';
-import { coverBottom, isUnder } from './under-bar.js';
+import { coverBottom, isUnder, isSiteBar } from './under-bar.js';
+import { whereTo } from './in-view.js';
+import { findTwin, notHereWords } from './not-here.js';
+import { missingEvent, missingPerson, scheduleTitle, pickBarWords, removedHold, PEOPLE_WORDS, tooBigForDemo, headingVars, ADDED_CSS } from './first-edits.js';
 import { demoSays, demoShort, DEMO_DRAFT_SAVED, DEMO_HISTORY_EMPTY, DEMO_HISTORY_NOTE,
   historyEntry, withEntry, undoChanges, goBackChanges, partVersions, hasPublished } from './tryout.js';
 
@@ -64,7 +67,7 @@ const PAUSE_KEY = 'kiln_pause';
 // before init() runs at module load — initSandbox reads them synchronously.
 const SANDBOX_KEY = 'kiln_sandbox';
 const SANDBOX_TTL = 24 * 3600 * 1000;
-const SANDBOX_FULL = 'This browser has no room left for the demo. Press “Start over” to clear it, or try smaller pictures.';
+const SANDBOX_FULL = 'This browser has no room left for the demo. Drop a picture you have added, or press “Start over” to clear it.';
 const UNDO_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-8.4L3 7"/></svg>';
 // Phone-first chrome: ONE media query decides "phone" — shared verbatim by the
 // CSS in injectStyles() and the few JS behavior forks (menu/toolbar positioning,
@@ -72,6 +75,8 @@ const UNDO_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" s
 // const→var, so anything read during boot must already be initialized.
 const MOBILE_MQ = '(max-width: 700px), (pointer: coarse) and (max-width: 820px)';
 function isMobileEditor() { return window.matchMedia(MOBILE_MQ).matches; }
+/** A screen that is touched, with no pointer to hover and most likely no keyboard. */
+function isTouch() { return window.matchMedia('(hover: none)').matches; }
 // True once the pencil and the status line exist (declared up here for the same reason).
 let chromeDrawn = false;
 // Settled once "Pick up where you left off?" has been answered or put away
@@ -86,6 +91,20 @@ const decorated = new WeakSet();
 const previewing = new Set();
 // Try-out mode: this page had nothing stored when it opened, so there is nothing an earlier editor left to mend.
 let sandboxWasEmpty = false;
+// The status line's timer. Declared up here because the demo draws its first
+// line while this module is still being read: declared further down, the
+// timer of that first line was forgotten when the declaration was reached, and
+// went off four seconds later on whatever line was showing by then. That is
+// how "Removed. Undo" could vanish after a second or two.
+let statusHideTimer = null;
+// How many lines the status line has shown: a timer that was set for one line
+// leaves a later one alone.
+let statusShown = 0;
+let statusPlaced = false;   // the line follows the site's bars as the page scrolls, once it has been shown on a phone
+// The line that says the sign-in has ended, with its way back in, once there
+// is one (opts.signIn). Other news is still shown, and this line comes back
+// after it: it is the one thing the person has to act on.
+let signInLine = null;
 // True once the person has pressed "Sign in again": the page is about to be left on purpose.
 let leavingToSignIn = false;
 // What a request found out about the sign-in, once one has found it ended; null until then.
@@ -1143,6 +1162,57 @@ function fieldHint(key) {
   return mode === 'admin' ? `Edit: ${readableName(key)} (${key})` : `Edit: ${readableName(key)}`;
 }
 
+// ─── A tap on something that cannot be changed here (not-here.js) ────────────
+
+/** Every editable part of the page, as findTwin reads them. */
+function twinFields() {
+  const out = [];
+  for (const el of document.querySelectorAll('.kiln-field[data-cms]')) {
+    if (isKilnChrome(el) || el.classList.contains('kiln-source-locked')) continue;
+    const link = el.closest('a[href]');
+    out.push({ el, key: el.getAttribute('data-cms'), list: el.closest('[data-cms-repeat]')?.getAttribute('data-cms-repeat') || null,
+      words: el.tagName === 'IMG' ? '' : el.innerText, href: link ? link.href : null });
+  }
+  return out;
+}
+
+/**
+ * A press on a part of the page that is not editable. Nothing happens to it
+ * here. Where the editor can tell it shows the same thing as a part that can
+ * be changed, the line says so and offers to go there; a link is held back
+ * only then, and only when the very words are the same (Ctrl or ⌘ and a click
+ * still follows it). An unmarked part of an editable block is said to be
+ * that. Everything else is the page's own, as it was.
+ */
+function tapNotHere(e) {
+  if (state.active || sourceActive || pickMode || e.metaKey || e.ctrlKey) return;
+  const at = e.target instanceof Element ? e.target : null;
+  if (!at || !document.getElementById('kiln-status') || document.documentElement.classList.contains('kiln-cmt-placing')) return;
+  if (at.closest(KILN_CHROME) || at.closest('[data-cms], [data-kiln-source], input, textarea, select, button, label, summary, [contenteditable="true"]')) return;
+  if (!document.querySelector('.kiln-field')) return;   // nothing on this page is this person's to change
+  const picture = /^(IMG|PICTURE|VIDEO|CANVAS)$/.test(at.tagName) || !!at.closest('svg');
+  // What was pressed: a picture, or an element with words of its own (not a whole section).
+  const own = [...at.childNodes].some(n => n.nodeType === 3 && n.nodeValue.trim());
+  const words = !picture && own ? at.innerText : '';
+  if (!picture && !words) return;
+  // An unmarked part of a block whose other parts are editable: said to be that. The page's own behaviour stays.
+  if (at.closest('.kiln-repeat-item')) { setStatus(notHereWords({ inBlock: true, picture }), 'idle', { hold: 9000 }); return; }
+  const link = at.closest('a[href]');
+  const nav = !!at.closest('nav, header, footer, [role="navigation"], [role="menu"], [role="menubar"]');
+  const twin = findTwin({ words, href: link ? link.href : null, nav }, twinFields());
+  if (twin) {
+    const where = twin.same === 'place' ? (twin.field.el.closest('.kiln-repeat-item') || twin.field.el) : twin.field.el;
+    if (twin.same === 'words') {
+      // The same words, where they can be changed: the person is sent there, not to wherever the link goes.
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setStatus(notHereWords({ same: twin.same, name: readableName(twin.field.key), list: twin.field.list ? readableName(twin.field.list) : null }), 'idle',
+      { hold: 12000, action: { label: 'Show me', title: 'Go to the part that can be changed', run: () => showChanged(where, 1600) } });
+  }
+}
+document.addEventListener('click', tapNotHere, true);
+
 // ─── Repeatable blocks ───────────────────────────────────────────────────────
 
 function setupRepeat(container, key) {
@@ -1282,7 +1352,7 @@ function attachItemControls(container, key, item) {
     item.remove();
     keepAside(container, item);   // Undo puts this very block back
     stageContainer(container, key);
-    setStatus('Removed.', 'saved', { hold: 10000, tag: 'removed', action: { label: 'Undo', title: 'Put the block back', run: undoEdit } });
+    setStatus('Removed.', 'saved', { hold: removedHold(), tag: 'removed', action: { label: 'Undo', title: 'Put the block back', run: undoEdit } });
   };
   // Phones: five thumb-sized buttons on every card buries the page under
   // controls, and on a two-column grid they would not even fit. There each
@@ -1480,7 +1550,8 @@ function addGalleryPhotos(container, key, add) {
         img.alt = '';
         img.loading = 'lazy';
         if (cfg.sandbox) {
-          img.src = `data:image/${scaled.ext};base64,${scaled.base64}`;
+          if (refusedByDemo(scaled)) return;
+          img.src = `data:${scaled.type};base64,${scaled.base64}`;
         } else {
           const slug = files[i].name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'photo';
           const name = `${slug}-${Date.now().toString(36)}-${i}.${scaled.ext}`;
@@ -1535,6 +1606,7 @@ function eventForm(container, key, item) {
     </div>
     <label>Link (tickets, Zoom, details — optional) <input type="text" id="kiln-ev-link" value="${escapeHtml(cur.link)}" placeholder="https://…"></label>
     <label>Details (optional) <input type="text" id="kiln-ev-desc" value="${escapeHtml(cur.desc)}"></label>
+    <p class="kiln-np-step" id="kiln-ev-status" role="status"></p>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
       <button class="kiln-btn-publish" id="kiln-ev-go">${item ? 'Save event' : 'Add event'}</button>
@@ -1542,7 +1614,13 @@ function eventForm(container, key, item) {
   m.querySelector('#kiln-ev-go').onclick = () => {
     const v = (id) => m.querySelector('#kiln-ev-' + id).value.trim();
     const title = v('title'), date = v('date'), start = v('start');
-    if (!title || !date) { m.querySelector('#kiln-ev-title').focus(); return; }
+    // Something is missing: say what, and put the cursor there. It used to do nothing at all.
+    const lacks = missingEvent({ title, date });
+    if (lacks) {
+      m.querySelector('#kiln-ev-status').textContent = lacks.say;
+      m.querySelector('#kiln-ev-' + lacks.at).focus();
+      return;
+    }
     const startIso = `${date}T${start || '00:00'}`;
     // No start time → an all-day event. Emit a DATE-ONLY datetime so the visitor
     // calendar renders it as all-day; a "…T00:00" value would show a bogus
@@ -1854,17 +1932,23 @@ function stagePending(key, patch, opts = {}) {
   refreshPublishButton();
 }
 
+let cameBack = null;   // the block the last write of a list put on the page (applyKeyDom), if there was one
+
 /** Set a field/container's live DOM to `html` and re-wire editing handles. */
 function applyKeyDom(key, html) {
   if (html === undefined) return null;
   const esc = CSS.escape(key);
   const rep = document.querySelector(`[data-cms-repeat="${esc}"]`);
+  cameBack = null;
   if (rep) {
+    const had = new Set(rep.children);
     // Not innerHTML: the blocks that are already there stay the elements they
     // are, with what the site's own scripts did to them (keep-blocks.js).
     writeBlocks(rep, html, tidyBlocks);
     setupRepeat(rep, key);
     rep.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
+    // The block that is on the page now and was not: the one to show the person.
+    cameBack = [...rep.children].find(c => !had.has(c) && c.classList.contains('kiln-repeat-item')) || null;
     return rep;
   }
   const el = document.querySelector(`[data-cms="${esc}"]`);
@@ -1911,13 +1995,20 @@ function applyUndoStep(s, dir) {
         // REMOVE it (don't skip), so an undone swap can't leave data-kiln-src
         // behind to be re-committed later. Also retire the orphaned upload.
         if (v === undefined) {
-          if (a === 'data-kiln-src') {
-            const orphan = n.getAttribute('data-kiln-src');
+          // (the same for the full-size original a new picture brought with it: dropping the change frees what it held)
+          if (a === 'data-kiln-src' || a === 'data-kiln-master') {
+            const orphan = n.getAttribute(a);
             if (orphan) for (const p of [...state.pendingBinaries.keys()]) if (p.endsWith(orphan.replace(/^\//, ''))) state.pendingBinaries.delete(p);
+            if (orphan) masterBitmaps.delete(orphan);
             n.removeAttribute(a);
           }
         } else if (a === 'style') showStyle(n, v);   // a size put back, with what the site's scripts put on the picture left on it
-        else n.setAttribute(a, v);
+        else {
+          // The demo: another picture is going in this place, and the original held in memory for the one leaving goes with it.
+          const held = a === 'src' ? n.getAttribute('data-kiln-master') || '' : '';
+          if (held.startsWith('/kiln-demo-master-')) { masterBitmaps.delete(held); n.removeAttribute('data-kiln-master'); }
+          n.setAttribute(a, v);
+        }
       }
     });
   }
@@ -1928,28 +2019,42 @@ function applyUndoStep(s, dir) {
   return el || document.querySelector(`[data-cms="${esc}"],[data-cms-repeat="${esc}"]`);
 }
 
+/**
+ * Show the person the part that changed: flash it, and move the page only as
+ * far as it takes to see it (in-view.js). On a phone the editor's own buttons
+ * lie along the bottom and its line of words along the top.
+ */
+function showChanged(el, ms = 1200) {
+  const r = el.getBoundingClientRect();
+  const how = whereTo({ top: r.top, bottom: r.bottom }, window.innerHeight, isMobileEditor() ? { top: 56, bottom: 140 } : {});
+  if (how !== 'stay') el.scrollIntoView({ behavior: 'smooth', block: how });
+  el.classList.add('kiln-flash');
+  setTimeout(() => el.classList.remove('kiln-flash'), ms);
+}
+
 function undoEdit() {
   // Mid-edit? Commit the field first so the in-progress change becomes the top
   // undo entry — then this undo takes the field back to how it was.
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
   const entry = editHistory.undo.pop();
   if (!entry) { setStatus('Nothing to undo', 'idle'); return; }
-  let el = null;
-  for (const s of [...entry.steps].reverse()) el = applyUndoStep(s, 'before') || el;
+  let el = null, block = null;
+  for (const s of [...entry.steps].reverse()) { el = applyUndoStep(s, 'before') || el; block = cameBack || block; }
   editHistory.redo.push(entry);
   refreshPublishButton(); updateUndoUi();
-  if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('kiln-flash'); setTimeout(() => el.classList.remove('kiln-flash'), 1200); }
+  // A block that came back is shown where it is; the page does not go to the middle of its list.
+  if (block || el) showChanged(block || el);
   setStatus('Undone', 'saved');
 }
 
 function redoEdit() {
   const entry = editHistory.redo.pop();
   if (!entry) { setStatus('Nothing to redo', 'idle'); return; }
-  let el = null;
-  for (const s of entry.steps) el = applyUndoStep(s, 'after') || el;
+  let el = null, block = null;
+  for (const s of entry.steps) { el = applyUndoStep(s, 'after') || el; block = cameBack || block; }
   editHistory.undo.push(entry);
   refreshPublishButton(); updateUndoUi();
-  if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('kiln-flash'); setTimeout(() => el.classList.remove('kiln-flash'), 1200); }
+  if (block || el) showChanged(block || el);
   setStatus('Redone', 'saved');
 }
 
@@ -2244,10 +2349,11 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
       return;
     }
 
+    if (refusedByDemo(scaled)) return;
     img.style.width = `${cssWidth}px`;
     img.style.height = 'auto';
     if (cfg.sandbox) {
-      img.src = `data:image/webp;base64,${base64}`;
+      img.src = `data:${scaled.type};base64,${base64}`;
       if (stage) stageImageEl(img, key);
       setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB) — Publish to keep it`, 'saved');
       return;
@@ -2256,7 +2362,7 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     // intermediate so we don't commit a pile of throwaway sizes on Publish.
     const prev = img.getAttribute('data-kiln-src');
     if (prev) state.pendingBinaries.delete((cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + prev.replace(/^\//, ''));
-    const name = `img-${Date.now().toString(36)}.webp`;
+    const name = `img-${Date.now().toString(36)}.${scaled.ext}`;
     const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `assets/uploads/${name}`;
     stageBinary(repoPath, base64);   // committed with Publish, not now
     img.src = URL.createObjectURL(blob);
@@ -2275,10 +2381,14 @@ function stageImageEl(img, key) {
   const repeat = img.closest('[data-cms-repeat]');
   if (repeat) { stageContainer(repeat, repeat.getAttribute('data-cms-repeat')); settleOn(img); return; }
   // Its style as the file would hold it: the size it was dragged to, and nothing a script put on it.
-  const attrs = { style: ownStyle(img) || '', 'data-kiln-master': img.getAttribute('data-kiln-master') || '' };
+  const attrs = { style: ownStyle(img) || '' };
   settleOn(img);
+  // The demo keeps the picture that is shown, and not the original it was made from (see addImageWithMaster).
   if (cfg.sandbox) attrs.src = img.getAttribute('src');
-  else attrs.src = safeUrl(img.getAttribute('data-kiln-src') || img.getAttribute('src'));
+  else {
+    attrs['data-kiln-master'] = img.getAttribute('data-kiln-master') || '';
+    attrs.src = safeUrl(img.getAttribute('data-kiln-src') || img.getAttribute('src'));
+  }
   stagePending(key, { attrs });
 }
 
@@ -2336,18 +2446,56 @@ function pickImage(img, key) {
 // the ORIGINAL even before it's been published (its repo URL isn't live yet).
 const masterBitmaps = new Map();
 
-/** Re-encode a bitmap to web-optimized webp at a target width. Returns {blob, base64}. */
+/** Whether any of a canvas is see-through, looked at on a small copy of it. */
+function seeThrough(canvas) {
+  const small = document.createElement('canvas');
+  small.width = small.height = 96;
+  const c = small.getContext('2d');
+  c.drawImage(canvas, 0, 0, 96, 96);
+  const px = c.getImageData(0, 0, 96, 96).data;
+  for (let i = 3; i < px.length; i += 4) if (px[i] < 250) return true;
+  return false;
+}
+
+/**
+ * A canvas as a picture file for the web. WebP where the browser can write
+ * it. One that cannot (Safari) hands back PNG whatever was asked for, and a
+ * photograph as PNG is ten times the size: there it is JPEG, unless the
+ * picture has see-through parts, which only PNG keeps.
+ * Returns { blob, base64, ext, type }, named for what was actually made.
+ */
+async function canvasToFile(canvas, quality = 0.85) {
+  const as = (type) => new Promise(r => canvas.toBlob(r, type, quality));
+  let blob = await as('image/webp');
+  if (!blob || blob.type !== 'image/webp') {
+    const jpeg = seeThrough(canvas) ? null : await as('image/jpeg');
+    blob = (jpeg && jpeg.type === 'image/jpeg' ? jpeg : null) || blob || await as('image/png');
+  }
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+  const ext = { 'image/webp': 'webp', 'image/png': 'png', 'image/jpeg': 'jpg' }[blob.type] || 'png';
+  return { blob, base64: btoa(bin), ext, type: blob.type || 'image/png' };
+}
+
+/** Re-encode a bitmap, web-optimized, at a target width. Returns { blob, base64, ext, type }. */
 async function bitmapToScaled(bmp, targetW) {
   const w = Math.max(1, Math.min(Math.round(targetW), bmp.width));
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = Math.round(bmp.height * (w / bmp.width));
   canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
-  const blob = await new Promise(r => canvas.toBlob(r, 'image/webp', 0.85))
-    || await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
-  const buf = new Uint8Array(await blob.arrayBuffer());
-  let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-  return { blob, base64: btoa(bin) };
+  return canvasToFile(canvas);
+}
+
+/**
+ * The demo keeps a picture in this browser, and a browser gives a site little
+ * room. One too big to keep is refused here, with its size and the limit,
+ * before anything of it is kept. Returns true when it was refused.
+ */
+function refusedByDemo(file) {
+  const no = cfg.sandbox ? tooBigForDemo(file.blob.size) : null;
+  if (no) setStatus(no, 'error');
+  return !!no;
 }
 
 /**
@@ -2365,15 +2513,20 @@ async function addImageWithMaster(img, key, file) {
   const displayW = Math.min(Math.round(cssW * dpr), masterW);
 
   if (cfg.sandbox) {
-    // Demo: no repo. Keep the master as a data URL (in the attr) + show a copy.
-    const master = await bitmapToScaled(bmp, masterW);
+    // Demo: no repo. The copy that is shown is kept in this browser, as a data
+    // URL. The full-size original is held in memory for this visit only (for
+    // dragging the picture bigger): kept in the browser too, as it used to be,
+    // it took most of the room there is and a second picture rarely fitted.
     const display = await bitmapToScaled(bmp, displayW);
-    img.setAttribute('data-kiln-master', `data:image/webp;base64,${master.base64}`);
-    img.src = `data:image/webp;base64,${display.base64}`;
+    if (refusedByDemo(display)) return;
+    const master = `/kiln-demo-master-${Date.now().toString(36)}`;   // a name for the picture in memory, not an address
+    masterBitmaps.set(master, bmp);
+    img.setAttribute('data-kiln-master', master);
+    img.src = `data:${display.type};base64,${display.base64}`;
     img.classList.add('kiln-modified');
     const rpt = img.closest('[data-cms-repeat]');
     if (rpt) stageContainer(rpt, rpt.getAttribute('data-cms-repeat'));
-    else stagePending(key, { attrs: { src: img.src, 'data-kiln-master': img.getAttribute('data-kiln-master') } });
+    else stagePending(key, { attrs: { src: img.src } });
     showResizeNow(img, key);
     setStatus('Image added — drag its ● corner to resize, then Publish', 'saved');
     return;
@@ -2383,14 +2536,14 @@ async function addImageWithMaster(img, key, file) {
   const root = cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '';
   // Master (kept forever, referenced by data-kiln-master).
   const master = await bitmapToScaled(bmp, masterW);
-  const masterUrl = `/assets/uploads/master-${stamp}.webp`;
-  stageBinary(root + `assets/uploads/master-${stamp}.webp`, master.base64);
+  const masterUrl = `/assets/uploads/master-${stamp}.${master.ext}`;   // named for what the browser made of it
+  stageBinary(root + `assets/uploads/master-${stamp}.${master.ext}`, master.base64);
   img.setAttribute('data-kiln-master', masterUrl);
   masterBitmaps.set(masterUrl, bmp);   // so a resize before publish resamples from it
   // Display copy at the on-page size.
   const display = await bitmapToScaled(bmp, displayW);
-  const dispUrl = `/assets/uploads/img-${stamp}.webp`;
-  stageBinary(root + `assets/uploads/img-${stamp}.webp`, display.base64);
+  const dispUrl = `/assets/uploads/img-${stamp}.${display.ext}`;
+  stageBinary(root + `assets/uploads/img-${stamp}.${display.ext}`, display.base64);
   img.src = URL.createObjectURL(display.blob);
   img.setAttribute('data-kiln-src', dispUrl);
   img.classList.add('kiln-modified');
@@ -2440,7 +2593,8 @@ async function resampleImage(img, key, maxDim) {
  *  to the repo, preview locally, and stage the future URL. */
 async function stageImageSwap(img, key, { blob, base64, ext }, originalName) {
   if (cfg.sandbox) {
-    const dataUrl = `data:image/${ext};base64,${base64}`;
+    if (refusedByDemo({ blob })) return;
+    const dataUrl = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${base64}`;
     img.src = dataUrl;
     img.classList.add('kiln-modified');
     const rpt = img.closest('[data-cms-repeat]');
@@ -2486,15 +2640,9 @@ async function downscale(file, maxDim = 1600) {
   canvas.width = Math.round(bitmap.width * scale);
   canvas.height = Math.round(bitmap.height * scale);
   canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  const blob = await new Promise(r => canvas.toBlob(r, 'image/webp', 0.85))
-    || await new Promise(r => canvas.toBlob(r, file.type, 0.85));
-  const buf = new Uint8Array(await blob.arrayBuffer());
-  let bin = '';
-  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-  // Name the file for what the browser actually produced: one that cannot
-  // encode WebP hands back PNG (or the original type), whatever was asked for.
-  const ext = { 'image/webp': 'webp', 'image/png': 'png', 'image/jpeg': 'jpg' }[blob.type] || 'png';
-  return { blob, base64: btoa(bin), ext };
+  // Named for what the browser actually produced: one that cannot write WebP
+  // gives JPEG, or PNG for a picture with see-through parts (canvasToFile).
+  return canvasToFile(canvas);
 }
 
 /** Insert an uploaded image at the cursor inside a rich-text field. */
@@ -2507,14 +2655,15 @@ function insertInlineImage(el) {
     if (!file) return;
     try {
       setStatus('Adding image…', 'saving');
-      const { blob, base64, ext } = await downscale(file, 1200);
+      const { blob, base64, ext, type } = await downscale(file, 1200);
       // Demo sandbox: never touches GitHub — embed the image as a data URL so it
       // shows immediately and survives the sandbox's localStorage round-trip.
       if (cfg.sandbox) {
+        if (refusedByDemo({ blob })) return;
         el.focus();
         document.execCommand('insertHTML', false,
-          `<img src="data:image/${ext};base64,${base64}" alt="" style="max-width:100%">`);
-        const ins = [...el.querySelectorAll('img')].find(i => i.getAttribute('src')?.startsWith(`data:image/${ext};base64,`));
+          `<img src="data:${type};base64,${base64}" alt="" style="max-width:100%">`);
+        const ins = [...el.querySelectorAll('img')].find(i => i.getAttribute('src')?.startsWith(`data:${type};base64,`));
         if (ins) inlineImgPopover(ins);
         setStatus('Image added — resize it now if you like, then Save and Publish', 'saved');
         return;
@@ -2705,9 +2854,26 @@ const STRUCTURAL_WORDS = {
   removeSection: ['Removed', 'remove'], insertAfter: ['Added', 'add'], appendMain: ['Added', 'add'],
 };
 
-/** One row per unpublished edit, for the publish sheet. Reads state, changes nothing. */
-function publishItems() {
+/**
+ * How many things the publish sheet would list now: the number every Publish
+ * control shows. Counted from the same rows the sheet draws, so the two can
+ * never disagree; a list with a block added, another moved and a price
+ * changed is three, where it used to be one however much had changed in it.
+ */
+function changeCount() {
+  try { return countChanges(publishItems({ light: true })); }
+  catch (err) { console.warn('[kiln] the edits could not be counted', err); return state.pending.size + state.pendingSource.size + state.pendingStructural.length; }
+}
+
+/**
+ * One row per unpublished edit, for the publish sheet. Reads state, changes
+ * nothing. `light`: only what the count needs. Which parts a row has is
+ * decided from the HTML alone either way; laying text out on the page to read
+ * it as a person does is for showing it, and is skipped.
+ */
+function publishItems({ light = false } = {}) {
   const items = [];
+  const shown = (key, html) => (light ? plainText(html) : renderedText(key, html));
   const blocksOf = (html) => [...new DOMParser().parseFromString(`<body>${html ?? ''}</body>`, 'text/html').body.children].map(c => c.outerHTML);
   for (const [key, v] of state.pending) {
     const el = elementForKey(key);
@@ -2716,23 +2882,42 @@ function publishItems() {
     let afterText = null;
     if (v.html !== undefined) {
       const baseHtml = state.undoBase.get(key) ?? '';
-      let listChanged = false;
       if (isList) {
-        const ch = blockChange(blockNames(blocksOf(baseHtml)), blockNames(blocksOf(v.html)));
+        // Every change is named: what was added, removed and moved, and each block that was changed, by its name.
+        const wasBlocks = blocksOf(baseHtml), nowBlocks = blocksOf(v.html);
+        const ch = listChanges(wasBlocks, nowBlocks);
         for (const n of ch.added) parts.push({ type: 'note', tone: 'add', text: `Added: ${n}` });
         for (const n of ch.removed) parts.push({ type: 'note', tone: 'remove', text: `Removed: ${n}` });
         if (ch.moved) parts.push({ type: 'note', text: 'The order changed.' });
-        listChanged = ch.added.length || ch.removed.length || ch.moved;
+        const liveBlocks = el ? [...el.children].filter(c => c.classList.contains('kiln-repeat-item')) : [];
+        for (const c of ch.changed) {
+          let said = false;
+          if (c.before !== c.after) {
+            parts.push({ type: 'text', name: c.name, before: shown(key, wasBlocks[c.from]), after: shown(key, nowBlocks[c.to]) });
+            said = true;
+          }
+          // the same slot in the block, a different picture
+          const was = imageSources(wasBlocks[c.from]), now = imageSources(nowBlocks[c.to]);
+          const live = liveBlocks[c.to] ? [...liveBlocks[c.to].querySelectorAll('img')] : [];
+          if (was.length === now.length) now.forEach((img, i) => {
+            if (was[i].src === img.src) return;
+            parts.push({ type: 'image', name: c.name, before: was[i].src, after: live[i]?.currentSrc || live[i]?.src || img.src });
+            said = true;
+          });
+          // neither words nor a picture: a link's address, a tag, a size
+          if (!said) parts.push({ type: 'note', text: `Changed: ${c.name}` });
+        }
+      } else {
+        const before = plainText(baseHtml);
+        afterText = plainText(v.html);
+        if (before !== afterText) { afterText = shown(key, v.html); parts.push({ type: 'text', before: shown(key, baseHtml), after: afterText }); }
       }
-      const before = renderedText(key, baseHtml);
-      afterText = renderedText(key, v.html);
-      if (!listChanged && before !== afterText) parts.push({ type: 'text', before, after: afterText });
-      // pictures inside the edited HTML: the same slot, a different picture
+      // pictures inside the edited HTML: which are new (for the warnings), and in a field the same slot with a different picture
       const was = imageSources(baseHtml), now = imageSources(v.html);
       const live = el ? [...el.querySelectorAll('img')].filter(i => !i.closest(KILN_CHROME)) : [];
       now.forEach((img, i) => {
         const changed = was.length === now.length ? was[i].src !== img.src : !was.some(w => w.src === img.src);
-        if (changed && was.length === now.length) parts.push({ type: 'image', before: was[i].src, after: live[i]?.currentSrc || live[i]?.src || img.src });
+        if (changed && was.length === now.length && !isList) parts.push({ type: 'image', before: was[i].src, after: live[i]?.currentSrc || live[i]?.src || img.src });
         images.push({ alt: img.alt, changed });
       });
       links.push(...linkProblems(v.html, location.origin));
@@ -2807,16 +2992,15 @@ function checkEditedLinks(items, add) {
 function requestPublish() {
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
   if (sourceActive) commitSourceEdit();
-  const count = () => state.pending.size + state.pendingSource.size;
-  const anything = () => count() || state.pendingBinaries.size || state.pendingStructural.length;
+  const anything = () => state.pending.size || state.pendingSource.size || state.pendingBinaries.size || state.pendingStructural.length;
   if (!anything()) return;
   if (mode === 'editor' && state.scope?.mode === 'review') return;
   if (previewOff(localStorage)) return publish();
   const suggest = isSuggestMode();
   openPublishSheet({
     modal, suggest,
-    items: publishItems,
-    count,
+    items: () => publishItems(),
+    count: changeCount,
     label: (n) => (suggest ? 'Send for review' : publishLabel(n)),
     extra: () => {
       const rows = state.pending.size + state.pendingSource.size + state.pendingStructural.length;
@@ -2875,7 +3059,7 @@ async function publish(opts = {}) {
   // The note from the publish sheet, already cleaned to one line of plain text.
   // Empty: every commit keeps the message it has always had.
   const noteMsg = noteMessage(opts.note);
-  if (cfg.sandbox) return publishSandbox(noteMsg);
+  if (cfg.sandbox) return publishSandbox(noteMsg, opts.note);
   keptNote = '';   // kept again below if this publish is stopped
   // An invited editor's first publish ends the first-session guide: note what
   // changed now, while the edits are still staged.
@@ -3993,7 +4177,7 @@ function describePublish() {
   return { before, after, message: editCommitMessage(file, [...flattenPending().map(e => e.key), ...state.pendingSource.keys()]) };
 }
 
-function publishSandbox(noteMsg = '') {
+function publishSandbox(noteMsg = '', note = '') {
   const told = describePublish();
   if (noteMsg) told.message = noteMsg;
   const s = sandboxStore();
@@ -4029,9 +4213,12 @@ function publishSandbox(noteMsg = '') {
   // No room: the publish matters more than how far back History reaches.
   if (!sandboxSave(s) && entry) { s.history[sandboxPath()] = [entry]; if (!sandboxSave(s)) delete s.history[sandboxPath()]; }
   if (!sandboxSave(s)) {
+    // Nothing was kept. The edits stay, and so does the line typed under "What changed?".
+    keptNote = note || '';
     setStatus(SANDBOX_FULL, 'error');
     return;   // keep pending edits so the visitor can retry
   }
+  keptNote = '';
   for (const [ref, v] of state.pendingSource) state.sourceBase.set(ref, v.value);
   state.pendingSource.clear();
   state.pending.clear();
@@ -4109,8 +4296,24 @@ function renderSandboxBanner() {
     + `<a id="kiln-sandbox-get" href="${START_URL}" target="_blank" rel="noopener">${START_LABEL}</a>`
     + '<button id="kiln-sandbox-reset">Start over</button>';
   document.body.appendChild(b);
-  b.querySelector('#kiln-sandbox-reset').onclick = () => { sandboxReset(); location.reload(); };
+  b.querySelector('#kiln-sandbox-reset').onclick = startOver;
   syncSandboxLink();
+}
+
+/**
+ * "Start over": it used to clear the demo the moment it was pressed, and it is
+ * on screen all the time. It asks first, in the editor's own dialog, and says
+ * what this browser holds that would go. With nothing to lose it just starts over.
+ */
+async function startOver() {
+  if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+  const s = sandboxStore();
+  const some = (of) => !!of && Object.values(of).some(v => v && (Array.isArray(v) ? v.length : Object.keys(v).length));
+  const lost = { published: some(s.pages) || some(s.history), draft: some(s.drafts),
+    unpublished: changeCount() + state.pendingBinaries.size };
+  if ((lost.published || lost.draft || lost.unpublished) && !(await askFirst(modal, ownDialogCopy('start-over', lost)))) return;
+  sandboxReset();
+  location.reload();
 }
 
 /**
@@ -4243,10 +4446,14 @@ function runJournal() {
 }
 
 function setStatusIdle() {
+  const then = statusShown;
   setTimeout(() => {
     // Never let the idle reset paper over a visible failure (e.g. build failed).
     const el = document.getElementById('kiln-status');
     if (!el || el.classList.contains('kiln-status--error')) return;
+    // Nor over a line that came after the one this was set for: "Removed. Undo"
+    // has ten seconds, and this used to take it away after four.
+    if (statusShown !== then) return;
     // On a phone the toast covers the page: it returns only with news, and
     // "you are still signed in" is not news.
     if (isMobileEditor()) { el.hidden = true; return; }
@@ -4616,34 +4823,33 @@ async function invitePanel() {
         <label>Name <input type="text" id="kiln-p-name" placeholder="Claudia"></label>
         <label>Access (days) <input type="number" id="kiln-p-days" value="90" min="1" max="360"></label>
       </div>
-      <label style="font-weight:normal;display:inline-flex;gap:6px;align-items:center;margin:2px 0 4px"><input type="checkbox" id="kiln-p-never"> Never expires (indefinite access)</label>
+      <label style="font-weight:normal;display:inline-flex;gap:6px;align-items:center;margin:2px 0 4px"><input type="checkbox" id="kiln-p-never"> ${PEOPLE_WORDS.never}</label>
       <div class="kiln-roles">
         <label class="kiln-role"><input type="radio" name="kiln-p-role" value="editor" checked>
           <span><strong>Editor</strong><br><small>Edits pages, images, posts. Signs in with their Google account.</small></span></label>
         <label class="kiln-role"><input type="radio" name="kiln-p-role" value="member">
           <span><strong>Member</strong><br><small>Views the members-only area and documents. Cannot edit.</small></span></label>
       </div>
-      <label id="kiln-p-paths-wrap">Pages this editor can edit
-        <input type="text" id="kiln-p-paths" placeholder="whole site — or e.g. blog, about.html"></label>
-      <p class="kiln-dim" id="kiln-p-paths-hint" style="margin:-2px 0 6px;font-size:12px">Comma-separated folders or files they may edit. Leave blank for the whole site.
-        <button type="button" class="kiln-btn-pick" id="kiln-p-pick" aria-expanded="false">▾ Choose pages</button><br>
-        Editors can never touch CNAME, _redirects, or .github.</p>
+      <label id="kiln-p-paths-wrap">${PEOPLE_WORDS.pagesLabel}
+        <input type="text" id="kiln-p-paths" placeholder="${PEOPLE_WORDS.pagesPlaceholder}"></label>
+      <p class="kiln-dim kiln-p-hint" id="kiln-p-paths-hint">${PEOPLE_WORDS.pagesHint}
+        <button type="button" class="kiln-btn-pick" id="kiln-p-pick" aria-expanded="false">▾ Choose pages</button></p>
       <div id="kiln-p-pages" class="kiln-pick-box" style="display:none"></div>
-      <label id="kiln-p-keys-wrap">Sections they can edit (optional)
-        <input type="text" id="kiln-p-keys" placeholder="everything — or pick sections below"></label>
-      <p class="kiln-dim" id="kiln-p-keys-hint" style="margin:-2px 0 6px;font-size:12px">Leave blank for every section of the pages above. Sections are grouped by page.
-        <button type="button" class="kiln-btn-pick" id="kiln-p-keypick" aria-expanded="false">▾ Choose sections</button></p>
+      <label id="kiln-p-keys-wrap">${PEOPLE_WORDS.keysLabel}
+        <input type="text" id="kiln-p-keys" placeholder="${PEOPLE_WORDS.keysPlaceholder}"></label>
+      <p class="kiln-dim kiln-p-hint" id="kiln-p-keys-hint">${PEOPLE_WORDS.keysHint}
+        <button type="button" class="kiln-btn-pick" id="kiln-p-keypick" aria-expanded="false">▾ Choose parts</button></p>
       <div id="kiln-p-keylist" class="kiln-pick-box" style="display:none"></div>
       <div id="kiln-p-feat-wrap">
         <label style="margin-bottom:2px">Tools this editor can use
           <button type="button" class="kiln-btn-pick" id="kiln-p-reviewer" title="A comment-only seat: they review and leave comments, with no other tools">Reviewer preset</button></label>
         <div id="kiln-p-features" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin:2px 0 8px"></div>
-        <p class="kiln-dim" style="margin:-2px 0 6px;font-size:12px">Editing text and images is always allowed. People &amp; access and site Settings stay owner-only.</p>
-        <label style="font-weight:normal;display:inline-flex;gap:6px;align-items:flex-start;margin:2px 0 4px;font-size:12.5px">
+        <p class="kiln-dim kiln-p-hint">${escapeHtml(PEOPLE_WORDS.toolsHint)}</p>
+        <label style="font-weight:normal;display:inline-flex;gap:6px;align-items:flex-start;margin:2px 0 4px;font-size:13px">
           <input type="checkbox" id="kiln-p-suggest" style="margin-top:2px">
-          <span><strong>Suggest-only publishing</strong> — their Publish sends you a suggestion to
-          approve (under <em>Suggestions</em>) instead of changing the live site.</span></label>
+          <span><strong>Suggest-only publishing.</strong> ${escapeHtml(PEOPLE_WORDS.suggest)}</span></label>
       </div>
+      <p class="kiln-np-step" id="kiln-p-said" role="status"></p>
       <div class="kiln-modal-actions" style="justify-content:flex-start;margin-top:8px">
         <button class="kiln-btn-publish" id="kiln-p-add">Add person</button>
       </div>
@@ -4821,10 +5027,14 @@ async function invitePanel() {
         form.style.display = 'none';
         return;
       }
-      status.textContent = 'People here sign in with their Google account. Removing someone revokes their access immediately, including any active session.';
+      status.textContent = PEOPLE_WORDS.signIn;
       form.style.display = '';
+      // AI assist is a tool only where the site has an AI key. A worker that
+      // says it has none: the box is not offered. One that says nothing (every
+      // worker until it learns to) leaves the box as it was.
+      if (data.aiConfigured === false) m.querySelector('.kiln-p-feat[value="ai"]')?.closest('label')?.remove();
       const list = m.querySelector('#kiln-people-list');
-      list.innerHTML = (data.people || []).length ? '' : '<p class="kiln-dim">Nobody yet — add the first person above.</p>';
+      list.innerHTML = (data.people || []).length ? '' : '<p class="kiln-dim">Nobody yet. Add the first person above.</p>';
       for (const p of data.people || []) {
         const realPaths = (p.paths || []).filter(x => x && x !== '' && x !== '**');
         const keyScope = (p.keys || []).length ? ` · sections: ${p.keys.join(', ')}` : '';
@@ -4863,7 +5073,10 @@ async function invitePanel() {
     const keys = m.querySelector('#kiln-p-keys').value.trim();
     const features = [...m.querySelectorAll('.kiln-p-feat:checked')].map(c => c.value);
     const suggestOnly = m.querySelector('#kiln-p-suggest').checked;
-    if (!email) return;
+    const said = m.querySelector('#kiln-p-said');
+    const lacks = missingPerson({ email });
+    said.textContent = lacks ? lacks.say : '';
+    if (lacks) { m.querySelector('#kiln-p-email').focus(); return; }
     if (cfg.sandbox) { m.querySelector('#kiln-people-list').innerHTML = `<p class="kiln-dim">${escapeHtml(demoShort('people'))}</p>`; return; }
     let data;
     try {
@@ -5600,7 +5813,11 @@ function offerDraftSandbox() {
     setStatus(`Draft loaded, ${n} change${n === 1 ? '' : 's'}. Publish when ready.`, 'saved');
   };
   m.querySelector('#kiln-dr-pub').onclick = async () => { taken(); await back(); publishSandbox(); };
-  m.querySelector('#kiln-dr-del').onclick = () => { taken(); setStatus('Draft deleted.', 'saved'); };
+  m.querySelector('#kiln-dr-del').onclick = async () => {
+    if (!(await askFirst(modal, ownDialogCopy('delete-draft', { changes: n, demo: true })))) return;
+    taken();
+    setStatus('Draft deleted.', 'saved');
+  };
 }
 
 async function checkForDraft() {
@@ -5648,6 +5865,13 @@ async function checkForDraft() {
   };
   const del = m.querySelector('#kiln-dr-del');
   if (del) del.onclick = async () => {
+    // How many parts of the page the draft holds differently from the page as it is.
+    let changes = 0;
+    for (const [key, f] of indexHtml(draft.text).fields) {
+      const live = state.fields.fields.get(key);
+      if (f.inner && draft.text.slice(f.inner.start, f.inner.end) !== (live?.inner ? state.page.text.slice(live.inner.start, live.inner.end) : null)) changes++;
+    }
+    if (!(await askFirst(modal, ownDialogCopy('delete-draft', { changes })))) return;
     status.textContent = 'Deleting…';
     try {
       await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
@@ -5671,7 +5895,7 @@ function schedulePanel(at) {
   }
   const inOneHour = new Date(Date.now() + 3600000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   const m = modal(`
-    <h3>Schedule these ${state.pending.size} edit${state.pending.size > 1 ? 's' : ''}</h3>
+    <h3>${scheduleTitle(countChanges(publishItems({ light: true }).filter(i => state.pending.has(i.key))))}</h3>
     <p class="kiln-dim">Kiln publishes them at the time you pick (it checks every 5 minutes), and the site rebuilds.</p>
     <label>Publish at <input type="datetime-local" id="kiln-sc-at" value="${typeof at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(at) ? at : inOneHour}"></label>
     <div class="kiln-modal-actions">
@@ -5745,6 +5969,7 @@ function schedulePanel(at) {
 
 function settingsPanel() {
   const ui = localStorage.getItem('kiln_ui_mode') || 'fab';
+  const touch = isTouch();
   const auth = cfg.auth || {};
   const isAdmin = mode === 'admin';
   const m = modal(`
@@ -5752,7 +5977,7 @@ function settingsPanel() {
     <h4>Your editor (this browser)</h4>
     <div class="kiln-roles">
       <label class="kiln-role"><input type="radio" name="kiln-uimode" value="fab" ${ui === 'fab' ? 'checked' : ''}>
-        <span><strong>Floating button</strong><br><small>Draggable circle; hover for the menu.</small></span></label>
+        <span><strong>Floating button</strong><br><small>A round button you can drag; ${touch ? 'tap it for the menu' : 'hover for the menu'}.</small></span></label>
       <label class="kiln-role"><input type="radio" name="kiln-uimode" value="bar" ${ui === 'bar' ? 'checked' : ''}>
         <span><strong>Top bar</strong><br><small>Fixed bar with all actions visible.</small></span></label>
       <label class="kiln-role"><input type="checkbox" id="kiln-set-nopreview" ${previewOff(localStorage) ? 'checked' : ''}>
@@ -5878,8 +6103,8 @@ function pickSectionSpot(kind) {
   const anchors = [...host.children].filter(c => !isKilnChrome(c) && c.getBoundingClientRect().height > 20);
   const bar = document.createElement('div');
   bar.id = 'kiln-pickbar';
-  bar.innerHTML = `<span><strong>Where should it go?</strong> Click a section to add the new one right
-    below it. <kbd>Esc</kbd> cancels.</span> <button id="kiln-spot-end">Put it at the end</button>`;
+  bar.innerHTML = `<span>${pickBarWords({ touch: isTouch() })}</span> <button id="kiln-spot-end">Put it at the end</button>
+    <button id="kiln-spot-cancel" class="kiln-pick-cancel">Cancel</button>`;
   document.body.appendChild(bar);
   let hovered = null;
   const mark = (el) => {
@@ -5901,7 +6126,7 @@ function pickSectionSpot(kind) {
     const a = anchors.find(x => x.contains(e.target));
     if (a) done(a);
   };
-  const key = (e) => { if (e.key === 'Escape') { cleanup(); setStatus('Add cancelled', 'idle'); } };
+  const key = (e) => { if (e.key === 'Escape') { cleanup(); setStatus('Nothing was added.', 'idle'); } };
   function cleanup() {
     mark(null);
     bar.remove();
@@ -5910,6 +6135,7 @@ function pickSectionSpot(kind) {
     document.removeEventListener('keydown', key, true);
   }
   bar.querySelector('#kiln-spot-end').onclick = (e) => { e.stopPropagation(); done(null); };
+  bar.querySelector('#kiln-spot-cancel').onclick = (e) => { e.stopPropagation(); cleanup(); setStatus('Nothing was added.', 'idle'); };
   document.addEventListener('mouseover', over, true);
   document.addEventListener('click', click, true);
   document.addEventListener('keydown', key, true);
@@ -5920,8 +6146,16 @@ function insertNewSection(kind, anchor) {
   const key = `${kind}_${stamp}`;
   const attr = kind === 'gallery' ? 'data-kiln-gallery' : 'data-kiln-events';
   const heading = kind === 'gallery' ? 'Gallery' : 'Events';
-  const html = `\n<section class="kiln-added" style="padding:2.5rem 0"><div style="max-width:1080px;margin:0 auto;padding:0 1.25rem">`
-    + `<h2 data-cms="${key}_title">${heading}</h2><div data-cms-repeat="${key}" ${attr}></div></div></section>\n`;
+  // The section's headings take the type the site's own headings have, read
+  // off the nearest one: it used to arrive in whatever the browser gives a
+  // heading nobody styled, which on most sites is plain body text.
+  const like = [anchor, anchor?.previousElementSibling, document.querySelector('main') || document.body]
+    .map(sec => sec && [...sec.querySelectorAll('h2, h1, h3')].find(h => !isKilnChrome(h) && !h.closest('.kiln-added') && h.getClientRects().length)).find(Boolean);
+  const look = like ? headingVars(getComputedStyle(like)) : '';
+  // Kiln's own plain look for it, unless the site has styles for an event of its own.
+  const plain = !siteStyles('kiln-event');
+  const html = `\n<section class="kiln-added${plain ? ' kiln-plain' : ''}" style="padding:2.5rem 0${look ? ';' + look : ''}"><div style="max-width:1080px;margin:0 auto;padding:0 1.25rem">`
+    + `<h2 class="kiln-added-title" data-cms="${key}_title">${heading}</h2><div data-cms-repeat="${key}" ${attr}></div></div></section>\n`;
   const wrap = document.createElement('div'); wrap.innerHTML = html.trim();
   const node = wrap.firstElementChild;
   stageSectionInsert({ node, html, key, anchor });
@@ -5930,6 +6164,18 @@ function insertNewSection(kind, anchor) {
   setStatus(cfg.sandbox
     ? `${kind === 'gallery' ? 'A gallery' : 'An events list'} is added for this visit to the demo. On a real site, Publish keeps it.`
     : `Added a ${kind} — click “+ Add ${kind === 'gallery' ? 'photos' : 'event'}”, then Publish`, 'saved');
+}
+
+/** Whether the site's own stylesheet does anything to an element of this class (a box, a border, a background). */
+function siteStyles(cls) {
+  const box = document.createElement('div');
+  box.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden';
+  box.innerHTML = `<article></article><article class="${cls}"></article>`;
+  document.body.appendChild(box);
+  const [a, b] = [...box.children].map(n => getComputedStyle(n));
+  const differs = ['paddingTop', 'paddingLeft', 'marginTop', 'borderTopWidth', 'borderLeftWidth', 'backgroundColor', 'display', 'boxShadow', 'borderRadius'].some(k => a[k] !== b[k]);
+  box.remove();
+  return differs;
 }
 
 /**
@@ -5986,8 +6232,8 @@ function makeEditableMode() {
   const top = document.getElementById('kiln-topbar'); if (top) top.style.display = 'none';
   const bar = document.createElement('div');
   bar.id = 'kiln-pickbar';
-  bar.innerHTML = `<span><strong>Make-editable mode.</strong> Click anything to make it editable.
-    Click something already editable to remove editing. <kbd>Esc</kbd> exits.</span>
+  bar.innerHTML = `<span><strong>Make-editable mode.</strong> ${isTouch() ? 'Tap' : 'Click'} anything to make it editable, or
+    something already editable to make it plain again.<span class="kiln-keys-only"> <kbd>Esc</kbd> exits.</span></span>
     <button id="kiln-pick-exit">Done</button>`;
   document.body.appendChild(bar);
   const over = (e) => {
@@ -6257,6 +6503,7 @@ async function signOut() {
 
 function renderAdminBar() {
   initPalette({ state, cfg, mode, pageInScope, keyInScope, humanizeKey, listSitePages, modal, setStatus, escapeHtml, stopped,
+    chrome: KILN_CHROME,   // the editor's own parts: never searched as the page's words
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
     // A site a generator builds: its pages are not the repository's .html
     // files. They are listed from its routes, its links and its sitemap, and
@@ -6292,7 +6539,7 @@ function renderAdminBar() {
     <div id="kiln-fab-menu" hidden>
       <div class="kiln-fab-head">
         <span class="kiln-brand">Kiln</span>
-        <span class="kiln-user">${escapeHtml(state.user)}${mode === 'editor' ? ' · editor' : ''}</span>
+        <span class="kiln-user">${escapeHtml(state.user)}${mode === 'editor' && !cfg.sandbox ? ' · editor' : ''}</span>
       </div>
       <button id="kiln-publish" class="kiln-fab-item kiln-fab-primary" disabled>Publish</button>
       <div id="kiln-grp-edits" class="kiln-fab-group" hidden>
@@ -6595,7 +6842,7 @@ function renderTopBar() {
   bar.id = 'kiln-topbar';
   bar.innerHTML = `
     <span class="kiln-brand">Kiln</span>
-    <span class="kiln-user">${escapeHtml(state.user)}${mode === 'editor' ? ' · editor' : ''}</span>
+    <span class="kiln-user">${escapeHtml(state.user)}${mode === 'editor' && !cfg.sandbox ? ' · editor' : ''}</span>
     <span class="kiln-status" id="kiln-status" hidden></span>
     <span class="kiln-bar-spacer"></span>
     <span id="kiln-undo-wrap" hidden>
@@ -7003,8 +7250,8 @@ function modal(bodyHtml, opts = {}) {
 }
 
 function refreshPublishButton() {
-  // Source-file edits count like page edits everywhere the number shows…
-  const n = state.pending.size + state.pendingSource.size;
+  // The number of things the publish sheet lists: every change to a list is one, as every edit to a field is.
+  const n = changeCount();
   // A queued upload with no field edit still needs a Publish to commit it.
   const anything = n || state.pendingBinaries.size || state.pendingStructural.length;
   const btn = document.getElementById('kiln-publish');
@@ -7061,11 +7308,38 @@ function disablePublish(yes) {
   }
 }
 
-let statusHideTimer = null;
-// The line that says the sign-in has ended, with its way back in, once there
-// is one (opts.signIn). Other news is still shown, and this line comes back
-// after it: it is the one thing the person has to act on.
-let signInLine = null;
+/**
+ * How far down the screen the site's own bars reach from the top: a header it
+ * keeps there, and at the top of the page a banner or an announcement over it
+ * (under-bar.js isSiteBar).
+ */
+function siteBarsBottom() {
+  const screen = { width: window.innerWidth, height: window.innerHeight, atTop: window.scrollY < 4 };
+  let from = 0;
+  for (let i = 0; i < 5; i++) {
+    const at = document.elementsFromPoint(Math.round(screen.width / 2), from + 10).find(e => !isKilnChrome(e) && e !== document.documentElement && e !== document.body);
+    let reach = 0;
+    for (let n = at; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+      const r = n.getBoundingClientRect(), pos = getComputedStyle(n).position;
+      if (isSiteBar({ top: r.top, bottom: r.bottom, width: r.width, pinned: pos === 'fixed' || pos === 'sticky', named: n.matches('header, nav, [role="banner"]') }, from, screen)) reach = Math.max(reach, r.bottom);
+    }
+    if (reach <= from) break;
+    from = reach;
+  }
+  return Math.round(from);
+}
+
+/** On a phone the line of words goes below the site's own bars: it used to lie on the site's logo. */
+function placeStatus() {
+  const el = document.getElementById('kiln-status');
+  if (!el || el.hidden || !isMobileEditor() || el.closest('#kiln-topbar')) return;
+  el.style.setProperty('--kiln-under', `${siteBarsBottom()}px`);
+  if (statusPlaced) return;
+  statusPlaced = true;
+  let frame = 0;
+  window.addEventListener('scroll', () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; placeStatus(); }); }, { passive: true });
+}
+
 function setStatus(text, kind, opts) {
   const el = document.getElementById('kiln-status');
   if (!el) return;
@@ -7087,6 +7361,8 @@ function setStatus(text, kind, opts) {
   el.className = `kiln-status kiln-status--${kind}${opts?.action ? ' kiln-status--act' : ''}`;
   if (opts?.tag) el.dataset.tag = opts.tag; else delete el.dataset.tag;
   el.hidden = false;
+  statusShown++;
+  placeStatus();
   clearTimeout(statusHideTimer);
   if (opts?.signIn) { signInLine = [text, kind, opts]; return; }
   if (signInLine && !opts?.offer) { statusHideTimer = setTimeout(() => setStatus(...signInLine), 6000); return; }
@@ -7117,7 +7393,10 @@ function savePendingToStorage() {
     const record = draftRecord(state.pending, state.pendingSource, Date.now(), state.typed);
     if (!record) { localStorage.removeItem(pendingStorageKey()); return; }
     localStorage.setItem(pendingStorageKey(), JSON.stringify(record));
-  } catch { /* storage full — nonfatal */ }
+  } catch {
+    // No room for the copy. An older copy left in its place would hold room for edits that may be gone: remove it.
+    try { localStorage.removeItem(pendingStorageKey()); } catch { /* storage blocked */ }
+  }
 }
 
 function clearSavedPending() {
@@ -7280,12 +7559,24 @@ function safeUrl(value) {
 }
 
 function injectStyles() {
+  // How a section the editor adds looks on a site with no styles of its own for
+  // it (the visitor's script carries the same rules). First in the head, so
+  // any rule of the site's own comes later.
+  const added = document.createElement('style');
+  added.setAttribute('data-kiln', '1');
+  added.textContent = ADDED_CSS;
+  document.head.insertBefore(added, document.head.firstChild);
   const style = document.createElement('style');
   // Marked so block previews can collect the SITE's styles without dragging
   // Kiln's own chrome CSS into the preview iframes.
   style.setAttribute('data-kiln', '1');
   style.textContent = `
-:root{--kiln-bg:rgba(16,16,25,.92);--kiln-accent:#6366f1;--kiln-accent-h:#4f46e5;--kiln-ok:#34d399;
+/* The editor's dark surfaces (menu, toolbars, search, bars, the line of words)
+   are all this colour. It was see-through enough to need the blur behind it:
+   where a browser does not draw the blur, the page's own words showed sharply
+   through a menu. It is solid enough to read on its own now, and the blur,
+   where it is drawn, only softens the little that is left. */
+:root{--kiln-bg:rgba(16,16,25,.985);--kiln-accent:#6366f1;--kiln-accent-h:#4f46e5;--kiln-ok:#34d399;
   --kiln-warn:#fbbf24;--kiln-err:#f87171;--kiln-font:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif}
 #kiln-fab-wrap{position:fixed;bottom:20px;right:20px;z-index:999999;font-family:var(--kiln-font)}
 /* Undo / Redo / Publish: one row above the pencil, right-aligned to it. An
@@ -7445,6 +7736,11 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   color:#d6d8e1;font:13px/1.45 var(--kiln-font);padding:10px 16px;border-radius:13px;
   border:1px solid rgba(255,255,255,.1);box-shadow:0 12px 40px rgba(0,0,0,.4);max-width:92vw}
 #kiln-pickbar strong{color:#fff}
+#kiln-pickbar .kiln-pick-cancel{background:rgba(255,255,255,.14)}
+/* Advice about keys is for a keyboard: not shown on a screen that is touched. */
+@media (hover:none){.kiln-keys-only{display:none!important}}
+/* Help under a box in People & access: small, but not tiny, and dark enough to read. */
+.kiln-p-hint{margin:-2px 0 8px!important;font-size:13px!important;line-height:1.45;color:#4b5563!important}
 #kiln-pickbar kbd,#kiln-cmt-hint kbd{background:rgba(255,255,255,.12);border-radius:4px;padding:1px 5px;font-size:11px}
 #kiln-pickbar button,#kiln-cmt-hint button{background:var(--kiln-accent);color:#fff;border:none;border-radius:8px;
   padding:6px 14px;font:600 12px var(--kiln-font);cursor:pointer;white-space:nowrap}
@@ -7808,7 +8104,7 @@ body:has(#kiln-topbar){padding-top:46px!important}
 /* Status toasts: top-center, clear of FAB and keyboard. A hint, not a fixture:
    setStatus() takes it away after a few seconds, and a tap dismisses it. */
 #kiln-fab-wrap .kiln-status{position:fixed;left:50%;right:auto;bottom:auto;
-  top:calc(10px + env(safe-area-inset-top,0px));transform:translateX(-50%);max-width:92vw;font-size:13px}
+  top:calc(10px + var(--kiln-under,0px) + env(safe-area-inset-top,0px));transform:translateX(-50%);max-width:92vw;font-size:13px}
 #kiln-fab-wrap .kiln-status--act{font-size:14.5px;padding:6px 6px 6px 16px}
 .kiln-status-act{min-height:40px;padding:6px 20px;font-size:14.5px}
 /* Top-bar mode: same bar, thumb-height targets, finger-scrollable. */

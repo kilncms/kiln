@@ -1,6 +1,9 @@
 /**
  * The editor's own questions.
  *
+ * (Two more act on a demo or a draft and used to ask nothing at all: "Start
+ * over" and "Delete draft". They ask here too, and say what will be lost.)
+ *
  * Four things were still asked in the browser's own grey box, which looks
  * like nothing else in the editor and says "OK" for whatever it is about to
  * do: deleting a comment thread, deleting a page (a box, then a second one to
@@ -49,6 +52,22 @@ export function ownDialogCopy(kind, info = {}) {
     return { title: 'This text reads differently in the page’s file',
       body: `On screen: “${info.onScreen}”. In the file: “${info.inFile}”. A script on the site may change it when the page loads. If you make it editable, edits replace the words in the file, and the script may go on changing what visitors see.`,
       cancel: 'Leave it', go: 'Make it editable' };
+  }
+  if (kind === 'start-over') {
+    // The demo: what this browser holds of it, named, so the question says what the answer costs.
+    const n = info.unpublished || 0;
+    const held = [info.published && 'what you published', info.draft && 'your saved draft',
+      n && (n === 1 ? 'your unpublished edit' : `your ${n} unpublished edits`)].filter(Boolean);
+    const list = held.length > 1 ? `${held.slice(0, -1).join(', ')} and ${held[held.length - 1]}` : (held[0] || 'everything you did here');
+    return { title: 'Start the demo over?',
+      body: `This clears your private demo in this browser: ${list}. Every page goes back to how it first was, and none of it can be brought back.`,
+      cancel: 'Keep my demo', go: 'Start over' };
+  }
+  if (kind === 'delete-draft') {
+    const n = info.changes || 0;
+    return { title: 'Delete this draft?',
+      body: `${n ? `The draft and the ${n} change${n === 1 ? '' : 's'} in it are` : 'The draft is'} thrown away, and can’t be brought back. ${info.demo ? 'What you have published stays as it is.' : 'The page that is live stays as it is.'}`,
+      cancel: 'Keep the draft', go: 'Delete draft' };
   }
   throw new Error(`no such question: ${kind}`);
 }

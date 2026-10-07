@@ -437,6 +437,12 @@
 .kiln-lb-next{position:absolute;right:14px;top:50%;transform:translateY(-50%)}
 .kiln-lb-count{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);color:#b9b9c4;font-size:12.5px}
 @media (max-width:600px){.kiln-lb-prev{left:4px}.kiln-lb-next{right:4px}}
+.kiln-plain .kiln-added-title{font-family:var(--kiln-h-font,inherit);font-weight:var(--kiln-h-weight,700);letter-spacing:var(--kiln-h-spacing,normal);text-transform:var(--kiln-h-case,none);font-size:clamp(1.6rem,4.5vw,2.4rem);line-height:1.15;margin:0 0 .5em}
+.kiln-plain .kiln-event{padding:.9em 0;border-top:1px solid rgba(127,127,127,.3)}
+.kiln-plain .kiln-ev-title{font-family:var(--kiln-h-font,inherit);font-weight:var(--kiln-h-weight,700);letter-spacing:var(--kiln-h-spacing,normal);font-size:1.25em;line-height:1.25;margin:0 0 .15em}
+.kiln-plain .kiln-ev-when{margin:0;opacity:.75;font-variant-numeric:tabular-nums}
+.kiln-plain .kiln-ev-loc,.kiln-plain .kiln-ev-desc{margin:.3em 0 0}
+.kiln-plain .kiln-ev-link{text-decoration:underline}
 .kiln-evbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin:0 0 14px}
 .kiln-evbar-views,.kiln-evbar-nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .kiln-evbar-label{font-weight:600;min-width:12ch;text-align:center}

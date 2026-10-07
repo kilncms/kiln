@@ -35,3 +35,23 @@ export function coverBottom(stack, viewHeight) {
 export function isUnder(rect, cover) {
   return cover > 0 && rect.bottom > 0 && rect.top < cover;
 }
+
+/**
+ * Whether a box is one of the site's own bars at the top of the screen, for
+ * placing the editor's line of words below them on a phone (it used to lie on
+ * the site's logo).
+ *   box    { top, bottom, width, pinned, named }: `pinned` when it is fixed
+ *          or sticky, `named` when it is a header, a nav or a banner
+ *   from   how far down the screen the bars found so far reach
+ *   screen { width, height, atTop }: `atTop` when the page is not scrolled
+ * A bar spans the screen, begins where the last one ended and is a strip, not
+ * a section. One the site pinned or named counts anywhere. At the very top of
+ * the page so does any such strip (a banner, an announcement): scrolled, a
+ * strip that is not pinned is only a line of the page going by.
+ */
+export function isSiteBar(box, from, screen) {
+  const height = box.bottom - box.top;
+  if (box.width < screen.width * 0.9 || box.top > from + 4 || box.bottom <= from + 4) return false;
+  if (height > Math.min(screen.height * 0.25, 180) || box.bottom > screen.height * 0.45) return false;
+  return !!(box.pinned || box.named || screen.atTop);
+}

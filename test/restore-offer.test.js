@@ -36,7 +36,8 @@ test('restore offer: "Start over" and the demo\'s day running out forget the sav
   assert.match(reset, /localStorage\.removeItem\(SANDBOX_KEY\)/);
   assert.match(reset, /const mine = `kiln_pending:\$\{cfg\.repo\}:`;/);
   assert.match(reset, /if \(key\.startsWith\(mine\)\) localStorage\.removeItem\(key\)/);
-  assert.match(main, /#kiln-sandbox-reset'\)\.onclick = \(\) => \{ sandboxReset\(\); location\.reload\(\); \};/);
+  // (it asks first now: own-dialogs.test.js)
+  assert.match(part('async function startOver()', '\n}\n'), /sandboxReset\(\);\s*\n\s*location\.reload\(\);/);
   assert.match(part('function sandboxTTLCheck()', '\n}\n'), /sandboxReset\(\)/);
 });
 

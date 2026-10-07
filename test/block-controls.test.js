@@ -39,7 +39,7 @@ test('block controls: removing a block asks nothing in the browser\'s own box, a
   const del = controls.slice(controls.indexOf('del.onclick'), controls.indexOf('// Phones: five thumb-sized buttons'));
   assert.equal(/\bconfirm\(|\bprompt\(|\balert\(/.test(del), false);
   // gone at once, kept aside for Undo, staged, and said with a button: in that order
-  const order = ['item.remove();', 'keepAside(container, item);', 'stageContainer(container, key);', "setStatus('Removed.', 'saved', { hold: 10000, tag: 'removed', action: { label: 'Undo'"];
+  const order = ['item.remove();', 'keepAside(container, item);', 'stageContainer(container, key);', "setStatus('Removed.', 'saved', { hold: removedHold(), tag: 'removed', action: { label: 'Undo'"];
   let at = -1;
   for (const step of order) { const i = del.indexOf(step); assert.ok(i > at, step); at = i; }
   assert.match(del, /run: undoEdit \}/);
