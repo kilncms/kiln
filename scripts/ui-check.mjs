@@ -30,6 +30,13 @@
  * Then the demo's way to get Kiln: once a visitor has published and the card
  * that offers "Put Kiln on my site" has gone, the demo's pill carries the
  * link, fitting beside the pencil.
+ * Then what only shows on a real site ("real sites"): a block's buttons are
+ * hidden while the block is under a bar the site keeps at the top of the
+ * screen; a list is published as the page's file has it, with none of the
+ * classes, styles or attributes the site's scripts put on its blocks while
+ * the page was open, so that one changed word changes one word in the file;
+ * History shows a way back on the page itself, in no frames; and signing out
+ * with an edit waiting asks in the editor's own dialog.
  * Both passes go through the publish sheet (open it, drop one edit, publish)
  * and press Undo; the signed-in pass also has someone else publish in between.
  * A last pass has the worker end the editor's sign-in: on page load the page
@@ -2197,6 +2204,289 @@ async function runSignInEverywhere(browser, size) {
   await context.close();
 }
 
+/**
+ * What only shows on a real site: one whose own scripts change its blocks
+ * while the page is open, and which keeps a bar at the top of the screen.
+ *
+ * In sandbox mode: a block's buttons are hidden while the block is under a
+ * bar pinned to the top, and a list is published as the page's file has it,
+ * with none of the state a script put on its blocks. Then as a signed-in
+ * editor, with the worker played here: one changed word in a list changes
+ * that word in the page file and nothing else; History shows a way back on
+ * the page itself, in no frames; and signing out with an edit waiting asks in
+ * the editor's own dialog, never the browser's box.
+ */
+async function runRealSites(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} real sites  `;
+  const WORKER = 'https://worker.invalid';
+  const REPO = 'acme/site';
+  const source = await (await fetch(URL_ARG)).text();
+  const file = new URL(URL_ARG).pathname.replace(/^\/+/, '').replace(/(^|\/)$/, '$1index.html');
+  const b64 = (text) => Buffer.from(text).toString('base64');
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+  // What a site's scripts do to a block while the page is open, done to every block of a list.
+  const scriptState = (page, key) => page.evaluate((k) => {
+    const blocks = [...document.querySelectorAll(`[data-cms-repeat="${k}"] > .kiln-repeat-item`)];
+    blocks.forEach((b, i) => {
+      b.classList.add('is-uicheck-seen');
+      b.setAttribute('aria-hidden', 'false');
+      b.setAttribute('data-uicheck-state', 'on');
+      if (i === 1) b.style.display = 'none';
+      else b.style.opacity = '1';
+      const field = b.querySelector('[data-cms]');
+      if (field) field.classList.add('is-uicheck-seen');
+    });
+    return blocks.length;
+  }, key);
+  const STATE = /is-uicheck-seen|data-uicheck-state|display:\s*none/;
+  /** The first list whose first block has a text field, and that field's words. */
+  const listWithField = (page) => page.evaluate(() => {
+    for (const list of document.querySelectorAll('[data-cms-repeat]:not([data-kiln-gallery]):not([data-kiln-events])')) {
+      const field = list.querySelector(':scope > .kiln-repeat-item [data-cms]:not(img)');
+      if (field && list.querySelectorAll(':scope > .kiln-repeat-item').length >= 2 && field.textContent.trim()) return { key: list.getAttribute('data-cms-repeat'), was: field.textContent };
+    }
+    return null;
+  });
+  const typeInto = async (page, key, text) => {
+    const field = page.locator(`[data-cms-repeat="${key}"] > .kiln-repeat-item [data-cms]:not(img)`).first();
+    await field.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(300);
+    await press(field);
+    await page.waitForTimeout(250);
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
+    await page.keyboard.type(text);
+    await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(300);
+  };
+  const publish = async (page) => {
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await page.waitForTimeout(200);
+    await press(page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+    await page.waitForTimeout(500);
+    if (await page.locator('#kiln-pubsheet-go').count()) await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(1500);
+  };
+
+  // ── sandbox: the bar, and what a list is published as ──────────────────────
+  {
+    const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+    const blocked = [];
+    await context.route('**/*', (route) => {
+      const u = route.request().url();
+      if (u.startsWith(ORIGIN) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
+      blocked.push(u);
+      return route.abort();
+    });
+    await context.addInitScript(() => { try { localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ } });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(600);
+
+    // A bar of the site's own, pinned to the top, above the page and below Kiln.
+    await page.evaluate(() => {
+      const bar = document.createElement('div');
+      bar.id = 'uicheck-bar';
+      bar.textContent = 'The site’s own bar';
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:72px;z-index:60;background:#fff;border-bottom:2px solid #111;font:16px/72px sans-serif;text-align:center';
+      document.body.appendChild(bar);
+    });
+    const block = page.locator('[data-cms-repeat] > .kiln-repeat-item').first();
+    check(scope, 'the page has a list to check', (await block.count()) === 1);
+    // the block's top corner (where its buttons are) goes to the middle of the bar
+    await block.scrollIntoViewIfNeeded();
+    await page.evaluate(() => { const b = document.querySelector('[data-cms-repeat] > .kiln-repeat-item'); window.scrollBy(0, b.getBoundingClientRect().top - 30); });
+    await page.waitForTimeout(500);
+    if (!phone) { const b = await block.boundingBox(); await page.mouse.move(b.x + b.width / 2, 120); await page.waitForTimeout(400); }
+    const under = await block.evaluate((b) => {
+      const ctl = b.querySelector(':scope > .kiln-item-ctl');
+      const r = ctl.getBoundingClientRect(), cs = getComputedStyle(ctl);
+      const btn = (ctl.querySelector('button') || ctl).getBoundingClientRect();
+      const top = document.elementFromPoint(btn.left + btn.width / 2, Math.min(70, Math.max(2, btn.top + btn.height / 2)));
+      return { top: Math.round(r.top), hidden: cs.visibility === 'hidden', onButton: !!(top && top.closest('.kiln-item-ctl')) };
+    });
+    check(scope, 'a block\'s buttons are hidden while they are under the site\'s bar', under.top < 72 && under.hidden, `buttons at ${under.top}px, ${under.hidden ? 'hidden' : 'showing'}`);
+    check(scope, 'and a press there does not reach one of them', !under.onButton);
+    await shot('real-under-bar');
+    await page.evaluate(() => window.scrollBy(0, -160));
+    await page.waitForTimeout(500);
+    if (!phone) { const b = await block.boundingBox(); await page.mouse.move(b.x + b.width / 2, b.y + 40); await page.waitForTimeout(400); }
+    const clear = await block.evaluate((b) => { const ctl = b.querySelector(':scope > .kiln-item-ctl'); const cs = getComputedStyle(ctl); return { top: Math.round(ctl.getBoundingClientRect().top), shows: cs.visibility !== 'hidden' && cs.opacity !== '0' }; });
+    check(scope, 'clear of the bar they are back', clear.top >= 72 && clear.shows, `buttons at ${clear.top}px, ${clear.shows ? 'showing' : 'hidden'}`);
+    await page.evaluate(() => document.getElementById('uicheck-bar').remove());
+
+    // A list published after the site's scripts have been at its blocks.
+    const list = await listWithField(page);
+    check(scope, 'the page has a list with a text field in its blocks', !!list);
+    if (list) {
+      const n = await scriptState(page, list.key);
+      await typeInto(page, list.key, 'Changed by ui-check');
+      await page.evaluate((k) => { const b = document.querySelectorAll(`[data-cms-repeat="${k}"] > .kiln-repeat-item`)[1]; if (b) b.style.display = 'none'; }, list.key);
+      await publish(page);
+      const html = await page.evaluate((k) => {
+        for (const name of Object.keys(localStorage)) {
+          try { const v = JSON.parse(localStorage.getItem(name)); const page = v && v.pages && Object.values(v.pages)[0]; if (page && page[k]) return page[k].html; } catch { /* not it */ }
+        }
+        return null;
+      }, list.key);
+      check(scope, 'the demo publishes the list', typeof html === 'string' && html.includes('Changed by ui-check'), html ? '' : 'nothing stored');
+      check(scope, `and none of what a script put on its ${n} blocks is in it`, typeof html === 'string' && !STATE.test(html) && !/aria-hidden="false"/.test(html), (String(html).match(STATE) || [''])[0]);
+      const inFile = (source.match(/is-inview/g) || []).length;
+      check(scope, 'nor the class the site\'s own fade-in adds, unless the file has it', typeof html === 'string' && (inFile > 0 || !/is-inview/.test(html)));
+    }
+    check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+    check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
+    await context.close();
+  }
+
+  // ── a signed-in editor on a real site, the worker played here ──────────────
+  {
+    const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+    await context.addInitScript(([repo]) => {
+      try {
+        if (!sessionStorage.getItem('uicheck_out')) localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' }));
+        localStorage.setItem('kiln_guide', '1');
+      } catch { /* ignore */ }
+    }, [REPO]);
+    const versions = [{ sha: 'c0'.repeat(20), text: source, message: 'site', by: 'Site Owner' }];   // newest last
+    const blocked = [];
+    await context.route('**/*', async (route) => {
+      const req = route.request();
+      const u = new URL(req.url());
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': ORIGIN }, body: JSON.stringify(body) });
+      if (u.origin === ORIGIN && u.pathname.endsWith('kiln-config.js')) {
+        return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
+      }
+      if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
+      if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+      const p = decodeURIComponent(u.pathname);
+      const head = versions[versions.length - 1];
+      if (req.method() === 'OPTIONS') {
+        return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
+      }
+      if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: null, mode: null } });
+      if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'] });
+      if (p === `/gh/repos/${REPO}/contents/${file}`) {
+        if (req.method() === 'GET') {
+          const ref = u.searchParams.get('ref');
+          const v = versions.find(x => x.sha === ref) || (ref === 'main' ? head : null);
+          return v ? json({ sha: `blob-${v.sha}`, content: b64(v.text) }) : json({ message: 'Not Found' }, 404);
+        }
+        const body = JSON.parse(req.postData());
+        const sha = `c${versions.length}`.padEnd(40, 'a');
+        versions.push({ sha, text: Buffer.from(body.content, 'base64').toString(), message: body.message, by: 'Sam (via Kiln)' });
+        return json({ commit: { sha }, content: {} });
+      }
+      if (p === `/gh/repos/${REPO}/commits`) {
+        return json([...versions].reverse().map((v, i, all) => ({ sha: v.sha, parents: all[i + 1] ? [{ sha: all[i + 1].sha }] : [],
+          commit: { message: v.message, author: { name: v.by, date: new Date(Date.now() - i * 60000).toISOString() } } })));
+      }
+      if (p.startsWith(`/gh/repos/${REPO}/git/matching-refs/`)) return json([]);
+      if (p === `/gh/repos/${REPO}/contents`) return json([{ path: 'index.html', type: 'file' }, { path: 'assets', type: 'dir' }]);
+      if (p === `/gh/repos/${REPO}/git/ref/heads/main`) return json({ object: { sha: head.sha } });
+      if (p.includes('/deployments')) return json([]);
+      if (p.endsWith('/status')) return json({ total_count: 0 });
+      return json({ message: 'Not Found' }, 404);
+    });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    const boxes = [];   // the browser's own confirm / prompt boxes
+    page.on('dialog', async (d) => { boxes.push(d.message()); await d.accept().catch(() => {}); });
+    const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(700);
+
+    // One changed word in a list, after the page has been scrolled through and its blocks marked.
+    const list = await listWithField(page);
+    if (list) {
+      const h = await page.evaluate(() => document.documentElement.scrollHeight);
+      for (let y = 0; y < h; y += 600) { await page.evaluate((yy) => window.scrollTo(0, yy), y); await page.waitForTimeout(60); }
+      await scriptState(page, list.key);
+      await typeInto(page, list.key, 'Changed by ui-check');
+      await publish(page);
+      const now = versions[versions.length - 1].text;
+      check(scope, 'a real site: publishing one changed word in a list writes the page file', versions.length === 2 && now.includes('Changed by ui-check'), `${versions.length - 1} writes`);
+      // The list as each file has it, read the way a browser reads it (so that
+      // `plain` and `plain=""` are one thing). With the old words put back where
+      // the new ones are, the published list must be the list as it was.
+      const [was, is] = await page.evaluate(([a, b, k]) => [a, b].map((text) => {
+        const list = new DOMParser().parseFromString(text, 'text/html').querySelector(`[data-cms-repeat="${k}"]`);
+        return list ? list.innerHTML : null;
+      }), [source, now, list.key]);
+      const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const undone = String(is).replace('Changed by ui-check', esc(list.was));
+      let at = 0; while (at < String(was).length && String(was)[at] === undone[at]) at++;
+      check(scope, 'and nothing else in the list changes: no class, style or attribute a script added', was !== null && undone === was,
+        undone === was ? '' : `first difference at ${at}: ${JSON.stringify(String(was).slice(Math.max(0, at - 40), at + 60))} became ${JSON.stringify(undone.slice(Math.max(0, at - 40), at + 60))}`);
+      // and outside the list not a byte
+      const outside = (text) => { const i = text.indexOf(`data-cms-repeat="${list.key}"`); return i === -1 ? null : text.slice(0, i); };
+      check(scope, 'and nothing before the list in the file changes at all', outside(source) !== null && outside(source) === outside(now));
+
+      // History: a way back is shown on the page, in no frames.
+      await typeInto(page, list.key, 'Changed twice by ui-check');
+      await publish(page);
+      await press(page.locator('#kiln-fab'));
+      await page.waitForTimeout(300);
+      const hist = page.locator('#kiln-history');
+      if (await hist.isVisible().catch(() => false)) {
+        await press(hist);
+        await page.waitForTimeout(900);
+        const goBack = page.locator('#kiln-modal button', { hasText: 'Go back to this' }).first();
+        check(scope, 'History lists the publishes with a way back', (await goBack.count()) === 1);
+        if (await goBack.count()) {
+          await press(goBack);
+          await page.waitForTimeout(1500);
+          const bar = page.locator('#kiln-previewbar');
+          check(scope, '"Go back to this" shows the earlier version on the page itself', await bar.isVisible().catch(() => false), (await page.locator('#kiln-modal').innerText().catch(() => '')).slice(0, 60));
+          check(scope, 'in no frames', (await page.locator('#kiln-modal iframe, iframe.kiln-vrestore-frame').count()) === 0);
+          const seen = await page.evaluate((k) => [...document.querySelectorAll(`[data-cms-repeat="${k}"] > .kiln-repeat-item`)].filter(b => getComputedStyle(b).opacity !== '0' && b.getClientRects().length).length, list.key);
+          check(scope, 'and the list can be seen in it', seen > 0, `${seen} blocks`);
+          await shot('real-history-on-page');
+          if (await bar.isVisible().catch(() => false)) await press(page.locator('#kiln-pv-cancel'));
+          await page.waitForTimeout(400);
+        }
+      } else {
+        check(scope, 'History is in this editor\'s menu', false);
+      }
+    }
+
+    // Signing out with an edit waiting.
+    if (list) {
+      await page.keyboard.press('Escape');
+      await typeInto(page, list.key, 'An edit that is waiting');
+      await press(page.locator('#kiln-fab'));
+      await page.waitForTimeout(300);
+      await press(page.locator('#kiln-signout'));
+      await page.waitForTimeout(500);
+      const ask = page.locator('#kiln-modal.kiln-ask');
+      check(scope, 'signing out with an edit waiting asks in the editor\'s own dialog', (await ask.count()) === 1 && /^Sign out and discard your edit\?/.test((await ask.locator('h3').textContent().catch(() => '')) || ''), ((await ask.locator('h3').textContent().catch(() => '')) || '').slice(0, 50));
+      check(scope, 'whose buttons say what they do', (await ask.locator('.kiln-modal-actions button').allTextContents()).map(t => t.trim()).join(' | ') === 'Stay signed in | Discard and sign out');
+      check(scope, 'never in the browser\'s box', boxes.length === 0, (boxes[0] || '').slice(0, 50));
+      await shot('real-sign-out');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(300);
+      check(scope, 'Escape keeps the sign-in and the edit', !!(await page.evaluate(() => localStorage.getItem('kiln_editor'))) && (await page.locator('.kiln-modified').count()) > 0);
+      await press(page.locator('#kiln-fab'));
+      await page.waitForTimeout(300);
+      await press(page.locator('#kiln-signout'));
+      await page.waitForTimeout(400);
+      await page.evaluate(() => sessionStorage.setItem('uicheck_out', '1'));
+      await press(page.locator('#kiln-ask-go'));
+      await page.waitForTimeout(1200);
+      check(scope, '"Discard and sign out" signs out', !(await page.evaluate(() => localStorage.getItem('kiln_editor'))));
+    }
+    check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+    check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
   if (ONLY && !label.includes(ONLY)) return;
@@ -2215,6 +2505,8 @@ try {
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
   // an invited editor granted "Make things editable" on top of the defaults
   await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
+  // what only shows on a real site: a bar pinned to the top, blocks its own scripts change, History's way back, the editor's own questions
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} real sites  `, () => runRealSites(browser, size));
   // the worker ends an invited editor's sign-in
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} sign-in ended`, () => runSignInEnded(browser, size));
   // …and they find out anywhere else in the editor
