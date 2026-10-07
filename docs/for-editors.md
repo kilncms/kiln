@@ -41,6 +41,16 @@ links, and a **Style** menu with the site's own text styles, so whatever you wri
 matches the design. The toolbar starts with the name of the part you are in ("Hero
 headline"). **Done** keeps what you typed; **Revert**, or the Esc key, throws it away.
 
+Not everything on a page is yours to change: only the parts the owner set up, which
+are the outlined ones. Some things are on a page twice, such as a product in a row
+of favourites and again in the full list, and only one of the two may be set up. If
+you click the other, the line beside the Kiln button says so ("This copy can't be
+changed here. The same words can, in Products.") and **Show me** takes you to the
+one that can. Changing it there does not change the copy unless the site was built
+to keep the two together, so tell the owner if you need both. A picture or a line
+that was not set up, inside an item whose other parts are outlined, says so when you
+click it. Anything else you click behaves as it does for a visitor.
+
 To make words a link, select them and press the link button on the toolbar. A small
 dialog asks for the address: a web address, or a page of the site such as `/about`.
 With the cursor in a link, the same button shows its address to change, and **Remove
@@ -62,11 +72,14 @@ Some other things you can do, depending on what the owner has set up:
   computer they appear when the pointer is on the item. On a phone each item has a
   **⋯** button: tap it and the controls open in a row under that item. A button
   under the list adds an item. Removing is immediate, and the line beside the Kiln
-  button reads **Removed. Undo** for ten seconds.
+  button reads **Removed. Undo** for ten seconds. The **Undo** button beside the
+  pencil does the same after that.
 - **Undo**: **Undo** and **Redo** buttons appear beside the Kiln button as soon as
   there is something to undo, and Ctrl+Z (Cmd+Z on a Mac) does the same. It takes
   back any change you have not published, one at a time: words, a swapped picture,
-  an item you added, moved, copied or removed. The list comes back as it was.
+  a link's address, a picture's size, an item you added, moved, copied or removed.
+  What comes back is what was there when you began, and the page stays where you
+  are: an item you removed returns in its place, in front of you.
 
 Nothing goes live while you type. Your edits stage on the page.
 
@@ -88,9 +101,13 @@ edits"). When you're happy, click it. (The same Publish is also the first item i
 pencil's menu.)
 
 Publish first shows you what is about to change. Each edit is listed as before and
-after: changed words are marked, a new picture sits beside the old one, and added or
-removed blocks are named. **Drop** leaves one edit out and puts that part of the page
-back. A yellow line is a warning, not a stop: a picture with no description, a link
+after: changed words are marked, a new picture sits beside the old one. In a list,
+every change is named: each item added or removed, a change of order, and each item
+you changed, by its name, with its words before and after. The number on the
+Publish button is the number of things this sheet lists, so an item added, another
+moved and a price changed in the same list count as three. **Drop** leaves one
+edit out and puts that part of the page back; for a list it drops all of that
+list's changes together. A yellow line is a warning, not a stop: a picture with no description, a link
 that goes nowhere, an empty heading. **Show me** takes you to it. You can write a line
 under **What changed?**, and it is saved with the change so History reads well. Then
 press the one button at the bottom. Escape or Cancel closes the sheet and keeps
@@ -153,7 +170,8 @@ other device.
 
 **Save as draft**, in the Kiln menu, puts your waiting text changes aside without
 publishing them. The next time that page is opened in Kiln it says there is a saved
-draft and offers to resume it, publish it, or leave it for later. A draft holds text
+draft and offers to resume it, publish it, or leave it for later. **Delete draft**
+asks first, and says how many changes the draft holds. A draft holds text
 changes, so publish new pictures and added sections first. If the page has both a
 draft and unpublished edits, you are asked about the edits first.
 
@@ -230,7 +248,10 @@ are offered back.
 copy for each visitor, kept in the visitor's own browser for a day. Publish, Undo,
 Save as draft, "Pick up where you left off?" and History all work there. Where
 something needs a real site (scheduling, new pages, inviting people), it says what a
-real site does.
+real site does. A browser gives the demo little room, so a picture is kept at the
+size it is shown and one larger than 1 MB after that is turned away with its size;
+a real site has no such limit. **Start over** asks first and says what it would
+clear.
 
 **I got signed out.** Your access has an expiry the owner set. Go back to
 `yoursite.com/kiln` and sign in with Google again. If it says you're not on the list,

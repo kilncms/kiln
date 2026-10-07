@@ -207,8 +207,11 @@ For each person you also set:
 
 - **Access duration** — 1 to 360 days, or never expires. When it lapses they just
   see the login screen again; re-add or renew them in this panel.
-- **Page scope** (editors) — limit them to specific pages. Everything else shows as
-  read-only for them, with a note saying which pages they do have.
+- **Page scope** (editors) — "Pages this editor can change": limit them to specific
+  pages or folders, or leave it empty for the whole site. Everything else shows as
+  read-only for them, with a note saying which pages they do have. The files that
+  run the site itself (its address record, redirects, build settings) are never
+  theirs to change, whatever is chosen here.
 - **Section scope** (editors) — within a page, limit them to specific sections. The
   picker shows each section with the first words of its content, so you know exactly
   what you're granting. Leave it blank for the whole page.
@@ -216,7 +219,9 @@ For each person you also set:
   posts, scheduling, the site menu, find & replace, AI assist, theme tokens,
   adding sections from the [block library](#block-library), and **Make things
   editable** (the two tools "Make text/images editable" and "Add a gallery or
-  events"; a suggest-only editor or a reviewer is never shown them).
+  events"; a suggest-only editor or a reviewer is never shown them). **AI
+  assist** does something only on a site whose worker has an AI key (see
+  below); a worker that reports it has none is not offered the box.
 - **Suggest-only publishing** (editors) — see below.
 
 Removing someone ends their access, including a sign-in they already hold. An

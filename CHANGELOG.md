@@ -320,6 +320,67 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   class or style a script first sets on an element while it is being edited,
   and the address of an editable picture that a lazy loader also changes.
   Those are published as they are on the page, as before.
+- **The publish sheet hid a change, and the number on Publish did not follow
+  what was done.** A price changed in a list, then an item added to the same
+  list: the sheet said only "Added", and the button stayed at "Publish 2
+  edits" through an add, a move and a removal. Every change to a list is named
+  now: each item added and removed, a change of order, and each item that was
+  changed, by its name, with its words (or its picture) before and after. The
+  number on every Publish control, the sheet's title and the menu's badge is
+  the number of things the sheet lists.
+- **A tap on a copy of an editable part did nothing a person could read.** A
+  page often shows one thing twice and only one of the two was marked as
+  editable. Where the editor can tell (the same words inside a link to the
+  same address as one editable part, or words only one editable part has), a
+  click on the unmarked copy says "This copy can't be changed here. The same
+  words can, in Products." with **Show me**, and its link is not followed
+  (Ctrl or ⌘ and a click still follows it). A picture or a line nobody marked,
+  inside a block whose other parts are editable, says so. Nothing is made
+  editable that was not, and a link in a `nav`, `header` or `footer` is never
+  taken over.
+- **The menu, the search panel and the toolbars were see-through** where a
+  browser does not draw the blur behind them: the page's own words showed
+  sharply through. Their background is solid enough to read on its own.
+- **A photograph was stored as PNG by a browser that cannot write WebP**
+  (Safari), ten times the size it should be, under a `.webp` name. Such a
+  browser writes JPEG now, or PNG for a picture with see-through parts, and the
+  file is named for what it is. In try-out mode this is why a normal photo
+  would not publish on a phone ("This browser has no room left for the demo").
+  The demo also no longer keeps a second, full-size copy of each picture in the
+  browser, refuses a picture larger than 1 MB after it is made web-sized with
+  its size and the limit, before anything is kept, and "no room" points at
+  dropping a picture before "Start over". Undo or Drop of a new picture frees
+  the full-size original it brought with it.
+- **Undo after removing a list item ran the page to the middle of the list**,
+  screens away from the item that had come back. Undo and Redo show the block
+  that came back and move the page only as far as it takes to see it.
+- **"Removed. Undo" could vanish after a second or two.** In try-out mode the
+  first status line's timer was lost while the editor started and went off on
+  whatever line was showing four seconds into the visit; and after a publish
+  the return of "Signed in as…" replaced a newer line. The line has its ten
+  seconds, the same as "Published. Undo".
+- **"Start over" and "Delete draft" acted at once.** Each asks first, in the
+  editor's own dialog, and says what would be lost.
+- **Small things.** "Add event" and "Add person" pressed with an empty form
+  say what is missing. Advice about keys ("Esc cancels", the hints under
+  Search & jump, "hover for the menu") is shown only where there is a
+  keyboard, and choosing a place for a new section has a Cancel button. Search
+  & jump searches all of a part's words, not its first 42 characters, shows
+  the words around what it found and goes to the item that holds them; lists
+  the pages this page links to where there is no repository to list (try-out
+  mode); finds words on the page that are in no editable part and says they
+  are not editable; and no longer lists a part because its name happens to
+  contain the typed letters in order. "Schedule these 1 edit" reads "Schedule
+  this edit". A note typed under "What changed?" survives a try-out publish
+  that did not fit. The demo calls its visitor "You", not "You · editor". On a
+  phone the line of words sits below the site's own header, and at the top of
+  the page below its banner, not on the logo. An events list or gallery added
+  from the menu has its heading in the site's own heading type and each event
+  set apart (on a site with no styles of its own for `.kiln-event`; the
+  section is marked `kiln-plain`). People & access says what it means in an
+  owner's words, its help text is larger, and the AI assist box is not offered
+  when the worker says the site has no AI key (`aiConfigured: false` from
+  `/admin/people`; a worker that says nothing leaves the box as it was).
 - **On a site a generator builds, nothing is written over unasked and nothing
   is offered that cannot be done** (source mode):
   - A field someone else changed since the page was built was written over
