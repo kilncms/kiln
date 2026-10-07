@@ -832,7 +832,7 @@ function applyFeatureGating() {
   // content files has none: not offered there, to anyone (startLine says so
   // to the person who came only to comment).
   if (!cfg.sandbox && state.page && !state.page.path) { const c = document.getElementById('kiln-comments'); if (c) c.style.display = 'none'; }
-  if (mode === 'admin' || cfg.sandbox) return;
+  if (mode === 'admin' || cfg.sandbox) { hideEmptyGroups(); return; }
   // 'suggestreview' is deliberately not in the worker's GRANTABLE_FEATURES, so
   // no invited editor ever has it — the review queue stays admin-only.
   const map = { 'kiln-menu': 'menu', 'kiln-theme': 'theme', 'kiln-findreplace': 'findreplace', 'kiln-newpost': 'newpost',
@@ -852,6 +852,14 @@ function applyFeatureGating() {
   if (isSuggestMode()) { const t = document.getElementById('kiln-theme'); if (t) t.style.display = 'none'; }
   if (!hasFeature('schedule') || isSuggestMode()) { const s = document.getElementById('kiln-schedule'); if (s) s.dataset.gated = '1'; }
   if (!hasFeature('draft') || isSuggestMode()) { const p = document.getElementById('kiln-sharepreview'); if (p) p.dataset.gated = '1'; }
+  hideEmptyGroups();
+}
+
+/** A group of the menu with none of its items on offer does not keep its heading. */
+function hideEmptyGroups() {
+  for (const g of document.querySelectorAll('#kiln-fab-menu .kiln-fab-group:not(#kiln-grp-edits)')) {
+    g.hidden = ![...g.querySelectorAll('button')].some(b => b.style.display !== 'none' && !b.hidden);
+  }
 }
 
 function renderScopeNote() {
@@ -7128,6 +7136,9 @@ function injectStyles() {
 #kiln-publish-quick:hover:not(:disabled){background:var(--kiln-accent-h)}
 #kiln-publish-quick:disabled{opacity:.55;cursor:default}
 #kiln-publish-quick[hidden]{display:none!important}
+/* The menu's own Publish, for someone who cannot publish or suggest here: the
+   item's display above would otherwise beat the hidden attribute. */
+#kiln-publish[hidden]{display:none!important}
 #kiln-fab:focus-visible,#kiln-publish-quick:focus-visible,#kiln-fab-wrap #kiln-undo-wrap button:focus-visible{
   outline:2px solid #fff;outline-offset:2px;box-shadow:0 0 0 5px var(--kiln-accent)}
 #kiln-fab-wrap #kiln-undo-wrap button{height:32px;padding:0 13px;border-radius:999px;border:none;cursor:pointer;

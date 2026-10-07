@@ -14,6 +14,9 @@ import { startLine } from '../src/editor/grants.js';
 import { lockReason } from '../src/editor/source-fields.js';
 import { parseSourceRef } from '../src/adapters/pointer.js';
 import { sourceModeRefusal } from '../worker/source.js';
+import { readFileSync } from 'node:fs';
+
+const main = readFileSync(new URL('../src/editor/main.js', import.meta.url), 'utf8');
 
 const sam = { user: 'Sam', touch: false, scopeMode: null, comments: false, pageFile: true };
 
@@ -65,4 +68,16 @@ test('the worker refuses exactly what the editor no longer offers: a source edit
   assert.equal(sourceModeRefusal({ name: 'Sam', mode: 'suggest' }).status, 403);
   assert.equal(sourceModeRefusal({ name: 'Sam', mode: 'review' }).status, 403);
   assert.equal(sourceModeRefusal({ name: 'Sam', mode: null }), null);
+});
+
+test('menu: a Publish button hidden for someone who cannot publish there is really not shown, and a heading with nothing under it goes', () => {
+  // The menu item's own display rule used to beat the hidden attribute: a
+  // comment-only editor saw a greyed "Publish" at the top of the menu.
+  assert.match(main, /#kiln-publish\[hidden\]\{display:none!important\}/);
+  const refresh = main.slice(main.indexOf('function refreshPublishButton('), main.indexOf('function disablePublish('));
+  assert.match(refresh, /state\.scope\?\.mode === 'review'\) \{\s*if \(btn\) btn\.hidden = true;/);
+  assert.match(refresh, /btn\.hidden = isSuggestMode\(\) && !!state\.page && !state\.page\.path && !anything;/);
+  assert.match(main, /function hideEmptyGroups\(\) \{/);
+  const gating = main.slice(main.indexOf('function applyFeatureGating('), main.indexOf('function renderScopeNote('));
+  assert.equal((gating.match(/hideEmptyGroups\(\);/g) || []).length, 2, 'for the owner and for an invited editor');
 });
