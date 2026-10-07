@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  sourceLabel, typedValue, groupSourceEdits, plainBody, markdownText, lockReason,
+  sourceLabel, typedValue, keptText, groupSourceEdits, plainBody, markdownText, lockReason,
   skipSentence, refusalSentence, typeHint, SAVED_BUILDING_COPY, BUILD_FAILED_COPY,
   buildRecord, buildStanding, resumePlan, BUILD_WATCH_MS, BUILD_KEPT_MS,
 } from '../src/editor/source-fields.js';
@@ -107,6 +107,23 @@ test('typed: a value of the wrong kind is told in a sentence that says how to wr
   // a value that could not be saved before is still sent as typed when it is somehow staged (the worker says why)
   const [g] = groupSourceEdits(new Map([['a.md#/frontmatter/n?type=number', { value: 'lots', type: 'number' }]]), {});
   assert.equal(g.body.edits[0].value, 'lots');
+});
+
+test('typed: a date, a time, a number or an address is kept without the spaces typed around it', () => {
+  // the worker takes "2026-09-21" and turns " 2026-09-21" away
+  assert.equal(keptText(' 2026-09-21 ', 'date'), '2026-09-21');
+  assert.equal(keptText('18:30\n', 'time'), '18:30');
+  assert.equal(keptText(' 150 ', 'number'), '150');
+  assert.equal(keptText(' yes', 'boolean'), 'yes');
+  assert.equal(keptText(' /about ', 'url'), '/about');
+  // words are kept as typed
+  assert.equal(keptText('  two  spaces ', undefined), '  two  spaces ');
+  assert.equal(keptText(' a title ', 'string'), ' a title ');
+  const commit = main.slice(main.indexOf('function commitSourceEdit('), main.indexOf('function cancelSourceEdit('));
+  assert.match(commit, /const kept = keptText\(value, a\.parsed\.type\);/);
+  assert.match(commit, /else stageSourcePending\(a\.ref, kept\);/);
+  // a line break typed into an entry's one paragraph leaves it one paragraph of words
+  assert.match(commit, /if \(a\.surface\.children\.length\) a\.surface\.textContent = value;/);
 });
 
 // ─── The text of an entry ────────────────────────────────────────────────────

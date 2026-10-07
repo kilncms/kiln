@@ -20,7 +20,7 @@ import { generatorSignals } from '../adapters/detect.js';
 import {
   scanSourceRefs, groupSourceEdits, matchAppliedRefs, matchSkippedRefs, resolveBuildState,
   revertRequest, parseSourceCapabilities, saveSummary, friendlyRef, STILL_BUILDING_COPY,
-  sourceLabel, typedValue, typeHint, isBody, plainBody, lockReason, skipSentence, refusalSentence,
+  sourceLabel, typedValue, keptText, typeHint, isBody, plainBody, lockReason, skipSentence, refusalSentence,
   SAVED_BUILDING_COPY, BUILD_FAILED_COPY, BUILD_WATCH_MS, buildRecord, buildStanding, resumePlan,
 } from './source-fields.js';
 import { initPalette, openPalette } from './palette.js';
@@ -3205,6 +3205,9 @@ function commitSourceEdit() {
   endSourceEditing(a);
   removeToolbar();
   const value = a.surface.textContent;
+  // A line break typed into an entry's one paragraph can leave an element in
+  // it: the paragraph holds words and nothing else.
+  if (a.surface.children.length) a.surface.textContent = value;
   if (value === a.originalText) return;   // nothing was typed here
   const f = state.sourceFields.get(a.ref);
   const base = state.sourceBase.get(a.ref);
@@ -3218,9 +3221,11 @@ function commitSourceEdit() {
     return;
   }
   // Back to what this place showed before any edit → un-stage (undoable).
+  const kept = keptText(value, a.parsed.type);
   const own = base === f.boot ? f.shown[f.els.indexOf(a.el)] : base;
-  if (prev && (value === own || value === base)) stageSourcePending(a.ref, null);
-  else stageSourcePending(a.ref, value);
+  if (prev && (kept === own || kept === base)) stageSourcePending(a.ref, null);
+  else if (kept === (prev ? prev.value : own)) syncSourceDom(a.ref);   // only spaces were typed around it
+  else stageSourcePending(a.ref, kept);
 }
 
 /** Esc: throw the in-progress edit away (staged value, else the pre-edit text). */

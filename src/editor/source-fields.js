@@ -253,6 +253,15 @@ export function typedValue(text, type) {
   return { ok: true, value: raw };
 }
 
+/**
+ * What is staged for a field: the words as typed, except that a date, a time,
+ * a number, a yes/no or an address loses the spaces typed around it (the
+ * worker takes "2026-09-21" and turns " 2026-09-21" away).
+ */
+export function keptText(text, type) {
+  return Object.hasOwn(TYPE_HELP, type || '') ? String(text ?? '').trim() : String(text ?? '');
+}
+
 const TYPE_HINT = {
   date: 'A date is typed here like 2026-09-20.',
   time: 'A time is typed here like 14:30.',
