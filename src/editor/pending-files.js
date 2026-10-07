@@ -65,11 +65,15 @@ export async function keptFiles(page, now = Date.now()) {
 
 /**
  * Of the kept uploads, the ones a set of restored edits still points at.
- * edits: { key: { html?, attrs? } }. A file no edit mentions was abandoned
- * (its swap was undone) and stays behind.
+ * edits: { key: { html?, attrs? } }, and source: { ref: { value } } for the
+ * content files. A file no edit mentions was abandoned (its swap was undone)
+ * and stays behind.
  */
-export function filesToRestore(files, edits) {
-  const hay = Object.values(edits || {}).map(e => `${e.html ?? ''}\n${Object.values(e.attrs || {}).join('\n')}`).join('\n');
+export function filesToRestore(files, edits, source = {}) {
+  const hay = [
+    ...Object.values(edits || {}).map(e => `${e.html ?? ''}\n${Object.values(e.attrs || {}).join('\n')}`),
+    ...Object.values(source || {}).map(e => String(e?.value ?? '')),
+  ].join('\n');
   return (files || []).filter(f => { const name = String(f.path).split('/').pop(); return !!name && hay.includes(name); });
 }
 

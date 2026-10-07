@@ -29,11 +29,13 @@ const { Content } = await render(entry);
 <h3 {...kilnSource(entry, 'title')}>{entry.data.title}</h3>
 <time {...kilnSource(entry, 'date', { type: 'date' })}>{entry.data.date}</time>
 <span {...kilnSource(entry, ['venue', 'name'])}>{entry.data.venue.name}</span>
+<Image {...kilnSource(entry, 'cover', { type: 'image', alt: 'coverAlt' })} src={entry.data.cover} alt={entry.data.coverAlt} />
+<a {...kilnSource(entry, ['cta', 'label'], { href: ['cta', 'href'] })} href={entry.data.cta.href}>{entry.data.cta.label}</a>
 <div {...kilnBody(entry)}><Content /></div>
 ```
 
 Each helper returns a plain attrs object like
-`{ 'data-kiln-source': 'src/content/events/service.md#/frontmatter/title' }`
+`{ 'data-kiln-source': 'src/content/events/service.md#/frontmatter/title?c=events' }`
 that you spread onto the element showing that value. When a signed-in Kiln
 editor opens the page, those elements become editable in place; saving commits
 to the underlying content file and your host rebuilds the site.
@@ -53,10 +55,23 @@ What the editor can do with each kind of element today:
 - **A field your template renders as Markdown**: stamp it
   `kilnSource(entry, 'summary', { type: 'markdown' })` and it is edited the same
   way as the body. A YAML block (`|`) stays a block.
-- **A link's address or a picture**: read-only for now. If you stamp
-  `{ type: 'url' }` on an `<a>`, its words are a label, not the address, so
-  the editor will not take them as one. To make a link's words editable, keep
-  them in a field of their own and stamp that.
+- **A picture** (`{ type: 'image' }` on an `<img>` or Astro's `<Image />`):
+  "Replace picture…" takes a picture from the device, makes it web-sized
+  (WebP, or JPEG from a browser such as Safari that cannot write WebP), and
+  puts it in the folder the field's picture is in now: beside the entry for a
+  path such as `./images/hall.jpg` (what `image()` checks), under `public/` for
+  an address such as `/img/hall.jpg`. The field is written in the same style.
+  The picture is committed before the entry that names it, and the worker
+  refuses a picture path that is not in the repository. `opts.alt` names the
+  field that holds the picture's description; it is typed beside "Replace
+  picture…". A field with no picture yet, a picture on another site, or a path
+  that uses an alias (`~/assets/…`) stays as it is and says why.
+- **A picture inside the body**: click it while the text is open, and it is
+  replaced and described the same way; only its line of Markdown changes.
+- **A link** (`opts.href` on an `<a>`): its words are edited in place and its
+  address is typed in the toolbar beside them. `{ type: 'url' }` on an `<a>`
+  makes the address the field: the toolbar takes the address and the words
+  stay as your template wrote them.
 - **An address shown as itself** (`{ type: 'url' }` on anything but an `<a>`):
   edited as text. It takes a web address (`https://…`), `mailto:`, `tel:` or a
   place on the site (`/about`, `#top`); words are turned away with a sentence.
@@ -105,33 +120,43 @@ Attrs for one frontmatter field.
 - `opts.type` — optional editor hint: `string` · `text` · `markdown` · `date` ·
   `time` · `enum` · `boolean` · `number` · `url` · `image`. Without it the
   field is edited as a string.
+- `opts.alt` — on a picture: the field that holds its description (a key or an
+  array, like `field`). Stamped as `data-kiln-source-alt`.
+- `opts.href` — on a link: the field that holds its address. Stamped as
+  `data-kiln-source-href`.
+
+The reference carries the entry's collection (`?c=events`), so the editor can
+find the field in the collection's schema.
 
 ### `kilnBody(entry)`
 
 Attrs for the entry's whole markdown body. Put it on the element that wraps
-`<Content />`. (`.md` bodies are editable; `.mdx` bodies are code, and Kiln
-never edits code.)
+`<Content />`. Both `.md` and `.mdx` bodies are edited with the toolbar; in
+`.mdx` the code (imports, exports, components, expressions) stays as written.
 
-### `kiln()` (default export — optional in v1)
+### `kiln()` (default export)
 
 ```js
 // astro.config.mjs
-import kiln from '@kilncms/astro';
+import kiln from './src/lib/kiln-astro.mjs';   // '@kilncms/astro' once it is on npm
 export default defineConfig({ integrations: [kiln()] });
 ```
 
-Honesty first: in v1 this integration **does nothing** except log a reminder
-that provenance comes from the explicit helpers. Automatic stamping of
-collection fields and a build-time `.kiln/schema.json` export (typed editor
-controls from your zod schemas) will land under this same entry point later —
-adding it today just means nothing to rewire then.
+At the end of each build it publishes your collections' schemas with the site,
+at `/kiln-schema.json`, as Astro itself describes them (JSON Schema, from
+`.astro/collections/`). The editor reads it and refuses, with a sentence, a
+value your next build would reject: a title longer than `.max(80)`, a page
+address where the schema says `.url()`, an empty field the schema requires, a
+word that is not in a `z.enum([...])`. Without the integration everything is
+edited as before; nothing is guessed. The file holds field names and their
+rules, no content.
 
 ## Stripping provenance from a build
 
 `data-kiln-source` values reveal repo paths (harmless for open-source sites,
 possibly unwanted elsewhere). Set `KILN_DISABLE=1` in a build's environment
-and every helper returns `{}` — no provenance is emitted, and those fields
-simply aren't editable on that deployment.
+and every helper returns `{}` — no provenance is emitted, no `/kiln-schema.json`
+is written, and those fields simply aren't editable on that deployment.
 
 ## Behavior guarantees
 

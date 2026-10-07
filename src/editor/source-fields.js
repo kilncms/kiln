@@ -235,7 +235,7 @@ export function revertRequest(committed, { repo, branch } = {}) {
  */
 export function parseSourceCapabilities(body) {
   if (!body || typeof body !== 'object' || !Array.isArray(body.modes)) {
-    return { legacy: true, source: false, adapters: [], markdown: false };
+    return { legacy: true, source: false, adapters: [], markdown: false, media: false };
   }
   return {
     legacy: false,
@@ -244,6 +244,9 @@ export function parseSourceCapabilities(body) {
     // A worker that takes a formatted Markdown body (and MDX prose) written
     // back by the editor, keeping the markup and the code it holds.
     markdown: body.sourceMarkdown === true,
+    // A worker that writes a picture field only with a picture that is in the
+    // repository, and checks a link address field (picturesToCheck).
+    media: body.sourceMedia === true,
   };
 }
 
@@ -281,12 +284,16 @@ export function sourceLabel(parsed) {
   let segs = parsed.pointer;
   if (segs.length > 1 && (segs[0] === 'frontmatter' || segs[0] === 'data')) segs = segs.slice(1);
   // An entry's whole text is its text; a place in a list is counted from 1.
-  const what = isBodyPointer(parsed) ? 'Text' : readableName(segs.map(s => (/^\d+$/.test(s) ? String(Number(s) + 1) : s)).join(' '));
+  // A field named for markup ("coverAlt", "cta.href") says what it is in words.
+  const what = isBodyPointer(parsed) ? 'Text' : upperFirst(readableName(segs.map(s => (/^\d+$/.test(s) ? String(Number(s) + 1) : s)).join(' '))
+    .replace(/\b(href|alt|src)\b/gi, (m) => ({ href: 'link', alt: 'description', src: 'picture' })[m.toLowerCase()]));
   const parts = parsed.path.split('/');
   let file = parts.pop().replace(/\.[^.]+$/, '');
   if (/^index$/i.test(file) && parts.length) file = parts.pop();
   return `${what} · ${readableName(file)}`;
 }
+
+const upperFirst = (w) => w.charAt(0).toUpperCase() + w.slice(1);
 
 // ─── Typed values ────────────────────────────────────────────────────────────
 
@@ -458,7 +465,7 @@ function inFolders(file, paths) {
  *            Markdown back, and a way to read the file): then an entry's
  *            text, formatted or in MDX, and a Markdown field are editable
  */
-export function lockReason({ parsed, tag = '', caps, paths, adapter = 'astro', plain = true, seat = null, rich = false } = {}) {
+export function lockReason({ parsed, tag = '', caps, paths, adapter = 'astro', plain = true, seat = null, rich = false, media = false } = {}) {
   if (!parsed) return 'This text can’t be edited here. For the site’s owner: its data-kiln-source value is not a reference Kiln can read.';
   if (caps && !caps.source) return 'This page can’t be edited yet. The site’s owner needs to update Kiln first.';
   // A suggest-only editor: the worker takes no suggestion for a content file
@@ -469,8 +476,14 @@ export function lockReason({ parsed, tag = '', caps, paths, adapter = 'astro', p
   if (kinds && !kinds.test(parsed.path)) return `${OWN_FILE}, so it can’t be edited here. Ask the site’s owner.`;
   const body = isBodyPointer(parsed);
   if (body && /\.mdx$/i.test(parsed.path) && !rich) return 'This text is written as code in the site’s files, so it can’t be edited here. Ask the site’s owner.';
-  if (String(tag).toUpperCase() === 'IMG' || parsed.type === 'image') return 'Pictures that come from the site’s content can’t be changed here yet. Ask the site’s owner.';
-  if (parsed.type === 'url' && String(tag).toUpperCase() === 'A') return 'This link’s address comes from the site’s content and can’t be changed here yet. Ask the site’s owner.';
+  // A picture field on a picture, and a link's address on a link, where the
+  // worker takes them back. Anything else on a picture is not its value.
+  const img = String(tag).toUpperCase() === 'IMG';
+  if (img || parsed.type === 'image') {
+    if (!(media && img && parsed.type === 'image')) return 'Pictures that come from the site’s content can’t be changed here yet. Ask the site’s owner.';
+    return null;
+  }
+  if (parsed.type === 'url' && String(tag).toUpperCase() === 'A' && !media) return 'This link’s address comes from the site’s content and can’t be changed here yet. Ask the site’s owner.';
   if ((body || parsed.type === 'markdown') && !plain && !rich) return 'This text has formatting (bold, links, a list or more than one paragraph). Kiln can’t edit it on the page yet without losing that, so it is left as it is. Ask the site’s owner to change it.';
   return null;
 }
@@ -485,6 +498,8 @@ export function skipSentence(reason) {
   if (/^needs to be a number/.test(r)) return TYPE_HELP.number;
   if (/^needs to be true or false/.test(r)) return TYPE_HELP.boolean;
   if (/^not a safe URL/.test(r)) return TYPE_HELP.url;
+  if (/^needs to be a picture/.test(r)) return 'This needs to be a picture kept in the site’s own files.';
+  if (/^picture not found/.test(r)) return 'The picture it points to is not in the site’s files. Choose or upload the picture again, then publish.';
   if (/script markup/.test(r)) return 'It can’t contain code, such as a script tag.';
   if (/^pointer not found/.test(r)) return GONE;
   if (CHANGED_SINCE_READ.test(r)) return 'Someone else changed this. Reload the page to see how it is now.';

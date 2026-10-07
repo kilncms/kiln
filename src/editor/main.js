@@ -27,6 +27,9 @@ import {
 import {
   prepare as richPrepare, plan as richPlan, prepSentence, planSentence, keepSentence, sheetWords, KEEP_ATTR,
 } from './source-rich.js';
+import { pictureTarget, inlinePicture, pictureName, addressValue } from './source-media.js';
+import { pictureValue, pictureFileName } from '../adapters/pictures.js';
+import { fieldSchema, valueProblem, problemSentence, readSchemaDoc } from './source-schema.js';
 import { initPalette, openPalette } from './palette.js';
 import { builtPages } from './site-pages.js';
 import { initSuggest, suggestChanges, sendSuggestion, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
@@ -2952,10 +2955,15 @@ function publishItems({ light = false } = {}) {
   }
   for (const [ref, v] of state.pendingSource) {
     const rf = state.sourceFields?.get(ref);
-    items.push({ id: 'source:' + ref, key: null, sourceRef: ref, label: sourceName(ref),
-      parts: v.md && v.words === rf?.richWords
-        ? [{ type: 'note', tone: 'plain', text: 'The formatting changed: the words are the same.' }]
-        : [{ type: 'text', before: v.md ? (rf?.richWords ?? '') : (state.sourceBase.get(ref) ?? ''), after: v.md ? (v.words ?? '') : v.value }], warnings: [],
+    const was = state.sourceBase.get(ref) ?? '';
+    const attr = rf?.attrEls?.[0]?.attr;
+    let parts;
+    if (rf?.picture) parts = [{ type: 'image', before: rf.shownDisplay || rf.pictureWas?.[0]?.src || '', after: v.display || '' }, { type: 'note', tone: 'plain', text: `New picture: ${pictureName(v.value)}` }];
+    else if (attr === 'alt') parts = [{ type: 'text', name: 'Picture description', before: was, after: String(v.value ?? '') }];
+    else if (attr === 'href' || (rf?.parsed?.type === 'url' && rf.els.some(el => el.tagName === 'A'))) parts = [{ type: 'text', name: 'Link goes to', before: was, after: String(v.value ?? '') }];
+    else if (v.md && v.words === rf?.richWords) parts = [{ type: 'note', tone: 'plain', text: 'The formatting changed: the words are the same.' }];
+    else parts = [{ type: 'text', before: v.md ? (rf?.richWords ?? '') : was, after: v.md ? (v.words ?? '') : v.value }];
+    items.push({ id: 'source:' + ref, key: null, sourceRef: ref, label: sourceName(ref), parts, warnings: [],
       drop: () => { state.pendingSource.delete(ref); syncSourceDom(ref); refreshPublishButton(); } });
   }
   state.pendingStructural.forEach((op, i) => {
@@ -3017,7 +3025,7 @@ function requestPublish() {
     checks: checkEditedLinks,
     jump: (item) => {
       document.querySelector('#kiln-modal [data-close]')?.click();
-      const el = item.key ? elementForKey(item.key) : state.sourceFields?.get(item.sourceRef)?.els[0];
+      const el = item.key ? elementForKey(item.key) : sourceFieldEls(state.sourceFields?.get(item.sourceRef))[0];
       if (!el) return;
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       el.classList.add('kiln-flash');
@@ -3055,6 +3063,40 @@ async function sendSuggestionFromSheet(note) {
   }
 }
 
+/**
+ * Commit the queued files (pictures, documents) that something about to be
+ * published names, in one commit. An upload whose edit was undone or dropped
+ * is named by nothing: committing it would put a file on the live site that
+ * no page uses, so it is left out (and forgotten). `haystack` is every value
+ * about to be committed, as one string.
+ */
+async function commitStagedFiles(haystack) {
+  if (!state.pendingBinaries.size) return;
+  for (const path of [...state.pendingBinaries.keys()]) {
+    const base = path.split('/').pop();
+    if (base && !haystack.includes(base)) {
+      state.pendingBinaries.delete(path);
+      try {
+        document.querySelectorAll('img[data-kiln-src]').forEach(img => {
+          if ((img.getAttribute('data-kiln-src') || '').split('/').pop() === base) img.removeAttribute('data-kiln-src');
+        });
+      } catch {}
+    }
+  }
+  if (!state.pendingBinaries.size) return;
+  const files = [...state.pendingBinaries].map(([path, base64]) => ({ path, base64 }));
+  await commitFiles(state.gh, cfg.repo, cfg.branch || 'main', files,
+    `Upload ${files.length} file${files.length > 1 ? 's' : ''} (via Kiln)`);
+  // Retire only the paths we sent; a file queued during the commit survives.
+  for (const { path } of files) state.pendingBinaries.delete(path);
+  clearImageCache();   // "From this site" should list what was just added
+}
+
+/** Every content-file value about to be published, as one string (what names a queued file). */
+function sourceHaystack() {
+  return [...state.pendingSource.values()].map(v => String(v.value ?? '')).join('\n');
+}
+
 async function publish(opts = {}) {
   // Still typing in a field? That text is part of what the person is publishing:
   // stage it first (the click-away that normally does this runs after us).
@@ -3085,6 +3127,19 @@ async function publish(opts = {}) {
   // even BE a committed page file to edit (§13), and its journal/status tail
   // must not claim "Published" for commits whose build hasn't run (§11).
   if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length) {
+    return publishSource(opts.note);
+  }
+  // Content-file edits and the pictures they name: the pictures first, in
+  // one commit, so that no content file names a picture that is not there yet.
+  if (!state.pending.size && !state.pendingStructural.length) {
+    setStatus('Publishing — adding the pictures…', 'saving');
+    disablePublish(true);
+    try {
+      await commitStagedFiles(sourceHaystack());
+    } catch (err) {
+      console.error('[kiln] publish pictures', err);
+      return publishFailed(err, opts);
+    }
     return publishSource(opts.note);
   }
 
@@ -3126,35 +3181,15 @@ async function publish(opts = {}) {
     // and its stale data-kiln-src marker would make watchDeploy point a live <img>
     // at that (now-absent) path. Keep only binaries whose filename actually appears
     // in a value we're about to commit.
-    if (state.pendingBinaries.size) {
-      const haystack = [
-        ...localEdits.map(e => e.html ?? e.value ?? ''),
-        ...partialEdits.map(e => e.html ?? e.value ?? ''),
-        ...state.pendingStructural.map(s => s.html || ''),
-      ].join('\n');
-      for (const path of [...state.pendingBinaries.keys()]) {
-        const base = path.split('/').pop();
-        if (base && !haystack.includes(base)) {
-          state.pendingBinaries.delete(path);
-          try {
-            document.querySelectorAll('img[data-kiln-src]').forEach(img => {
-              if ((img.getAttribute('data-kiln-src') || '').split('/').pop() === base) img.removeAttribute('data-kiln-src');
-            });
-          } catch {}
-        }
-      }
-    }
     // Commit any queued binaries (images/docs) FIRST, in one commit, so the files
     // exist before the page that references them goes live. Deferring them to here
     // is what makes "nothing is live until Publish" true (Discard = no orphans).
-    if (state.pendingBinaries.size) {
-      const files = [...state.pendingBinaries].map(([path, base64]) => ({ path, base64 }));
-      await commitFiles(state.gh, cfg.repo, cfg.branch || 'main', files,
-        `Upload ${files.length} file${files.length > 1 ? 's' : ''} (via Kiln)`);
-      // Retire only the paths we sent; a file queued during the commit survives.
-      for (const { path } of files) state.pendingBinaries.delete(path);
-      clearImageCache();   // "From this site" should list what was just added
-    }
+    await commitStagedFiles([
+      ...localEdits.map(e => e.html ?? e.value ?? ''),
+      ...partialEdits.map(e => e.html ?? e.value ?? ''),
+      ...state.pendingStructural.map(s => s.html || ''),
+      sourceHaystack(),
+    ].join('\n'));
     let result = null;
     // What Undo needs: the page file exactly as it was when this commit was made.
     let textBefore = null;
@@ -3245,24 +3280,29 @@ async function publish(opts = {}) {
     if (state.pendingSource.size) await publishSource(opts.note);
   } catch (err) {
     console.error('[kiln] publish', err);
-    keptNote = opts.note || '';   // the line typed under "What changed?" is back in its box when the sheet is opened again
-    // A file the worker would not take (type, size, or contents that don't match
-    // its name) comes back with a plain sentence — show it, with the file's name.
-    const why = fileRefusalText(err.data);
-    const which = why && err.data.path ? ` (${String(err.data.path).split('/').pop()})` : '';
-    // Re-enable Publish so the user can retry. disablePublish(false) would keep
-    // the button disabled when only binaries/structural ops are pending (its
-    // check is `!state.pending.size`); refreshPublishButton counts those too.
-    // It also saves the edits in this browser, before anything is said about them.
-    refreshPublishButton();
-    // The sign-in has ended (401), or it does not allow this change (403):
-    // the edits stay as they are, and the person is told where they stand.
-    // Trouble on the way (no answer, a 5xx, a 429) is neither: it says so, and to try again.
-    const f = why ? null : readFailure(err);
-    if (f && (f.kind === 'ended' || f.kind === 'refused')) stoppedDialog(f, true, noteTyped(opts.note));
-    else if (f && f.kind === 'trouble') setStatus(publishTrouble(f, { edits: state.pending.size, source: state.pendingSource.size }), 'error');
-    else setStatus(why ? why + which : `${notDone('That was not published.', err)} Your ${state.pending.size + state.pendingSource.size === 1 ? 'edit is' : 'edits are'} still here.`, 'error');
+    publishFailed(err, opts);
   }
+}
+
+/** A publish that stopped: what is said, and the edits kept for another try. */
+function publishFailed(err, opts = {}) {
+  keptNote = opts.note || '';   // the line typed under "What changed?" is back in its box when the sheet is opened again
+  // A file the worker would not take (type, size, or contents that don't match
+  // its name) comes back with a plain sentence — show it, with the file's name.
+  const why = fileRefusalText(err.data);
+  const which = why && err.data.path ? ` (${String(err.data.path).split('/').pop()})` : '';
+  // Re-enable Publish so the user can retry. disablePublish(false) would keep
+  // the button disabled when only binaries/structural ops are pending (its
+  // check is `!state.pending.size`); refreshPublishButton counts those too.
+  // It also saves the edits in this browser, before anything is said about them.
+  refreshPublishButton();
+  // The sign-in has ended (401), or it does not allow this change (403):
+  // the edits stay as they are, and the person is told where they stand.
+  // Trouble on the way (no answer, a 5xx, a 429) is neither: it says so, and to try again.
+  const f = why ? null : readFailure(err);
+  if (f && (f.kind === 'ended' || f.kind === 'refused')) stoppedDialog(f, true, noteTyped(opts.note));
+  else if (f && f.kind === 'trouble') setStatus(publishTrouble(f, { edits: state.pending.size, source: state.pendingSource.size }), 'error');
+  else setStatus(why ? why + which : `${notDone('That was not published.', err)} Your ${state.pending.size + state.pendingSource.size === 1 ? 'edit is' : 'edits are'} still here.`, 'error');
 }
 
 // ─── "Published. Undo": ten seconds to take a publish back ───────────────────
@@ -3440,10 +3480,14 @@ async function initSourceFields() {
     const own = f.indexes.map(i => els[i]);
     // What each place showed when the page loaded. One value can be written
     // two ways on a page (a date, say), and each place gets its own words back.
-    const shown = own.map(el => sourceSurface(el, f.parsed).textContent);
+    // A link whose address is the field shows the address in its href, not in its words.
+    const shown = own.map(el => (isAddressLink(el, f.parsed) ? el.getAttribute('href') ?? '' : sourceSurface(el, f.parsed).textContent));
     state.sourceFields.set(f.ref, { parsed: f.parsed, els: own, shown, boot: shown[0] });
     if (!state.sourceBase.has(f.ref)) state.sourceBase.set(f.ref, shown[0]);
   }
+  // A picture's description and a link's address are fields of their own,
+  // named beside the picture or link (kilnSource's alt and href).
+  const companions = registerSourceCompanions();
   // Review-mode seats never see edit affordances (matches decorateFields).
   if (mode === 'editor' && state.scope?.mode === 'review') return;
   for (const m of scan.malformed) {
@@ -3458,16 +3502,33 @@ async function initSourceFields() {
   // Formatted text (an entry's text, a Markdown field) is edited with the
   // toolbar when the worker takes Markdown back and the file can be read.
   const rich = !!state.sourceCaps?.markdown && !!state.gh && !cfg.sandbox;
+  // Pictures and link addresses, where the worker checks them and the file can be read.
+  const media = !!state.sourceCaps?.media && !!state.gh && !cfg.sandbox;
+  sourceMedia = media;
+  // The site's schema, when it publishes one, so that a value the build
+  // would turn away is named before it is kept. Read once, in the background.
+  if (!cfg.sandbox && [...state.sourceFields.values()].some(f => f.parsed.collection)) loadSiteSchema();
   for (const [ref, f] of state.sourceFields) {
     for (const el of f.els) {
       // Read-only is decided here, before anyone types: the worker would turn
       // each of these away at Publish, or take words that are not the value.
       const why = lockReason({ parsed: f.parsed, tag: el.tagName, caps: state.sourceCaps, paths: state.scope?.paths, adapter: cfg.adapter || 'astro', plain: !!plainBody(el) || (!isBody(f.parsed) && !el.children.length),
-        seat: isSuggestMode() ? 'suggest' : null, rich });
+        seat: isSuggestMode() ? 'suggest' : null, rich, media });
       if (why) { lockSourceField(el, why); firstWhy = firstWhy || why; }
+      else if (el.tagName === 'IMG') { decorateSourcePicture(el, ref, f.parsed); open++; }
       else if (rich && isMarkdownField(f.parsed)) { decorateRichSource(el, ref, f.parsed); open++; }
       else { decorateSourceField(el, ref, f.parsed); open++; }
     }
+  }
+  // A picture whose only field is its description, and a link whose address
+  // is a field while its words are not.
+  for (const c of companions) {
+    if (c.el.hasAttribute(SOURCE_ATTR)) continue;   // handled with its own field above
+    const why = lockReason({ parsed: c.parsed, caps: state.sourceCaps, paths: state.scope?.paths, adapter: cfg.adapter || 'astro',
+      seat: isSuggestMode() ? 'suggest' : null, media }) || (media ? null : 'This comes from the site’s content and can’t be changed here yet. Ask the site’s owner.');
+    if (why) continue;   // the page as it is: nothing to say about a part nobody offered
+    if (c.attr === 'alt') { decorateSourcePicture(c.el, null, null); open++; }
+    else { decorateSourceField(c.el, c.ref, { ...c.parsed, type: 'url' }); open++; }
   }
   // Nothing on this page can be edited by this person: say so once, in sight.
   if (!open && firstWhy) {
@@ -3481,7 +3542,7 @@ async function initSourceFields() {
   // Click-away saves, Esc reverts — the same semantics data-cms fields have.
   // Registered here so pages without source fields add no listeners.
   document.addEventListener('click', (e) => {
-    if (sourceActive && !sourceActive.el.contains(e.target) && !e.target.closest('#kiln-toolbar') && !e.target.closest('.kiln-keeps-edit')) {
+    if (sourceActive && !sourceActive.el.contains(e.target) && !e.target.closest('#kiln-toolbar') && !e.target.closest('.kiln-keeps-edit') && !e.target.closest('#kiln-modal')) {
       commitSourceEdit({ away: true });
     }
   });
@@ -3537,6 +3598,14 @@ function startSourceEditing(el, ref, parsed) {
   // An in-progress data-cms edit commits first (its click-away can't see this
   // click — decorateSourceField stopped propagation).
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+  // A link whose address is the field: its words are not, so only the address is typed.
+  if (el.tagName === 'A' && parsed.type === 'url') {
+    sourceActive = { el, surface: el, ref, parsed, addressOnly: true };
+    el.classList.add('kiln-editing');
+    renderSourceToolbar(el, ref, parsed);
+    tbAddress()?.focus();
+    return;
+  }
   const surface = sourceSurface(el, parsed);
   sourceActive = { el, surface, ref, parsed, originalText: surface.textContent };
   el.classList.add('kiln-editing');
@@ -3569,9 +3638,19 @@ function commitSourceEdit(opts = {}) {
   const a = sourceActive;
   if (!a) return;
   if (a.rich) { commitRichSource(opts); return; }
+  // The link's address, typed in the toolbar: read before the toolbar goes.
+  const hrefRef = a.addressOnly ? a.ref : sourceHrefOf.get(a.el);
+  const address = hrefRef ? tbAddress()?.value : undefined;
   sourceActive = null;
+  if (a.addressOnly) {
+    a.el.classList.remove('kiln-editing');
+    removeToolbar();
+    if (address !== undefined) stageSourceAttr(hrefRef, address);
+    return;
+  }
   endSourceEditing(a);
   removeToolbar();
+  if (address !== undefined) stageSourceAttr(hrefRef, address);
   // Where Enter was pressed WebKit puts an element and Chromium a line break:
   // either way it is a line break.
   for (const br of a.surface.querySelectorAll('br')) br.replaceWith('\n');
@@ -3593,6 +3672,14 @@ function commitSourceEdit(opts = {}) {
   }
   // Back to what this place showed before any edit → un-stage (undoable).
   const kept = keptText(value, a.parsed.type);
+  // What the site's own schema takes (a length, a full address, one of a
+  // list): said now, rather than by a build that fails after Publish.
+  const no = kept !== state.sourceBase.get(a.ref) ? schemaSays(a.parsed, kept) : null;
+  if (no) {
+    a.surface.textContent = a.originalText;
+    setStatus(`${kept.trim() ? `“${kept.trim().slice(0, 40)}”` : 'That'} was not kept. ${no}`, 'error', { hold: 12000 });
+    return;
+  }
   const own = base === f.boot ? f.shown[f.els.indexOf(a.el)] : base;
   if (prev && (kept === own || kept === base)) stageSourcePending(a.ref, null);
   else if (kept === (prev ? prev.value : own)) syncSourceDom(a.ref);   // only spaces were typed around it
@@ -3605,6 +3692,7 @@ function cancelSourceEdit() {
   if (!a) return;
   if (a.rich) { cancelRichSource(); return; }
   sourceActive = null;
+  if (a.addressOnly) { a.el.classList.remove('kiln-editing'); removeToolbar(); return; }
   endSourceEditing(a);
   a.surface.textContent = a.originalText;
   removeToolbar();
@@ -3627,6 +3715,14 @@ function decorateRichSource(el, ref, parsed) {
     // A part kept as the file has it says so, and takes no typing.
     const kept = e.target.closest(`[${KEEP_ATTR}^="b"]`);
     if (kept && el.contains(kept)) { e.preventDefault(); e.stopPropagation(); setStatus(keepSentence(kept), 'idle', { hold: 9000 }); return; }
+    // A picture in the text: replaced, and described, from its own toolbar.
+    const pic = sourceMedia && e.target.tagName === 'IMG' && el.contains(e.target) ? e.target : null;
+    if (pic) {
+      e.preventDefault(); e.stopPropagation();
+      if (sourceActive?.el === el) openInlinePicture(el, pic, parsed);
+      else startRichSource(el, ref, parsed).then(() => { if (sourceActive?.el === el) openInlinePicture(el, pic, parsed); });
+      return;
+    }
     if (sourceActive && sourceActive.el === el) return;
     e.preventDefault(); e.stopPropagation();
     startRichSource(el, ref, parsed);
@@ -3683,8 +3779,7 @@ async function startRichSource(el, ref, parsed) {
   const sel = window.getSelection();
   sel.removeAllRanges();
   sel.addRange(range);
-  renderToolbar(el, null, { markdown: true, label: sourceLabel(parsed).split(' · ')[0],
-    onSave: () => commitSourceEdit(), onCancel: () => cancelSourceEdit() });
+  richToolbar(el, parsed);
 }
 
 /** Typing may not take away a part kept as the file has it. */
@@ -3748,15 +3843,293 @@ function cancelRichSource() {
   removeToolbar();
 }
 
+// ─── Pictures and link addresses from the content files ──────────────────────
+// A picture field holds the path of a picture in the repository. "Replace
+// picture…" makes the chosen file web-sized (WebP, or JPEG where a browser
+// such as Safari cannot write WebP), puts it in the folder the field's picture
+// is in now, and stages the field's new path; the file is committed before the
+// content file that names it (publish). A picture in an entry's text is
+// replaced the same way from inside the text. A link's address is typed in the
+// toolbar, beside its words.
+
+let sourceMedia = false;               // the worker takes pictures and addresses back (initSourceFields)
+const sourceHrefOf = new WeakMap();    // a link → the ref of its address field
+const sourceAltOf = new WeakMap();     // a picture → the ref of its description field
+
+/** The description and address fields named beside pictures and links: [{ el, attr, ref, parsed }]. */
+function registerSourceCompanions() {
+  const out = [];
+  for (const [attr, tag, map] of [['alt', 'IMG', sourceAltOf], ['href', 'A', sourceHrefOf]]) {
+    for (const el of document.querySelectorAll(`[${SOURCE_ATTR}-${attr}]`)) {
+      if (isKilnChrome(el) || el.tagName !== tag) continue;
+      const ref = el.getAttribute(`${SOURCE_ATTR}-${attr}`);
+      const parsed = parseSourceRef(ref);
+      if (!parsed || isBody(parsed)) continue;
+      const shown = el.getAttribute(attr) ?? '';
+      let f = state.sourceFields.get(ref);
+      if (!f) { f = { parsed, els: [], shown: [], boot: shown }; state.sourceFields.set(ref, f); }
+      (f.attrEls = f.attrEls || []).push({ el, attr, shown });
+      if (!state.sourceBase.has(ref)) state.sourceBase.set(ref, shown);
+      map.set(el, ref);
+      out.push({ el, attr, ref, parsed });
+    }
+  }
+  return out;
+}
+
+/** Every element that shows a field, its words or one of its attributes. */
+function sourceFieldEls(f) {
+  return f ? [...f.els, ...(f.attrEls || []).map(a => a.el)] : [];
+}
+
+/** /kiln-schema.json, once per page: the site's own collection schemas, or nothing. */
+let siteSchemaRead = null;
+function loadSiteSchema() {
+  if (!siteSchemaRead) {
+    siteSchemaRead = fetch(new URL('/kiln-schema.json', location.href), { credentials: 'omit' })
+      .then(res => (res.ok ? res.json() : null))
+      .then(doc => { state.siteSchema = readSchemaDoc(doc) ? doc : null; return state.siteSchema; })
+      .catch(() => null);
+  }
+  return siteSchemaRead;
+}
+
+/** The schema of one field, when the site publishes one: { node, required } or null. */
+function sourceSchema(parsed) {
+  if (!parsed?.collection || parsed.pointer[0] !== 'frontmatter') return null;
+  return fieldSchema(state.siteSchema, parsed.collection, parsed.pointer.slice(1));
+}
+
+/** Whether the site's schema takes `value` for this field: null, or the sentence that says what it needs. */
+function schemaSays(parsed, value) {
+  const p = valueProblem(sourceSchema(parsed), value);
+  return p ? problemSentence(p) : null;
+}
+
+function decorateSourcePicture(img, ref, parsed) {
+  img.classList.add('kiln-field', 'kiln-source-field');
+  img.title = parsed ? sourceHint(parsed) : 'Edit: Picture description';
+  if (ref) {
+    const f = state.sourceFields.get(ref);
+    f.picture = true;
+    // What each picture showed, to show again when its edit is dropped.
+    f.pictureWas = f.els.map(el => ({ src: el.getAttribute('src'), srcset: el.getAttribute('srcset'), sizes: el.getAttribute('sizes') }));
+  }
+  img.addEventListener('click', (e) => {
+    if (img.classList.contains('kiln-source-locked')) return;
+    e.preventDefault(); e.stopPropagation();
+    openSourcePicture(img, ref, parsed);
+  });
+}
+
+/** Show a picture's new file before it is on the site, or what it showed before. */
+function showPicture(img, src, was) {
+  if (src) {
+    img.setAttribute('src', src);
+    img.removeAttribute('srcset');   // a responsive picture would go on showing its old files
+    img.removeAttribute('sizes');
+    return;
+  }
+  if (!was) return;
+  for (const name of ['src', 'srcset', 'sizes']) {
+    if (was[name] === null || was[name] === undefined) img.removeAttribute(name);
+    else img.setAttribute(name, was[name]);
+  }
+}
+
+/** A field's value as the file holds it now, read through the worker (and kept for this page). */
+async function readSourceValue(ref, parsed) {
+  const f = state.sourceFields.get(ref);
+  if (f?.read !== undefined) return f.read;
+  const value = await readRichText(parsed);
+  if (f) f.read = value;
+  return value;
+}
+
+/** A picture field's toolbar: Replace picture…, its description, Done. */
+async function openSourcePicture(img, ref, parsed) {
+  if (sourceActive) commitSourceEdit({ away: true });
+  if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+  const altRef = sourceAltOf.get(img) || null;
+  let target = null;
+  if (ref) {
+    setStatus('Reading the picture from the site’s files…', 'saving');
+    let value;
+    try { value = await readSourceValue(ref, parsed); }
+    catch (err) {
+      console.warn('[kiln] could not read', parsed.path, err);
+      setStatus('The file this picture comes from could not be read, so it can’t be replaced right now. Reload the page to try again.', 'error', { hold: 9000 });
+      return;
+    }
+    setStatus('', 'idle');
+    await loadSiteSchema();
+    target = pictureTarget({ file: parsed.path, value, paths: mode === 'editor' ? (state.scope?.paths || null) : null, field: sourceSchema(parsed) });
+  }
+  pictureToolbar(img, {
+    label: parsed ? sourceLabel(parsed).split(' · ')[0] : 'Picture',
+    target,
+    alt: altRef ? sourceText(altRef, img, 'alt') : null,
+    replace: (file) => replaceSourcePicture(img, ref, parsed, target.place, file),
+    done: (alt) => { if (altRef) stageSourceAttr(altRef, alt); },
+  });
+}
+
+/** What a field shows now on this element: the staged value, else the base, else the page's own. */
+function sourceText(ref, el, attr) {
+  const pend = state.pendingSource.get(ref);
+  if (pend) return String(pend.value ?? '');
+  return el.getAttribute(attr) ?? '';
+}
+
+/**
+ * The picture toolbar, for a picture field and for a picture in a text.
+ * o: { label, target ({ place } | { why, sentence } | null: no file field),
+ *      alt (the description, or null when there is no field for it),
+ *      replace(file), done(alt) }
+ */
+function pictureToolbar(img, o) {
+  removeToolbar();
+  const tb = document.createElement('div');
+  tb.id = 'kiln-toolbar';
+  tb.innerHTML = `
+    ${TB_GRIP}
+    <span class="kiln-tb-label">${escapeHtml(o.label)}</span>
+    ${o.target ? '<button class="kiln-tb-fmt kiln-tb-attach" data-act="replace">Replace picture…</button>' : ''}
+    ${o.alt !== null ? `<input class="kiln-href-input" data-act="alt" type="text" value="${escapeHtml(o.alt)}"
+      placeholder="Describe this picture" title="What the picture shows, for people who can’t see it" aria-label="Picture description">` : ''}
+    <button class="kiln-tb-save" data-act="done">Done</button>`;
+  document.body.appendChild(tb);
+  positionToolbar(tb, img);
+  makeToolbarDraggable(tb);
+  img.classList.add('kiln-editing');
+  const altInput = tb.querySelector('[data-act="alt"]');
+  let away = null;
+  const finish = () => {
+    document.removeEventListener('click', away, true);
+    img.classList.remove('kiln-editing');
+    const alt = altInput ? altInput.value : null;
+    tb.remove();
+    o.done(alt);
+  };
+  const replace = tb.querySelector('[data-act="replace"]');
+  if (replace) replace.onclick = (e) => {
+    e.stopPropagation();
+    if (!o.target.place) { setStatus(o.target.sentence, 'idle', { hold: 12000 }); return; }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = () => { if (input.files[0]) o.replace(input.files[0]); };
+    input.click();
+  };
+  if (altInput) altInput.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(); } };
+  tb.querySelector('[data-act="done"]').onclick = (e) => { e.stopPropagation(); finish(); };
+  away = (e) => {
+    if (!tb.isConnected) { document.removeEventListener('click', away, true); return; }
+    if (tb.contains(e.target) || e.target === img || e.target.closest('#kiln-modal')) return;
+    finish();
+  };
+  setTimeout(() => document.addEventListener('click', away, true), 0);
+}
+
+/**
+ * A chosen file as a picture for the site: web-sized, in the format the
+ * browser can write (WebP; JPEG or PNG where it cannot), checked against what
+ * the site takes, and queued to be committed with Publish.
+ * Returns { value (what the field will say), display (an address to show it now), path } or null.
+ */
+async function sitePicture(file, owner, place) {
+  setStatus('Adding the picture…', 'saving');
+  let bmp;
+  try { bmp = await createImageBitmap(file); }
+  catch { setStatus('That file could not be read as a picture. Choose a JPEG, PNG or WebP picture.', 'error', { hold: 9000 }); return null; }
+  const pic = await bitmapToScaled(bmp, Math.min(bmp.width, 2400));
+  const path = `${place.folder}/${pictureFileName(file.name, pic.ext, Date.now().toString(36))}`;
+  const head = new Uint8Array(await pic.blob.slice(0, 64).arrayBuffer());
+  const no = uploadProblem(path, { size: pic.blob.size, head });
+  if (no) { setStatus(no.error, 'error', { hold: 12000 }); return null; }
+  stageBinary(path, pic.base64);   // committed with Publish, before the file that names it
+  return { value: pictureValue(owner, place, path), display: URL.createObjectURL(pic.blob), path };
+}
+
+async function replaceSourcePicture(img, ref, parsed, place, file) {
+  const pic = await sitePicture(file, parsed.path, place);
+  if (!pic) return;
+  // A picture replaced twice before publishing: the first upload is not kept.
+  const prev = state.pendingSource.get(ref);
+  if (prev?.upload) state.pendingBinaries.delete(prev.upload);
+  stageSourcePending(ref, { value: pic.value, display: pic.display, upload: pic.path });
+  setStatus('Picture added. Publish to put it on the site.', 'saved');
+}
+
+/** Stage a picture description or a link address from the toolbar, when it changed and the site takes it. */
+function stageSourceAttr(ref, typed) {
+  const f = state.sourceFields.get(ref);
+  if (!f || typed === null || typed === undefined) return;
+  const isAddress = f.parsed.type === 'url' || f.attrEls?.some(a => a.attr === 'href');
+  const value = isAddress ? addressValue(typed) : String(typed);
+  const pend = state.pendingSource.get(ref);
+  const base = state.sourceBase.get(ref);
+  if (value === (pend ? pend.value : base)) return;
+  if (isAddress) {
+    const t = typedValue(value, 'url');
+    if (!t.ok) { setStatus(`“${value.slice(0, 40)}” was not kept. ${t.why}`, 'error', { hold: 12000 }); return; }
+  }
+  const no = schemaSays(f.parsed, value);
+  if (no) { setStatus(`${value ? `“${value.slice(0, 40)}”` : 'That'} was not kept. ${no}`, 'error', { hold: 12000 }); return; }
+  stageSourcePending(ref, value === base ? null : value);
+}
+
+/** A picture inside an entry's text, clicked while the text is being edited. */
+function openInlinePicture(el, pic, parsed) {
+  const f = [...state.sourceFields.values()].find(x => x.els.includes(el));
+  const prep = f?.richPrep;
+  const k = pic.getAttribute(KEEP_ATTR);
+  const info = pic.hasAttribute('data-kiln-md-src')
+    ? { url: pic.getAttribute('data-kiln-md-src'), alt: pic.getAttribute('alt') || '' }
+    : (prep && k !== null && /^\d+$/.test(k) ? inlinePicture(prep.kept[Number(k)], prep.opts?.refs) : null);
+  if (!info) { setStatus('This picture is kept as the file has it, so it can’t be changed here. Ask the site’s owner to change it.', 'idle', { hold: 9000 }); return; }
+  const target = pictureTarget({ file: parsed.path, value: info.url, paths: mode === 'editor' ? (state.scope?.paths || null) : null });
+  const back = () => richToolbar(el, parsed);
+  // Set apart from the file's own words: from here on the picture is written from the page.
+  const own = () => { pic.removeAttribute(KEEP_ATTR); if (!pic.hasAttribute('data-kiln-md-src')) pic.setAttribute('data-kiln-md-src', info.url); };
+  pictureToolbar(pic, {
+    label: 'Picture in the text',
+    target,
+    alt: pic.getAttribute('alt') || '',
+    replace: async (file) => {
+      const made = await sitePicture(file, parsed.path, target.place);
+      if (!made) return;
+      own();
+      pic.setAttribute('data-kiln-md-src', made.value);
+      showPicture(pic, made.display);
+      setStatus('Picture added. Press Done on the text, then Publish.', 'saved');
+    },
+    done: (alt) => {
+      if (alt !== null && alt !== (pic.getAttribute('alt') || '')) { own(); pic.setAttribute('alt', alt); }
+      if (sourceActive?.el === el) back();
+    },
+  });
+}
+
+/** The toolbar of a formatted text being edited. */
+function richToolbar(el, parsed) {
+  renderToolbar(el, null, { markdown: true, label: sourceLabel(parsed).split(' · ')[0],
+    onSave: () => commitSourceEdit(), onCancel: () => cancelSourceEdit() });
+}
+
 /** The floating control for a source field — label, provenance (§10), Done/Revert. */
 function renderSourceToolbar(el, ref, parsed) {
   removeToolbar();
+  // A link: its address is typed here, beside its words (or alone, when only the address is a field).
+  const hrefRef = el.tagName === 'A' ? (parsed.type === 'url' ? ref : sourceHrefOf.get(el)) : null;
   const tb = document.createElement('div');
   tb.id = 'kiln-toolbar';
   tb.innerHTML = `
     ${TB_GRIP}
     <span class="kiln-tb-label" title="${escapeHtml(parsed.rawPointer)}">${escapeHtml(sourceLabel(parsed).split(' · ')[0])}</span>
     <button class="kiln-tb-fmt kiln-src-where" title="${escapeHtml(`${parsed.path}#${parsed.rawPointer}`)}">Where does this come from?</button>
+    ${hrefRef ? `<input class="kiln-href-input" data-act="href" type="text" value="${escapeHtml(sourceText(hrefRef, el, 'href'))}"
+      placeholder="https://… or /page" title="Where this link goes" aria-label="Where this link goes" autocomplete="off" autocapitalize="off" spellcheck="false">` : ''}
     <span class="kiln-tb-gap"></span>
     <button class="kiln-tb-save" title="Keep this edit (staged for Publish)">Done</button>
     <button class="kiln-tb-cancel" title="Throw away this edit (Esc)">Revert</button>`;
@@ -3774,6 +4147,13 @@ function renderSourceToolbar(el, ref, parsed) {
   };
   tb.querySelector('.kiln-tb-save').onclick = (e) => { e.stopPropagation(); commitSourceEdit(); };
   tb.querySelector('.kiln-tb-cancel').onclick = (e) => { e.stopPropagation(); cancelSourceEdit(); };
+  const addr = tbAddress();
+  if (addr) addr.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); commitSourceEdit(); } };
+}
+
+/** The address box of the source toolbar, when it has one. */
+function tbAddress() {
+  return document.querySelector('#kiln-toolbar .kiln-href-input[data-act="href"]');
 }
 
 /**
@@ -3816,6 +4196,18 @@ function syncSourceDom(ref) {
   if (!f) return;
   const pend = state.pendingSource.get(ref);
   const base = state.sourceBase.get(ref);
+  // Descriptions and addresses named beside a picture or a link.
+  (f.attrEls || []).forEach((a) => {
+    const v = pend ? String(pend.value ?? '') : (base === f.boot ? a.shown : base);
+    if (v !== undefined && a.el.getAttribute(a.attr) !== v) a.el.setAttribute(a.attr, v);
+    markSourceModified(a.el);
+  });
+  if (f.picture) {
+    // The new picture shows from the moment it is chosen, and after publishing
+    // until the site has been built again with it.
+    f.els.forEach((el, i) => { showPicture(el, pend?.display ?? f.shownDisplay ?? null, f.pictureWas?.[i]); markSourceModified(el); });
+    return;
+  }
   if (f.richHtml !== undefined) {
     // A formatted text: the page shows what was typed, as the browser holds it.
     f.els.forEach((el) => {
@@ -3830,18 +4222,33 @@ function syncSourceDom(ref) {
   f.els.forEach((el, i) => {
     if (el === sourceActive?.el || el.classList.contains('kiln-source-locked')) return;   // never rewrite under the caret
     const text = pend ? pend.value : (base === f.boot ? f.shown[i] : base);
-    const surface = sourceSurface(el, f.parsed);
-    if (text !== undefined && surface.textContent !== text) surface.textContent = text;
-    el.classList.toggle('kiln-modified', !!pend);
+    if (isAddressLink(el, f.parsed)) {
+      if (text !== undefined && el.getAttribute('href') !== text) el.setAttribute('href', text);
+    } else {
+      const surface = sourceSurface(el, f.parsed);
+      if (text !== undefined && surface.textContent !== text) surface.textContent = text;
+    }
+    markSourceModified(el);
     el.title = sourceHint(f.parsed);
   });
+}
+
+/** A link whose address is the field (its words are not). */
+function isAddressLink(el, parsed) {
+  return el.tagName === 'A' && parsed?.type === 'url';
+}
+
+/** An element is marked as edited while any field it shows (its words, its picture, its description or address) is staged. */
+function markSourceModified(el) {
+  const refs = [el.getAttribute(SOURCE_ATTR), sourceAltOf.get(el), sourceHrefOf.get(el)].filter(Boolean);
+  el.classList.toggle('kiln-modified', refs.some(r => state.pendingSource.has(r)));
 }
 
 /** A field whose edit was not saved keeps its marker, and its hint says why. */
 function markSourceFieldIssue(ref, why) {
   const f = state.sourceFields.get(ref);
   if (!f) return;
-  for (const el of f.els) if (!el.classList.contains('kiln-source-locked')) el.title = `Not saved. ${why}`;
+  for (const el of sourceFieldEls(f)) if (!el.classList.contains('kiln-source-locked')) el.title = `Not saved. ${why}`;
 }
 
 /**
@@ -3884,7 +4291,7 @@ function showNotSaved(list) {
   bar.querySelector('#kiln-srcskip-x').onclick = () => bar.remove();
   bar.querySelectorAll('button[data-i]').forEach(btn => {
     btn.onclick = () => {
-      const el = state.sourceFields?.get(list[+btn.dataset.i].ref)?.els.find(n => n.isConnected);
+      const el = sourceFieldEls(state.sourceFields?.get(list[+btn.dataset.i].ref)).find(n => n.isConnected);
       if (!el) return;
       el.scrollIntoView({ block: 'center', behavior: 'smooth' });
       el.classList.add('kiln-flash');
@@ -3966,6 +4373,7 @@ async function publishSource(note = '', opts = {}) {
         state.sourceBase.set(ref, v.value);   // the committed value is the new baseline
         const rf = state.sourceFields?.get(ref);
         if (v.md && rf) { rf.richRead = v.value; rf.richPrep = null; rf.richHtml = v.html; rf.richWords = v.words; }
+        if (rf?.picture) { rf.read = v.value; rf.shownDisplay = v.display; }
         syncSourceDom(ref);
       }
     }
@@ -4020,6 +4428,7 @@ function sourceWas(ref) {
   const f = state.sourceFields?.get(ref);
   if (!f) return undefined;
   if (f.richRead !== undefined) return f.richRead;
+  if (f.read !== undefined) return f.read;   // a picture's path, as read from the file
   const base = state.sourceBase.get(ref);
   if (base !== f.boot) return readAs([base], f.parsed.type);
   // A read-only place shows something that is not the value (a link's label).
@@ -7583,7 +7992,7 @@ let keptReady = false;        // true once offerPendingRestore has read what an 
 function syncKeptFiles() {
   if (!keptReady || cfg.sandbox) return;
   const page = pendingStorageKey();
-  const queued = state.pending.size ? [...state.pendingBinaries.keys()] : [];
+  const queued = state.pending.size || state.pendingSource.size ? [...state.pendingBinaries.keys()] : [];
   const { add, remove } = syncPlan(queued, [...keptHere]);
   for (const path of add) {
     keptHere.add(path);
@@ -7637,7 +8046,7 @@ function offerPendingRestore() {
 async function restoreSaved(saved, kept, signedInAgain) {
   // The pictures and files those edits added: queue them again, and show each
   // picture from the kept bytes (its address on the site does not exist yet).
-  const files = filesToRestore(await kept, saved.edits);
+  const files = filesToRestore(await kept, saved.edits, saved.source);
   for (const f of files) { state.pendingBinaries.set(f.path, f.base64); keptHere.add(f.path); }
   for (const [key, edit] of Object.entries(saved.edits)) {
     const target = elementForKey(key);
@@ -7675,8 +8084,29 @@ async function restoreSaved(saved, kept, signedInAgain) {
       img.src = preview;
     }
   }
-  // Edits to content files: staged again, and shown in every place the value appears.
+  // Edits to content files: staged again, and shown in every place the value
+  // appears; a new picture is shown from its kept bytes.
+  const shownFrom = (path) => {
+    const f = files.find(x => x.path === path);
+    const ext = (String(path).split('.').pop() || '').toLowerCase();
+    if (!f || !/^(png|jpe?g|webp|avif|gif)$/.test(ext)) return null;
+    try { return URL.createObjectURL(new Blob([Uint8Array.from(atob(f.base64), c => c.charCodeAt(0))], { type: `image/${ext === 'jpg' ? 'jpeg' : ext}` })); }
+    catch { return null; }
+  };
   for (const [ref, entry] of Object.entries(saved.source)) {
+    if (entry.upload) entry.display = shownFrom(entry.upload) || undefined;
+    if (entry.md && entry.html) {
+      // A picture put into a text: its page address was the browser's own, gone with the page.
+      const holder = document.createElement('template');   // inert: nothing in it loads or runs
+      holder.innerHTML = entry.html;
+      for (const img of holder.content.querySelectorAll('img[data-kiln-md-src]')) {
+        const name = img.getAttribute('data-kiln-md-src').split('/').pop();
+        const file = files.find(x => x.path.split('/').pop() === name);
+        const url = file && shownFrom(file.path);
+        if (url) img.setAttribute('src', url);
+      }
+      entry.html = holder.innerHTML;
+    }
     state.pendingSource.set(ref, entry);
     syncSourceDom(ref);
   }

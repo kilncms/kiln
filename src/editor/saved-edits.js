@@ -85,7 +85,13 @@ export function readDraft(saved, { now = Date.now(), known = () => true } = {}) 
   const stored = saved.source && typeof saved.source === 'object' ? saved.source : {};
   for (const [ref, v] of Object.entries(stored)) {
     if (!v || typeof v.value !== 'string' || !known(ref)) continue;
-    source[ref] = v.type ? { value: v.value, type: v.type } : { value: v.value };
+    const entry = v.type ? { value: v.value, type: v.type } : { value: v.value };
+    // A formatted text is Markdown, with the page's HTML and words beside it;
+    // a picture field names the upload kept beside the draft. (The address a
+    // new picture was shown from ends with the page, and is not kept.)
+    if (v.md === true && typeof v.html === 'string' && typeof v.words === 'string') Object.assign(entry, { md: true, html: v.html, words: v.words });
+    if (typeof v.upload === 'string' && /^[\w.-][\w./-]*$/.test(v.upload) && !v.upload.split('/').includes('..')) entry.upload = v.upload;
+    source[ref] = entry;
   }
   const count = Object.keys(saved.edits).length + Object.keys(source).length;
   const typed = typedRecord(saved.typed);

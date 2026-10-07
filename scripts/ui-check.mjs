@@ -88,7 +88,7 @@
  * Not part of `npm test` or CI.
  */
 import { createRequire } from 'node:module';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 // Playwright is not a dependency of this repo: point PLAYWRIGHT_DIR at an installed copy,
@@ -3350,6 +3350,197 @@ async function runFormatted(browser, size) {
   }
 }
 
+/**
+ * Pictures and link addresses on a generated page ("media"): an Astro entry
+ * with a picture Astro's image() checks, a link whose words and address are
+ * two fields, a link whose address is a field, and a picture inside the
+ * Markdown text, on a site that publishes its schema. The person replaces
+ * both pictures and describes one, changes both addresses (and is told why a
+ * page address will not do where the site wants a full one), and is told why
+ * a title is too long. What reaches the repository: the pictures first, in
+ * the folder the entry keeps them in, then the entry naming them. The page,
+ * the file and the schema are the real ones in test/fixtures/astro-media.
+ */
+async function runMedia(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} media       `;
+  const WORKER = 'https://worker.invalid';
+  const REPO = 'acme/site';
+  const AT = '/uicheck-media/';
+  const FILE = 'src/content/posts/spring-fair.md';
+  const FIX = path.join(path.dirname(path.dirname(new URL(import.meta.url).pathname)), 'test', 'fixtures', 'astro-media');
+  const src = readFileSync(path.join(FIX, 'src', 'content', 'posts', 'spring-fair.md'), 'utf8');
+  const body = src.slice(src.indexOf('\n---\n', 4) + 5);
+  const fm = { '/frontmatter/cover': './images/green.png', '/frontmatter/banner': '/img/hall.png', '/body': body };
+  const built = readFileSync(path.join(FIX, 'built', 'spring-fair.html'), 'utf8');
+  const inner = /<body>([\s\S]*)<\/body>/.exec(built)[1];
+  const assets = {
+    '/kiln-schema.json': ['application/json', readFileSync(path.join(FIX, 'built', 'kiln-schema.json'))],
+    '/img/hall.png': ['image/png', readFileSync(path.join(FIX, 'public', 'img', 'hall.png'))],
+  };
+  for (const f of readdirSync(path.join(FIX, 'built', '_astro'))) assets[`/_astro/${f}`] = ['image/webp', readFileSync(path.join(FIX, 'built', '_astro', f))];
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Spring fair</title><style>body{font:17px/1.55 system-ui,sans-serif;max-width:40rem;margin:0 auto;padding:0 16px 220px}img{display:block;width:240px;height:auto;margin:10px 0;background:#eee}a{display:inline-block;margin:6px 12px 6px 0}</style></head><body>${inner}<script src="/assets/kiln-config.js"></script><script src="/assets/kiln.js" defer></script></body></html>`;
+  const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+  await context.addInitScript(([repo]) => {
+    try { localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' })); localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ }
+  }, [REPO]);
+  const worker = { commits: [], reads: [], order: [], blobs: 0, tree: [] };
+  const blocked = [];
+  await context.route('**/*', async (route) => {
+    const req = route.request();
+    const u = new URL(req.url());
+    const json = (b, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': ORIGIN }, body: JSON.stringify(b) });
+    if (u.origin === ORIGIN && u.pathname.endsWith('kiln-config.js')) return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', mode: 'source', adapter: 'astro', styles: [] };` });
+    if (u.origin === ORIGIN && u.pathname === AT) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: html });
+    if (u.origin === ORIGIN && assets[u.pathname]) return route.fulfill({ contentType: assets[u.pathname][0], body: assets[u.pathname][1] });
+    if (u.origin === ORIGIN && u.pathname.startsWith(AT)) return route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Not found</h1>' });
+    if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
+    if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+    const p = decodeURIComponent(u.pathname);
+    const m = req.method();
+    if (m === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
+    if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: null, mode: null } });
+    if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'], sourceWas: true, sourceMarkdown: true, sourceMedia: true });
+    if (p === '/source/read') {
+      const b = JSON.parse(req.postData());
+      worker.reads.push(b.pointer);
+      return b.pointer in fm ? json({ value: fm[b.pointer], sha: 'f'.repeat(40) }) : json({ error: 'pointer not found in source' }, 404);
+    }
+    if (p === '/source/commit') {
+      const b = JSON.parse(req.postData());
+      worker.order.push('source');
+      worker.commits.push(b);
+      return json({ ok: true, file: b.file, commit: { sha: 'c'.repeat(40), parent: 'b'.repeat(40) }, applied: b.edits.map(e => e.key), skipped: [] });
+    }
+    const gh = `/gh/repos/${REPO}`;
+    if (p === `${gh}/git/ref/heads/main` && m === 'GET') return json({ object: { sha: 'a'.repeat(40) } });
+    if (p.startsWith(`${gh}/git/commits/`) && m === 'GET') return json({ sha: 'a'.repeat(40), tree: { sha: 't'.repeat(40) } });
+    if (p === `${gh}/git/blobs` && m === 'POST') { worker.blobs++; return json({ sha: String(worker.blobs).padStart(40, '0') }); }
+    if (p === `${gh}/git/trees` && m === 'POST') { worker.tree = JSON.parse(req.postData()).tree.map(t => t.path); return json({ sha: 'e'.repeat(40) }); }
+    if (p === `${gh}/git/commits` && m === 'POST') return json({ sha: 'd'.repeat(40) });
+    if (p === `${gh}/git/refs/heads/main` && m === 'PATCH') { worker.order.push('pictures'); return json({ object: { sha: 'd'.repeat(40) } }); }
+    if (p.startsWith(`${gh}/git/trees/`)) return json({ tree: ['astro.config.mjs', FILE].map(x => ({ path: x, type: 'blob' })) });
+    if (p.endsWith('/status')) return json({ total_count: 0 });
+    if (p.includes('/deployments')) return json([]);
+    if (p === '/comments' || p === '/comments/counts') return json({ error: 'bad path' }, 400);
+    return json({ message: 'Not Found' }, 404);
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  const boxes = [];
+  page.on('dialog', async (d) => { boxes.push(d.message()); await d.dismiss().catch(() => {}); });
+  const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+  const statusLine = () => page.evaluate(() => { const el = document.getElementById('kiln-status'); return el && !el.hidden ? el.textContent.trim() : ''; });
+  // A picture from this device: a small PNG, made here.
+  const png = await page.evaluate(async () => {
+    const c = document.createElement('canvas'); c.width = 64; c.height = 48;
+    const x = c.getContext('2d'); x.fillStyle = '#3a7'; x.fillRect(0, 0, 64, 48); x.fillStyle = '#fd3'; x.fillRect(8, 8, 20, 20);
+    const b = await new Promise(r => c.toBlob(r, 'image/png'));
+    return [...new Uint8Array(await b.arrayBuffer())];
+  });
+  const upload = async (name) => {
+    const chooser = page.waitForEvent('filechooser', { timeout: 5000 });
+    await press(page.locator('#kiln-toolbar [data-act="replace"]'));
+    await (await chooser).setFiles({ name, mimeType: 'image/png', buffer: Buffer.from(png) });
+    await page.waitForFunction(() => /Picture added/.test(document.getElementById('kiln-status')?.textContent || ''), null, { timeout: 5000 }).catch(() => {});
+  };
+  try {
+    await page.goto(`${ORIGIN}${AT}`, { waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(700);
+    const cover = page.locator(`img[data-kiln-source^="${FILE}#/frontmatter/cover"]`);
+    check(scope, 'the picture Astro checks is offered for replacing, not read-only', await cover.evaluate(el => el.classList.contains('kiln-field') && !el.classList.contains('kiln-source-locked')));
+
+    // Replace it, and describe it.
+    await press(cover);
+    await page.locator('#kiln-toolbar [data-act="replace"]').waitFor({ state: 'visible', timeout: 5000 });
+    check(scope, 'its toolbar has Replace picture and the description the file holds', await page.locator('#kiln-toolbar [data-act="alt"]').inputValue() === 'The green with stalls');
+    check(scope, 'the file was read to find the folder its pictures are kept in', worker.reads.includes('/frontmatter/cover'), worker.reads.join(' '));
+    const tb = await box(page.locator('#kiln-toolbar'));
+    check(scope, 'the toolbar fits the screen', tb.left >= 0 && tb.right <= size.width + 0.5, `${Math.round(tb.left)}–${Math.round(tb.right)}`);
+    await upload('Fête on the green.png');
+    check(scope, 'the new picture shows at once, without the old responsive files', await cover.evaluate(el => el.getAttribute('src').startsWith('blob:') && !el.hasAttribute('srcset')), await statusLine());
+    await page.locator('#kiln-toolbar [data-act="alt"]').fill('Stalls on the green at noon');
+    await shot('media-picture');
+    await press(page.locator('#kiln-toolbar [data-act="done"]'));
+    await page.waitForTimeout(250);
+    check(scope, 'Done keeps the picture and its description as edits waiting to be published', await cover.evaluate(el => el.classList.contains('kiln-modified') && el.getAttribute('alt') === 'Stalls on the green at noon'));
+
+    // A title longer than the site's schema takes is not kept, and that is said.
+    const title = page.locator(`h1[data-kiln-source^="${FILE}#/frontmatter/title"]`);
+    await press(title);
+    await page.keyboard.type(' and a great deal more that goes on for far too long for any page heading at all');
+    await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(250);
+    check(scope, 'a title longer than the site takes is not kept, and the line says the limit', /at most 80 characters/.test(await statusLine()) && await title.innerText() === 'Spring fair', await statusLine());
+
+    // The link: its address beside its words. A page address is not a full one.
+    const cta = page.locator('a.cta');
+    await press(cta);
+    await page.locator('#kiln-toolbar [data-act="href"]').waitFor({ state: 'visible', timeout: 5000 });
+    check(scope, 'a link offers its address beside its words', await page.locator('#kiln-toolbar [data-act="href"]').inputValue() === 'https://example.com/book');
+    await page.locator('#kiln-toolbar [data-act="href"]').fill('/book');
+    await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(250);
+    check(scope, 'a page address where the site wants a full one is not kept, and that is said', /full web address/.test(await statusLine()) && await cta.getAttribute('href') === 'https://example.com/book', await statusLine());
+    await press(cta);
+    await page.locator('#kiln-toolbar [data-act="href"]').fill('https://example.com/stalls');
+    await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(250);
+    check(scope, 'a full address is kept, and the link goes there on the page', await cta.getAttribute('href') === 'https://example.com/stalls' && await cta.evaluate(el => el.classList.contains('kiln-modified')));
+
+    // A link whose address is the field: only the address is typed.
+    const site = page.locator('a.site');
+    await press(site);
+    await page.locator('#kiln-toolbar [data-act="href"]').waitFor({ state: 'visible', timeout: 5000 });
+    check(scope, 'a link whose address is the field takes no typing in its words', await site.evaluate(el => !el.isContentEditable) && await page.locator('#kiln-toolbar [data-act="href"]').inputValue() === 'https://example.com');
+    await page.locator('#kiln-toolbar [data-act="href"]').fill('https://example.org/fair');
+    await page.locator('#kiln-toolbar [data-act="href"]').press('Enter');
+    await page.waitForTimeout(250);
+    check(scope, 'Enter keeps the address', await site.getAttribute('href') === 'https://example.org/fair' && await site.innerText() === 'Our website');
+
+    // A picture inside the text, replaced from within the text.
+    const stalls = page.locator('.post-body img[alt="Stalls on the green"]');
+    await press(stalls);
+    await page.locator('#kiln-toolbar [data-act="replace"]').waitFor({ state: 'visible', timeout: 5000 });
+    check(scope, 'a picture in the text opens its own toolbar, with its description', await page.locator('#kiln-toolbar [data-act="alt"]').inputValue() === 'Stalls on the green');
+    await upload('stalls.png');
+    await press(page.locator('#kiln-toolbar [data-act="done"]'));
+    await page.locator('#kiln-toolbar .kiln-tb-save').waitFor({ state: 'visible', timeout: 5000 });
+    await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(300);
+    check(scope, 'Done on the text keeps it as an edit', await page.locator('.post-body').evaluate(el => el.classList.contains('kiln-modified')));
+
+    // Publish: the pictures first, in the entry's own picture folder, then the entry.
+    await press(page.locator('#kiln-publish-quick'));
+    await page.waitForTimeout(450);
+    const sheet = await page.locator('.kiln-pubsheet').innerText().catch(() => '');
+    await shot('media-sheet');
+    check(scope, 'the publish sheet shows the new picture, its description and both addresses', /New picture: fete-on-the-green-/.test(sheet) && /Picture description/.test(sheet) && (sheet.match(/Link goes to/g) || []).length === 2, sheet.replace(/\s+/g, ' ').slice(0, 200));
+    if (await page.locator('#kiln-pubsheet-go').count()) await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(1500);
+    check(scope, 'the pictures were committed first, then the entry', worker.order.join(' ') === 'pictures source', worker.order.join(' '));
+    check(scope, 'both pictures went in the folder the entry keeps its pictures in, as WebP', worker.tree.length === 2 && worker.tree.every(t => /^src\/content\/posts\/images\/(fete-on-the-green|stalls)-[a-z0-9]+\.webp$/.test(t)), worker.tree.join(' '));
+    const edits = Object.fromEntries((worker.commits[0]?.edits || []).map(e => [e.pointer, e]));
+    const coverFile = worker.tree.find(t => /fete/.test(t)) || '';
+    check(scope, 'the cover names its new picture the way the file names pictures', edits['/frontmatter/cover']?.value === `./images/${coverFile.split('/').pop()}` && edits['/frontmatter/cover']?.type === 'image' && edits['/frontmatter/cover']?.was === './images/green.png', JSON.stringify(edits['/frontmatter/cover']));
+    check(scope, 'the description and both addresses went as their own fields', edits['/frontmatter/coverAlt']?.value === 'Stalls on the green at noon' && edits['/frontmatter/cta/href']?.value === 'https://example.com/stalls' && edits['/frontmatter/website']?.value === 'https://example.org/fair' && !edits['/frontmatter/title']);
+    const was = body.split('\n');
+    const now = String(edits['/body']?.value || '').split('\n');
+    const removed = was.filter(l => !now.includes(l));
+    const added = now.filter(l => !was.includes(l));
+    const stallsFile = worker.tree.find(t => /stalls/.test(t)) || '';
+    check(scope, 'in the text only the picture\'s line changed, its title kept', JSON.stringify(removed) === JSON.stringify(['![Stalls on the green](./images/green.png "The green at noon")'])
+      && JSON.stringify(added) === JSON.stringify([`![Stalls on the green](./images/${stallsFile.split('/').pop()} "The green at noon")`]), JSON.stringify({ removed, added }).slice(0, 220));
+    await shot('media-published');
+  } finally {
+    check(scope, 'no script errors, no browser box, nothing outside the local server', errors.length === 0 && boxes.length === 0 && blocked.length === 0, [...errors, ...boxes, ...blocked].join(' | ').slice(0, 200));
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
   if (ONLY && !label.includes(ONLY)) return;
@@ -3378,6 +3569,8 @@ try {
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} generated   `, () => runGenerated(browser, size));
   // formatted text from a content file: the toolbar, a bold word, a new item, a table that takes no typing, the file's own Markdown
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} formatted   `, () => runFormatted(browser, size));
+  // pictures and link addresses from a content file: replaced, described, checked against the site's schema, the pictures committed first
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} media       `, () => runMedia(browser, size));
   // the worker ends an invited editor's sign-in
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} sign-in ended`, () => runSignInEnded(browser, size));
   // …and they find out anywhere else in the editor

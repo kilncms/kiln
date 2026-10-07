@@ -77,7 +77,7 @@ import { handleCloud, expireStaleTrials, cloudSiteForOrigin } from './cloud.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
 import { adapterIds } from '../src/adapters/index.js';
-import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, changedSinceRead, markdownProblems, duplicateCandidates, SOURCE_FILE_GONE } from './source.js';
+import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, changedSinceRead, markdownProblems, picturesToCheck, duplicateCandidates, SOURCE_FILE_GONE } from './source.js';
 import { uploadProblem, editorFileKind, isUploadKind, base64Bytes, base64Head, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../src/file-policy.js';
 
 // UTF-8-safe base64 (GitHub content is base64; edits re-applied at cron time).
@@ -125,7 +125,9 @@ export default {
         // left out when the file no longer says that (worker/source.js changedSinceRead).
         // `sourceMarkdown`: a formatted Markdown body (and MDX prose) may be written,
         // keeping the markup and the code it holds (markdownProblems, astro sameCode).
-        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, ...deployedBuild(env) };
+        // `sourceMedia`: a picture field is written only with a picture that is in
+        // the repository, and Markdown may not name a new one that is not (picturesToCheck).
+        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, ...deployedBuild(env) };
         // ?deep=1 asks the things publishing depends on. A plain GET stays a
         // constant 200 that touches nothing, as every editor and monitor expects.
         if (url.searchParams.get('deep') === '1') {
@@ -1549,6 +1551,14 @@ async function sourceRead(h, repo, file, ref) {
   return cur;
 }
 
+/** Whether a file is in the repository at `ref` (a picture a commit is about to name). */
+async function repoHas(h, repo, path, ref) {
+  const res = await fetch(`${GH}/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(ref)}`, { method: 'HEAD', headers: h });
+  if (res.status === 404) return false;
+  if (!res.ok) throw new Error(`look-up ${res.status}`);
+  return true;
+}
+
 async function sourceCommit(request, env) {
   const { repo, branch = 'main', adapter, file, edits, message } = await request.json().catch(() => ({}));
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
@@ -1581,9 +1591,19 @@ async function sourceCommit(request, env) {
         parsed = parsed || v.adapter.parse(source, v.file);
         return v.adapter.read(parsed, e.pointer);
       }, { checkFragmentWrite, mdx: /\.mdx$/i.test(v.file) });
-      const leftOut = new Set([...moved, ...marked].map(s => s.key));
+      // A picture is named only once it is in the repository (rule 4, third part).
+      const pics = picturesToCheck(runnable.filter(e => !moved.some(m => m.key === e.key)), v.file, {
+        currentOf: (e) => { parsed = parsed || v.adapter.parse(source, v.file); return v.adapter.read(parsed, e.pointer); },
+        mdx: /\.mdx$/i.test(v.file),
+      });
+      const missing = [];
+      for (const c of pics.check) {
+        if (missing.some(m => m.key === c.key)) continue;
+        if (!(await repoHas(h, repo, c.path, branch))) missing.push({ key: c.key, reason: `picture not found: ${c.path}` });
+      }
+      const leftOut = new Set([...moved, ...marked, ...pics.skips, ...missing].map(s => s.key));
       const { content, applied, skipped } = v.adapter.applyEdits(source, runnable.filter(e => !leftOut.has(e.key)), v.file);
-      const allSkipped = [...typedSkips, ...moved, ...marked, ...skipped];
+      const allSkipped = [...typedSkips, ...moved, ...marked, ...pics.skips, ...missing, ...skipped];
       if (!applied.length) return json({ error: 'no edits could be applied', skipped: allSkipped }, 422);
       // Cheap pre-commit parse check (§9) — the build is the real judge (§12).
       const invalid = v.adapter.validate(content, v.file);

@@ -388,6 +388,62 @@ is the contract now.
   `sourceMarkdown` and it has a way to read files; otherwise a formatted body
   is read-only as before, and a one-paragraph body is edited as plain words. A
   worker from before this never sees a formatted body from a new editor.
+- **Saved in the browser.** A staged formatted text keeps `md`, `html` and
+  `words` in the browser's saved copy (`readDraft`), so one brought back after a
+  reload is still sent as Markdown.
+
+### Pictures, link addresses and the site's schema (2026-10)
+
+- **Stamping.** `kilnSource(entry, field, { type: 'image', alt })` on a
+  picture adds `data-kiln-source-alt` for its description field;
+  `kilnSource(entry, field, { href })` on a link adds `data-kiln-source-href`
+  (with `?type=url`) for its address field. Every front matter reference made
+  by the helpers carries `&c=<collection>`; `parseSourceRef` returns it as
+  `collection`, and older editors ignore it.
+- **Where a picture goes.** `src/adapters/pictures.js` (shared): `picturePlace`
+  reads a picture field's value the way Astro does (`/x.png` is
+  `public/x.png`; anything else is a path from the content file) and returns
+  its repository path, its folder and the style it is written in (`./`,
+  `../`, bare, `/`), or why there is none (`empty`, `remote`, `alias`,
+  `outside`, `not-picture`). `pictureValue` writes a new path in the same
+  style; `pictureFileName` names an upload from its own name plus a stamp, so
+  nothing is written over.
+- **The editor.** A picture field opens a toolbar: "Replace picture…" and the
+  description (when there is a field for it). The field's value is read with
+  `/source/read` (the page shows Astro's optimised copy, not the path).
+  `pictureTarget` (source-media.js) refuses up front, with a sentence, a
+  picture with no folder to follow, a folder outside the editor's grant, or a
+  field whose schema says `format: uri`. The chosen file goes through
+  `bitmapToScaled`/`canvasToFile` (at most 2400 pixels wide; WebP, else JPEG,
+  else PNG for see-through pictures) and `uploadProblem`, is queued with
+  `stageBinary`, and the staged entry is `{ value, type: 'image', display,
+  upload }`. A picture inside a formatted text is replaced from the text: the
+  picture loses its `data-kiln-keep` mark and carries `data-kiln-md-src`, which
+  `blockMarkdown` writes instead of the address the page shows; only its block
+  is rewritten. A link's address is a toolbar input beside its words
+  (`stageSourceAttr`: `typedValue(…, 'url')`, then the schema).
+- **Publishing.** Queued files are committed first, in one commit
+  (`commitStagedFiles`, which leaves out any file no staged value names), then
+  the content files (`publishSource`). A source-only publish with pictures
+  takes the same order.
+- **The worker.** `picturesToCheck` (worker/source.js): a `type: 'image'` value
+  must be a picture path `picturePlace` accepts, else
+  `needs to be a picture on this site`; it and every picture a Markdown edit
+  names that the field did not name before are looked up (`HEAD
+  /contents/<path>?ref=<branch>`), and one that is not there is left out with
+  `picture not found: <path>`. A picture on another site in Markdown is not
+  looked up. `/healthz` gains `sourceMedia: true`; an editor without it keeps
+  pictures and link addresses read-only.
+- **The site's schema.** `kiln()` writes `<outDir>/kiln-schema.json`
+  (`{ version: 1, collections: { <name>: <JSON Schema> } }`) at
+  `astro:build:done`, from `.astro/collections/<name>.schema.json`. The editor
+  reads `/kiln-schema.json` once when a reference names a collection
+  (`source-schema.js`: `fieldSchema`, `valueProblem`, `problemSentence`) and
+  refuses a value with the sentence before it is staged: `maxLength`,
+  `minLength`, `format: uri` and `email`, `enum`, `pattern`, a required field
+  left empty. No schema: nothing is checked and nothing is guessed. `image()`
+  is a plain string in Astro's JSON Schema; the reference's `?type=image` is
+  what makes a field a picture.
 
 ## CLI + fixtures + integration (owner: cli workstream)
 

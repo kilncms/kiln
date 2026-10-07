@@ -17,34 +17,36 @@ const legacyEntry = {  // legacy collections: id carries the extension
   data: { title: 'Interfaith Worship Service' },
 };
 
-test('kilnSource stamps the real attribute with path#pointer', () => {
+test('kilnSource stamps the real attribute with path#pointer, and the collection whose schema holds it', () => {
   assert.deepEqual(kilnSource(layerEntry, 'title'),
+    { [SOURCE_ATTR]: 'src/content/events/service.md#/frontmatter/title?c=events' });
+  assert.deepEqual(kilnSource({ ...layerEntry, collection: 'bad name' }, 'title'),
     { [SOURCE_ATTR]: 'src/content/events/service.md#/frontmatter/title' });
 });
 
 test('legacy entries derive src/content/<collection>/<id>; extensionless ids get .md', () => {
   assert.deepEqual(kilnSource(legacyEntry, 'title'),
-    { [SOURCE_ATTR]: 'src/content/events/service.md#/frontmatter/title' });
+    { [SOURCE_ATTR]: 'src/content/events/service.md#/frontmatter/title?c=events' });
   assert.deepEqual(kilnSource({ id: 'service', collection: 'events' }, 'title'),
-    { [SOURCE_ATTR]: 'src/content/events/service.md#/frontmatter/title' });
+    { [SOURCE_ATTR]: 'src/content/events/service.md#/frontmatter/title?c=events' });
   assert.deepEqual(kilnSource({ id: 'deep-dive.mdx', collection: 'guides' }, 'title'),
-    { [SOURCE_ATTR]: 'src/content/guides/deep-dive.mdx#/frontmatter/title' });
+    { [SOURCE_ATTR]: 'src/content/guides/deep-dive.mdx#/frontmatter/title?c=guides' });
 });
 
 test('opts.type appends the ?type= hint; junk types are dropped', () => {
   assert.equal(kilnSource(layerEntry, 'date', { type: 'date' })[SOURCE_ATTR],
-    'src/content/events/service.md#/frontmatter/date?type=date');
+    'src/content/events/service.md#/frontmatter/date?type=date&c=events');
   assert.equal(kilnSource(layerEntry, 'date', { type: 'DATE!' })[SOURCE_ATTR],
-    'src/content/events/service.md#/frontmatter/date');
+    'src/content/events/service.md#/frontmatter/date?c=events');
 });
 
 test('nested fields via array segments; RFC 6901 escaping applied per segment', () => {
   assert.equal(kilnSource(layerEntry, ['venue', 'name'])[SOURCE_ATTR],
-    'src/content/events/service.md#/frontmatter/venue/name');
+    'src/content/events/service.md#/frontmatter/venue/name?c=events');
   assert.equal(kilnSource(layerEntry, ['tags', 0])[SOURCE_ATTR],
-    'src/content/events/service.md#/frontmatter/tags/0');
+    'src/content/events/service.md#/frontmatter/tags/0?c=events');
   assert.equal(kilnSource(layerEntry, 'a/b~c')[SOURCE_ATTR],
-    'src/content/events/service.md#/frontmatter/a~1b~0c');
+    'src/content/events/service.md#/frontmatter/a~1b~0c?c=events');
 });
 
 test('kilnBody points at /body', () => {
@@ -67,6 +69,26 @@ test('every helper output round-trips through parseSourceRef', () => {
   assert.deepEqual(parseSourceRef(kilnSource(layerEntry, 'a/b~c')[SOURCE_ATTR]).pointer,
     ['frontmatter', 'a/b~c']);
   assert.equal(parseSourceRef(kilnSource(layerEntry, 'start', { type: 'time' })[SOURCE_ATTR]).type, 'time');
+  assert.equal(parseSourceRef(kilnSource(layerEntry, 'start', { type: 'time' })[SOURCE_ATTR]).collection, 'events');
+  assert.equal(parseSourceRef(kilnBody(layerEntry)[SOURCE_ATTR]).collection, undefined);
+  const pic = kilnSource(layerEntry, 'cover', { type: 'image', alt: 'coverAlt' });
+  assert.equal(parseSourceRef(pic['data-kiln-source-alt']).pointer.join('/'), 'frontmatter/coverAlt');
+  const link = kilnSource(layerEntry, ['cta', 'label'], { href: ['cta', 'href'] });
+  assert.equal(parseSourceRef(link['data-kiln-source-href']).type, 'url');
+});
+
+test('a picture names its description field, and a link its address field', () => {
+  assert.deepEqual(kilnSource(layerEntry, 'cover', { type: 'image', alt: 'coverAlt' }), {
+    [SOURCE_ATTR]: 'src/content/events/service.md#/frontmatter/cover?type=image&c=events',
+    'data-kiln-source-alt': 'src/content/events/service.md#/frontmatter/coverAlt?c=events',
+  });
+  assert.deepEqual(kilnSource(layerEntry, ['cta', 'label'], { href: ['cta', 'href'] }), {
+    [SOURCE_ATTR]: 'src/content/events/service.md#/frontmatter/cta/label?c=events',
+    'data-kiln-source-href': 'src/content/events/service.md#/frontmatter/cta/href?type=url&c=events',
+  });
+  // An unusable companion field is left out; the field itself still stands.
+  assert.deepEqual(Object.keys(kilnSource(layerEntry, 'cover', { type: 'image', alt: '' })), [SOURCE_ATTR]);
+  assert.deepEqual(Object.keys(kilnSource(layerEntry, 'cover', { type: 'image', alt: [null] })), [SOURCE_ATTR]);
 });
 
 test('helpers never throw: unusable entries and fields return {}', () => {
@@ -89,6 +111,7 @@ test('KILN_DISABLE strips provenance (checked per call, §16.1)', () => {
   try {
     process.env.KILN_DISABLE = '1';
     assert.deepEqual(kilnSource(layerEntry, 'title'), {});
+    assert.deepEqual(kilnSource(layerEntry, 'cover', { type: 'image', alt: 'coverAlt' }), {});
     assert.deepEqual(kilnBody(layerEntry), {});
     process.env.KILN_DISABLE = '0';
     assert.ok(kilnSource(layerEntry, 'title')[SOURCE_ATTR]);
@@ -98,7 +121,7 @@ test('KILN_DISABLE strips provenance (checked per call, §16.1)', () => {
   }
 });
 
-test('default export is a documented no-op integration that announces once', () => {
+test('the integration announces itself once', () => {
   const integration = kiln();
   assert.equal(integration.name, '@kilncms/astro');
   const hook = integration.hooks['astro:config:setup'];
@@ -108,6 +131,43 @@ test('default export is a documented no-op integration that announces once', () 
   hook({ logger: { info: (m) => lines.push(m) } });   // second call: silent
   assert.equal(lines.length, 1);
   assert.match(lines[0], /kilnSource\(\)\/kilnBody\(\) helpers/);
-  assert.match(lines[0], /automatic stamping and schema export land later/);
+  assert.match(lines[0], /kiln-schema\.json/);
   assert.doesNotThrow(() => kiln().hooks['astro:config:setup'](undefined));
+});
+
+test('at the end of a build, the collections\' schemas are published as /kiln-schema.json', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const root = mkdtempSync(join(tmpdir(), 'kiln-astro-'));
+  try {
+    mkdirSync(join(root, '.astro', 'collections'), { recursive: true });
+    mkdirSync(join(root, 'dist'));
+    const posts = { type: 'object', properties: { title: { type: 'string', maxLength: 80 } }, required: ['title'] };
+    writeFileSync(join(root, '.astro', 'collections', 'posts.schema.json'), JSON.stringify(posts));
+    writeFileSync(join(root, '.astro', 'collections', 'broken.schema.json'), '{ not json');
+    writeFileSync(join(root, '.astro', 'collections', 'notes.txt'), 'x');
+    const k = kiln();
+    const lines = [];
+    const logger = { info: (m) => lines.push(m), warn: (m) => lines.push(m) };
+    k.hooks['astro:config:setup']({ config: { root: pathToFileURL(root + '/') }, logger });
+    await k.hooks['astro:build:done']({ dir: pathToFileURL(join(root, 'dist') + '/'), logger });
+    const out = JSON.parse(readFileSync(join(root, 'dist', 'kiln-schema.json'), 'utf8'));
+    assert.deepEqual(out, { version: 1, collections: { posts } });
+    // KILN_DISABLE: nothing is published
+    rmSync(join(root, 'dist', 'kiln-schema.json'));
+    const prev = process.env.KILN_DISABLE;
+    process.env.KILN_DISABLE = '1';
+    try { await k.hooks['astro:build:done']({ dir: pathToFileURL(join(root, 'dist') + '/'), logger }); }
+    finally { if (prev === undefined) delete process.env.KILN_DISABLE; else process.env.KILN_DISABLE = prev; }
+    assert.equal(existsSync(join(root, 'dist', 'kiln-schema.json')), false);
+    // No schemas (an older Astro, no collections): nothing is written and the build goes on
+    const bare = kiln();
+    bare.hooks['astro:config:setup']({ config: { root: pathToFileURL(join(root, 'dist') + '/') }, logger });
+    await assert.doesNotReject(bare.hooks['astro:build:done']({ dir: pathToFileURL(join(root, 'dist') + '/'), logger }));
+    await assert.doesNotReject(kiln().hooks['astro:build:done'](undefined));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

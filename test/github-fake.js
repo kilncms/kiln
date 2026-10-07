@@ -73,6 +73,7 @@ export function fakeGitHub({ repo = 'acme/site', files = {}, defaultBranch = 'ma
 
       if ((m = /^\/contents\/(.+)$/.exec(path))) {
         const file = m[1];
+        if (method === 'HEAD') return treeOf(q.get('ref') || defaultBranch)?.get(file) ? new Response(null, { status: 200 }) : notFound();
         if (method === 'GET') {
           const e = treeOf(q.get('ref') || defaultBranch)?.get(file);
           if (!e) return notFound();

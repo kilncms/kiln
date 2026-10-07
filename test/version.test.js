@@ -78,5 +78,5 @@ test('KLR-18 /healthz: a plain GET still answers 200 with what it always had, pl
   assert.equal('build' in (await get({ KILN_BUILD: '<script>' })).json, false);
   // Nothing from the environment leaks: only these keys.
   const withSecrets = await get({ KILN_BUILD: 'abc1234', LS_API_KEY: 'sk_live_x', GOOGLE_CLIENT_SECRET: 'shh', AI_API_KEY: 'k' });
-  assert.deepEqual(Object.keys(withSecrets.json).sort(), ['adapters', 'build', 'memberSessions', 'modes', 'ok', 'renameMovesAll', 'sourceMarkdown', 'sourceWas', 'version']);
+  assert.deepEqual(Object.keys(withSecrets.json).sort(), ['adapters', 'build', 'memberSessions', 'modes', 'ok', 'renameMovesAll', 'sourceMarkdown', 'sourceMedia', 'sourceWas', 'version']);
 });

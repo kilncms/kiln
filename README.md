@@ -140,6 +140,26 @@ Honest scope, today:
   Markdown is the same, stamped `kilnSource(entry, 'summary', { type: 'markdown' })`.
   (This needs a worker that says `sourceMarkdown` in its `/healthz`; with an
   older one a formatted text stays read-only, as before.)
+- **In:** pictures and link addresses. A picture stamped
+  `kilnSource(entry, 'cover', { type: 'image', alt: 'coverAlt' })` gets
+  "Replace picture…" and its description in the toolbar. The new picture is
+  made web-sized (WebP, or JPEG from a browser such as Safari that cannot write
+  WebP), checked against the upload limits, put in the folder the field's
+  picture is in now (beside the entry for `./images/hall.jpg`, which `image()`
+  checks; under `public/` for `/img/hall.jpg`), committed before the entry that
+  names it, and named in the field in the same style. A picture inside an
+  entry's text is replaced the same way, and only its line changes. A link
+  stamped `kilnSource(entry, ['cta', 'label'], { href: ['cta', 'href'] })` has
+  its words edited in place and its address typed beside them. The worker
+  writes a picture path only when that picture is in the repository. (This
+  needs a worker that says `sourceMedia` in its `/healthz`; with an older one
+  pictures and link addresses stay read-only, as before.)
+- **In:** the site's own schema. With `kiln()` in `astro.config.mjs`, each
+  build publishes the collections' schemas at `/kiln-schema.json`, and the
+  editor refuses, with a sentence, a value the next build would reject: a title
+  longer than `.max(80)`, a page address where `.url()` wants a full one, an
+  empty required field, a word outside a `z.enum`. A picture field whose schema
+  wants a full web address says so instead of offering an upload.
 - **In:** typed values (`date`, `time`, `url`, `boolean`, `number`). A value of
   the wrong kind is said in a sentence when the field is left ("This needs to be
   a date written like 2026-09-20."), and the worker checks again. A `url` is a
@@ -162,9 +182,10 @@ Honest scope, today:
   output is blocked from editing `dist/` with an explanation, instead of edits
   silently vanishing.
 - **Read-only on the page for now**, each with a sentence that says why when it
-  is clicked: a picture stamped as a field; a link stamped with its address
-  (`type: 'url'` on an `<a>`, whose words are a label and not the address); a
-  table inside a text.
+  is clicked: a table inside a text; a picture field that has no picture yet,
+  names a picture on another site, or uses a path alias (`~/assets/…`), since
+  there is no folder to follow. Choosing a picture that is already in the
+  repository, instead of uploading one, is not offered for content pictures yet.
 - **Not yet:** date-picker-style controls (typed values are edited as text, in
   the form they are stored: a date is typed `2026-09-20` even where the page
   writes it out), adding, removing or

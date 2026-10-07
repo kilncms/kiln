@@ -829,7 +829,10 @@ function inlineOf(node, style, opts) {
   if (tag === 'IMG') {
     const alt = attr(node, 'alt') || '';
     const title = attr(node, 'title');
-    return `![${escapeText(alt, opts)}](${linkDest(attr(node, 'src') || '')}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
+    // A picture replaced in the editor shows the new file before it is on the
+    // site; the address the text will hold is beside it.
+    const src = attr(node, 'data-kiln-md-src') || attr(node, 'src') || '';
+    return `![${escapeText(alt, opts)}](${linkDest(src)}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
   }
   if (/^(?:P|DIV|H[1-6]|LI|BLOCKQUOTE)$/.test(tag)) return inner();
   return inner();   // a span, a mark, an underline: their words
@@ -1269,6 +1272,29 @@ export function mdxCode(text) {
 const DANGEROUS_URL = /^(?:javascript|vbscript):|^data:(?:text\/html|image\/svg)/;
 
 /** Link and picture addresses in Markdown that would run code when followed: ['url:…']. */
+/** The address of every picture in a Markdown text, in order (reference pictures resolved). */
+export function pictureUrls(text, opts = {}) {
+  const out = [];
+  const refs = linkRefs(text, opts);
+  const walk = (nodes) => {
+    for (const nd of nodes) {
+      if (nd.type === 'image' && typeof nd.url === 'string') out.push(nd.url.trim());
+      if (nd.children) walk(nd.children);
+    }
+  };
+  const visit = (t) => {
+    for (const b of markdownBlocks(t, opts)) {
+      const raw = t.slice(b.start, b.end);
+      if (b.kind === 'paragraph') walk(parseInline(raw, { ...opts, refs }));
+      else if (b.kind === 'heading') walk(parseInline(headingInside(raw, b), { ...opts, refs }));
+      else if (b.kind === 'blockquote') visit(quoteInside(raw));
+      else if (b.kind === 'list') listItems(raw).forEach(visit);
+    }
+  };
+  visit(String(text));
+  return out;
+}
+
 export function riskyUrls(text, opts = {}) {
   const out = [];
   const refs = linkRefs(text, opts);

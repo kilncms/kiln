@@ -71,14 +71,18 @@ export function parseSourceRef(ref) {
   if (!path) return null;
   let frag = ref.slice(hash + 1);
   let type;
+  let collection;
   const q = frag.indexOf('?');
   if (q !== -1) {
     const query = frag.slice(q + 1);
     frag = frag.slice(0, q);
     const m = /(?:^|&)type=([a-z]+)/.exec(query);
     if (m && FIELD_TYPES.has(m[1])) type = m[1];
+    // The collection whose schema holds the field (the Astro helpers add it).
+    const c = /(?:^|&)c=([A-Za-z0-9_-]{1,64})(?:&|$)/.exec(query);
+    if (c) collection = c[1];
   }
   const pointer = parsePointer(frag);
   if (!pointer || pointer.length === 0) return null;
-  return { path, pointer, rawPointer: frag, type };
+  return { path, pointer, rawPointer: frag, type, ...(collection && { collection }) };
 }

@@ -34,6 +34,27 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   owner's video embed survives an edit to another paragraph) and may add none,
   including a link or a picture whose address would run code (`javascript:`
   and the like), which the old check could not see in Markdown.
+- **Pictures and link addresses on a site Astro builds.** A picture stamped
+  `kilnSource(entry, 'cover', { type: 'image', alt: 'coverAlt' })` is replaced
+  from the device and described from its toolbar. The picture is made
+  web-sized (WebP, or JPEG where the browser cannot write WebP), checked
+  against the upload limits, put in the folder the field's picture is already
+  in (beside the entry for a path `image()` checks, under `public/` for an
+  address), committed before the entry, and named in the field in the file's
+  own style. A picture inside an entry's text is replaced the same way and only
+  its line changes. A link's address (`opts.href`, or `{ type: 'url' }` on an
+  `<a>`) is typed in the toolbar beside its words. The worker writes a picture
+  path only when the picture is in the repository, and refuses a new picture in
+  Markdown that is not there (`/healthz` says `sourceMedia`; with an older
+  worker these stay read-only).
+- **The site's own schema, before the build.** `kiln()` in `astro.config.mjs`
+  publishes the collections' schemas at `/kiln-schema.json` at the end of each
+  build, from what Astro writes in `.astro/collections/`. The editor reads it
+  and refuses, with a sentence, a value the next build would reject (too long,
+  not a full web address where the schema wants one, empty where it is
+  required, not one of an enum's words). References made by the helpers carry
+  the entry's collection (`?c=posts`).
+
 
 - **The release runs the end-to-end tests itself.** With the two test
   repositories named (`KILN_E2E_REPO`, `KILN_E2E_SOURCE_REPO`),
@@ -311,6 +332,9 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A formatted text from a content file, saved in the browser and brought back
+  after a reload, is published as Markdown again (it was sent as plain words),
+  and a picture put in it or in a picture field comes back with its file.
 - **Undo could leave what it restored invisible, and a publish wrote one
   visit's state into the page file.** The editor copied each field's markup as
   it started, while the site was still animating in. On a site whose headline

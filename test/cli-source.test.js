@@ -116,6 +116,9 @@ test('wizard §7.2: generator tree asks the mode question; choosing source write
     assert.match(out, /wrote src\/lib\/kiln-astro\.mjs/);
     assert.equal(readFileSync(path.join(dir, 'src', 'lib', 'kiln-astro.mjs'), 'utf8'), readFileSync(path.join(path.dirname(CLI), '..', 'integrations', 'astro', 'index.mjs'), 'utf8'));
     assert.match(out, /kilnSource\(entry, 'title'\)/);
+    // pictures and links, and the schema check that keeps a bad value from failing the build
+    assert.match(out, /kilnSource\(entry, 'cover', \{ type: 'image', alt: 'coverAlt' \}\)/);
+    assert.match(out, /integrations: \[kiln\(\)\]/);
     assert.match(out, /auto-deploy/);
     assert.match(out, /Node 18\+/);
     assert.match(out, /source mode is new/);

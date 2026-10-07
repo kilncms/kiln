@@ -216,7 +216,12 @@ async function detectSiteMode() {
       @kilncms/astro package is not on npm yet):
         import { kilnSource, kilnBody } from '../lib/kiln-astro.mjs';
         <h3 {...kilnSource(entry, 'title')}>{entry.data.title}</h3>
+        <Image {...kilnSource(entry, 'cover', { type: 'image', alt: 'coverAlt' })} … />
         <div {...kilnBody(entry)}><Content /></div>
+      So that the editor turns away a value your build would reject, add
+      the same file's integration to astro.config.mjs:
+        import kiln from './src/lib/kiln-astro.mjs';
+        export default defineConfig({ integrations: [kiln()] });
    2. Verify your host builds + deploys this repo on every push (Cloudflare
       Pages / Netlify / Vercel, Git-connected). In source mode a host that
       doesn't auto-deploy means nothing you save ever publishes.
@@ -460,7 +465,7 @@ const WORKER_FILES = [
   ...['index.js', 'cloud.js', 'runbook.js', 'sanitize-guard.js', 'source.js'].map(f => ['worker', f]),
   ['src', 'engine.js'],
   ['src', 'file-policy.js'],
-  ...['astro.js', 'detect.js', 'frontmatter.js', 'index.js', 'json-splice.js', 'markdown.js', 'pointer.js', 'toml-splice.js', 'yaml-splice.js'].map(f => ['src', 'adapters', f]),
+  ...['astro.js', 'detect.js', 'frontmatter.js', 'index.js', 'json-splice.js', 'markdown.js', 'pictures.js', 'pointer.js', 'toml-splice.js', 'yaml-splice.js'].map(f => ['src', 'adapters', f]),
 ];
 /** What the worker's own package.json must list for wrangler to bundle it. */
 const WORKER_DEPS = { parse5: '^8.0.0', yaml: '^2.0.0' };

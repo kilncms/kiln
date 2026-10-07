@@ -144,8 +144,19 @@ edit them the same way, and a few things read differently:
   toolbar: bold, italic, links, lists, headings, quotes. Inside it, a table, a
   block of code or a part the site builds itself shows a dashed outline and takes
   no typing; click it and the line says why.
-- Some parts are read-only for now: a picture, a link's address. Click one and
-  the line says why. Ask the site's owner to change those.
+- Click a picture to replace it: **Replace picture…** takes one from your device
+  and makes it the right size for the web, and the box beside it holds the
+  picture's description, for people who can't see it. Inside a longer text, open
+  the text first and then click the picture. The picture goes on the site with
+  your next Publish.
+- Click a button or a link to change where it goes: the address is in the box on
+  the toolbar, beside its words.
+- The site may have rules for some things, such as how long a title can be, or
+  that a link needs a full web address starting with https://. If what you type
+  breaks one, it is not kept, and the line says what the site needs.
+- A few parts can't be changed here, such as a table inside a text or a picture
+  the site takes from another website. Click one and the line says why. Ask the
+  site's owner to change those.
 - If a text says it was changed on the site after the page was made, someone
   else published it since. Reload the page in a minute, once the site has
   rebuilt, and it can be edited again.

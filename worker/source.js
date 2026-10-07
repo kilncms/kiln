@@ -12,7 +12,8 @@
 
 import { getAdapter, adapterIds } from '../src/adapters/index.js';
 import { safeSourcePath, parsePointer } from '../src/adapters/pointer.js';
-import { riskyUrls } from '../src/adapters/markdown.js';
+import { riskyUrls, pictureUrls } from '../src/adapters/markdown.js';
+import { picturePlace } from '../src/adapters/pictures.js';
 import { isHtmlPath } from './sanitize-guard.js';
 
 /** Per-request edit cap (IMPL contract rule 3: 1..100). */
@@ -210,6 +211,41 @@ export const NOT_AN_ADDRESS =
  * attacker-controlled, so unknown/enum/image types fail closed into the same
  * markup check rather than skipping it.
  */
+/**
+ * Pictures a commit would name (rule 4, third part). A picture field holds
+ * the path of a picture in the repository, in the place Astro reads it from
+ * (a path from the content file, or an address under public/); anything else
+ * is refused without looking. The rest are looked up before the commit: a
+ * build fails on a picture that is not there. A Markdown text is looked at
+ * for pictures it did not name before; one on another site is the site's own
+ * business.
+ *
+ * Returns { check: [{ key, path }], skips: [{ key, reason }] }.
+ */
+export function picturesToCheck(edits, file, { currentOf = () => undefined, mdx = false } = {}) {
+  const check = [];
+  const skips = [];
+  for (const e of edits || []) {
+    const key = e.key ?? e.pointer;
+    if (e.type === 'image') {
+      const place = typeof e.value === 'string' ? picturePlace(file, e.value) : { why: 'not-picture' };
+      if (place.why) skips.push({ key, reason: 'needs to be a picture on this site' });
+      else check.push({ key, path: place.path });
+      continue;
+    }
+    if (!isMarkdownEdit(e) || typeof e.value !== 'string') continue;
+    const had = new Map();
+    const before = currentOf(e);
+    for (const u of typeof before === 'string' ? pictureUrls(before, { mdx }) : []) had.set(u, (had.get(u) || 0) + 1);
+    for (const u of pictureUrls(e.value, { mdx })) {
+      if (had.get(u)) { had.set(u, had.get(u) - 1); continue; }
+      const place = picturePlace(file, u);
+      if (!place.why) check.push({ key, path: place.path });
+    }
+  }
+  return { check, skips };
+}
+
 export function typedEditProblems(edits, { safeUrl, checkFragment }) {
   const skips = [];
   for (const e of edits || []) {
