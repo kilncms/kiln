@@ -94,9 +94,7 @@ export function kilnSource(entry, field, opts = {}) {
  *
  *   <div {...kilnBody(entry)}><Content /></div>
  *
- * The body is edited with the toolbar and written back as Markdown. In .mdx
- * the prose is editable; imports, exports, components and expressions stay
- * exactly as written.
+ * Note: Kiln edits .md bodies; .mdx bodies are code and stay read-only.
  */
 export function kilnBody(entry) {
   if (disabled()) return {};

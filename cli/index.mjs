@@ -460,7 +460,7 @@ const WORKER_FILES = [
   ...['index.js', 'cloud.js', 'runbook.js', 'sanitize-guard.js', 'source.js'].map(f => ['worker', f]),
   ['src', 'engine.js'],
   ['src', 'file-policy.js'],
-  ...['astro.js', 'detect.js', 'index.js', 'pointer.js', 'yaml-splice.js'].map(f => ['src', 'adapters', f]),
+  ...['astro.js', 'detect.js', 'frontmatter.js', 'index.js', 'json-splice.js', 'markdown.js', 'pointer.js', 'toml-splice.js', 'yaml-splice.js'].map(f => ['src', 'adapters', f]),
 ];
 /** What the worker's own package.json must list for wrangler to bundle it. */
 const WORKER_DEPS = { parse5: '^8.0.0', yaml: '^2.0.0' };

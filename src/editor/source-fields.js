@@ -93,7 +93,7 @@ export function groupSourceEdits(pending, { repo, branch, adapter, was } = {}) {
     }
     const g = groups.get(parsed.path);
     const type = staged?.type ?? parsed.type;
-    const edit = { pointer: parsed.rawPointer, value: wireValue(staged?.value, type, parsed), key: ref };
+    const edit = { pointer: parsed.rawPointer, value: wireValue(staged?.value, type, parsed, staged?.md), key: ref };
     if (type) edit.type = type;
     // What the field held when the page was read, when that is known: the
     // worker leaves the edit out if the file no longer says so (changedRefs).
@@ -235,12 +235,15 @@ export function revertRequest(committed, { repo, branch } = {}) {
  */
 export function parseSourceCapabilities(body) {
   if (!body || typeof body !== 'object' || !Array.isArray(body.modes)) {
-    return { legacy: true, source: false, adapters: [] };
+    return { legacy: true, source: false, adapters: [], markdown: false };
   }
   return {
     legacy: false,
     source: body.modes.includes('source'),
     adapters: Array.isArray(body.adapters) ? body.adapters : [],
+    // A worker that takes a formatted Markdown body (and MDX prose) written
+    // back by the editor, keeping the markup and the code it holds.
+    markdown: body.sourceMarkdown === true,
   };
 }
 
@@ -360,9 +363,14 @@ export function typeHint(type) {
   return TYPE_HINT[type] ? `${TYPE_HINT[type]} The page shows it in the site’s own way once the site has rebuilt.` : '';
 }
 
-/** The value as it goes to the worker. What is staged stays the text that was typed. */
-function wireValue(value, type, parsed) {
+/**
+ * The value as it goes to the worker. What is staged stays the text that was
+ * typed. A formatted text is already Markdown (source-rich.js wrote it) and
+ * goes as it is.
+ */
+function wireValue(value, type, parsed, md = false) {
   if (typeof value !== 'string') return value;
+  if (md) return value;
   if (type === 'number' || type === 'boolean') {
     const typed = typedValue(value, type);
     return typed.ok ? typed.value : value;   // a wrong one goes as typed: the worker says why
@@ -375,6 +383,11 @@ function wireValue(value, type, parsed) {
 /** Whether a reference is to an entry's whole text (its markdown body). */
 export function isBody(parsed) {
   return isBodyPointer(parsed);
+}
+
+/** Whether a field holds Markdown that is edited with the toolbar: an entry's text, or a field stamped ?type=markdown. */
+export function isMarkdownField(parsed) {
+  return isBodyPointer(parsed) || parsed?.type === 'markdown';
 }
 
 /**
@@ -441,8 +454,11 @@ function inFolders(file, paths) {
  *   adapter  the site's adapter id
  *   plain    for an entry's text: whether it is one plain paragraph (plainBody)
  *   seat     'suggest' for an editor whose Publish only proposes
+ *   rich     whether formatted text can be edited here (a worker that takes
+ *            Markdown back, and a way to read the file): then an entry's
+ *            text, formatted or in MDX, and a Markdown field are editable
  */
-export function lockReason({ parsed, tag = '', caps, paths, adapter = 'astro', plain = true, seat = null } = {}) {
+export function lockReason({ parsed, tag = '', caps, paths, adapter = 'astro', plain = true, seat = null, rich = false } = {}) {
   if (!parsed) return 'This text can’t be edited here. For the site’s owner: its data-kiln-source value is not a reference Kiln can read.';
   if (caps && !caps.source) return 'This page can’t be edited yet. The site’s owner needs to update Kiln first.';
   // A suggest-only editor: the worker takes no suggestion for a content file
@@ -452,10 +468,10 @@ export function lockReason({ parsed, tag = '', caps, paths, adapter = 'astro', p
   const kinds = EDITABLE[adapter];
   if (kinds && !kinds.test(parsed.path)) return `${OWN_FILE}, so it can’t be edited here. Ask the site’s owner.`;
   const body = isBodyPointer(parsed);
-  if (body && /\.mdx$/i.test(parsed.path)) return 'This text is written as code in the site’s files, so it can’t be edited here. Ask the site’s owner.';
+  if (body && /\.mdx$/i.test(parsed.path) && !rich) return 'This text is written as code in the site’s files, so it can’t be edited here. Ask the site’s owner.';
   if (String(tag).toUpperCase() === 'IMG' || parsed.type === 'image') return 'Pictures that come from the site’s content can’t be changed here yet. Ask the site’s owner.';
   if (parsed.type === 'url' && String(tag).toUpperCase() === 'A') return 'This link’s address comes from the site’s content and can’t be changed here yet. Ask the site’s owner.';
-  if (body && !plain) return 'This text has formatting (bold, links, a list or more than one paragraph). Kiln can’t edit it on the page yet without losing that, so it is left as it is. Ask the site’s owner to change it.';
+  if ((body || parsed.type === 'markdown') && !plain && !rich) return 'This text has formatting (bold, links, a list or more than one paragraph). Kiln can’t edit it on the page yet without losing that, so it is left as it is. Ask the site’s owner to change it.';
   return null;
 }
 

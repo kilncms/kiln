@@ -45,9 +45,14 @@ What the editor can do with each kind of element today:
   form the file stores. A date is typed `2026-09-20` even if your template
   writes it out as "September 20, 2026"; the editor says so when the field is
   opened, and the page shows it your way again once the site has rebuilt.
-- **The body** (`kilnBody`): edited in place when it is one plain paragraph.
-  A body with formatting (bold, links, a list, more than one paragraph) is
-  read-only on the page for now, and says why when it is clicked.
+- **The body** (`kilnBody`): edited in place with the toolbar: bold, italic,
+  links, lists, headings, quotes, line breaks. Kiln writes back Markdown in your
+  file's own style, changing only the blocks that were edited. A table, a code
+  block, raw HTML and an MDX component or expression stay as they render and are
+  written back exactly. In `.mdx` the prose is editable and the code is not.
+- **A field your template renders as Markdown**: stamp it
+  `kilnSource(entry, 'summary', { type: 'markdown' })` and it is edited the same
+  way as the body. A YAML block (`|`) stays a block.
 - **A link's address or a picture**: read-only for now. If you stamp
   `{ type: 'url' }` on an `<a>`, its words are a label, not the address, so
   the editor will not take them as one. To make a link's words editable, keep

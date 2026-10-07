@@ -8,6 +8,33 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Formatted text on a site Astro builds.** An entry's body, formatted or
+  not, is edited on the page with the same toolbar as a plain HTML site: bold,
+  italic, links, lists (nested too), headings, quotes, line breaks. The editor
+  reads the entry's Markdown (`POST /source/read`), matches each block on the
+  page to its block in the file by what it says, and writes back only what
+  changed, in the file's own style: a block nobody touched keeps every byte, a
+  changed word rewrites that word, and a reference link, a hard break or a
+  wrapped line stays as the file wrote it. Pictures in the text go back as the
+  file wrote them (Astro shows its optimised copies at other addresses). A
+  table, a code block, raw HTML, and in MDX a component or an expression, stay
+  as they render, take no typing and say why when clicked. MDX prose is
+  editable; the worker takes an MDX edit only when every import, export,
+  component and expression is as it was, with none added. A field stamped
+  `{ type: 'markdown' }` is edited the same way, and a YAML block (`|`) stays a
+  block. A text that no longer says what the file says (someone changed it
+  since the page was built) is not offered until the site has rebuilt. Needs a
+  worker whose `/healthz` says `sourceMarkdown`; with an older one a formatted
+  text stays read-only, as before.
+- **TOML front matter** (`+++`) is read and written like YAML: comments, quoting
+  and key order stay. JSON front matter and data files are read and written the
+  same way (`src/adapters/json-splice.js`), for the generators to come.
+- **Markdown keeps its markup and adds none.** A change to a Markdown body or
+  field may keep the scripts, frames and embeds the field already holds (an
+  owner's video embed survives an edit to another paragraph) and may add none,
+  including a link or a picture whose address would run code (`javascript:`
+  and the like), which the old check could not see in Markdown.
+
 - **The release runs the end-to-end tests itself.** With the two test
   repositories named (`KILN_E2E_REPO`, `KILN_E2E_SOURCE_REPO`),
   `npm run deploy:test` runs both tests on staging after the deploy, and

@@ -141,8 +141,20 @@ function singleQuoted(s) {
  *    string escaping is a strict subset of YAML double-quoted style, so
  *    JSON.stringify output is always valid YAML.
  */
-export function serializeScalar(value, { type, originalStyle, flow = false } = {}) {
+export function serializeScalar(value, { type, originalStyle, flow = false, header, indent } = {}) {
   let s;
+  // A block of text (| or >) stays a block, its lines indented as they were.
+  // A folded one (>) is written literal (|): folding would join the lines the
+  // text means to keep apart. The chomping mark (-, +) stays.
+  if (originalStyle === 'block' && type !== 'boolean' && type !== 'number' && typeof value === 'string' && indent) {
+    const text = value.replace(/\r\n/g, '\n');
+    const chomp = /[-+]/.exec(header || '')?.[0] || '';
+    const body = chomp === '+' ? text : text.replace(/\n+$/, '');
+    // A first line that starts with a space, or a tab anywhere at a line's start, needs an indentation mark: write it quoted instead.
+    if (!/^[ \t]/.test(body) && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(body) && body !== '') {
+      return `|${chomp}\n` + body.split('\n').map(l => (l ? indent + l : '')).join('\n');
+    }
+  }
   if (type === 'boolean') s = value === true || value === 'true' ? 'true' : 'false';
   else if (type === 'number') {
     const n = Number(value);
@@ -187,8 +199,15 @@ export function locateValue(yamlText, segs) {
   // A block scalar's source runs through its final line break; the break
   // belongs to the document's line structure, not the value — keep it.
   while (end > start && (yamlText[end - 1] === '\n' || yamlText[end - 1] === '\r')) end--;
+  const style = styleOf(res.token);
+  if (style === 'block') {
+    const header = (res.token.props || []).find(t => t.type === 'block-scalar-header')?.source || '|';
+    const firstLine = /^([ ]*)\S/m.exec(res.token.source || '');
+    const keyCol = (() => { const ls = yamlText.lastIndexOf('\n', start - 1) + 1; return /^ */.exec(yamlText.slice(ls))[0].length; })();
+    return { start, end, style, header, indent: firstLine ? firstLine[1] : ' '.repeat(keyCol + 2), flow: false };
+  }
   // Inside [ ] or { } a comma or a bracket ends an unquoted value.
-  return { start, end, style: styleOf(res.token), flow: res.parent?.type === 'flow-collection' };
+  return { start, end, style, flow: res.parent?.type === 'flow-collection' };
 }
 
 /**
@@ -209,7 +228,7 @@ export function applyYamlEdits(yamlText, edits) {
   for (const e of edits) {
     const loc = locateValue(yamlText, e.segs);
     if (loc.error) { skipped.push({ key: e.key, reason: loc.error }); continue; }
-    const out = serializeScalar(e.value, { type: e.type, originalStyle: loc.style, flow: loc.flow });
+    const out = serializeScalar(e.value, { type: e.type, originalStyle: loc.style, flow: loc.flow, header: loc.header, indent: loc.indent });
     if (out === null) { skipped.push({ key: e.key, reason: 'value does not fit the field type' }); continue; }
     if (loc.insertAt !== undefined) {
       splices.push({ start: loc.insertAt, end: loc.insertAt, text: ' ' + out, key: e.key });

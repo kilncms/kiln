@@ -75,6 +75,10 @@
  * publish, or the editor asking by itself. Each must show the same dialog,
  * keep what was typed on screen, and bring back what the saved copy holds.
  * A sign-in that ran out by the browser's own clock must be said once.
+ * And formatted text from a content file ("formatted"): the toolbar a plain
+ * HTML site has, a bold word and a new list item written back as the file's
+ * own Markdown with only those lines changed, a table that takes no typing
+ * and says why, and Esc.
  * Exits non-zero if any check fails. `--shots <dir>` also saves a screenshot
  * of each step as <step>-<width>.png. `--only <pass>` runs the passes whose
  * name has that word in it ("safety net", "signed in", "ended elsewhere"…).
@@ -84,7 +88,7 @@
  * Not part of `npm test` or CI.
  */
 import { createRequire } from 'node:module';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 // Playwright is not a dependency of this repo: point PLAYWRIGHT_DIR at an installed copy,
@@ -3196,6 +3200,156 @@ async function runGenerated(browser, size) {
   });
 }
 
+/**
+ * Formatted text on a generated page ("formatted"): an entry's body that
+ * Astro made from Markdown, with a list, a table and code, on a site whose
+ * worker takes Markdown back. The person clicks the text and gets the same
+ * toolbar as on a plain HTML site, bolds a word, adds a list item, finds the
+ * table says why it takes no typing, and Esc puts typing back. What reaches
+ * the worker is the file's own Markdown with only those lines changed. The
+ * page and the file are the real ones in test/fixtures/astro-formatted.
+ */
+async function runFormatted(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} formatted   `;
+  const WORKER = 'https://worker.invalid';
+  const REPO = 'acme/site';
+  const AT = '/uicheck-formatted/';
+  const FILE = 'src/content/posts/spring-fair.md';
+  const FIX = path.join(path.dirname(path.dirname(new URL(import.meta.url).pathname)), 'test', 'fixtures', 'astro-formatted');
+  const src = readFileSync(path.join(FIX, 'src', 'content', 'posts', 'spring-fair.md'), 'utf8');
+  const body = src.slice(src.indexOf('\n---\n', 4) + 5);
+  const built = readFileSync(path.join(FIX, 'built', 'spring-fair.html'), 'utf8');
+  const inner = /<body>([\s\S]*)<\/body>/.exec(built)[1];
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Spring fair</title><style>body{font:17px/1.55 system-ui,sans-serif;max-width:40rem;margin:0 auto;padding:0 16px 220px}table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:4px 8px}pre{overflow:auto}</style></head><body>${inner}<script src="/assets/kiln-config.js"></script><script src="/assets/kiln.js" defer></script></body></html>`;
+  const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+  await context.addInitScript(([repo]) => {
+    try { localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' })); localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ }
+  }, [REPO]);
+  const worker = { commits: [], reads: 0 };
+  const blocked = [];
+  await context.route('**/*', async (route) => {
+    const req = route.request();
+    const u = new URL(req.url());
+    const json = (b, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': ORIGIN }, body: JSON.stringify(b) });
+    if (u.origin === ORIGIN && u.pathname.endsWith('kiln-config.js')) return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', mode: 'source', adapter: 'astro', styles: [] };` });
+    if (u.origin === ORIGIN && u.pathname === AT) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: html });
+    if (u.origin === ORIGIN && u.pathname.startsWith(AT)) return route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Not found</h1>' });
+    if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
+    if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+    const p = decodeURIComponent(u.pathname);
+    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
+    if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: null, mode: null } });
+    if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'], sourceWas: true, sourceMarkdown: true });
+    if (p === '/source/read') { worker.reads++; const b = JSON.parse(req.postData()); return b.pointer === '/body' ? json({ value: body, sha: 'f'.repeat(40) }) : json({ error: 'pointer not found in source' }, 404); }
+    if (p === '/source/commit') {
+      const b = JSON.parse(req.postData());
+      worker.commits.push(b);
+      return json({ ok: true, file: b.file, commit: { sha: 'c'.repeat(40), parent: 'b'.repeat(40) }, applied: b.edits.map(e => e.key), skipped: [] });
+    }
+    if (p.startsWith(`/gh/repos/${REPO}/git/trees/`)) return json({ tree: ['astro.config.mjs', FILE].map(x => ({ path: x, type: 'blob' })) });
+    if (p.endsWith('/status')) return json({ total_count: 0 });
+    if (p.includes('/deployments')) return json([]);
+    if (p === '/comments' || p === '/comments/counts') return json({ error: 'bad path' }, 400);
+    return json({ message: 'Not Found' }, 404);
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  const boxes = [];
+  page.on('dialog', async (d) => { boxes.push(d.message()); await d.dismiss().catch(() => {}); });
+  const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+  const statusLine = () => page.evaluate(() => { const el = document.getElementById('kiln-status'); return el && !el.hidden ? el.textContent.trim() : ''; });
+  /** Put the caret in (or select) the words `w` inside the element matching `sel`. */
+  const selectWords = (sel, w, collapseToEnd = false) => page.evaluate(([s, word, end]) => {
+    const root = document.querySelector(s);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const at = n.data.indexOf(word);
+      if (at === -1) continue;
+      const r = document.createRange();
+      r.setStart(n, end ? at + word.length : at);
+      r.setEnd(n, at + word.length);
+      const selection = getSelection(); selection.removeAllRanges(); selection.addRange(r);
+      return true;
+    }
+    return false;
+  }, [sel, w, collapseToEnd]);
+  try {
+    await page.goto(`${ORIGIN}${AT}`, { waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(700);
+    const text = page.locator(`[data-kiln-source="${FILE}#/body"]`);
+    check(scope, 'the formatted text is offered for editing, not read-only', await text.evaluate(el => el.classList.contains('kiln-source-rich') && !el.classList.contains('kiln-source-locked')));
+
+    // The toolbar is the one a plain HTML site has, without what Markdown cannot hold.
+    await press(text.locator('p').first());
+    await page.locator('#kiln-toolbar').waitFor({ state: 'visible', timeout: 5000 });
+    await page.waitForTimeout(300);
+    const buttons = await page.evaluate(() => [...document.querySelectorAll('#kiln-toolbar [data-cmd]')].map(b => b.dataset.cmd));
+    check(scope, 'the toolbar has bold, italic, both lists, link and the format menu', ['bold', 'italic', 'insertUnorderedList', 'insertOrderedList', 'link'].every(c => buttons.includes(c)) && await page.locator('#kiln-toolbar .kiln-style-select').count() === 1, buttons.join(' '));
+    check(scope, 'and nothing Markdown cannot hold: no underline, no upload, no site styles, no section history', !['underline', 'img', 'doc', 'hist'].some(c => buttons.includes(c)) && await page.locator('#kiln-toolbar optgroup[label="Site styles"]').count() === 0, buttons.join(' '));
+    check(scope, 'the file was read once, to match the page to it', worker.reads === 1, `reads ${worker.reads}`);
+    const tb = await box(page.locator('#kiln-toolbar'));
+    check(scope, 'the toolbar fits the screen', tb.left >= 0 && tb.right <= size.width + 0.5, `${Math.round(tb.left)}–${Math.round(tb.right)}`);
+    const table = text.locator('table');
+    check(scope, 'the table is kept as the file has it: it takes no typing', await table.evaluate(t => t.getAttribute('contenteditable') === 'false' && /^b\d+$/.test(t.getAttribute('data-kiln-keep') || '')));
+    await shot('formatted-toolbar');
+
+    // Bold one word with the toolbar.
+    await selectWords(`[data-kiln-source="${FILE}#/body"] p`, 'green');
+    await press(page.locator('#kiln-toolbar [data-cmd="bold"]'));
+    await page.waitForTimeout(150);
+    // A new item at the end of the list: Enter after "Food", then the words.
+    await selectWords(`[data-kiln-source="${FILE}#/body"] > ul > li:last-child`, 'Food', true);
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Games');
+    await page.waitForTimeout(150);
+    await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(300);
+    check(scope, 'Done keeps it on the page as an edit waiting to be published', await text.evaluate(el => el.classList.contains('kiln-modified') && !el.isContentEditable && /Games/.test(el.textContent)));
+
+    // A click on the table says why it takes no typing.
+    await press(table.locator('td').first());
+    await page.waitForTimeout(250);
+    check(scope, 'a click on the table says why it is kept as it is, where a phone can see it', /table/i.test(await statusLine()), await statusLine());
+
+    // Esc puts typing back.
+    await press(text.locator('h2'));
+    await page.locator('#kiln-toolbar').waitFor({ state: 'visible', timeout: 5000 });
+    await selectWords(`[data-kiln-source="${FILE}#/body"] h2`, 'Getting there', true);
+    await page.keyboard.type(' quickly');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(250);
+    check(scope, 'Esc puts back what was typed since the text was opened, and keeps the earlier edit', await text.evaluate(el => !/quickly/.test(el.textContent) && /Games/.test(el.textContent) && !el.isContentEditable));
+
+    // Publish: the file's Markdown, with only those two lines changed.
+    await press(page.locator('#kiln-publish-quick'));
+    await page.waitForTimeout(450);
+    const sheet = await page.locator('.kiln-pubsheet').innerText().catch(() => '');
+    await shot('formatted-sheet');
+    check(scope, 'the publish sheet names the text and shows its words, not Markdown', /Text/.test(sheet) && /Food\s+Games/.test(sheet) && !/\*\*/.test(sheet), sheet.replace(/\s+/g, ' ').slice(0, 160));
+    if (await page.locator('#kiln-pubsheet-go').count()) await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(1300);
+    const sent = worker.commits[0]?.edits?.[0];
+    check(scope, 'one commit to the entry\'s file, its body as Markdown', worker.commits.length === 1 && worker.commits[0].file === FILE && sent?.pointer === '/body' && typeof sent.value === 'string');
+    const was = body.split('\n');
+    const now = String(sent?.value || '').split('\n');
+    const removed = was.filter(l => !now.includes(l));
+    const added = now.filter(l => !was.includes(l));
+    check(scope, 'only the bolded line and the new item changed, in the file\'s own style', JSON.stringify(removed) === JSON.stringify(['The **spring fair** is on the green, from ten until four. Entry is'])
+      && JSON.stringify(added) === JSON.stringify(['The **spring fair** is on the **green**, from ten until four. Entry is', '- Games']), JSON.stringify({ removed, added }).slice(0, 220));
+    check(scope, 'the table, the code and the reference link went back byte for byte', ['| 10:00 | Doors open  |', "const open = '10:00';", '[c]: mailto:fair@example.org', 'Take the 12 bus to the church.  '].every(l => now.includes(l)));
+    check(scope, 'the edit says the Markdown it was made from, so a change made since is not written over', sent?.was === body);
+    await shot('formatted-published');
+  } finally {
+    check(scope, 'no script errors, no browser box, nothing outside the local server', errors.length === 0 && boxes.length === 0 && blocked.length === 0, [...errors, ...boxes, ...blocked].join(' | ').slice(0, 200));
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
   if (ONLY && !label.includes(ONLY)) return;
@@ -3222,6 +3376,8 @@ try {
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} real sites  `, () => runRealSites(browser, size));
   // a page a generator built: a field someone else changed, the site's real pages, and what a suggest-only or comment-only editor is offered
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} generated   `, () => runGenerated(browser, size));
+  // formatted text from a content file: the toolbar, a bold word, a new item, a table that takes no typing, the file's own Markdown
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} formatted   `, () => runFormatted(browser, size));
   // the worker ends an invited editor's sign-in
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} sign-in ended`, () => runSignInEnded(browser, size));
   // …and they find out anywhere else in the editor

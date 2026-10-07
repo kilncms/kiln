@@ -21,9 +21,12 @@ import {
   scanSourceRefs, groupSourceEdits, matchAppliedRefs, matchSkippedRefs, resolveBuildState,
   revertRequest, parseSourceCapabilities, saveSummary, friendlyRef, STILL_BUILDING_COPY,
   sourceLabel, typedValue, keptText, typeHint, isBody, plainBody, lockReason, skipSentence, refusalSentence,
-  readAs, changedRefs, theirsText, theirsOrMine,
+  readAs, changedRefs, theirsText, theirsOrMine, isMarkdownField,
   SAVED_BUILDING_COPY, BUILD_FAILED_COPY, BUILD_WATCH_MS, buildRecord, buildStanding, resumePlan,
 } from './source-fields.js';
+import {
+  prepare as richPrepare, plan as richPlan, prepSentence, planSentence, keepSentence, sheetWords, KEEP_ATTR,
+} from './source-rich.js';
 import { initPalette, openPalette } from './palette.js';
 import { builtPages } from './site-pages.js';
 import { initSuggest, suggestChanges, sendSuggestion, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
@@ -1852,7 +1855,7 @@ function startEditing(el, key) {
   if (state.active && state.active !== el) commitEdit(state.active, state.active.getAttribute('data-cms'));
   // Same rule for an in-progress source-field edit (its own click-away never
   // fires either — this handler stopped propagation).
-  if (sourceActive) commitSourceEdit();
+  if (sourceActive) commitSourceEdit({ away: true });
   // What Undo goes back to is the part as it is now, when the person begins
   // (not as it was when the editor started, mid-animation), and from here on
   // a change to an element inside it is the person's, not a script's.
@@ -2948,8 +2951,11 @@ function publishItems({ light = false } = {}) {
     items.push({ id: key, key, label: readableName(key), parts, warnings, links: links.filter(l => l.problem === 'check'), drop: () => dropPending(key) });
   }
   for (const [ref, v] of state.pendingSource) {
+    const rf = state.sourceFields?.get(ref);
     items.push({ id: 'source:' + ref, key: null, sourceRef: ref, label: sourceName(ref),
-      parts: [{ type: 'text', before: state.sourceBase.get(ref) ?? '', after: v.value }], warnings: [],
+      parts: v.md && v.words === rf?.richWords
+        ? [{ type: 'note', tone: 'plain', text: 'The formatting changed: the words are the same.' }]
+        : [{ type: 'text', before: v.md ? (rf?.richWords ?? '') : (state.sourceBase.get(ref) ?? ''), after: v.md ? (v.words ?? '') : v.value }], warnings: [],
       drop: () => { state.pendingSource.delete(ref); syncSourceDom(ref); refreshPublishButton(); } });
   }
   state.pendingStructural.forEach((op, i) => {
@@ -3449,13 +3455,18 @@ async function initSourceFields() {
   if (!cfg.sandbox) state.sourceCaps = await fetchSourceCaps();
   let open = 0;
   let firstWhy = '';
+  // Formatted text (an entry's text, a Markdown field) is edited with the
+  // toolbar when the worker takes Markdown back and the file can be read.
+  const rich = !!state.sourceCaps?.markdown && !!state.gh && !cfg.sandbox;
   for (const [ref, f] of state.sourceFields) {
     for (const el of f.els) {
       // Read-only is decided here, before anyone types: the worker would turn
       // each of these away at Publish, or take words that are not the value.
-      const why = lockReason({ parsed: f.parsed, tag: el.tagName, caps: state.sourceCaps, paths: state.scope?.paths, adapter: cfg.adapter || 'astro', plain: !!plainBody(el),
-        seat: isSuggestMode() ? 'suggest' : null });
-      if (why) { lockSourceField(el, why); firstWhy = firstWhy || why; } else { decorateSourceField(el, ref, f.parsed); open++; }
+      const why = lockReason({ parsed: f.parsed, tag: el.tagName, caps: state.sourceCaps, paths: state.scope?.paths, adapter: cfg.adapter || 'astro', plain: !!plainBody(el) || (!isBody(f.parsed) && !el.children.length),
+        seat: isSuggestMode() ? 'suggest' : null, rich });
+      if (why) { lockSourceField(el, why); firstWhy = firstWhy || why; }
+      else if (rich && isMarkdownField(f.parsed)) { decorateRichSource(el, ref, f.parsed); open++; }
+      else { decorateSourceField(el, ref, f.parsed); open++; }
     }
   }
   // Nothing on this page can be edited by this person: say so once, in sight.
@@ -3470,8 +3481,8 @@ async function initSourceFields() {
   // Click-away saves, Esc reverts — the same semantics data-cms fields have.
   // Registered here so pages without source fields add no listeners.
   document.addEventListener('click', (e) => {
-    if (sourceActive && !sourceActive.el.contains(e.target) && !e.target.closest('#kiln-toolbar')) {
-      commitSourceEdit();
+    if (sourceActive && !sourceActive.el.contains(e.target) && !e.target.closest('#kiln-toolbar') && !e.target.closest('.kiln-keeps-edit')) {
+      commitSourceEdit({ away: true });
     }
   });
   document.addEventListener('keydown', (e) => {
@@ -3554,9 +3565,10 @@ function endSourceEditing(a) {
 }
 
 /** Click-away/Done for a source field: stage its text if it changed (§10). */
-function commitSourceEdit() {
+function commitSourceEdit(opts = {}) {
   const a = sourceActive;
   if (!a) return;
+  if (a.rich) { commitRichSource(opts); return; }
   sourceActive = null;
   endSourceEditing(a);
   removeToolbar();
@@ -3591,9 +3603,148 @@ function commitSourceEdit() {
 function cancelSourceEdit() {
   const a = sourceActive;
   if (!a) return;
+  if (a.rich) { cancelRichSource(); return; }
   sourceActive = null;
   endSourceEditing(a);
   a.surface.textContent = a.originalText;
+  removeToolbar();
+}
+
+// ─── Formatted text from the content files ───────────────────────────────────
+// An entry's text (or a field stamped ?type=markdown) is Markdown in the file
+// and HTML on the page. It is edited with the same toolbar as a plain HTML
+// site; when the person is done the editor writes Markdown back, changed only
+// where the page was (source-rich.js, adapters/markdown.js).
+
+function decorateRichSource(el, ref, parsed) {
+  const f = state.sourceFields.get(ref);
+  if (f && f.richHtml === undefined) { f.richHtml = el.innerHTML; f.richWords = sheetWords(el); }
+  el.classList.add('kiln-field', 'kiln-source-field', 'kiln-source-rich');
+  el.title = sourceHint(parsed);
+  el.addEventListener('click', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.target.closest('a')) return;
+    if (el.classList.contains('kiln-source-locked')) return;
+    // A part kept as the file has it says so, and takes no typing.
+    const kept = e.target.closest(`[${KEEP_ATTR}^="b"]`);
+    if (kept && el.contains(kept)) { e.preventDefault(); e.stopPropagation(); setStatus(keepSentence(kept), 'idle', { hold: 9000 }); return; }
+    if (sourceActive && sourceActive.el === el) return;
+    e.preventDefault(); e.stopPropagation();
+    startRichSource(el, ref, parsed);
+  });
+}
+
+/** Read what the field holds in the file now: the Markdown the page was made from. */
+async function readRichText(parsed) {
+  const data = await ask('/source/read', { method: 'POST',
+    body: { repo: cfg.repo, branch: cfg.branch || 'main', adapter: cfg.adapter || 'astro', file: parsed.path, pointer: parsed.rawPointer } });
+  return typeof data.value === 'string' ? data.value : String(data.value ?? '');
+}
+
+async function startRichSource(el, ref, parsed) {
+  if (sourceActive && sourceActive.el !== el) commitSourceEdit({ away: true });
+  if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+  const f = state.sourceFields.get(ref);
+  if (!f) return;
+  if (!f.richPrep) {
+    setStatus('Reading the text from the site’s files…', 'saving');
+    let text;
+    try { text = f.richRead !== undefined ? f.richRead : await readRichText(parsed); }
+    catch (err) {
+      console.warn('[kiln] could not read', parsed.path, err);
+      setStatus(prepSentence('unreadable'), 'error', { hold: 9000 });
+      return;
+    }
+    // Matched against the page as it was before any edit staged here; the
+    // place on the page shows the staged edit, which already carries the marks.
+    const pend = state.pendingSource.get(ref);
+    let target = el;
+    if (pend?.html !== undefined) { target = document.createElement('div'); target.innerHTML = f.richHtml; }
+    const r = richPrepare(target, text, { mdx: /\.mdx$/i.test(parsed.path) });
+    if (!r.ok) {
+      console.warn('[kiln] formatted text not matched to its file:', parsed.path, r.why, r.at ?? '');
+      setStatus(prepSentence(r.why), r.why === 'changed' ? 'idle' : 'error', { hold: 12000 });
+      if (!pend) { el.classList.remove('kiln-field'); lockSourceField(el, prepSentence(r.why)); }
+      return;
+    }
+    f.richRead = text;
+    f.richPrep = r.prep;
+    if (!pend) f.richHtml = el.innerHTML;   // the page with the marks on what is kept
+    setStatus('', 'idle');
+  }
+  sourceActive = { el, ref, parsed, rich: true, startHtml: el.innerHTML };
+  el.classList.add('kiln-editing');
+  el.contentEditable = 'true';
+  try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch { /* an older browser: a DIV is read as a paragraph */ }
+  el.addEventListener('beforeinput', guardKept);
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  renderToolbar(el, null, { markdown: true, label: sourceLabel(parsed).split(' · ')[0],
+    onSave: () => commitSourceEdit(), onCancel: () => cancelSourceEdit() });
+}
+
+/** Typing may not take away a part kept as the file has it. */
+function guardKept(e) {
+  const a = sourceActive;
+  if (!a?.rich || !/^delete|^insertFromPaste|^insertReplacementText|^insertText/.test(e.inputType || '')) return;
+  const ranges = typeof e.getTargetRanges === 'function' ? e.getTargetRanges() : [];
+  for (const r of ranges) {
+    if (r.collapsed) continue;
+    const range = document.createRange();
+    try { range.setStart(r.startContainer, r.startOffset); range.setEnd(r.endContainer, r.endOffset); } catch { continue; }
+    const kept = [...a.el.querySelectorAll(`[${KEEP_ATTR}^="b"]`)].find(k => range.intersectsNode(k));
+    if (kept) { e.preventDefault(); setStatus(keepSentence(kept), 'idle', { hold: 9000 }); return; }
+  }
+}
+
+function endRichSource(a) {
+  a.el.removeEventListener('beforeinput', guardKept);
+  a.el.removeAttribute('contenteditable');
+  a.el.classList.remove('kiln-editing');
+}
+
+/** Done, or a click away: the page's text is written back as Markdown, and staged. */
+function commitRichSource(opts = {}) {
+  const a = sourceActive;
+  if (!a?.rich) return;
+  const f = state.sourceFields.get(a.ref);
+  const r = f?.richPrep ? richPlan(a.el, f.richPrep) : { unchanged: true };
+  if (r.error) {
+    console.warn('[kiln] formatted text not written:', a.ref, r.error);
+    if (!opts.away) { setStatus(planSentence(r.error), 'error', { hold: 12000 }); return; }
+    // Clicked away from a change that cannot be written: it is put back, and said.
+    sourceActive = null;
+    endRichSource(a);
+    removeToolbar();
+    a.el.innerHTML = a.startHtml;
+    setStatus(`${planSentence(r.error).replace(/ Press Revert[^.]*\.| Type it[^.]*\.$/, '')} The text is back as it was.`, 'error', { hold: 12000 });
+    return;
+  }
+  sourceActive = null;
+  endRichSource(a);
+  removeToolbar();
+  const pend = state.pendingSource.get(a.ref);
+  if (r.unchanged) {
+    if (pend) stageSourcePending(a.ref, null);   // back to how the file has it: nothing to publish
+    return;
+  }
+  if (pend && pend.value === r.text) return;
+  const entry = { value: r.text, md: true, html: a.el.innerHTML, words: sheetWords(a.el) };
+  if (f.parsed.type) entry.type = f.parsed.type;
+  stageSourcePending(a.ref, entry);
+}
+
+/** Esc or Revert: the text goes back to how it was when this edit began. */
+function cancelRichSource() {
+  const a = sourceActive;
+  if (!a?.rich) return;
+  sourceActive = null;
+  endRichSource(a);
+  a.el.innerHTML = a.startHtml;
   removeToolbar();
 }
 
@@ -3640,7 +3791,7 @@ function stageSourcePending(ref, value, opts = {}) {
     state.pendingSource.delete(ref);
     if (step) step.nextEntry = undefined;
   } else {
-    const entry = { value };
+    const entry = typeof value === 'object' ? { ...value } : { value };
     const type = f?.parsed?.type;
     if (type) entry.type = type;
     state.pendingSource.set(ref, entry);
@@ -3665,6 +3816,17 @@ function syncSourceDom(ref) {
   if (!f) return;
   const pend = state.pendingSource.get(ref);
   const base = state.sourceBase.get(ref);
+  if (f.richHtml !== undefined) {
+    // A formatted text: the page shows what was typed, as the browser holds it.
+    f.els.forEach((el) => {
+      if (el === sourceActive?.el || el.classList.contains('kiln-source-locked')) return;
+      const html = pend?.html ?? f.richHtml;
+      if (el.innerHTML !== html) writeInside(el, html);
+      el.classList.toggle('kiln-modified', !!pend);
+      el.title = sourceHint(f.parsed);
+    });
+    return;
+  }
   f.els.forEach((el, i) => {
     if (el === sourceActive?.el || el.classList.contains('kiln-source-locked')) return;   // never rewrite under the caret
     const text = pend ? pend.value : (base === f.boot ? f.shown[i] : base);
@@ -3802,6 +3964,8 @@ async function publishSource(note = '', opts = {}) {
         state.pendingSource.delete(ref);
         state.sourceTheirs.delete(ref);
         state.sourceBase.set(ref, v.value);   // the committed value is the new baseline
+        const rf = state.sourceFields?.get(ref);
+        if (v.md && rf) { rf.richRead = v.value; rf.richPrep = null; rf.richHtml = v.html; rf.richWords = v.words; }
         syncSourceDom(ref);
       }
     }
@@ -3855,6 +4019,7 @@ function sourceWas(ref) {
   if (state.sourceTheirs.has(ref)) return state.sourceTheirs.get(ref);
   const f = state.sourceFields?.get(ref);
   if (!f) return undefined;
+  if (f.richRead !== undefined) return f.richRead;
   const base = state.sourceBase.get(ref);
   if (base !== f.boot) return readAs([base], f.parsed.type);
   // A read-only place shows something that is not the value (a link's label).
@@ -7003,19 +7168,23 @@ function makeToolbarDraggable(tb) {
 
 const TB_GRIP = '<span class="kiln-tb-grip" title="Drag to move this toolbar" aria-hidden="true">⠿</span>';
 
-function renderToolbar(el, key) {
+function renderToolbar(el, key, opts = {}) {
   removeToolbar();
   const tb = document.createElement('div');
   tb.id = 'kiln-toolbar';
-  const isLink = el.tagName === 'A';
-  const plain = el.hasAttribute('data-cms-plain');
-  const styles = Array.isArray(cfg.styles) ? cfg.styles : [];
+  // A formatted text from a content file: only what Markdown can hold
+  // (no underline, no site styles), and Done/Revert write Markdown back.
+  const md = !!opts.markdown;
+  const isLink = !md && el.tagName === 'A';
+  const plain = !md && el.hasAttribute('data-cms-plain');
+  const styles = !md && Array.isArray(cfg.styles) ? cfg.styles : [];
   const LINK_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>';
   const IMG_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>';
   const HIST_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>';
   tb.innerHTML = `
     ${TB_GRIP}
-    <span class="kiln-tb-label" title="${escapeHtml(key)}">${escapeHtml(readableName(key))}</span>
+    ${md ? `<span class="kiln-tb-label" title="${escapeHtml(opts.label)}">${escapeHtml(opts.label)}</span>`
+    : `<span class="kiln-tb-label" title="${escapeHtml(key)}">${escapeHtml(readableName(key))}</span>`}
     ${plain ? '' : `
       <select class="kiln-style-select" title="Text format and site styles">
         <option value="">Style</option>
@@ -7031,18 +7200,18 @@ function renderToolbar(el, key) {
       </select>
       <button class="kiln-tb-fmt" data-cmd="bold" title="Bold"><b>B</b></button>
       <button class="kiln-tb-fmt" data-cmd="italic" title="Italic"><i>I</i></button>
-      <button class="kiln-tb-fmt" data-cmd="underline" title="Underline"><u>U</u></button>
+      ${md ? '' : '<button class="kiln-tb-fmt" data-cmd="underline" title="Underline"><u>U</u></button>'}
       <button class="kiln-tb-fmt" data-cmd="insertUnorderedList" title="Bullet list">≔</button>
       <button class="kiln-tb-fmt" data-cmd="insertOrderedList" title="Numbered list">1.</button>
       <button class="kiln-tb-fmt" data-cmd="link" title="Turn selection into a link">${LINK_ICON}</button>
-      <button class="kiln-tb-fmt" data-cmd="img" title="Insert an image at the cursor">${IMG_ICON}</button>
-      <button class="kiln-tb-fmt" data-cmd="doc" title="Upload a document (PDF, doc…) and insert it at the cursor">📄</button>
+      ${md ? '' : `<button class="kiln-tb-fmt" data-cmd="img" title="Insert an image at the cursor">${IMG_ICON}</button>
+      <button class="kiln-tb-fmt" data-cmd="doc" title="Upload a document (PDF, doc…) and insert it at the cursor">📄</button>`}
       <button class="kiln-tb-fmt kiln-tb-clear" data-cmd="removeFormat" title="Clear formatting">Clear</button>`}
     ${isLink ? `<input class="kiln-href-input" type="text" value="${escapeHtml(el.getAttribute('href') || '')}" title="Where this links to" placeholder="/page.html or https://…">
       <button class="kiln-tb-fmt kiln-tb-attach" data-cmd="attach" title="Upload a file (PDF, doc…) and point this link at it">Attach file…</button>` : ''}
-    ${hasFeature('ai') ? '<button class="kiln-tb-fmt" id="kiln-ai" data-cmd="ai" title="AI assist — improve, shorten, change tone, translate">✨</button>' : ''}
+    ${hasFeature('ai') && !md ? '<button class="kiln-tb-fmt" id="kiln-ai" data-cmd="ai" title="AI assist — improve, shorten, change tone, translate">✨</button>' : ''}
     <span class="kiln-tb-gap"></span>
-    <button class="kiln-tb-fmt" data-cmd="hist" title="This section's history — undo to a previous version">${HIST_ICON}</button>
+    ${md ? '' : `<button class="kiln-tb-fmt" data-cmd="hist" title="This section's history — undo to a previous version">${HIST_ICON}</button>`}
     <button class="kiln-tb-save" title="Keep this edit (you can still Esc-revert until you click away)">Done</button>
     <button class="kiln-tb-cancel" title="Throw away this edit (Esc)">Revert</button>`;
   document.body.appendChild(tb);
@@ -7116,8 +7285,8 @@ function renderToolbar(el, key) {
       el.focus();
     });
   }
-  tb.querySelector('.kiln-tb-save').onclick = (e) => { e.stopPropagation(); commitEdit(el, key); };
-  tb.querySelector('.kiln-tb-cancel').onclick = (e) => { e.stopPropagation(); cancelEditing(); };
+  tb.querySelector('.kiln-tb-save').onclick = (e) => { e.stopPropagation(); if (md) opts.onSave(); else commitEdit(el, key); };
+  tb.querySelector('.kiln-tb-cancel').onclick = (e) => { e.stopPropagation(); if (md) opts.onCancel(); else cancelEditing(); };
 }
 
 /**
@@ -7699,6 +7868,8 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
    locked one (old worker / malformed ref / image type) reads as untouchable. */
 .kiln-source-locked{cursor:not-allowed;outline:2px dashed transparent;outline-offset:4px;border-radius:4px;transition:outline-color .15s}
 .kiln-source-locked:hover{outline-color:rgba(156,163,175,.85)}
+/* A formatted text being edited: the parts kept as the file has them (a table, code, a component) take no typing, and look it. */
+.kiln-source-rich.kiln-editing [data-kiln-keep^="b"]{cursor:not-allowed;outline:1px dashed rgba(156,163,175,.9);outline-offset:3px;border-radius:4px;user-select:none}
 /* §12 build-failed banner: per-file one-click revert. */
 #kiln-notices{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999998;display:flex;flex-direction:column;
   align-items:center;gap:8px;box-sizing:border-box;max-width:92vw;pointer-events:none}

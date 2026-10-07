@@ -25,8 +25,8 @@ exports `SOURCE_ATTR` — use it, never the literal string.
   `buildHints`, `sensitivePaths()`.
 - `src/adapters/index.js` — `getAdapter(id)`, `adapterIds()`, `detectAll(files)`,
   `generatorSignals(files)`.
-- `src/adapters/detect.js` — **yaml-free**; the ONLY adapter module the editor
-  bundle may import besides pointer.js.
+- `src/adapters/detect.js` — **yaml-free**; with `markdown.js` (which imports
+  nothing), the only adapter modules the editor bundle may import besides pointer.js.
 
 ## Worker endpoints (owner: worker workstream)
 
@@ -126,7 +126,7 @@ Where the contract above left room, these are the decisions now in code:
 
 - Feature-detect: no `[data-kiln-source]` on the page → not one new code path
   runs (§13). Never import yaml-splice/astro/index from the editor — only
-  `pointer.js` and `detect.js`.
+  `pointer.js`, `detect.js` and `markdown.js`.
 - Scan `[data-kiln-source]`, `parseSourceRef`; malformed → field not editable,
   ONE console warn with the element (§8.1). Both `data-cms` and
   `data-kiln-source` on one element → source wins, console warn (§4.3).
@@ -239,8 +239,8 @@ main.js; nothing changes in what the worker is asked or answers.
   Page settings open a sentence, not a list of the repository's commits and a
   form that cannot be saved; no draft is looked for.
 
-Still open, and written down rather than patched: a formatted body edited on
-the page, a control for pictures and for link addresses, History for content
+Still open, and written down rather than patched (a formatted body edited on
+the page has since landed: "Formatted text" below): a control for pictures and for link addresses, History for content
 files, adding and removing entries (`/source/duplicate` has no button), and
 what a click on template text should say.
 
@@ -325,6 +325,69 @@ each point says what an older editor or an older worker does.
 Still open after this: a field whose stored value the page does not show (a
 date written out) is saved without the question; suggestions and comments for
 content files and generated pages.
+
+### Formatted text (2026-10)
+
+An entry's body and a field stamped `?type=markdown` are edited with the
+toolbar and written back as Markdown. Where this replaces a line above, this
+is the contract now.
+
+- **The pieces.** `src/adapters/markdown.js` (no imports: the editor and the
+  worker both load it) splits Markdown into top-level blocks with their exact
+  offsets (`markdownBlocks`, MDX with `{ mdx: true }`), parses inline text with
+  CommonMark's delimiter rules (`parseInline`), writes a page block back as
+  Markdown in the file's own style (`blockMarkdown`, `sniffStyle`), and plans
+  the smallest change (`planBody`, `rewriteBlock`). `src/editor/source-rich.js`
+  does the page side: `prepare` (match, lock what is kept), `readPage`, `plan`.
+  `src/adapters/frontmatter.js` finds and writes front matter in YAML, TOML
+  (`toml-splice.js`) or JSON (`json-splice.js`).
+- **Read before editing.** `POST /source/read { repo, branch, adapter, file,
+  pointer } → { value, sha }` returns what one field holds (the body, or a
+  front matter value), through the same gauntlet as `/source/commit`
+  (`validateSourceRequest`). The editor never parses YAML; the worker does.
+- **Matching.** The page's prose blocks (P, H1–H6, UL, OL, BLOCKQUOTE, HR,
+  top level of the stamped element) are matched in order to the file's prose
+  blocks by kind and by words (`matchBlocks`; typeset quotes, dashes and dots
+  equal their plain forms; a component, an expression or HTML inside a
+  paragraph matches any words). A mismatch in words is `changed` (someone
+  changed the file since the page was built): the field is not offered and
+  says so. A mismatch in count or kind is `unmatched`: read-only, with a
+  sentence, and a console warning naming the block.
+- **Kept as written** (`data-kiln-keep="b<n>"`, `contenteditable="false"`):
+  every non-prose top-level element (a table, code, raw HTML, a component) and
+  every prose block that holds something the page cannot give back
+  (`rewritable` is false: inline HTML, an MDX component or expression, a
+  footnote mark). Clicking one says why (`keepSentence`). Typing that would
+  delete one is refused (`beforeinput`); if one still goes, `planBody` answers
+  `kept-moved` and nothing is staged. Pictures inside prose are matched to the
+  file's pictures in order by their descriptions and carry `data-kiln-keep="<n>"`:
+  they are written back as the file's own `![…](…)`, never as the address the
+  page shows.
+- **Writing.** Unchanged blocks keep their bytes. A changed block is found in
+  the file by matching characters, and only the changed part is replaced; the
+  result must have the same shape as the new block (`shapeOf`: blocks, marks,
+  links, pictures, words), else the whole block is written as the page now
+  has it when nothing in it would be lost (`rewritable`), else nothing is
+  staged (`not-writable`). Added blocks go after the block before them on the
+  page, or before the block after them; between two kept parts they are refused
+  (`ambiguous`).
+- **On the wire.** The staged entry is `{ value: <the field's new Markdown>,
+  md: true, html, words, type? }`; `groupSourceEdits` sends `value` as it is
+  (no escaping) and `was` is the Markdown that was read. `html` is what Undo,
+  Redo and a restored copy put back on the page (`writeInside`); `words` is what
+  the publish sheet shows.
+- **The worker's checks.** A Markdown edit (`/body`, or `type: 'markdown'`) is
+  not refused by `typedEditProblems` for markup it may already hold;
+  `markdownProblems` runs once the file is read: the new text may hold the
+  executable markup (`checkFragmentWrite`) and the risky link addresses
+  (`riskyUrls`: `javascript:`, `vbscript:`, `data:text/html`, `data:image/svg`)
+  the field holds now, and none more. In `.mdx`, `astro.applyEdits` takes a body
+  only when `mdxCode(old)` equals `mdxCode(new)`: the same imports, exports,
+  components and expressions, in order. `/healthz` gains `sourceMarkdown: true`.
+- **Compatibility.** An editor uses this path only when `/healthz` says
+  `sourceMarkdown` and it has a way to read files; otherwise a formatted body
+  is read-only as before, and a one-paragraph body is edited as plain words. A
+  worker from before this never sees a formatted body from a new editor.
 
 ## CLI + fixtures + integration (owner: cli workstream)
 

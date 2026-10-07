@@ -12,6 +12,7 @@
 
 import { getAdapter, adapterIds } from '../src/adapters/index.js';
 import { safeSourcePath, parsePointer } from '../src/adapters/pointer.js';
+import { riskyUrls } from '../src/adapters/markdown.js';
 import { isHtmlPath } from './sanitize-guard.js';
 
 /** Per-request edit cap (IMPL contract rule 3: 1..100). */
@@ -240,12 +241,49 @@ export function typedEditProblems(edits, { safeUrl, checkFragment }) {
       if (typeof value !== 'number' || !Number.isFinite(value)) skips.push({ key, reason: 'needs to be a number' });
       continue;
     }
-    // string / text / markdown / untyped / unrecognized: markup check.
-    if (typeof value === 'string' && checkFragment(value)) {
+    // string / text / untyped / unrecognized: markup check. A field that
+    // holds Markdown is checked against what it holds now, once the file has
+    // been read (markdownProblems): it may keep an embed it already has.
+    if (typeof value === 'string' && !isMarkdownEdit(e) && checkFragment(value)) {
       skips.push({ key, reason: 'value may not contain script markup' });
     }
   }
   return skips;
+}
+
+/** An edit to a field that holds Markdown: an entry's body, or a field stamped `?type=markdown`. */
+export const isMarkdownEdit = (e) => !!e && (e.pointer === '/body' || e.type === 'markdown');
+
+/**
+ * The second half of rule 4, for Markdown, once the file has been read: the
+ * new text may hold the executable markup (scripts, handlers, frames, forms)
+ * and the links that would run code (`javascript:` and the like) that the
+ * field holds now, and nothing more. `currentOf(edit)` is the field's text in
+ * the file ('' or undefined when it has none). Returns skips like
+ * typedEditProblems.
+ */
+export function markdownProblems(edits, currentOf, { checkFragmentWrite, mdx = false }) {
+  const skips = [];
+  for (const e of edits || []) {
+    if (!isMarkdownEdit(e) || typeof e.value !== 'string') continue;
+    let cur = '';
+    try { cur = currentOf(e); } catch { cur = ''; }
+    cur = typeof cur === 'string' ? cur : '';
+    const added = checkFragmentWrite(cur, e.value) || addedToken(riskyUrls(cur, { mdx }), riskyUrls(e.value, { mdx }));
+    if (added) skips.push({ key: e.key ?? e.pointer, reason: 'value may not contain script markup' });
+  }
+  return skips;
+}
+
+function addedToken(before, after) {
+  const counts = new Map();
+  for (const t of before) counts.set(t, (counts.get(t) || 0) + 1);
+  for (const t of after) {
+    const c = counts.get(t) || 0;
+    if (c > 0) { counts.set(t, c - 1); continue; }
+    return t;
+  }
+  return null;
 }
 
 /**

@@ -40,6 +40,7 @@
  *                          (needs the AI_API_KEY secret; editors need the 'ai' feature)
  *   GET  /healthz          capability handshake: {ok, modes, adapters, version}
  *   POST /source/commit    source mode: typed edits → one commit on a content file
+ *   POST /source/read      source mode: what one field of a content file holds now (a Markdown body, before it is edited)
  *   POST /source/revert    source mode: restore a file to its content at a given sha
  *   POST /source/duplicate source mode: copy a content file to a free -copy sibling
  *
@@ -74,9 +75,9 @@ const WORKER_VERSION = '0.4.0';
 
 import { handleCloud, expireStaleTrials, cloudSiteForOrigin } from './cloud.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
-import { checkDocumentWrite, checkFragment, isHtmlPath } from './sanitize-guard.js';
+import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
 import { adapterIds } from '../src/adapters/index.js';
-import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, changedSinceRead, duplicateCandidates, SOURCE_FILE_GONE } from './source.js';
+import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, changedSinceRead, markdownProblems, duplicateCandidates, SOURCE_FILE_GONE } from './source.js';
 import { uploadProblem, editorFileKind, isUploadKind, base64Bytes, base64Head, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../src/file-policy.js';
 
 // UTF-8-safe base64 (GitHub content is base64; edits re-applied at cron time).
@@ -122,7 +123,9 @@ export default {
         // site stores along when its repository is renamed, not the people list alone.
         // `sourceWas`: an edit to a content file that says what its field held is
         // left out when the file no longer says that (worker/source.js changedSinceRead).
-        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, sourceWas: true, ...deployedBuild(env) };
+        // `sourceMarkdown`: a formatted Markdown body (and MDX prose) may be written,
+        // keeping the markup and the code it holds (markdownProblems, astro sameCode).
+        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, ...deployedBuild(env) };
         // ?deep=1 asks the things publishing depends on. A plain GET stays a
         // constant 200 that touches nothing, as every editor and monitor expects.
         if (url.searchParams.get('deep') === '1') {
@@ -176,6 +179,7 @@ export default {
       if (path === '/suggestions/decide' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionDecide(request, env));
       if (path === '/ai/assist' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await aiAssist(request, env));
       if (path === '/source/commit' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceCommit(request, env));
+      if (path === '/source/read' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceReadField(request, env));
       if (path === '/source/revert' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceRevert(request, env));
       if (path === '/source/duplicate' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceDuplicate(request, env));
       if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
@@ -1571,9 +1575,15 @@ async function sourceCommit(request, env) {
       // the rest go through. Looked at again on the retry, against the file
       // as it is then.
       const moved = changedSinceRead(v.adapter, source, v.file, runnable);
-      const movedKeys = new Set(moved.map(s => s.key));
-      const { content, applied, skipped } = v.adapter.applyEdits(source, runnable.filter(e => !movedKeys.has(e.key)), v.file);
-      const allSkipped = [...typedSkips, ...moved, ...skipped];
+      // Markdown may keep the markup it holds and add none (rule 4, second half).
+      let parsed = null;
+      const marked = markdownProblems(runnable.filter(e => !moved.some(m => m.key === e.key)), (e) => {
+        parsed = parsed || v.adapter.parse(source, v.file);
+        return v.adapter.read(parsed, e.pointer);
+      }, { checkFragmentWrite, mdx: /\.mdx$/i.test(v.file) });
+      const leftOut = new Set([...moved, ...marked].map(s => s.key));
+      const { content, applied, skipped } = v.adapter.applyEdits(source, runnable.filter(e => !leftOut.has(e.key)), v.file);
+      const allSkipped = [...typedSkips, ...moved, ...marked, ...skipped];
       if (!applied.length) return json({ error: 'no edits could be applied', skipped: allSkipped }, 422);
       // Cheap pre-commit parse check (§9) — the build is the real judge (§12).
       const invalid = v.adapter.validate(content, v.file);
@@ -1599,6 +1609,37 @@ async function sourceCommit(request, env) {
     return json({ error: 'conflict: the file changed while saving — try again' }, 409);
   } catch {
     return json({ error: 'could not apply edits safely' }, 502);
+  }
+}
+
+/**
+ * POST /source/read { repo, branch?, adapter, file, pointer } → { value, sha }:
+ * what one field of a content file holds now, as the file has it (an entry's
+ * Markdown body, a Markdown field of its front matter). The editor reads a
+ * formatted text before it is edited, to match the page to the file and to
+ * write back only what changed; YAML stays here, out of the editor. Same
+ * door as /source/commit: the actor, the path rules, the adapter.
+ */
+async function sourceReadField(request, env) {
+  const { repo, branch = 'main', adapter, file, pointer } = await request.json().catch(() => ({}));
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
+  if (!/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
+  const actor = await authActor(request, env, repo);
+  const v = validateSourceRequest({ file, edits: [{ pointer, value: '' }], adapter, actor }, { isSensitivePath, pathInScope });
+  if (v.error) return json({ error: v.error, ...(v.detail !== undefined && { detail: v.detail }) }, v.status);
+  const itok = await installationToken(env, repo);
+  if (!itok) return json({ error: 'app not installed on repo', repo }, 503);
+  const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA };
+  try {
+    const cur = await sourceRead(h, repo, v.file, branch);
+    if (!cur) return json({ error: SOURCE_FILE_GONE }, 404);
+    const parsed = v.adapter.parse(utf8FromB64(cur.content), v.file);
+    const value = v.adapter.read(parsed, pointer);
+    if (value === undefined) return json({ error: 'pointer not found in source' }, 404);
+    if (value !== null && typeof value === 'object') return json({ error: 'type mismatch' }, 422);
+    return json({ value: value ?? '', sha: cur.sha });
+  } catch {
+    return json({ error: 'could not read the file' }, 502);
   }
 }
 

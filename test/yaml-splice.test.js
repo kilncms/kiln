@@ -99,7 +99,8 @@ test('a file that does not parse is never written (§8.1)', () => {
 test('block scalar replacement swaps the whole value safely', () => {
   const r = applyYamlEdits(SRC, [{ key: 'd', segs: ['desc'], value: 'One line now' }]);
   assert.deepEqual(r.applied, ['d']);
-  assert.ok(r.text.includes('desc: "One line now"') || r.text.includes('desc: One line now'));
+  // A block of text stays a block, its lines indented as they were.
+  assert.match(r.text, /desc: \|[-+]?\n {2,}One line now(\n|$)/);
   assert.ok(!r.text.includes('Line one'));
   assert.equal(validateYaml(r.text), null);
 });

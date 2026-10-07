@@ -140,9 +140,15 @@ edit them the same way, and a few things read differently:
   like `2026-09-20`, even where the page writes it out in words; the line under
   the page says so when you click one. If what you type is not a date, it is not
   kept, and the line says how to write it.
-- Some parts are read-only for now: a text with formatting in it (bold, links, a
-  list, more than one paragraph), a picture, a link's address. Click one and the
-  line says why. Ask the site's owner to change those.
+- A longer text (an article, an event's description) is edited with the same
+  toolbar: bold, italic, links, lists, headings, quotes. Inside it, a table, a
+  block of code or a part the site builds itself shows a dashed outline and takes
+  no typing; click it and the line says why.
+- Some parts are read-only for now: a picture, a link's address. Click one and
+  the line says why. Ask the site's owner to change those.
+- If a text says it was changed on the site after the page was made, someone
+  else published it since. Reload the page in a minute, once the site has
+  rebuilt, and it can be edited again.
 - If someone else changed the same thing since the page was made, nothing of
   theirs is replaced without asking. A box says **Someone else changed this** and
   shows theirs and yours. **Keep theirs** drops your edit and shows their words.

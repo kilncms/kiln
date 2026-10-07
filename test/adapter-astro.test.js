@@ -65,13 +65,26 @@ test('frontmatter + body edited together in one batch', () => {
   assert.ok(r.content.endsWith('Short.\n'));
 });
 
-test('MDX: frontmatter editable, body refused as code (§8.4)', () => {
-  const r = astro.applyEdits(ENTRY, [
+test('MDX: frontmatter and prose editable; the code is kept exactly (§8.4)', () => {
+  const mdx = "---\ntitle: T\n---\nimport Box from '../Box.astro';\n\nSome *words*.\n\n<Box tone=\"warn\">\n\nInside.\n\n</Box>\n\nIt is {year}.\n";
+  const prose = astro.applyEdits(mdx, [
     { pointer: '/frontmatter/title', value: 'Fine' },
-    { pointer: '/body', value: 'nope' },
+    { pointer: '/body', value: mdx.slice(mdx.indexOf('import')).replace('Some *words*.', 'Some *new* words.') },
   ], 'src/content/e.mdx');
-  assert.deepEqual(r.applied, ['/frontmatter/title']);
-  assert.match(r.skipped[0].reason, /MDX body is code/);
+  assert.deepEqual(prose.applied, ['/frontmatter/title', '/body']);
+  assert.match(prose.content, /Some \*new\* words\./);
+  assert.match(prose.content, /<Box tone="warn">/);
+  // A component changed, an expression added, an import removed: none is made.
+  for (const body of [
+    mdx.slice(mdx.indexOf('import')).replace('tone="warn"', 'tone="info"'),
+    mdx.slice(mdx.indexOf('import')).replace('Some *words*.', 'Some {process.env.SECRET} words.'),
+    mdx.slice(mdx.indexOf('\n\n') + 2),
+  ]) {
+    const r = astro.applyEdits(mdx, [{ pointer: '/body', value: body }], 'src/content/e.mdx');
+    assert.deepEqual(r.applied, []);
+    assert.match(r.skipped[0].reason, /MDX code may not change/);
+    assert.equal(r.content, mdx);
+  }
 });
 
 test('non-content file types are refused wholesale', () => {

@@ -7,7 +7,9 @@
  *
  * Checked: [text](target), ![alt](target), <a href>, <img src>, and reference
  * definitions, in every tracked *.md file. A relative target must be a file or
- * directory in the repository; a #fragment must be a heading in the file it
+ * directory in the repository (in a sample site, one with its own public/
+ * folder, /img/x.png is a file in that folder, as the site serves it); a
+ * #fragment must be a heading in the file it
  * points at, by GitHub's own slug rule. Code blocks and inline code are
  * skipped. Exits 1 and lists file:line for each broken link.
  */
@@ -73,6 +75,13 @@ export async function check({ root = ROOT, files, external = false, fetchFn = fe
   const slugCache = new Map();
   const slugsOf = (abs) => { if (!slugCache.has(abs)) slugCache.set(abs, headingSlugs(readFileSync(abs, 'utf8'))); return slugCache.get(abs); };
   const web = new Map();   // url → where it was first seen
+  // Where a /root/address points: a sample site serves its public/ folder at /.
+  const served = (abs) => {
+    for (let d = path.dirname(abs); d.length > root.length && d.startsWith(root); d = path.dirname(d)) {
+      if (existsSync(path.join(d, 'public'))) return path.join(d, 'public');
+    }
+    return root;
+  };
   for (const rel of list) {
     const abs = path.join(root, rel);
     const text = readFileSync(abs, 'utf8');
@@ -86,7 +95,7 @@ export async function check({ root = ROOT, files, external = false, fetchFn = fe
       if (filePart) {
         let decoded = filePart.split('?')[0];
         try { decoded = decodeURIComponent(decoded); } catch { /* keep */ }
-        dest = decoded.startsWith('/') ? path.join(root, decoded) : path.resolve(path.dirname(abs), decoded);
+        dest = decoded.startsWith('/') ? path.join(served(abs), decoded) : path.resolve(path.dirname(abs), decoded);
         if (!existsSync(dest)) { broken.push(`${at}  ${target}  (no such file)`); continue; }
       }
       if (fragment && statSync(dest).isFile() && dest.toLowerCase().endsWith('.md')) {

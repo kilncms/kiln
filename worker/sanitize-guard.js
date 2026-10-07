@@ -121,6 +121,23 @@ export function checkDocumentWrite(oldHtml, newHtml) {
   return null;
 }
 
+/**
+ * Guard a change to a text that may already hold markup (a Markdown body, a
+ * Markdown field): the new text may carry the executable markup the current
+ * one has (an embed the owner put there survives an edit to another
+ * paragraph), and nothing more. Returns the first new token, or null.
+ */
+export function checkFragmentWrite(oldFragment, newFragment) {
+  const counts = new Map();
+  for (const t of collect(parseFragment(String(oldFragment ?? '')))) counts.set(t, (counts.get(t) || 0) + 1);
+  for (const t of collect(parseFragment(String(newFragment ?? '')))) {
+    const c = counts.get(t) || 0;
+    if (c > 0) { counts.set(t, c - 1); continue; }
+    return t;
+  }
+  return null;
+}
+
 /** Guard a fragment (a field's innerHTML). Any executable markup is rejected. */
 export function checkFragment(fragmentHtml) {
   const tokens = collect(parseFragment(String(fragmentHtml)));

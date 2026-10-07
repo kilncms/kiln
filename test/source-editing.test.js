@@ -212,7 +212,7 @@ test('read-only: a click says the sentence where a phone can see it, not only in
   assert.equal(/its source reference is malformed/.test(main), false);
   // a page where nothing can be edited says so at once
   const init = main.slice(main.indexOf('async function initSourceFields('), main.indexOf('async function fetchSourceCaps('));
-  assert.match(init, /lockReason\(\{ parsed: f\.parsed, tag: el\.tagName, caps: state\.sourceCaps, paths: state\.scope\?\.paths, adapter: cfg\.adapter \|\| 'astro', plain: !!plainBody\(el\),\s+seat: isSuggestMode\(\) \? 'suggest' : null \}\)/);
+  assert.match(init, /lockReason\(\{ parsed: f\.parsed, tag: el\.tagName, caps: state\.sourceCaps, paths: state\.scope\?\.paths, adapter: cfg\.adapter \|\| 'astro', plain: !!plainBody\(el\)(?: \|\| \(!isBody\(f\.parsed\) && !el\.children\.length\))?,\s+seat: isSuggestMode\(\) \? 'suggest' : null(?:, rich)? \}\)/);
 });
 
 // ─── Not saved, and why ──────────────────────────────────────────────────────

@@ -123,9 +123,23 @@ close.
 
 Honest scope, today:
 
-- **In:** markdown content files — `.md` frontmatter and body, `.mdx` frontmatter
-  only (MDX bodies are code, and Kiln never edits code). Frontmatter is spliced
-  surgically: comments, quoting, and key order survive byte-identical.
+- **In:** markdown content files: `.md` and `.mdx` frontmatter (YAML between
+  `---` or TOML between `+++`) and body. Frontmatter is spliced surgically:
+  comments, quoting, and key order survive byte-identical.
+- **In:** formatted text, with the same toolbar as on a plain HTML site: bold,
+  italic, links, bullet and numbered lists (nested too), headings, quotes, line
+  breaks. The editor reads the entry's Markdown, matches each block on the page
+  to its block in the file, and writes back only what changed, in the file's own
+  style (its bullet, its emphasis marks, its kind of line break): an untouched
+  block keeps every byte, and a changed word rewrites that word. Pictures in the
+  text go back as the file wrote them. A table, a code block, raw HTML and, in
+  MDX, a component or an expression stay on the page as they render, take no
+  typing, say why when clicked, and are written back exactly. In MDX the worker
+  takes an edit only when every import, export, component and expression is as
+  it was, in the same order, with none added. A field the page renders as
+  Markdown is the same, stamped `kilnSource(entry, 'summary', { type: 'markdown' })`.
+  (This needs a worker that says `sourceMarkdown` in its `/healthz`; with an
+  older one a formatted text stays read-only, as before.)
 - **In:** typed values (`date`, `time`, `url`, `boolean`, `number`). A value of
   the wrong kind is said in a sentence when the field is left ("This needs to be
   a date written like 2026-09-20."), and the worker checks again. A `url` is a
@@ -148,14 +162,12 @@ Honest scope, today:
   output is blocked from editing `dist/` with an explanation, instead of edits
   silently vanishing.
 - **Read-only on the page for now**, each with a sentence that says why when it
-  is clicked: an entry's body that has formatting (bold, links, a list, more
-  than one paragraph), because the editor reads and writes words and would save
-  it back without any of that (a body that is one plain paragraph is edited as
-  usual); a picture; a link stamped with its address (`type: 'url'` on an `<a>`,
-  whose words are a label and not the address).
+  is clicked: a picture stamped as a field; a link stamped with its address
+  (`type: 'url'` on an `<a>`, whose words are a label and not the address); a
+  table inside a text.
 - **Not yet:** date-picker-style controls (typed values are edited as text, in
   the form they are stored: a date is typed `2026-09-20` even where the page
-  writes it out), a formatted body edited on the page, adding, removing or
+  writes it out), adding, removing or
   reordering entries, History and Page settings on a generated page (both say
   so), Eleventy / Hugo / Jekyll adapters (Astro first), suggest-mode and
   scheduled source edits, and comments on a generated page. A suggest-only

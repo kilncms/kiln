@@ -103,6 +103,19 @@ test('KLR-19 link check: a missing file, a missing heading and a broken image ar
   ]);
 });
 
+test('KLR-19 link check: in a sample site, /img/x.png is a file in that site\'s public folder', async () => {
+  const t = tree({
+    'sample/public/img/hall.png': 'x',
+    'sample/src/post.md': '![hall](/img/hall.png) ![gone](/img/gone.png) [readme](/README.md)\n',
+    'README.md': '# Kiln\n\n[post](/sample/src/post.md)\n',
+  });
+  const r = await check(t);
+  assert.deepEqual(r.broken, [
+    'sample/src/post.md:1  /img/gone.png  (no such file)',
+    'sample/src/post.md:1  /README.md  (no such file)',
+  ]);
+});
+
 test('KLR-19 link check: code is not read as links; headings get GitHub\'s anchors', async () => {
   const t = tree({ 'a.md': '# A\n\n```md\n[not a link](nope.md)\n```\n\nInline `[x](nope.md)` too. A real one: [b](b.md#what-s-new-in-0-4).\n', 'b.md': "# B\n\n## What's new in 0.4?\n\n## Dup\n\n## Dup\n" });
   const r = await check(t);

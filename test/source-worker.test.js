@@ -9,12 +9,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  markdownProblems, isMarkdownEdit,
   sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems,
   duplicateCandidates, SOURCE_EDITS_MAX, SOURCE_FILE_GONE,
 } from '../worker/source.js';
 import { isSensitivePath, pathInScope } from '../worker/index.js';
 import { safeUrl } from '../src/engine.js';
-import { checkFragment } from '../worker/sanitize-guard.js';
+import { checkFragment, checkFragmentWrite } from '../worker/sanitize-guard.js';
 
 const deps = { isSensitivePath, pathInScope };
 const typedDeps = { safeUrl, checkFragment };
@@ -167,7 +168,8 @@ test('typedEditProblems: boolean and number are real scalars, not strings', () =
 
 test('typedEditProblems: script markup in string values is skipped (real checkFragment)', () => {
   for (const value of ['<script>alert(1)</script>', 'hi <img src=x onerror=alert(1)>', '<a href="javascript:x">go</a>', '<iframe src=//evil></iframe>']) {
-    for (const type of ['string', 'text', 'markdown', undefined]) {
+    // Markdown (type markdown, or an entry's body) is checked once the file is read: markdownProblems.
+    for (const type of ['string', 'text', undefined]) {
       const skips = typedEditProblems([edit({ type, value })], typedDeps);
       assert.deepEqual(skips, [{ key: '/frontmatter/title', reason: 'value may not contain script markup' }],
         `should skip ${type ?? 'untyped'}: ${value}`);
@@ -229,4 +231,29 @@ test('duplicateCandidates: -copy then -copy-N siblings, extension kept, capped',
 
 test('SOURCE_FILE_GONE matches the contract copy', () => {
   assert.equal(SOURCE_FILE_GONE, 'That content file no longer exists — the page may have been rebuilt since you loaded it. Reload.');
+});
+
+test('markdownProblems: Markdown may keep the markup it holds and add none, links that run code included', () => {
+  const body = 'Watch:\n\n<iframe src="https://www.youtube.com/embed/x"></iframe>\n\nSome **words**.\n';
+  const cur = () => body;
+  const md = (value, extra = {}) => ({ pointer: '/body', key: 'b', value, ...extra });
+  const run = (edits, current = cur) => markdownProblems(edits, current, { checkFragmentWrite });
+  // An edit to the words keeps the owner's embed: taken.
+  assert.deepEqual(run([md(body.replace('Some', 'Some more'))]), []);
+  // Anything new that runs code is refused, the embed's twin as much as a script.
+  for (const added of ['<script>alert(1)</script>', '<img src=x onerror=alert(1)>', '<iframe src="https://evil.example"></iframe>',
+    '[go](javascript:alert(1))', '[go]( JavaScript:alert(1) )', '![x](data:image/svg+xml;base64,PHN2Zz4=)', '[go][r]\n\n[r]: javascript:alert(1)']) {
+    assert.deepEqual(run([md(`${body}\n${added}\n`)]), [{ key: 'b', reason: 'value may not contain script markup' }], added);
+  }
+  // A field stamped ?type=markdown is held to the same rule; plain words pass.
+  assert.deepEqual(run([{ pointer: '/frontmatter/desc', key: 'd', type: 'markdown', value: '[x](javascript:1)' }], () => ''), [{ key: 'd', reason: 'value may not contain script markup' }]);
+  assert.deepEqual(run([{ pointer: '/frontmatter/desc', key: 'd', type: 'markdown', value: 'A [link](https://example.com).' }], () => ''), []);
+  // Edits to other fields are not this check's: typedEditProblems has them.
+  assert.equal(isMarkdownEdit({ pointer: '/frontmatter/title' }), false);
+  assert.deepEqual(run([{ pointer: '/frontmatter/title', key: 't', value: '<script>x</script>' }]), []);
+});
+
+test('typedEditProblems: Markdown is not refused for markup it may already hold; its check comes after the read', () => {
+  const skips = typedEditProblems([edit({ pointer: '/body', value: 'An embed: <iframe src="https://www.youtube.com/embed/x"></iframe>' })], typedDeps);
+  assert.deepEqual(skips, []);
 });
