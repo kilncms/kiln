@@ -352,6 +352,20 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **On a phone the editor's controls are one row.** Undo and Redo (as icons,
+  named for screen readers), Publish and the Kiln button sit side by side at the
+  bottom, where they used to be two floating rows over the bottom of the page.
+- **Which editor each site runs.** The editor says its build with its presence
+  ping; the worker keeps it per repository (`ebuild:<repo>`, written when it
+  changes or once a day) and the operator's overview (`/admin/cloud/overview`)
+  carries `editor_build` and `editor_seen` for each site.
+- **Security headers for sites set up before Kiln wrote them.** `kiln update`
+  on a site with no `_headers` file offers Kiln's (asked first); a site's own
+  file is never touched.
+- **A written procedure for deleting what Kiln keeps**
+  ([docs/deleting-data.md](docs/deleting-data.md)): what the worker stores about
+  people and sites, what deletes each part, and the steps for an invited person
+  and for a whole account.
 - **On an Eleventy, Hugo or Jekyll site nothing suggests a source mode that
   does not exist for it.** The editor's "This page is build output" box, the
   setup wizard and `kiln doctor` say that Kiln can't edit that generator's

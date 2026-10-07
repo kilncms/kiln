@@ -62,6 +62,7 @@
  *   esess:<id>  {repo,name,role,email,paths,rid?}  (TTL = person.days; rid = the id of the repository it is for)
  *   atok:<sha>  {id,repo,name,paths,keys,readonly,created,exp,rid?}  API token, keyed by SHA-256(secret)  (TTL = days)
  *   itok:<repo> cached installation token    (TTL 50 min)
+ *   ebuild:<repo> {build,at}  the editor build a site's signed-in editors last said they run (KLR-18)
  *   cmt:<repo>:<encodeURIComponent(page)>:<threadId>  comment thread
  *               {id,page,status,anchor,created,resolved,messages}  (no TTL — kept until deleted)
  *   sug:<repo>:<12hex>  suggestion {id,page,by,email,ts,note,edits:[{key,html}|{key,attr,value}],
@@ -813,8 +814,23 @@ async function requirePushCached(request, env, repo) {
 const PRESENCE_REWRITE_MS = 5 * 60 * 1000;
 const PRESENCE_TTL_S = 390;
 
+/**
+ * Which editor build a site runs (KLR-18): the build a signed-in editor says it
+ * is, kept per repository as `ebuild:<repo>` { build, at }. Written when the
+ * build changes, and otherwise at most once a day, so a day of editing costs
+ * one write. The operator's overview shows it beside each site.
+ */
+const EDITOR_BUILD_REFRESH_MS = 24 * 3600 * 1000;
+async function noteEditorBuild(env, repo, build, now = Date.now()) {
+  if (typeof build !== 'string' || !/^[\w.-]{1,40}$/.test(build)) return;
+  let had = null;
+  try { had = await env.KILN.get(`ebuild:${repo}`, 'json'); } catch { /* treat as absent */ }
+  if (had && had.build === build && now - (had.at || 0) < EDITOR_BUILD_REFRESH_MS) return;
+  try { await env.KILN.put(`ebuild:${repo}`, JSON.stringify({ build, at: now })); } catch { /* the ping still answers */ }
+}
+
 async function presencePing(request, env) {
-  const { repo, path: pagePath, name } = await request.json().catch(() => ({}));
+  const { repo, path: pagePath, name, build } = await request.json().catch(() => ({}));
   if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo) || typeof pagePath !== 'string' || !pagePath.startsWith('/')) {
     return json({ error: 'bad request' }, 400);
   }
@@ -855,6 +871,7 @@ async function presencePing(request, env) {
   if (!(mine && mine.page === page && mine.role === role && now - (mine.ts || 0) < PRESENCE_REWRITE_MS)) {
     await env.KILN.put(myKey, JSON.stringify({ name: nameKey, role, page, ts: now }), { expirationTtl: PRESENCE_TTL_S });
   }
+  await noteEditorBuild(env, repo, build, now);
 
   // `others` = people on THIS page; `online` = everyone editing the site right
   // now. Dedupe by name (keep the freshest) so entries written under the old

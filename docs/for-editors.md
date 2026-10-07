@@ -75,7 +75,8 @@ Some other things you can do, depending on what the owner has set up:
   button reads **Removed. Undo** for ten seconds. The **Undo** button beside the
   pencil does the same after that.
 - **Undo**: **Undo** and **Redo** buttons appear beside the Kiln button as soon as
-  there is something to undo, and Ctrl+Z (Cmd+Z on a Mac) does the same. It takes
+  there is something to undo (on a phone, two round arrows on the same line as
+  Publish), and Ctrl+Z (Cmd+Z on a Mac) does the same. It takes
   back any change you have not published, one at a time: words, a swapped picture,
   a link's address, a picture's size, an item you added, moved, copied or removed.
   What comes back is what was there when you began, and the page stays where you

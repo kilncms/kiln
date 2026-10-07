@@ -1278,6 +1278,18 @@ async function update() {
       warn('left the members gate as it is: the worker did not answer, so it is not known whether it supports the current gate');
     }
   }
+  // Security headers (KLN-07): a site set up before Kiln wrote a _headers file
+  // is offered one, in the folder its sign-in page is published from. An
+  // existing file is the owner's and is never touched.
+  const headers = path.join(root, '_headers');
+  if (!existsSync(headers)) {
+    info(`This site has no _headers file. Kiln's sets security headers on every page: other sites cannot frame yours, and browsers use HTTPS only.`);
+    if (await yes(`Add it as ${headers.split(path.sep).join('/')}?`, 'y')) {
+      cpSync(path.join(PKG_ROOT, 'templates', '_headers'), headers);
+      alsoCommit.push(headers);
+      ok(`wrote ${headers.split(path.sep).join('/')}`);
+    }
+  }
   // The Astro helper is Kiln's file in the site too. An older copy is offered
   // the newer one (its new helpers need it); a file that is not Kiln's is left alone.
   const helper = path.join('src', 'lib', 'kiln-astro.mjs');

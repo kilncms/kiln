@@ -232,7 +232,8 @@ function scratchRepo(scriptSrc) {
   git('config', 'user.name', 'Test');
   git('config', 'commit.gpgsign', 'false');
   writeFileSync(path.join(site, 'index.html'), `<!doctype html><title>Site</title><h1>Hi</h1>\n<script src="${scriptSrc}" defer></script>\n`);
-  git('add', 'index.html');
+  writeFileSync(path.join(site, '_headers'), '/*\n  X-Content-Type-Options: nosniff\n');   // as a site set up today has
+  git('add', 'index.html', '_headers');
   git('commit', '-m', 'site');
   git('remote', 'add', 'origin', path.join(root, 'origin.git'));
   git('push', '-u', 'origin', 'main');

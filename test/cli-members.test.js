@@ -51,6 +51,7 @@ function site(gate) {
   git('config', 'commit.gpgsign', 'false');
   writeFileSync(path.join(dir, 'index.html'), '<!doctype html><title>Club</title><h1>Hi</h1>\n<script src="/assets/kiln-config.js"></script><script src="/assets/kiln.js" defer></script>\n');
   writeFileSync(path.join(dir, 'assets', 'kiln-config.js'), `window.KILN_CONFIG = { repo: '${REPO}', worker: '${WORKER}' };\n`);
+  writeFileSync(path.join(dir, '_headers'), '/*\n  X-Content-Type-Options: nosniff\n');   // as a site set up today has
   if (gate === 'current') cpSync(path.join(ROOT, 'templates', 'functions'), path.join(dir, 'functions'), { recursive: true });
   else if (gate) { mkdirSync(path.join(dir, 'functions', 'members'), { recursive: true }); writeFileSync(path.join(dir, GATE), gate); }
   git('add', '-A');

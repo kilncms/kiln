@@ -9,7 +9,7 @@
  *   POST /cloud/sites/remove     → cancel its subscription, then delete a site
  *   GET  /cloud/portal?site=     → Lemon Squeezy customer-portal link
  *   POST /cloud/webhook/ls       → Lemon Squeezy webhook (signed) → set site status
- *   GET  /admin/cloud/overview   → (owner only) accounts, sites, MRR
+ *   GET  /admin/cloud/overview   → (owner only) accounts, sites (with the editor build each runs), MRR
  *   POST /admin/cloud/grant      → (owner only) manually set a site's status
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
@@ -476,6 +476,13 @@ export async function handleCloud(request, env, url, path) {
       const accounts = await env.kiln_cloud.prepare('SELECT COUNT(*) n FROM accounts').first();
       const sites = await env.kiln_cloud.prepare('SELECT s.*, a.github_login, a.email FROM sites s JOIN accounts a ON a.id = s.account_id ORDER BY s.created_at DESC').all();
       const rows = sites.results || [];
+      // Which editor each site runs, from what its editors' sessions say (KLR-18; index.js noteEditorBuild).
+      for (const r of rows) {
+        let eb = null;
+        try { eb = r.repo ? await env.KILN.get(`ebuild:${r.repo}`, 'json') : null; } catch { eb = null; }
+        r.editor_build = eb?.build || null;
+        r.editor_seen = eb?.at || null;
+      }
       const active = rows.filter(s => s.status === 'active');
       const price = (p) => p === 'managed' ? 14.99 : 4.99;
       const mrr = active.reduce((m, s) => m + price(s.plan), 0);

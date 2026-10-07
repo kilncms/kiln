@@ -539,4 +539,5 @@ plain HTML in your repo, right now, already. To remove Kiln entirely:
    uninstall the GitHub App from the repo.
 
 The site keeps working, with every edit anyone ever made intact. Nothing to export,
-no lock-in to unwind.
+no lock-in to unwind. What the worker still holds about the site and its people,
+and how each part is deleted, is in [Deleting what Kiln keeps](deleting-data.md).

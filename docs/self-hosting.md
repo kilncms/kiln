@@ -182,6 +182,12 @@ replacing it with the newer one (`kilnEntry`, the `alt` and `href` options,
 `kiln()` publishing the schema); a file there that is not Kiln's is left alone. Eleventy, Hugo and Jekyll sites have no source mode yet: Kiln edits
 only the HTML files committed in their repositories.
 
+### When someone asks for their data to be deleted
+
+[Deleting what Kiln keeps](deleting-data.md) lists what your worker stores about
+people and sites, what deletes each part, and the steps for a person who was
+invited and for a whole account.
+
 ## One worker, many sites
 
 A single worker can serve every site and client you have. This is the agency setup,

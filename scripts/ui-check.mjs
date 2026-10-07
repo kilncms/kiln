@@ -302,6 +302,22 @@ async function run(browser, size, firstVisit) {
     const pill = page.getByRole('button', { name: new RegExp(`^${label}`) }).filter({ visible: true }).first();
     check(scope, `${label} pill can be pressed`, ...Object.values((await pill.count()) ? await hit(pill) : { ok: false, why: 'not shown' }));
   }
+  if (phone) {
+    // One row at the bottom: Undo and Redo as icons with their names read out, Publish, the pencil.
+    const row = await page.evaluate(() => ['#kiln-undo-btn', '#kiln-redo-btn', '#kiln-publish-quick', '#kiln-fab'].map((q) => {
+      const el = document.querySelector(q);
+      const r = el && el.getBoundingClientRect();
+      return r && r.width ? { q, top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, name: el.getAttribute('aria-label') || '' } : { q, missing: true };
+    }));
+    const shown = row.filter(r => !r.missing);
+    const mid = (r) => (r.top + r.bottom) / 2;
+    const oneRow = shown.length === 4 && shown.every(r => Math.abs(mid(r) - mid(shown[3])) <= 4);
+    const inOrder = shown.every((r, i) => i === 0 || shown[i - 1].right <= r.left + 0.5) && shown[3].right <= size.width;
+    const covered = size.height - Math.min(...shown.map(r => r.top));
+    check(scope, 'Undo, Redo, Publish and the pencil are one row at the bottom, side by side on the screen', oneRow && inOrder, JSON.stringify(shown.map(r => [r.q, Math.round(r.left), Math.round(r.top)])));
+    check(scope, 'the row covers no more than the pencil\'s own band of the page', covered <= 80, `${Math.round(covered)}px`);
+    check(scope, 'Undo and Redo are icons, named for screen readers', row[0].name === 'Undo' && row[1].name === 'Redo' && row[0].width <= 48 && row[1].width <= 48, `${row[0].name} ${Math.round(row[0].width)}px, ${row[1].name} ${Math.round(row[1].width)}px`);
+  }
   if (phone && await banner.count()) {
     const bb = await box(banner);
     const others = [pencil, publish, page.locator('#kiln-undo-btn'), page.locator('#kiln-redo-btn')];

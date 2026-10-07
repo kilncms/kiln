@@ -30,7 +30,7 @@ const scratch = [];
 after(() => { for (const d of scratch) rmSync(d, { recursive: true, force: true }); });
 
 /** A site with a worker folder as an older wizard left it, and stand-ins for npx and npm. */
-function site({ worker = true, files = {}, deployFails = false } = {}) {
+function site({ worker = true, files = {}, deployFails = false, headers = true } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'kiln-update-worker-'));
   scratch.push(root);
   const dir = path.join(root, 'site');
@@ -40,6 +40,7 @@ function site({ worker = true, files = {}, deployFails = false } = {}) {
   const put = (f, text) => { mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); writeFileSync(path.join(dir, f), text); };
   put('index.html', '<!doctype html><body><script src="/assets/kiln-config.js"></script><script src="/assets/kiln.js" defer></script></body>\n');
   put('assets/kiln-config.js', `window.KILN = {\n  repo:   'acme/site',\n  branch: 'main',\n  worker: '${WORKER}',\n  styles: [],\n};\n`);
+  if (headers) put('_headers', '/*\n  X-Content-Type-Options: nosniff\n');   // as a site set up today has
   if (worker) {
     put('kiln-worker/wrangler.toml', TOML);
     put('kiln-worker/package.json', JSON.stringify({ name: 'kiln-worker', private: true, type: 'module', dependencies: { parse5: '^8.0.0' } }, null, 2) + '\n');
@@ -232,4 +233,19 @@ test('KLR-11 the help lists --worker under update, and another option is still r
   const bad = kiln('update', '--force');
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /kiln update has no option --force\. It takes: --worker\./);
+});
+
+test('KLN-07 update: a site set up before Kiln wrote a headers file is offered one, and one that has its own keeps it', async () => {
+  const bare = site({ worker: false, headers: false });
+  const yes = await run(bare, ['update'], ['y', 'n']);
+  assert.equal(yes.code, 0, yes.out);
+  assert.match(yes.out, /This site has no _headers file\. Kiln's sets security headers on every page: other sites cannot frame yours, and browsers use HTTPS only\./);
+  assert.equal(bare.read('_headers'), readFileSync(path.join(ROOT, 'templates', '_headers'), 'utf8'));
+  const no = site({ worker: false, headers: false });
+  assert.equal((await run(no, ['update'], ['n', 'n'])).code, 0);
+  assert.equal(no.has('_headers'), false, 'asked, and answered no: nothing written');
+  const own = site({ worker: false, files: { _headers: '/*\n  X-Frame-Options: DENY\n' } });
+  const r = await run(own, ['update'], ['n']);
+  assert.doesNotMatch(r.out, /no _headers file/);
+  assert.equal(own.read('_headers'), '/*\n  X-Frame-Options: DENY\n');
 });

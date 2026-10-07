@@ -755,6 +755,9 @@ function workerAuthHeaders() {
 // Advisory awareness, not locking — Kiln merges different-field edits cleanly
 // at publish time, and same-field overwrites are gated by a confirm in publish().
 
+/** This bundle's build stamp (scripts/build.mjs). */
+const EDITOR_BUILD = (typeof __KILN_VERSION__ !== 'undefined') ? String(__KILN_VERSION__) : 'dev';
+
 let presenceTimer = null;
 let presenceTickN = 0;
 let presenceRefused = false;   // signed in, and the worker will not list this person: not asked again
@@ -762,7 +765,8 @@ async function presencePing() {
   if (signInOver) return;   // nobody is signed in to be shown
   if (!presenceRefused) try {
     // An ended sign-in is answered 403 here; `ask` finds out which it is, and the status line says so.
-    const data = await ask('/presence', { method: 'POST', body: { repo: cfg.repo, path: location.pathname, name: state.user } });
+    // `build`: this editor's build, so the operator can see which editor each site runs (KLR-18).
+    const data = await ask('/presence', { method: 'POST', body: { repo: cfg.repo, path: location.pathname, name: state.user, build: EDITOR_BUILD } });
     if (data.scope) state.scope = data.scope;   // editor path/section grants (see decorateFields)
     // A suggest-mode grant can arrive on a later tick (first ping offline) or
     // change mid-session — keep the Publish button and gating honest. Both are
@@ -2033,7 +2037,7 @@ function applyUndoStep(s, dir) {
  */
 function showChanged(el, ms = 1200) {
   const r = el.getBoundingClientRect();
-  const how = whereTo({ top: r.top, bottom: r.bottom }, window.innerHeight, isMobileEditor() ? { top: 56, bottom: 140 } : {});
+  const how = whereTo({ top: r.top, bottom: r.bottom }, window.innerHeight, isMobileEditor() ? { top: 56, bottom: 90 } : {});
   if (how !== 'stay') el.scrollIntoView({ behavior: 'smooth', block: how });
   el.classList.add('kiln-flash');
   setTimeout(() => el.classList.remove('kiln-flash'), ms);
@@ -5451,9 +5455,10 @@ function renderSandboxBanner() {
     #kiln-sandbox-banner.kiln-sbx-get{padding-left:9px}
   }
   /* Phones: a small pill at the bottom left, level with the docked pencil and
-     never under it (the pencil's column is kept free on the right). It steps
-     aside entirely while a field's toolbar or the menu sheet has the bottom of
-     the screen. */
+     never under it (the pencil's column is kept free on the right). While
+     Undo, Redo or Publish share the pencil's row, it sits just above that row.
+     It steps aside entirely while a field's toolbar or the menu sheet has the
+     bottom of the screen. */
   @media ${MOBILE_MQ}{
     #kiln-sandbox-banner{left:calc(12px + env(safe-area-inset-left,0px));bottom:calc(22px + env(safe-area-inset-bottom,0px));
       max-width:calc(100vw - 108px);box-sizing:border-box;padding:5px 5px 5px 14px;gap:10px;font-size:13px;
@@ -5462,6 +5467,7 @@ function renderSandboxBanner() {
     #kiln-sandbox-banner button{flex:none;min-height:34px;padding:6px 13px}
     #kiln-sandbox-banner.kiln-sbx-get{padding-left:5px;gap:6px}
     .kiln-sbx-get #kiln-sandbox-get{display:inline-flex;align-items:center;flex:none;box-sizing:border-box;min-height:34px;padding:6px 12px}
+    .kiln-row-on #kiln-sandbox-banner{bottom:calc(84px + env(safe-area-inset-bottom,0px))}
     .kiln-tb-open #kiln-sandbox-banner,.kiln-menu-open #kiln-sandbox-banner{display:none}
   }
   /* The demo's menu is the menu of a real site: every item opens its own
@@ -7806,8 +7812,8 @@ function renderAdminBar() {
     </button>
     <div id="kiln-quick">
       <div id="kiln-undo-wrap" hidden>
-        <button id="kiln-undo-btn" title="Undo last change (⌘Z)">${UNDO_ICON} Undo</button>
-        <button id="kiln-redo-btn" title="Redo (⌘⇧Z)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M21 7v6h-6"/><path d="M20.5 13a9 9 0 1 1-2.6-8.4L21 7"/></svg> Redo</button>
+        <button id="kiln-undo-btn" title="Undo last change (⌘Z)" aria-label="Undo">${UNDO_ICON}<span class="kiln-q-label"> Undo</span></button>
+        <button id="kiln-redo-btn" title="Redo (⌘⇧Z)" aria-label="Redo"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px" aria-hidden="true"><path d="M21 7v6h-6"/><path d="M20.5 13a9 9 0 1 1-2.6-8.4L21 7"/></svg><span class="kiln-q-label"> Redo</span></button>
       </div>
       <button id="kiln-publish-quick" type="button" hidden>Publish</button>
     </div>
@@ -8045,6 +8051,10 @@ function placeQuickRow() {
   if (!fab || !row) return;
   window.dispatchEvent(new Event('kiln:chrome'));   // the row grew, shrank or emptied: section dividers re-check
   fab.classList.remove('kiln-flip-x', 'kiln-flip-y');
+  // Whether anything is in the row, read from what it holds (while a field's
+  // toolbar is up the row is not drawn, so its size says nothing): the demo's
+  // pill on a phone steps up above a row with something in it.
+  document.documentElement.classList.toggle('kiln-row-on', [...row.children].some(c => !c.hidden));
   const r = row.getBoundingClientRect();
   if (!r.width) return;   // nothing in it right now
   if (r.left < 8) fab.classList.add('kiln-flip-x');
@@ -9359,12 +9369,15 @@ body:has(#kiln-topbar){padding-top:46px!important}
 #kiln-fab-wrap{left:auto!important;top:auto!important;
   right:calc(14px + env(safe-area-inset-right,0px))!important;bottom:calc(16px + env(safe-area-inset-bottom,0px))!important}
 #kiln-fab{width:56px;height:56px}
-/* The row never leaves the screen: if Undo, Redo and Publish do not fit side by
-   side, Publish keeps the line next to the pencil and the pills go above it. */
-#kiln-quick{bottom:66px;flex-wrap:wrap;gap:8px;max-width:calc(100vw - 22px - env(safe-area-inset-right,0px))}
+/* One row at the bottom, on the pencil's line: Undo and Redo as icons (their
+   names are read out), then Publish, then the pencil. The row used to sit above
+   the pencil, and the two rows covered the bottom of the page. */
+#kiln-quick{bottom:6px;right:66px;flex-wrap:nowrap;gap:8px;max-width:calc(100vw - 94px - env(safe-area-inset-right,0px))}
 #kiln-fab-wrap #kiln-undo-wrap{gap:8px}
-#kiln-fab-wrap #kiln-undo-wrap button{height:40px;padding:0 16px}
-#kiln-publish-quick{height:44px;padding:0 20px;font-size:15px}
+#kiln-fab-wrap #kiln-undo-wrap button{height:44px;width:44px;padding:0;justify-content:center}
+#kiln-fab-wrap #kiln-undo-wrap button svg{width:17px;height:17px}
+#kiln-fab-wrap .kiln-q-label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+#kiln-publish-quick{height:44px;padding:0 18px;font-size:15px;min-width:0;overflow:hidden;text-overflow:ellipsis}
 /* A field's toolbar is docked across the bottom while you type: the pencil and
    its row step aside until it closes, so nothing sits on the toolbar. */
 .kiln-tb-open #kiln-fab,.kiln-tb-open #kiln-quick{display:none}
