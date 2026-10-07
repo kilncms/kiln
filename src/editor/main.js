@@ -45,6 +45,7 @@ import { noteList, noteCopy, fileTrue } from './file-state.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { plainName, readableName } from './names.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS } from './link-dialog.js';
+import { askFirst, ownDialogCopy } from './own-dialogs.js';
 import { demoSays, demoShort, DEMO_DRAFT_SAVED, DEMO_HISTORY_EMPTY, DEMO_HISTORY_NOTE,
   historyEntry, withEntry, undoChanges, goBackChanges, partVersions, hasPublished } from './tryout.js';
 
@@ -4710,44 +4711,6 @@ function parseVersionTag(ref) {
 }
 
 /**
- * Visual check in front of every restore: the page as it is beside the page as
- * it would be. Both iframes are fully sandboxed (no tokens, so scripts are
- * inert) and fed raw HTML via srcdoc — relative asset URLs still resolve
- * against this page. Resolves 'stage' | 'cancel' (back to history) | 'closed'.
- */
-function confirmRestoreVisual({ title, nowText, thenText, thenLabel = 'This version' }) {
-  return new Promise((resolve) => {
-    const m = modal(`
-      <h3>${title}</h3>
-      <div class="kiln-vrestore-grid">
-        <figure class="kiln-vrestore-pane"><figcaption>Now</figcaption>
-          <iframe sandbox="" class="kiln-vrestore-frame" title="The page as it is now"></iframe></figure>
-        <figure class="kiln-vrestore-pane"><figcaption>${escapeHtml(thenLabel)}</figcaption>
-          <iframe sandbox="" class="kiln-vrestore-frame" title="The page after restoring"></iframe></figure>
-      </div>
-      <p class="kiln-dim">Interactive parts are frozen in these previews. Staging only previews the change
-      on the page — nothing goes live until you hit Publish.</p>
-      <div class="kiln-modal-actions">
-        <button class="kiln-btn-ghost" id="kiln-vr-cancel">Cancel</button>
-        <button class="kiln-btn-publish" id="kiln-vr-stage">Stage restore</button>
-      </div>`);
-    m.querySelector('.kiln-modal-card').classList.add('kiln-vrestore-card');
-    const [nowFrame, thenFrame] = m.querySelectorAll('.kiln-vrestore-frame');
-    nowFrame.srcdoc = nowText;
-    thenFrame.srcdoc = thenText;
-    // Esc / ✕ / backdrop remove the modal without hitting our buttons — settle then.
-    const mo = new MutationObserver(() => {
-      if (!document.body.contains(m)) { mo.disconnect(); resolve('closed'); }
-    });
-    mo.observe(document.body, { childList: true });
-    // Close via the ✕ so modal() also unhooks its document keydown listener.
-    const done = (v) => { mo.disconnect(); m.querySelector('.kiln-modal-x')?.click(); resolve(v); };
-    m.querySelector('#kiln-vr-stage').onclick = () => done('stage');
-    m.querySelector('#kiln-vr-cancel').onclick = () => done('cancel');
-  });
-}
-
-/**
  * History in the demo: this browser's publishes of this page, newest first,
  * each with the two ways back a real site offers. Both preview on the page
  * and are published like any other edit, so a visitor can publish twice and
@@ -4813,8 +4776,8 @@ async function historyPanel(resume = null) {
     <h3>Page history</h3>
     <p class="kiln-dim">Every publish saves a version of this page. <strong>Undo this change</strong> takes
     back just what that publish changed; <strong>Go back to this</strong> returns the whole page to how it
-    was then. Both only <em>preview</em> the result on the page first — nothing changes on the live site
-    until you hit Publish. (For one section's history, click into it and press its ${'↻'} clock button.)</p>
+    was then. Both show the result on the page first, with Cancel and Keep. Nothing changes on the live site
+    until you publish. (For one section's history, click into it and press its ${'↻'} clock button.)</p>
     <div id="kiln-hist" class="kiln-inv-list">Loading…</div>
     <p class="kiln-np-step" id="kiln-hist-status"></p>`);
   const status = m.querySelector('#kiln-hist-status');
@@ -4823,6 +4786,11 @@ async function historyPanel(resume = null) {
 
   const list = m.querySelector('#kiln-hist');
   const spin = (msg) => { status.innerHTML = `<span class="kiln-spin"></span> ${msg}`; };
+  // A way back is shown on the page itself, by the page's own styles and
+  // scripts, with Cancel and Keep. (It used to be shown first in two frames
+  // side by side with the scripts off, where a site that fades its sections
+  // in as they are scrolled to showed them blank.)
+  const closeHistory = () => m.querySelector('.kiln-modal-x')?.click();
 
   // Undo ONE publish: put back the sections it changed, leave everything since.
   async function undoCommit(c) {
@@ -4840,15 +4808,8 @@ async function historyPanel(resume = null) {
       status.textContent = 'That publish didn’t change any section content on this page (it may have been photos or layout).';
       return;
     }
-    // Project this page's source with just those sections put back, for the visual.
-    let thenText = applyEdits(state.page.text, changes.map(({ key, value }) => ({ key, html: value }))).html;
-    for (const key of removals) thenText = removeKilnSection(thenText, key) ?? thenText;
     const what = escapeHtml(describeCommit(c.commit.message));
-    const choice = await confirmRestoreVisual({
-      title: `Undo “${what}”?`, nowText: state.page.text, thenText, thenLabel: 'After undo',
-    });
-    if (choice === 'cancel') { historyPanel(); return; }
-    if (choice !== 'stage') return;
+    closeHistory();
     const n = previewRestore(changes, `undo “${what}”`, '', removals);
     if (!n) setStatus('Those sections aren’t on this page anymore, so there’s nothing to put back.', 'error');
   }
@@ -4873,12 +4834,8 @@ async function historyPanel(resume = null) {
       if (el?.closest('.kiln-added')) removals.push(key); else gone++;
     }
     if (!changes.length && !removals.length) { status.textContent = 'The page already matches that version.'; return; }
-    const choice = await confirmRestoreVisual({
-      title: `Go back to ${what}?`, nowText: state.page.text, thenText,
-    });
-    if (choice === 'cancel') { historyPanel(); return; }
-    if (choice !== 'stage') return;
     const note = gone ? `${gone} section${gone > 1 ? 's' : ''} added since then stay as they are.` : '';
+    closeHistory();
     const n = previewRestore(changes, `the page as it was ${what}`, note, removals);
     if (!n) setStatus('Those sections aren’t on this page anymore, so there’s nothing to put back.', 'error');
   }
@@ -5135,11 +5092,11 @@ function pageSettingsPanel() {
     } catch (err) { status.textContent = stopped(err, 'published', typedIn(m)) || notDone('The settings were not published.', err); }
   };
   const delBtn = m.querySelector('#kiln-ps-del');
-  if (delBtn) delBtn.onclick = () => {
+  if (delBtn) delBtn.onclick = async () => {
     const status = m.querySelector('#kiln-ps-status');
-    const name = state.page.path.split('/').pop();
-    if (!confirm(`Delete ${state.page.path}?\n\nThe page comes off the live site on the next deploy. It stays in the site's Git history, so it can be recovered. Remember to remove it from your Site menu too.`)) return;
-    if (prompt(`Type the file name to confirm: ${name}`) !== name) { status.textContent = 'Name didn’t match — not deleted.'; return; }
+    // One dialog of the editor's own (own-dialogs.js): what happens, and the
+    // file's name typed into it before the button does anything.
+    if (!(await askFirst(modal, ownDialogCopy('delete-page', { path: state.page.path })))) return;
     status.textContent = 'Deleting…';
     (async () => {
       try {
@@ -5950,6 +5907,17 @@ function exitEditMode() {
  * menu. Replaces the old fixed top bar so the site itself stays unobstructed.
  * Position is remembered per-browser.
  */
+/**
+ * Sign out. With edits waiting it asks first, in the editor's own dialog:
+ * signing out throws them away, whatever kind they are.
+ */
+async function signOut() {
+  const edits = state.pending.size + state.pendingSource.size + state.pendingStructural.length + state.pendingBinaries.size;
+  if (edits && !(await askFirst(modal, ownDialogCopy('sign-out', { edits })))) return;
+  clearSavedPending();
+  window.Kiln.logout();
+}
+
 function renderAdminBar() {
   initPalette({ state, cfg, mode, pageInScope, keyInScope, humanizeKey, listSitePages, modal, setStatus, escapeHtml, stopped,
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main') });
@@ -6215,11 +6183,7 @@ function renderAdminBar() {
   const settingsBtn = fab.querySelector('#kiln-settings');
   if (settingsBtn) settingsBtn.onclick = close(settingsPanel);
   fab.querySelector('#kiln-help').onclick = close(openHelp);
-  fab.querySelector('#kiln-signout').onclick = () => {
-    if (state.pending.size && !confirm('Discard your unpublished edits and sign out?')) return;
-    clearSavedPending();
-    window.Kiln.logout();
-  };
+  fab.querySelector('#kiln-signout').onclick = close(signOut);
   const inviteBtn = fab.querySelector('#kiln-invite');
   if (inviteBtn) inviteBtn.onclick = close(invitePanel);
   const makeBtn = fab.querySelector('#kiln-makeblock');
@@ -6327,11 +6291,7 @@ function renderTopBar() {
   bar.querySelector('#kiln-schedule').onclick = schedulePanel;
   const sugBtn = bar.querySelector('#kiln-suggestions');
   if (sugBtn) sugBtn.onclick = suggestionsPanel;
-  bar.querySelector('#kiln-signout').onclick = () => {
-    if (state.pending.size && !confirm('Discard your unpublished edits and sign out?')) return;
-    clearSavedPending();
-    window.Kiln.logout();
-  };
+  bar.querySelector('#kiln-signout').onclick = signOut;
   const inviteBtn = bar.querySelector('#kiln-invite');
   if (inviteBtn) inviteBtn.onclick = invitePanel;
   const makeBtn = bar.querySelector('#kiln-makeblock');
@@ -7351,12 +7311,8 @@ body:has(#kiln-topbar){padding-top:46px!important}
 .kiln-modal-body input.kiln-nv-input{width:170px;margin:0;padding:7px 9px;font-size:13px}
 .kiln-nv-form .kiln-btn-ghost{font-size:11.5px;padding:5px 10px;white-space:nowrap}
 /* Visual restore preview: current page beside the restored one, stacked when narrow */
-.kiln-modal-card.kiln-vrestore-card{max-width:min(1040px,94vw)}
-.kiln-vrestore-grid{display:flex;gap:12px;align-items:stretch}
-.kiln-vrestore-pane{flex:1 1 0;min-width:0;margin:0}
-.kiln-vrestore-pane figcaption{font:600 10.5px var(--kiln-font);letter-spacing:.07em;text-transform:uppercase;color:#6b7280;margin:0 0 6px}
-.kiln-vrestore-frame{width:100%;height:52vh;min-height:260px;border:1.5px solid #e5e7eb;border-radius:10px;background:#fff}
-@media(max-width:760px){.kiln-vrestore-grid{flex-direction:column}.kiln-vrestore-frame{height:36vh;min-height:180px}}
+.kiln-ask .kiln-btn-risky{background:#c62828}
+.kiln-ask .kiln-btn-risky:hover:not(:disabled){background:#a81f1f}
 /* ⌘K palette — dark card matching the Kiln chrome, riding on the modal() shell. */
 .kiln-palette-wrap .kiln-modal-card{background:var(--kiln-bg);-webkit-backdrop-filter:blur(16px);
   backdrop-filter:blur(16px);color:#e7e7ee;max-width:580px;border:1px solid rgba(255,255,255,.09)}

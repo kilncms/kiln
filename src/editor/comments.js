@@ -12,6 +12,7 @@
 
 import { notDone } from './plain-failure.js';
 import { TYPED } from './saved-edits.js';
+import { askFirst, ownDialogCopy } from './own-dialogs.js';
 
 let ready = false;
 let cfg, state, isAdmin, status, showModal, ask, say, stopped, pagePage, chromeSel;
@@ -295,8 +296,9 @@ function threadCard(t, num, rerender) {
     swap((await api('/comments/resolve', { path: pagePage, thread: t.id, resolved: t.status === 'open' })).thread)));
   acts.appendChild(res);
   if (isAdmin) {
-    acts.appendChild(btn('kiln-btn-ghost kiln-cmt-del', 'Delete', function () {
-      if (!confirm('Delete this comment thread for everyone?')) return;
+    acts.appendChild(btn('kiln-btn-ghost kiln-cmt-del', 'Delete', async function () {
+      // The editor's own question (own-dialogs.js), not the browser's box.
+      if (!(await askFirst(showModal, ownDialogCopy('delete-thread')))) return;
       act(this, 'deleted', async () => {
         await api('/comments/delete', { path: pagePage, thread: t.id });
         threads = threads.filter(x => x.id !== t.id);

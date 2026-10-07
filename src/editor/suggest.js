@@ -15,6 +15,7 @@
 
 import { notDone, said } from './plain-failure.js';
 import { demoSays } from './tryout.js';
+import { askFirst, ownDialogCopy } from './own-dialogs.js';
 import { applyEdits, readValues } from '../engine.js';
 import { editFile } from '../github.js';
 
@@ -339,7 +340,7 @@ function suggestionRow(m, sug) {
         // as everywhere else; 409 (page moved) and 422 (couldn't apply / guard)
         // leave the suggestion open on the worker — keep the row with an
         // inline explanation.
-        // a note typed for the editor (in a prompt, now closed) is offered as a copy
+        // a note typed for the editor (in a dialog, now closed) is offered as a copy
         err.textContent = stopped(e2, approve ? 'approved' : 'declined', note ? { name: 'your note', text: note } : null) || (e2.status === 409
           ? 'The page changed while approving — try again.'
           : `Could not ${approve ? 'approve' : 'decline'}: ${e2.data.error || e2.status}${e2.data.detail ? ` (${e2.data.detail})` : ''}`);
@@ -364,10 +365,11 @@ function suggestionRow(m, sug) {
     }
   };
   approveBtn.onclick = () => decide(true);
-  declineBtn.onclick = () => {
-    const note = window.prompt('Note for the editor? (optional — OK declines)', '');
-    if (note === null) return;   // cancelled
-    decide(false, note.trim());
+  declineBtn.onclick = async () => {
+    // The editor's own question (own-dialogs.js), with a box for the note.
+    const note = await askFirst(deps.modal, ownDialogCopy('decline'));
+    if (note === null) return;   // put away: nothing is declined
+    decide(false, note);
   };
   return wrap;
 }
