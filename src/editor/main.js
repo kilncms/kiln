@@ -46,6 +46,7 @@ import { notDone, whyNot, said } from './plain-failure.js';
 import { plainName, readableName } from './names.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS } from './link-dialog.js';
 import { askFirst, ownDialogCopy } from './own-dialogs.js';
+import { coverBottom, isUnder } from './under-bar.js';
 import { demoSays, demoShort, DEMO_DRAFT_SAVED, DEMO_HISTORY_EMPTY, DEMO_HISTORY_NOTE,
   historyEntry, withEntry, undoChanges, goBackChanges, partVersions, hasPublished } from './tryout.js';
 
@@ -920,6 +921,8 @@ function decorateFields() {
     setupRepeat(container, key);
   });
 
+  watchBar();
+
   // Clicking away SAVES your edit (staged for Publish). Esc reverts it.
   // The image popover and its drag handle are body-level editor chrome, NOT
   // outside clicks — committing on them rewrote the field's innerHTML mid-
@@ -944,6 +947,50 @@ function decorateFields() {
       inlineImgPopover(e.target);
     }
   });
+}
+
+// ─── A block's buttons under the site's own bar (under-bar.js) ───────────────
+// A header the site keeps at the top of the screen covers what scrolls under
+// it. A block's buttons are stacked above the whole page, so they are hidden
+// for as long as any part of them is under such a bar.
+
+let barFrame = 0;
+let barWatched = false;
+function barSoon() {
+  if (barFrame) return;
+  barFrame = requestAnimationFrame(() => { barFrame = 0; hideUnderBar(); });
+}
+
+function hideUnderBar() {
+  const ctls = document.querySelectorAll('.kiln-item-ctl');
+  if (!ctls.length) return;
+  // The box of the fixed or sticky element that `el` is, or is inside.
+  const pinned = (el) => {
+    for (let n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+      const pos = getComputedStyle(n).position;
+      if (pos === 'fixed' || pos === 'sticky') { const r = n.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height }; }
+    }
+    return null;
+  };
+  // What is painted along the top edge of the screen, at a few places across it.
+  let cover = 0;
+  for (const y of [2, 18]) {
+    for (const part of [0.25, 0.5, 0.75]) {
+      const x = Math.round(window.innerWidth * part);
+      const first = document.elementsFromPoint(x, y).find(el => !isKilnChrome(el));   // Kiln's own are above it: look through them
+      if (first) cover = Math.max(cover, coverBottom([{ kiln: false, pinned: pinned(first) }], window.innerHeight));
+    }
+  }
+  for (const ctl of ctls) ctl.classList.toggle('kiln-under-bar', isUnder(ctl.getBoundingClientRect(), cover));
+}
+
+/** Look whenever the page moves: at most once a frame, and only on a page that has lists. */
+function watchBar() {
+  if (barWatched || !document.querySelector('.kiln-item-ctl')) return;
+  barWatched = true;
+  window.addEventListener('scroll', barSoon, { passive: true, capture: true });
+  window.addEventListener('resize', barSoon);
+  barSoon();
 }
 
 /**
@@ -7235,6 +7282,8 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   max-width:calc(100% - 16px);z-index:9999;opacity:0;transition:opacity .15s}
 .kiln-repeat-item:hover>.kiln-item-ctl{opacity:1}
 .kiln-row-editing .kiln-item-ctl{opacity:0!important;pointer-events:none}
+/* Under a bar the site keeps at the top of the screen: neither seen nor pressed. */
+.kiln-under-bar{visibility:hidden!important;pointer-events:none!important}
 /* Table rows keep their controls in a dedicated end-of-row cell (a floating
    overlay would cover the last column's text while typing). */
 .kiln-ctl-cell{width:1%;white-space:nowrap;vertical-align:middle;background:none!important;border:none!important;padding:2px 4px!important}
