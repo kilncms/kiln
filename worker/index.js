@@ -1995,7 +1995,7 @@ async function repoForOrigin(env, origin) {
       if (row) return row.repo;
     } catch { /* D1 unreachable — fall through */ }
   }
-  const STATIC = { 'https://npu-i.pages.dev': 'NPU-I/npu-i' };
+  const STATIC = { 'https://npu-i-site.pages.dev': 'NPU-I/npu-i' };
   return STATIC[origin] || null;
 }
 

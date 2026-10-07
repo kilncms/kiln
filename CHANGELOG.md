@@ -673,6 +673,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **An address a site has left is trusted nowhere.** The hosted worker still
+  answered the address one site moved away from, and its built-in map tied
+  that old address, not the new one, to the site's repository. A Pages
+  address that is given up can be registered by anyone. The old address is
+  out of the production origin list and the map names where the site is now.
 - **Invited editors could commit SVG, XML and XSL files**, which skip the HTML
   content guard and run script in the site's origin, where the owner's GitHub
   token is stored. Editor writes are now limited to an explicit list of inert
