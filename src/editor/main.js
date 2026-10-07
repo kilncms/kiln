@@ -3342,6 +3342,24 @@ function markSourceFieldIssue(ref, why) {
 }
 
 /**
+ * The bars that tell something and wait for an answer (the failed-build
+ * banner, the "not saved" box, the History preview) share one column, so
+ * none lies on another. On a wide screen it is at the top. On a phone the top
+ * is where the status line is, and each of these used to lie on it there, in
+ * a narrow box over the site's own header: the column is above the pencil
+ * and its buttons instead, as wide as the screen.
+ */
+function noticeColumn() {
+  let col = document.getElementById('kiln-notices');
+  if (!col) {
+    col = document.createElement('div');
+    col.id = 'kiln-notices';
+    document.body.appendChild(col);
+  }
+  return col;
+}
+
+/**
  * What a publish left out, and why, in a box of its own: the status line goes
  * on to say that the site is rebuilding with what WAS saved, and a tooltip on
  * the field is not something a phone can show. Each row goes to its field.
@@ -3359,7 +3377,7 @@ function showNotSaved(list) {
     ${list.map((x, i) => `<div class="kiln-srcskip-row"><button type="button" class="kiln-status-link" data-i="${i}">${escapeHtml(x.label)}</button>
       <span>${escapeHtml(x.why)}</span></div>`).join('')}
     <button class="kiln-btn-ghost" id="kiln-srcskip-x">Got it</button>`;
-  document.body.appendChild(bar);
+  noticeColumn().appendChild(bar);
   bar.querySelector('#kiln-srcskip-x').onclick = () => bar.remove();
   bar.querySelectorAll('button[data-i]').forEach(btn => {
     btn.onclick = () => {
@@ -3650,7 +3668,7 @@ function sourceBuildFailedBanner(committed, sha) {
     ${committed.map((c, i) => `<div class="kiln-srcfail-row"><span>${escapeHtml((c.refs || []).length ? c.refs.map(r => sourceName(r.ref)).join(', ') : c.file)}</span>
       <button class="kiln-btn-ghost" data-i="${i}">${UNDO_ICON} Undo this change</button></div>`).join('')}
     <button class="kiln-btn-ghost" id="kiln-srcfail-x">Dismiss</button>`;
-  document.body.appendChild(bar);
+  noticeColumn().prepend(bar);   // above what a publish left out, when both are up
   bar.querySelector('#kiln-srcfail-x').onclick = () => bar.remove();
   bar.querySelectorAll('button[data-i]').forEach(btn => {
     btn.onclick = async () => {
@@ -4797,11 +4815,14 @@ function previewRestore(changes, label, note, removals = []) {
   const bar = document.createElement('div');
   bar.id = 'kiln-previewbar';
   const nChanged = applied.length + removed.length;
-  bar.innerHTML = `<span><strong>Previewing:</strong> ${label} — ${nChanged} section${nChanged > 1 ? 's' : ''} changed${removed.length ? ` (${removed.length} removed)` : ''}.
-    ${note ? `<small>${note}</small>` : ''} <small>Nothing is live yet.</small></span>
+  // This bar is the whole of going back: the page shows the older version,
+  // and Keep leaves it there as unpublished edits. What it says after that is
+  // what is left to do.
+  bar.innerHTML = `<span><strong>Previewing</strong> ${label}. ${nChanged} section${nChanged > 1 ? 's' : ''} changed${removed.length ? ` (${removed.length} removed)` : ''}.
+    ${note ? `<small>${note}</small>` : ''} <small>Nothing is live yet. Keep it, then press Publish.</small></span>
     <button class="kiln-btn-ghost" id="kiln-pv-cancel">Cancel</button>
-    <button class="kiln-btn-publish" id="kiln-pv-keep">Keep — then Publish</button>`;
-  document.body.appendChild(bar);
+    <button class="kiln-btn-publish" id="kiln-pv-keep" title="Keep this on the page as unpublished edits">Keep</button>`;
+  noticeColumn().appendChild(bar);
   bar.querySelector('#kiln-pv-keep').onclick = () => {
     undoGroup(() => {
       for (const a of applied) {
@@ -4820,7 +4841,7 @@ function previewRestore(changes, label, note, removals = []) {
     });
     refreshPublishButton();
     bar.remove();
-    setStatus(`Kept ${applied.length + removed.length} restored section${applied.length + removed.length > 1 ? 's' : ''} — hit Publish to make it live (⌘Z undoes)`, 'saved');
+    setStatus(`Kept. Press Publish to make ${applied.length + removed.length > 1 ? 'these changes' : 'this change'} live.`, 'saved', { hold: 9000 });
   };
   bar.querySelector('#kiln-pv-cancel').onclick = () => {
     for (const a of applied) {
@@ -5616,7 +5637,7 @@ const PICKABLE = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'a', 
   'img', 'div', 'section', 'article', 'figure', 'figcaption', 'blockquote', 'small', 'strong',
   'em', 'td', 'th', 'tr', 'tbody', 'table', 'time', 'dl', 'dt', 'dd', 'caption', 'address']);
 
-const KILN_CHROME = '#kiln-fab-wrap,#kiln-topbar,#kiln-toolbar,#kiln-modal,#kiln-imgpop,#kiln-previewbar,'
+const KILN_CHROME = '#kiln-fab-wrap,#kiln-topbar,#kiln-toolbar,#kiln-modal,#kiln-imgpop,#kiln-previewbar,#kiln-notices,'
   + '#kiln-presence,#kiln-pickbar,#kiln-sandbox-banner,#kiln-scope-note,.kiln-item-ctl,.kiln-ctl-cell,.kiln-repeat-add,'
   + '.kiln-filterbar,.kiln-filterbar-preview,.kiln-evbar,.kiln-img-handle,'
   + '#kiln-cmt-layer,#kiln-cmt-hint,#kiln-cmt-pop,#kiln-cmt-composer,#kiln-blocks-layer';
@@ -5939,9 +5960,8 @@ async function annotateElement(el, kind, key) {
     // POSITION still matches, so annotating is safe — but confirm, because the
     // editor will show (and could overwrite) the source version, not the
     // script's output.
-    if (!confirm(`Heads up: this text reads differently in the page source`
-      + ` (a script on your site may update it on load).\n\nOn screen: “${domText}”\nIn source: “${srcText}”\n\n`
-      + `Making it editable means edits replace the SOURCE text, and your script may keep changing what visitors see. Make it editable anyway?`)) {
+    // One dialog of the editor's own (own-dialogs.js), not the browser's box.
+    if (!(await askFirst(modal, ownDialogCopy('reads-differently', { onScreen: domText, inFile: srcText })))) {
       throw said('The words in the page’s file are not the words on screen, so nothing was changed');
     }
   }
@@ -7210,7 +7230,10 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-source-locked{cursor:not-allowed;outline:2px dashed transparent;outline-offset:4px;border-radius:4px;transition:outline-color .15s}
 .kiln-source-locked:hover{outline-color:rgba(156,163,175,.85)}
 /* §12 build-failed banner: per-file one-click revert. */
-#kiln-srcfail{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999998;display:flex;
+#kiln-notices{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999998;display:flex;flex-direction:column;
+  align-items:center;gap:8px;box-sizing:border-box;max-width:92vw;max-height:calc(100vh - 24px);overflow-y:auto;pointer-events:none}
+#kiln-notices>*{pointer-events:auto;flex:none}
+#kiln-srcfail{display:flex;
   flex-direction:column;gap:8px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
   color:#d6d8e1;font:13px/1.45 var(--kiln-font);padding:12px 16px;border-radius:13px;
   border:1px solid rgba(248,113,113,.5);box-shadow:0 12px 40px rgba(0,0,0,.4);max-width:min(560px,92vw)}
@@ -7219,13 +7242,12 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-srcfail-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:#fff}
 #kiln-srcfail .kiln-btn-ghost{white-space:nowrap}
 #kiln-srcfail-x{align-self:flex-end}
-/* What a publish left out, and why: under the failed-build banner when both are up. */
-#kiln-srcskip{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999997;display:flex;
+/* What a publish left out, and why: under the failed-build banner when both are up (they share #kiln-notices). */
+#kiln-srcskip{display:flex;
   flex-direction:column;gap:8px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
   color:#d6d8e1;font:13px/1.45 var(--kiln-font);padding:12px 16px;border-radius:13px;box-sizing:border-box;
   border:1px solid rgba(251,191,36,.5);box-shadow:0 12px 40px rgba(0,0,0,.4);width:max-content;max-width:min(560px,92vw);
   max-height:60vh;overflow-y:auto}
-#kiln-srcfail ~ #kiln-srcskip,#kiln-srcskip:has(~ #kiln-srcfail){top:auto;bottom:96px}
 #kiln-srcskip strong{color:var(--kiln-warn)}
 .kiln-srcskip-row{display:flex;flex-direction:column;gap:1px}
 .kiln-srcskip-row .kiln-status-link{background:none;border:0;padding:0;font:600 13px/1.4 var(--kiln-font);color:#fff;text-align:left;cursor:pointer;text-decoration:underline}
@@ -7247,9 +7269,9 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 #kiln-pickbar kbd,#kiln-cmt-hint kbd{background:rgba(255,255,255,.12);border-radius:4px;padding:1px 5px;font-size:11px}
 #kiln-pickbar button,#kiln-cmt-hint button{background:var(--kiln-accent);color:#fff;border:none;border-radius:8px;
   padding:6px 14px;font:600 12px var(--kiln-font);cursor:pointer;white-space:nowrap}
-/* Restore-preview bar: same placement as the pick bar; the page shows the older
-   version behind it until Keep or Cancel. */
-#kiln-previewbar{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999998;display:flex;
+/* Restore-preview bar: in the column of bars (#kiln-notices); the page shows the
+   older version behind it until Keep or Cancel. */
+#kiln-previewbar{display:flex;
   align-items:center;gap:12px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
   color:#d6d8e1;font:13px/1.45 var(--kiln-font);padding:10px 16px;border-radius:13px;
   border:1px solid rgba(255,255,255,.1);box-shadow:0 12px 40px rgba(0,0,0,.4);max-width:92vw}
@@ -7322,8 +7344,9 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-hist-prev{color:#374151;font-size:13px}
 .kiln-modal-body h4{margin:16px 0 8px;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af}
 .kiln-modal-body label{display:block;font-size:13px;color:#4b5563;margin-bottom:10px}
+.kiln-modal-body label[hidden]{display:none}
 .kiln-modal-body input[type=text],.kiln-modal-body input[type=email],.kiln-modal-body input[type=number]{
-  width:100%;padding:10px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:14px;margin-top:4px;
+  width:100%;box-sizing:border-box;padding:10px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:14px;margin-top:4px;
   font-family:var(--kiln-font);transition:border-color .15s;outline:none}
 .kiln-modal-body input:focus{border-color:var(--kiln-accent)}
 .kiln-2col{display:grid;grid-template-columns:1.4fr 1fr;gap:10px}
@@ -7698,8 +7721,16 @@ body:has(#kiln-topbar){padding-top:56px!important}
 .kiln-img-handle{width:32px;height:32px;border-width:3px}
 .kiln-img-handle::after{inset:8px}
 /* Helper bars wrap instead of overflowing a 390px screen. */
-#kiln-pickbar,#kiln-previewbar{flex-wrap:wrap;max-width:94vw;top:calc(10px + env(safe-area-inset-top,0px))}
+#kiln-pickbar{flex-wrap:wrap;max-width:94vw;top:calc(10px + env(safe-area-inset-top,0px))}
 #kiln-pickbar button,#kiln-previewbar button{min-height:40px}
+/* The bars that wait for an answer: as wide as the screen, above the pencil
+   and its row of buttons. The top is the status line's, and the site's header's. */
+#kiln-notices{left:8px;right:8px;top:auto;bottom:calc(140px + env(safe-area-inset-bottom,0px));transform:none;max-width:none;
+  align-items:stretch;max-height:calc(100dvh - 240px)}
+#kiln-notices>*{max-width:none;width:auto}
+#kiln-previewbar{flex-wrap:wrap;gap:8px 10px}
+#kiln-previewbar>span{flex:1 1 100%}
+#kiln-previewbar button{flex:1 1 0}
 #kiln-scope-note,#kiln-presence{max-width:60vw;bottom:calc(14px + env(safe-area-inset-bottom,0px))}
 }` + publishSheetCss(MOBILE_MQ) + imagePickerCss(MOBILE_MQ);
   document.head.appendChild(style);

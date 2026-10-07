@@ -401,13 +401,22 @@ export async function sharePreviewPanel() {
     <p class="kiln-dim">Saved to the draft branch — nothing is live. Your host builds the preview in
     about a minute; the status line reports when it's up.</p>
     <p><a class="kiln-sug-preview-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a></p>
+    <label id="kiln-prev-byhand" hidden>This browser did not let Kiln copy it. The link is selected here, to copy by hand:
+      <input type="text" id="kiln-prev-url" readonly value="${escapeHtml(url)}"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Close</button>
       <button class="kiln-btn-publish" id="kiln-prev-copy">Copy link</button>
     </div>`);
   m.querySelector('#kiln-prev-copy').onclick = async () => {
     try { await navigator.clipboard.writeText(url); setStatus('Preview link copied', 'saved'); }
-    catch { window.prompt('Copy the preview link:', url); }
+    catch {
+      // No clipboard here: the link in a box of the dialog's own, selected, to
+      // copy by hand. (It was the browser's grey box.)
+      m.querySelector('#kiln-prev-byhand').hidden = false;
+      const box = m.querySelector('#kiln-prev-url');
+      box.focus();
+      box.select();
+    }
   };
   // The journal HEAD-probes the URL and announces when the branch build answers.
   journalAdd({ type: 'url', target: url, desc: 'Preview' });

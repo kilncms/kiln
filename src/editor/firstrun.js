@@ -138,15 +138,35 @@ export function placeTip(target, tip, view, { gap = 12, margin = 8, prefer = 'be
  * heading that sits low on the screen would land on it.
  *
  * `blocked` says whether the tip would lie on something of the page's own to
- * press (a button, a link) on each side: { below, above }. Right under a
- * heading is where a page keeps its buttons, so the tip goes above when that
- * side is free.
+ * press (a button, a link) or to read (the paragraph under the heading) on
+ * each side: { below, above }. Right under a heading is where a page keeps
+ * its buttons and its first paragraph, so the tip goes above when that side
+ * is free, and failing that beside the heading's words (`beside`: there is
+ * room for it there).
  */
-export function sideForHeading(top, height, tipHeight, viewHeight, { gap = 12, strip = 96, head = 64, blocked = {} } = {}) {
+export function sideForHeading(top, height, tipHeight, viewHeight, { gap = 12, strip = 96, head = 64, blocked = {}, beside = false } = {}) {
   const fitsBelow = top + height + gap + tipHeight <= viewHeight - strip;
   const fitsAbove = top - gap - tipHeight >= head;
+  // Neither side is free, and the heading's own line has room after its
+  // words (placeBeside): the tip goes there and lies on nothing.
+  if (beside && (!fitsBelow || blocked.below) && (!fitsAbove || blocked.above)) return 'beside';
   if (fitsBelow && !(blocked.below && fitsAbove && !blocked.above)) return 'below';
   return fitsAbove ? 'above' : 'below';
+}
+
+/**
+ * A place for the first tip on the heading's own line, after its words, when
+ * under the heading there is a paragraph and over it there is no room. `words`
+ * is the box of the heading's first line of text, in the same space as `view`.
+ * Returns the tip's { left, top }, or null when the line has no room for it.
+ */
+export function placeBeside(words, tip, view, { gap = 14, margin = 8 } = {}) {
+  if (!words || !words.width || !words.height) return null;
+  const left = words.left + words.width + gap;
+  if (left + tip.width > view.left + view.width - margin) return null;
+  const top = words.top + words.height / 2 - tip.height / 2;
+  if (top < view.top + margin || top + tip.height > view.top + view.height - margin) return null;
+  return { left, top };
 }
 
 // ─── The demo guide (sandbox only) ───────────────────────────────────────────
@@ -326,29 +346,68 @@ function placeGuideTip() {
   // Step 2 sits above the Publish button. Step 1 goes under the heading unless
   // that would land it in the strip along the bottom of the screen where the
   // pencil, its buttons and the demo banner live; then it goes above instead.
-  const below = fixed ? false : sideForHeading(r.top, r.height, tip.offsetHeight, window.innerHeight, { blocked: pressable(r) }) === 'below';
+  const size = { width: tip.offsetWidth, height: tip.offsetHeight };
+  // …or, with a paragraph under the heading and no room over it, on the
+  // heading's own line after its words.
+  const words = fixed ? null : firstLine(tip._target);
+  const after = words && placeBeside({ left: words.left + sx, top: words.top + sy, width: words.width, height: words.height }, size, view);
+  const side = fixed ? 'above' : sideForHeading(r.top, r.height, tip.offsetHeight, window.innerHeight, { blocked: pressable(r), beside: !!after });
+  if (side === 'beside') {
+    tip.style.left = `${Math.round(after.left)}px`;
+    tip.style.top = `${Math.round(after.top)}px`;
+    tip.className = 'kiln-guide--beside';
+    return;
+  }
   const pos = placeTip({ left: r.left + sx, top: r.top + sy, width: r.width, height: r.height },
-    { width: tip.offsetWidth, height: tip.offsetHeight }, view, { prefer: below ? 'below' : 'above' });
+    size, view, { prefer: side === 'below' ? 'below' : 'above' });
   tip.style.left = `${Math.round(pos.left)}px`;
   tip.style.top = `${Math.round(pos.top)}px`;
   tip.className = `kiln-guide--${pos.side}`;
   tip.style.setProperty('--kiln-guide-arrow', `${Math.round(pos.arrow)}px`);
 }
 
+/** The box of an element's first line of words on screen, or null when it has none. */
+function firstLine(el) {
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const lines = [...range.getClientRects()].filter(b => b.width > 1 && b.height > 1);
+    if (!lines.length) return null;
+    const top = Math.min(...lines.map(b => b.top));
+    const first = lines.filter(b => b.top < top + lines[0].height / 2);
+    const left = Math.min(...first.map(b => b.left)), right = Math.max(...first.map(b => b.right));
+    const bottom = Math.max(...first.map(b => b.bottom));
+    return { left, top, width: right - left, height: bottom - top };
+  } catch { return null; }
+}
+
 /**
  * Whether the tip, put under or over the heading at `r`, would lie on
- * something of the page's own that is there to be pressed.
+ * something of the page's own that is there to be pressed, or on words that
+ * are there to be read (the paragraph under the heading).
  */
 function pressable(r, gap = 12) {
   const w = tip.offsetWidth, h = tip.offsetHeight;
   const centre = r.left + r.width / 2;
   const left = Math.min(Math.max(centre - w / 2, 8), Math.max(8, document.documentElement.clientWidth - w - 8));
+  const own = (el) => !el.closest('[id^="kiln-"], .kiln-item-ctl, .kiln-repeat-add, .kiln-block-gap') && !el.contains(tip._target) && !tip._target.contains(el);
   const things = [...document.querySelectorAll('a[href], button, [role="button"], input, select, textarea, summary')]
-    .filter(el => !el.closest('[id^="kiln-"], .kiln-item-ctl, .kiln-repeat-add, .kiln-block-gap') && !el.contains(tip._target) && !tip._target.contains(el))
-    .map(el => el.getBoundingClientRect()).filter(b => b.width && b.height);
-  const on = (top) => things.some(b => b.bottom > top && b.top < top + h && b.right > left && b.left < left + w);
+    .filter(own).map(el => el.getBoundingClientRect()).filter(b => b.width && b.height);
+  const hits = (b, top) => b.bottom > top && b.top < top + h && b.right > left && b.left < left + w;
+  // Words: a paragraph's box runs the width of its column, so it is the lines
+  // of text inside it that count, and only of what is near the heading.
+  const near = [...document.querySelectorAll(READ)].slice(0, 2000).filter(own)
+    .filter(el => { const b = el.getBoundingClientRect(); return b.width && b.height && b.bottom > r.top - gap - h && b.top < r.bottom + gap + h; });
+  const lines = [];
+  for (const el of near) {
+    try { const range = document.createRange(); range.selectNodeContents(el); lines.push(...range.getClientRects()); } catch { /* no words to measure */ }
+  }
+  const on = (top) => things.some(b => hits(b, top)) || lines.some(b => b.width > 1 && b.height > 1 && hits(b, top));
   return { below: on(r.bottom + gap), above: on(r.top - gap - h) };
 }
+
+// What a page has to read near a heading.
+const READ = 'p, li, h1, h2, h3, h4, h5, h6, blockquote, figcaption, dd, dt, td, th, label, address, pre, .kiln-field';
 
 /** Look at the tip's place again a few times over the next seconds: once is not enough on a page that is still moving. */
 let settling = [];
@@ -424,6 +483,7 @@ function guideCss(mobileMq) {
   background:rgb(16,16,25);transform:rotate(45deg);border:1px solid rgba(255,255,255,.09)}
 .kiln-guide--below .kiln-guide-arrow{top:-6px;border-right:none;border-bottom:none}
 .kiln-guide--above .kiln-guide-arrow{bottom:-6px;border-left:none;border-top:none}
+.kiln-guide--beside .kiln-guide-arrow{left:0;top:50%;margin-top:-6px;border-right:none;border-top:none}
 /* A field's toolbar or the menu owns the screen while it is open. */
 .kiln-tb-open #kiln-guide,.kiln-menu-open #kiln-guide{display:none}
 #kiln-guide-card{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:9999990;box-sizing:border-box;

@@ -6,7 +6,8 @@
  * do: deleting a comment thread, deleting a page (a box, then a second one to
  * type the file's name into), signing out with edits waiting, and the note
  * that goes with declining a suggestion. Each is one dialog of the editor's
- * now, whose buttons say what they do.
+ * now, whose buttons say what they do. So is the last of them: making text
+ * editable whose words in the page's file are not the words on screen.
  *
  * ownDialogCopy and answerOf are pure and tested in node; askFirst needs a page.
  *
@@ -43,6 +44,11 @@ export function ownDialogCopy(kind, info = {}) {
       body: 'Nothing on the site changes. The person who suggested it sees that it was declined, with your note if you write one.',
       input: { label: 'A note for them (optional)' },
       cancel: 'Cancel', go: 'Decline' };
+  }
+  if (kind === 'reads-differently') {
+    return { title: 'This text reads differently in the page’s file',
+      body: `On screen: “${info.onScreen}”. In the file: “${info.inFile}”. A script on the site may change it when the page loads. If you make it editable, edits replace the words in the file, and the script may go on changing what visitors see.`,
+      cancel: 'Leave it', go: 'Make it editable' };
   }
   throw new Error(`no such question: ${kind}`);
 }
