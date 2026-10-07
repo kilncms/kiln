@@ -164,7 +164,7 @@ Honest scope, today:
 
 The full design is [docs/SOURCE-MODE-SPEC.md](docs/SOURCE-MODE-SPEC.md).
 
-## Setup (self-host, ~10 minutes)
+## Setup (self-host, 30 to 45 minutes the first time)
 
 **1. Deploy the auth worker**
 
@@ -489,8 +489,8 @@ a public network service, the AGPL asks you to make your source changes availabl
 
 **Kiln Open Source (self-host):** self-host the small auth engine, your own Cloudflare
 worker plus your own GitHub App. One `wrangler deploy`, one click, and the setup wizard
-(`npx github:kilncms/kiln#release`) walks you through all of it. The price of free is about 10 minutes
-of configuration. You trust only yourself. The entire engine, editor, worker, and CLI in this
+(`npx github:kilncms/kiln#release`) walks you through all of it. The price of free is 30 to 45 minutes
+of configuration the first time. You trust only yourself. The entire engine, editor, worker, and CLI in this
 repo are open source (AGPL-3.0) and never gated or crippled; Kiln Cloud is optional paid
 hosting of that exact same engine.
 
