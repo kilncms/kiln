@@ -6,6 +6,7 @@
  */
 
 import { readableName } from './names.js';
+import { pageKey } from './site-pages.js';
 
 const ACTIONS = [
   { id: 'kiln-publish', label: 'Publish' },
@@ -29,8 +30,11 @@ let viewMode = 'list';   // 'list' | 'search'
 let debTimer = null;
 let renderedQ = '';
 let searchToken = 0;     // bumped on re-render/close — abandons an in-flight search
-let pages = null;        // scope-filtered repo paths (loaded once per page load)
+let pages = null;        // scope-filtered repo paths (loaded once per page load); on a generated site, the addresses of its real pages
 let pagesPromise = null;
+/** A site a generator builds: its pages are addresses on the built site, not files in the repository (site-pages.js). */
+const generated = () => !!(deps.generated && deps.generated());
+const isHere = (p) => (generated() ? pageKey(p) === pageKey(location.pathname) : p === deps.state.page?.path);
 const fileCache = new Map();   // repo path → { flat, title } — session-lived, like histCache
 
 export function initPalette(d) {
@@ -157,7 +161,7 @@ function actionRows() {
 function pageRows() {
   if (!pages) return [];
   return pages.map((p) => {
-    const cur = p === deps.state.page?.path;
+    const cur = isHere(p);
     const title = fileCache.get(p)?.title || '';
     return { name: pageUrl(p), text: `${p} ${pageUrl(p)} ${title}`, hint: cur ? 'this page' : title,
       run: cur ? () => {} : () => { location.href = encodeURI(pageUrl(p)); } };
@@ -177,6 +181,11 @@ function fieldRows() {
     if (!snip && el.tagName === 'IMG') snip = el.getAttribute('alt') || '(image)';
     const name = readableName(key);
     rows.push({ name, text: `${name} ${key} ${snip}`, hint: snip, run: () => flashTo(el) });
+  }
+  // What can be edited on a generated page: the fields that come from content files.
+  for (const f of (deps.sourceFieldRows ? deps.sourceFieldRows() : [])) {
+    const snip = (f.el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 42);
+    rows.push({ name: f.name, text: `${f.name} ${snip}`, hint: snip, run: () => flashTo(f.el) });
   }
   return rows;
 }
@@ -218,6 +227,16 @@ function render() {
 
 function sitePages() {
   if (!deps.state.gh) { pages = pages || []; return Promise.resolve(pages); }   // sandbox: no repo
+  if (!pagesPromise && generated()) {
+    // Each page was read from the built site to be listed at all: its words
+    // and title are kept, so searching the site's text asks for nothing more.
+    pagesPromise = deps.builtPages().then((list) => {
+      for (const p of list) fileCache.set(p.url, { flat: p.flat, title: p.title });
+      pages = list.map(p => p.url);
+      if (isOpen() && viewMode === 'list') render();
+      return pages;
+    }).catch(() => { pagesPromise = null; pages = pages || []; return pages; });
+  }
   if (!pagesPromise) {
     pagesPromise = deps.listSitePages().then((all) => {
       // Editors: only in-scope pages — never fetch (or list) what the UI scope hides.
@@ -302,9 +321,9 @@ function renderHits(q, hits, done, total) {
 }
 
 function gotoMatch(path, q) {
-  if (path !== deps.state.page?.path) { location.href = encodeURI(pageUrl(path)); return; }
+  if (!isHere(path)) { location.href = encodeURI(pageUrl(path)); return; }
   const ql = q.toLowerCase();
-  const el = [...document.querySelectorAll('[data-cms],[data-cms-repeat]')]
+  const el = [...document.querySelectorAll('[data-cms],[data-cms-repeat],[data-kiln-source]')]
     .filter(n => (n.textContent || '').replace(/\s+/g, ' ').toLowerCase().includes(ql))
     .sort((a, b) => a.textContent.length - b.textContent.length)[0];   // most specific container
   if (el) flashTo(el);
@@ -321,6 +340,7 @@ function flashTo(el) {
 
 /** Repo path → served URL (inverse of pageFileCandidates, honoring cfg.root). */
 function pageUrl(p) {
+  if (generated()) return String(p);   // already an address on the built site
   let u = String(p);
   const root = (deps.cfg.root || '').replace(/^\/+|\/+$/g, '');
   if (root && u.startsWith(root + '/')) u = u.slice(root.length + 1);

@@ -25,6 +25,7 @@ import {
   SAVED_BUILDING_COPY, BUILD_FAILED_COPY, BUILD_WATCH_MS, buildRecord, buildStanding, resumePlan,
 } from './source-fields.js';
 import { initPalette, openPalette } from './palette.js';
+import { builtPages } from './site-pages.js';
 import { initSuggest, suggestChanges, sendSuggestion, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
 import { initTheme, openThemePanel } from './theme.js';
 import { initComments, openComments, commentsTick, resumeComment, typedComment } from './comments.js';
@@ -6065,7 +6066,25 @@ async function signOut() {
 
 function renderAdminBar() {
   initPalette({ state, cfg, mode, pageInScope, keyInScope, humanizeKey, listSitePages, modal, setStatus, escapeHtml, stopped,
-    fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main') });
+    fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
+    // A site a generator builds: its pages are not the repository's .html
+    // files. They are listed from its routes, its links and its sitemap, and
+    // each is checked against the built site (site-pages.js).
+    generated: () => !cfg.sandbox && (cfg.mode === 'source' || (!state.page?.path && !!document.querySelector(`[${SOURCE_ATTR}]`))),
+    builtPages: () => builtPages({
+      adapter: cfg.adapter || 'astro',
+      here: location.href,
+      hrefs: [...document.querySelectorAll('a[href]')].filter(a => !a.closest(KILN_CHROME)).map(a => a.getAttribute('href')),
+      treePaths: async () => (await state.gh.request('GET', `/repos/${cfg.repo}/git/trees/${encodeURIComponent(cfg.branch || 'main')}?recursive=1`))
+        .tree.filter(t => t.type === 'blob').map(t => t.path),
+      fetchPage: async (pathname) => {
+        const res = await fetch(pathname, { credentials: 'same-origin' });
+        const at = new URL(res.url || pathname, location.href);
+        const same = at.origin === location.origin;
+        return { ok: res.ok && same, type: res.headers.get('content-type') || '', path: at.pathname, text: res.ok && same ? await res.text() : '' };
+      },
+    }),
+    sourceFieldRows: () => [...(state.sourceFields || [])].map(([ref, f]) => ({ ref, name: sourceName(ref), el: f.els.find(el => el.isConnected && !el.classList.contains('kiln-source-locked')) })).filter(r => r.el) });
   initSuggest({ state, cfg, mode, modal, setStatus, escapeHtml, ask, stopped, flattenPending, retireStaged,
     saveDraft, journalAdd, humanizeKey, noteTyped,
     note: () => keptNote, noteDone: () => { keptNote = ''; },
