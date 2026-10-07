@@ -43,7 +43,10 @@ import { draftRecord, readDraft, draftHolds, TYPED } from './saved-edits.js';
 import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
-import { noteList, noteCopy, fileTrue } from './file-state.js';
+import { noteList, noteCopy, fileTrue, noteInside, noteAs, beginInside, settleInside, insideAsFile, asFileHtml,
+  beginOn, endOn, ownStyle, settleOn, showStyle } from './file-state.js';
+import { writeInside, rememberInside } from './keep-inside.js';
+import { takeBase, readAttrs } from './baselines.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { plainName, readableName } from './names.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS } from './link-dialog.js';
@@ -79,6 +82,10 @@ let restoreAsked = Promise.resolve();
 // Fields that already have their click handler. A list that is written again
 // keeps the blocks it had (keep-blocks.js), and those must not get a second one.
 const decorated = new WeakSet();
+// Keys History is showing an earlier version of, not yet kept: the page is not their baseline.
+const previewing = new Set();
+// Try-out mode: this page had nothing stored when it opened, so there is nothing an earlier editor left to mend.
+let sandboxWasEmpty = false;
 // True once the person has pressed "Sign in again": the page is about to be left on purpose.
 let leavingToSignIn = false;
 // What a request found out about the sign-in, once one has found it ended; null until then.
@@ -104,7 +111,6 @@ const state = {
   fields: null,          // indexHtml() of page.text
   pending: new Map(),    // key → { html?, attrs?: {name: value} }
   active: null,
-  originals: new Map(),
   // Binary uploads (images/docs) queued for the NEXT Publish, so nothing is
   // committed to the repo until you actually publish (Discard leaves no orphans).
   // repoPath → base64
@@ -113,11 +119,14 @@ const state = {
   // applied to the source at Publish time — so they're pending like everything else.
   // [{ op:'annotate', tag, nth, attrs } | { op:'remove', key }]
   pendingStructural: [],
-  // What each field/container looked like before any editing this session —
-  // seeded at decoration, updated after each publish. The undo stack uses these
-  // to put the DOM back when un-staging a change. (NOT state.baseline — that is
-  // the publish-conflict snapshot set by loadPageSource.)
-  undoBase: new Map(),        // key → clean innerHTML
+  // What each field/container held before this session's unpublished changes,
+  // as the page's file would hold it. Taken whenever the person begins to
+  // change a part that has no change waiting (baselines.js), never only when
+  // the editor starts: the page is still animating in then. Updated after each
+  // publish. The undo stack uses these to put the DOM back when un-staging a
+  // change. (NOT state.baseline — that is the publish-conflict snapshot set by
+  // loadPageSource.)
+  undoBase: new Map(),        // key → inner HTML as the file would hold it
   undoBaseAttrs: new Map(),   // key → { attrName: value }
   // Source mode (§4.3): fields whose value lives in a content FILE, not this
   // page's HTML. Keyed by the FULL data-kiln-source ref string. None of this is
@@ -139,7 +148,7 @@ const state = {
 // stack works at the "committed change" level, like Canva's.
 const editHistory = { undo: [], redo: [] };
 let undoBucket = null;   // when set, stagePending records into this composite entry
-let activeOriginalHtml = null;   // the currently-edited element's own pre-edit HTML (for Esc)
+let activeOriginalHtml = null;   // the currently-edited element's own pre-edit HTML, as the file would hold it (for Esc)
 
 /** Group several stagePending calls into ONE undo entry (e.g. a multi-section restore). */
 function undoGroup(fn) {
@@ -703,6 +712,7 @@ async function loadPageSource() {
   state.baseline = readValues(state.page.text);
   for (const w of state.fields.warnings) console.warn('[kiln]', w);
   noteFileLists();
+  noteFileFields();
 }
 
 /** Auth headers for worker endpoints, whichever way this session signed in. */
@@ -1063,17 +1073,11 @@ function decorateField(el, key) {
   if (el.hasAttribute(SOURCE_ATTR)) return;   // §4.3: data-kiln-source wins, on every decorate path
   el.classList.add('kiln-field');
   el.title = fieldHint(key);
-  // Seed the undo baseline with the pre-edit state (first decoration wins;
-  // keys inside repeats stage via their container, so their entry is unused).
-  if (!el.closest('[data-cms-repeat]') && !state.undoBase.has(key)) state.undoBase.set(key, el.innerHTML);
-  const attrName = el.getAttribute('data-cms-attr');
-  if (attrName && !state.undoBaseAttrs.has(key)) {
-    // A picture's description is edited beside it: its starting value is part
-    // of the baseline too, so Undo puts it back and the publish sheet can show it.
-    const base = { [attrName]: el.getAttribute(attrName) || '' };
-    if (el.tagName === 'IMG') base.alt = el.getAttribute('alt') || '';
-    state.undoBaseAttrs.set(key, base);
-  }
+  // A first baseline, so that there always is one (keys inside repeats stage
+  // via their container, so they have none of their own). It is what the file
+  // would hold, and it is taken again when the person begins (beginKey): the
+  // page is still arriving now, and this copy must never be the one Undo shows.
+  if (!el.closest('[data-cms-repeat]') && elementForKey(key) === el) takeBase(state, key, { html: baseHtml(el), attrs: readAttrs(el, ownStyle(el)) });
   // One click handler per element, however often it is decorated: a list that
   // is written again keeps its blocks, and a part can be made editable, un-made
   // and made editable again. The handler reads the field's name as it is now.
@@ -1098,6 +1102,38 @@ function decorateField(el, key) {
     if (state.active === el && e.target.tagName === 'IMG' && e.target !== el) inlineImgPopover(e.target);
   });
 }
+
+/**
+ * The person begins to change a part: what Undo goes back to is what the part
+ * holds now, unless a change to it is already waiting (baselines.js). `el` is
+ * the field, or anything in a list.
+ */
+function beginKey(key, el) {
+  const picture = el.tagName === 'IMG' && el.hasAttribute('data-cms');
+  const list = el.closest('[data-cms-repeat]');
+  if (list) {
+    if (picture) beginOn(el);
+    const k = list.getAttribute('data-cms-repeat');
+    // Not while a field of the list is being typed in: that edit began with the list as it was.
+    if (!state.pending.has(k) && !previewing.has(k) && !(state.active && list.contains(state.active))) state.undoBase.set(k, containerCleanHtml(list).innerHTML);
+    return;
+  }
+  if (state.active === el || previewing.has(key)) return;
+  takeBase(state, key, { html: baseHtml(el), attrs: readAttrs(el, ownStyle(el)) });
+  if (picture) beginOn(el);   // from here on, a change to its size is the person's
+}
+
+/** A press anywhere on an editable part or a list, before any handler acts on it. */
+function beginUnder(e) {
+  const at = e.target instanceof Element ? e.target : null;
+  if (!at || (state.active && state.active.contains(at)) || at.closest('#kiln-modal, #kiln-toolbar')) return;
+  const add = at.closest('.kiln-repeat-add[data-kiln-add]');
+  const list = add ? document.querySelector(`[data-cms-repeat="${CSS.escape(add.dataset.kilnAdd)}"]`) : at.closest('[data-cms-repeat]');
+  if (list) { if (list.classList.contains('kiln-repeat')) beginKey(null, at.closest('img[data-cms]') || list); return; }
+  const field = at.closest('[data-cms]');
+  if (field && decorated.has(field) && field.hasAttribute('data-cms')) beginKey(field.getAttribute('data-cms'), field);
+}
+document.addEventListener('pointerdown', beginUnder, true);
 
 /**
  * What hovering an editable part says: its name as a person reads it. The
@@ -1577,21 +1613,61 @@ function noteFileLists() {
   }
 }
 
+/** The fields of this page that are not in a list, once each. */
+function loneFields() {
+  const seen = new Set(), out = [];
+  for (const el of document.querySelectorAll('[data-cms]')) {
+    const key = el.getAttribute('data-cms');
+    if (seen.has(key) || isKilnChrome(el) || el.hasAttribute(SOURCE_ATTR) || el.closest('[data-cms-repeat]')) continue;
+    seen.add(key);
+    out.push([key, el]);
+  }
+  return out;
+}
+
+/**
+ * The same for every field that is not in a list: what the file says is
+ * inside it. A field with a change waiting, or being typed in, keeps what was
+ * noted for it: that is what its change is measured against.
+ */
+function noteFileFields() {
+  for (const [key, el] of loneFields()) {
+    if (state.pending.has(key) || state.active === el) continue;
+    const f = state.fields.fields.get(key);
+    if (f?.inner) noteInside(el, state.page.text.slice(f.inner.start, f.inner.end));
+    else if (f?.range && el.tagName === 'IMG') noteOwn(el, state.page.text.slice(f.range.start, f.range.end));
+  }
+}
+
+/** What the file says of a picture that is a field: its own tag, as the file has it. */
+function noteOwn(el, tagHtml, style) {
+  const t = document.createElement('template');
+  t.innerHTML = tagHtml;
+  const as = t.content.firstElementChild;
+  if (!as || as.tagName !== el.tagName) return;
+  if (style !== undefined) { if (style) as.setAttribute('style', style); else as.removeAttribute('style'); }
+  noteAs(el, as.cloneNode(false));
+}
+
 /**
  * The demo has no repository. Its "file" is the page as the site serves it
- * (read once), or, for a list this visitor has published in the demo, what
+ * (read once), or, for a part this visitor has published in the demo, what
  * that publish holds.
  */
 let servedPage = null;
-async function noteSandboxLists() {
+async function readServedPage() {
   try {
     if (!servedPage) {
       const res = await fetch(location.pathname + location.search);
-      if (!res.ok) return;
+      if (!res.ok) return null;
       const text = await res.text();
       servedPage = { text, fields: indexHtml(text).fields };
     }
-  } catch { return; }   // the page could not be read again: lists are published as they are on the page, as before
+  } catch { return null; }   // the page could not be read again: parts are published as they are on the page, as before
+  return servedPage;
+}
+async function noteSandboxLists() {
+  if (!await readServedPage()) return;
   const mine = sandboxStore().pages?.[sandboxPath()] || {};
   for (const list of document.querySelectorAll('[data-cms-repeat]')) {
     if (isKilnChrome(list)) continue;
@@ -1602,6 +1678,43 @@ async function noteSandboxLists() {
     // What Undo goes back to is the list as the file has it, too.
     if (!state.pending.has(key)) state.undoBase.set(key, containerCleanHtml(list).innerHTML);
   }
+  for (const [key, el] of loneFields()) {
+    if (state.pending.has(key) || state.active === el) continue;
+    const f = servedPage.fields.get(key);
+    const html = mine[key]?.html ?? (f?.inner ? servedPage.text.slice(f.inner.start, f.inner.end) : null);
+    if (html != null && noteInside(el, html)) takeBase(state, key, { html: baseHtml(el) });
+    if (!f?.inner && f?.range && el.tagName === 'IMG') {
+      noteOwn(el, servedPage.text.slice(f.range.start, f.range.end), mine[key]?.attrs?.style);
+      takeBase(state, key, { attrs: readAttrs(el, ownStyle(el)) });
+    }
+  }
+}
+
+/**
+ * A demo an earlier editor stored. That editor kept a field's HTML as it was
+ * on the page, with what the site's scripts had put on it: a headline could
+ * be stored at the start of its entrance animation, which is invisible, and
+ * was then shown that way at every visit. Once per page, before anything
+ * stored is put on the page, each stored field (and what the demo's History
+ * holds of it) is read as the page's file would have it.
+ */
+async function healSandboxStore() {
+  const path = sandboxPath();
+  if (sandboxWasEmpty || sandboxStore()._asFile?.[path]) return;
+  // Not for long: on a line too slow to read the page again, the demo opens as it was stored.
+  if (!await Promise.race([readServedPage(), new Promise(resolve => setTimeout(() => resolve(null), 2500))])) return;
+  const s = sandboxStore();
+  const mend = (key, html) => {
+    const el = elementForKey(key), f = servedPage.fields.get(key);
+    if (!el || el.getAttribute('data-cms') !== key || el.closest('[data-cms-repeat]') || !f?.inner || typeof html !== 'string') return html;
+    return asFileHtml(el, html, servedPage.text.slice(f.inner.start, f.inner.end));
+  };
+  for (const [key, v] of Object.entries(s.pages?.[path] || {})) if (v && typeof v.html === 'string') v.html = mend(key, v.html);
+  for (const entry of s.history?.[path] || []) {
+    for (const [key, was] of Object.entries(entry.before || {})) if (typeof was?.html === 'string') was.html = mend(key, was.html);
+  }
+  s._asFile = { ...(s._asFile || {}), [path]: 1 };
+  sandboxSave(s);
 }
 
 /** The same, on a detached copy, in place. */
@@ -1662,12 +1775,17 @@ function startEditing(el, key) {
   // Same rule for an in-progress source-field edit (its own click-away never
   // fires either — this handler stopped propagation).
   if (sourceActive) commitSourceEdit();
+  // What Undo goes back to is the part as it is now, when the person begins
+  // (not as it was when the editor started, mid-animation), and from here on
+  // a change to an element inside it is the person's, not a script's.
+  beginKey(key, el);
+  beginInside(el);
+  rememberInside(el);
   state.active = el;
-  if (!state.originals.has(key)) state.originals.set(key, el.innerHTML);
-  // THIS element's own pre-edit content, for a correct Esc/cancel. The shared
-  // state.originals map is keyed by data-cms name, which repeats across blocks —
-  // restoring from it would paste a sibling block's text into this one.
-  activeOriginalHtml = el.innerHTML;
+  // THIS element's own pre-edit content, for a correct Esc/cancel. A name
+  // repeats across the blocks of a list, so a map keyed by it would paste a
+  // sibling block's text into this one.
+  activeOriginalHtml = baseHtml(el);
   // Keep this row's floating controls out of the way while typing in it.
   el.closest('.kiln-repeat-item')?.classList.add('kiln-row-editing');
   el.classList.add('kiln-editing');
@@ -1695,7 +1813,10 @@ function cancelEditing() {
   // sibling block's text.
   const inRepeat = !!el.closest('[data-cms-repeat]');
   const pendingEdit = inRepeat ? null : state.pending.get(key);
-  el.innerHTML = pendingEdit?.html ?? activeOriginalHtml ?? el.innerHTML;
+  const back = pendingEdit?.html ?? activeOriginalHtml;
+  // Not innerHTML: the elements that are there stay, with what the site's
+  // scripts did to them, and one typed away comes back as itself (keep-inside.js).
+  if (back != null) writeInside(el, back);
   state.active = null;
   activeOriginalHtml = null;
   removeToolbar();
@@ -1747,7 +1868,8 @@ function applyKeyDom(key, html) {
     return rep;
   }
   const el = document.querySelector(`[data-cms="${esc}"]`);
-  if (el) el.innerHTML = html;
+  // The same for a field: its elements stay the ones the site's scripts know (keep-inside.js).
+  if (el) writeInside(el, html);
   return el;
 }
 
@@ -1794,7 +1916,8 @@ function applyUndoStep(s, dir) {
             if (orphan) for (const p of [...state.pendingBinaries.keys()]) if (p.endsWith(orphan.replace(/^\//, ''))) state.pendingBinaries.delete(p);
             n.removeAttribute(a);
           }
-        } else n.setAttribute(a, v);
+        } else if (a === 'style') showStyle(n, v);   // a size put back, with what the site's scripts put on the picture left on it
+        else n.setAttribute(a, v);
       }
     });
   }
@@ -1868,8 +1991,12 @@ function fieldValue(html, plain) {
 
 function commitEdit(el, key) {
   const plain = el.hasAttribute('data-cms-plain');
-  const value = fieldValue(el.innerHTML, plain);
-  el.innerHTML = value;
+  // What the file would now say of each element inside: the file's own class
+  // and style plus what the person changed, never what a script put there.
+  settleInside(el);
+  const html = committedHtml(el, plain);
+  // The page shows what will be published: what the sanitizer does not keep goes now.
+  if (fieldValue(el.innerHTML, plain) !== el.innerHTML) writeInside(el, html);
   el.contentEditable = 'false';
   el.classList.remove('kiln-editing');
   el.closest('.kiln-repeat-item')?.classList.remove('kiln-row-editing');
@@ -1891,17 +2018,18 @@ function commitEdit(el, key) {
   // commits that stale intermediate value while the page shows the original.
   // (Repeat fields share keys and stage as a whole container, so they never take
   // this path; they always re-stage from the current DOM below.)
-  const original = state.originals.get(key);
-  const unchanged = !repeat && original !== undefined && fieldValue(original, plain) === value && !hrefChanged;
+  // Unchanged is "reads as its baseline does", both as the file would hold them:
+  // an animation that moved on while the field was open is not a change.
+  const base = state.undoBase.get(key);
+  const unchanged = !repeat && base !== undefined && fieldValue(base, plain) === html && !hrefChanged;
   if (unchanged) {
-    state.originals.delete(key);
     if (state.pending.has(key)) {
       const prev = state.pending.get(key);
       state.pending.delete(key);
       el.classList.remove('kiln-modified');
       // Record the un-stage as a normal undo step so ⌘Z still restores it.
       pushUndoEntry({ steps: [{ key, prevEntry: JSON.parse(JSON.stringify(prev)), nextEntry: undefined,
-        beforeHtml: prev.html, afterHtml: state.undoBase.get(key) }] });
+        beforeHtml: prev.html, afterHtml: base }] });
       refreshPublishButton();
     }
     state.active = null;
@@ -1918,7 +2046,7 @@ function commitEdit(el, key) {
     stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
   } else {
     undoGroup(() => {
-      stagePending(key, { html: committedHtml(el, plain, value) });
+      stagePending(key, { html });
       if (hrefChanged) stagePending(key, { attrs: { href: hrefValue } });
     });
   }
@@ -1926,11 +2054,16 @@ function commitEdit(el, key) {
   removeToolbar();
 }
 
-/** The HTML to commit for a field: blob previews are swapped for their real repo paths. */
-function committedHtml(el, plain, fallback) {
-  if (plain) return fallback;
+/**
+ * The HTML to commit for a field: its inside as the page's file would hold it
+ * (file-state.js), not as the site's scripts have left it on this visit, with
+ * blob previews swapped for their real repo paths.
+ */
+function committedHtml(el, plain = el.hasAttribute('data-cms-plain')) {
   const clone = el.cloneNode(true);
+  insideAsFile(clone, el);
   clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, .kiln-repeat-add, #kiln-toolbar').forEach(n => n.remove());
+  if (plain) return escapeHtml(clone.textContent);
   clone.querySelectorAll('img[data-kiln-src]').forEach(img => {
     img.setAttribute('src', img.getAttribute('data-kiln-src'));
     img.removeAttribute('data-kiln-src');
@@ -1938,10 +2071,23 @@ function committedHtml(el, plain, fallback) {
   return DOMPurify.sanitize(clone.innerHTML, SANITIZE);
 }
 
+/**
+ * A field's inside as the file would hold it, whole: what Undo, Esc and Drop
+ * put back. Not through the sanitizer, so that markup the file has and the
+ * editor would not write itself is not lost from the page by an Undo.
+ */
+function baseHtml(el) {
+  const clone = el.cloneNode(true);
+  insideAsFile(clone, el);
+  clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, .kiln-repeat-add, #kiln-toolbar').forEach(n => n.remove());
+  return clone.innerHTML;
+}
+
 // ─── Images ──────────────────────────────────────────────────────────────────
 
 /** Mini toolbar for images: replace, alt text, done. */
 function imageToolbar(img, key) {
+  beginKey(key, img);   // what Undo goes back to: the picture showing now, which a lazy loader may have put there since the editor started
   removeToolbar();
   const tb = document.createElement('div');
   tb.id = 'kiln-toolbar';
@@ -1967,6 +2113,7 @@ function imageToolbar(img, key) {
       if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
       else stagePending(key, { attrs: { alt: altInput.value } });
     }
+    endOn(img);
     tb.remove();
   };
   tb.querySelector('[data-act="replace"]').onclick = (e) => { e.stopPropagation(); replaceImage(img, key); };
@@ -2126,8 +2273,10 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
 function stageImageEl(img, key) {
   img.classList.add('kiln-modified');
   const repeat = img.closest('[data-cms-repeat]');
-  if (repeat) { stageContainer(repeat, repeat.getAttribute('data-cms-repeat')); return; }
-  const attrs = { style: img.getAttribute('style') || '', 'data-kiln-master': img.getAttribute('data-kiln-master') || '' };
+  if (repeat) { stageContainer(repeat, repeat.getAttribute('data-cms-repeat')); settleOn(img); return; }
+  // Its style as the file would hold it: the size it was dragged to, and nothing a script put on it.
+  const attrs = { style: ownStyle(img) || '', 'data-kiln-master': img.getAttribute('data-kiln-master') || '' };
+  settleOn(img);
   if (cfg.sandbox) attrs.src = img.getAttribute('src');
   else attrs.src = safeUrl(img.getAttribute('data-kiln-src') || img.getAttribute('src'));
   stagePending(key, { attrs });
@@ -2325,7 +2474,8 @@ function applyImageSize(img, key, val) {
   img.classList.add('kiln-modified');
   const repeat = img.closest('[data-cms-repeat]');
   if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
-  else stagePending(key, { attrs: { style: img.getAttribute('style') || '' } });
+  else stagePending(key, { attrs: { style: ownStyle(img) || '' } });
+  settleOn(img);
   setStatus(val === 'orig' ? 'Size reset — Publish to save' : `Width set to ${val} — Publish to save`, 'saved');
 }
 
@@ -2863,7 +3013,6 @@ async function publish(opts = {}) {
       if (skippedKeys.has(key) && !appliedKeys.has(key)) continue;
       if (state.pending.has(key) && JSON.stringify(state.pending.get(key)) === snap) {
         state.pending.delete(key);
-        state.originals.delete(key);
         if (!partialKeys.has(key)) {
           record.entries.set(key, snap);
           record.prevBase.set(key, state.undoBase.get(key));
@@ -3782,7 +3931,7 @@ function applySandboxEdits(edits) {
     if (!el) continue;
     if (v.html !== undefined) {
       if (el.getAttribute('data-cms-repeat') === key) writeBlocks(el, v.html, tidyBlocks);
-      else el.innerHTML = v.html;
+      else writeInside(el, v.html);   // the elements the page's own animation is running on stay
     }
     if (v.attrs) for (const a in v.attrs) el.setAttribute(a, v.attrs[a]);
   }
@@ -3872,6 +4021,7 @@ function publishSandbox(noteMsg = '') {
   // Source edits stage + preview locally too — never a network commit (§13).
   for (const [ref, v] of state.pendingSource) page[ref] = { text: v.value };
   s.pages[sandboxPath()] = page;
+  if (sandboxWasEmpty) s._asFile = { ...(s._asFile || {}), [sandboxPath()]: 1 };   // stored by this editor: nothing to mend later
   s._published = true;   // the pill keeps the way to get Kiln in sight from now on (syncSandboxLink)
   s.history = s.history || {};
   const earlier = s.history[sandboxPath()];
@@ -3885,7 +4035,6 @@ function publishSandbox(noteMsg = '') {
   for (const [ref, v] of state.pendingSource) state.sourceBase.set(ref, v.value);
   state.pendingSource.clear();
   state.pending.clear();
-  state.originals.clear();
   // Same publish boundary as a real site: what is published is no longer
   // something Undo can take back off the page.
   for (const [key, v] of Object.entries(page)) {
@@ -3982,6 +4131,8 @@ async function initSandbox() {
   document.documentElement.setAttribute('data-kiln-sandbox', '1');
   sandboxTTLCheck();
   state.user = 'You';
+  { const s = sandboxStore(); sandboxWasEmpty = !s.pages?.[sandboxPath()] && !s.history?.[sandboxPath()]; }
+  await healSandboxStore();
   restoreSandboxPage();
   // Use the live DOM as the "source" so fields index cleanly and there is no repo fetch.
   state.page = { path: sandboxPath(), text: document.documentElement.outerHTML };
@@ -4775,7 +4926,8 @@ function currentDomHtmlFor(key) {
   const esc = CSS.escape(key);
   const rep = document.querySelector(`[data-cms-repeat="${esc}"]`);
   if (rep) return containerCleanHtml(rep).innerHTML;
-  return document.querySelector(`[data-cms="${esc}"]`)?.innerHTML;
+  const el = document.querySelector(`[data-cms="${esc}"]`);
+  return el ? baseHtml(el) : undefined;
 }
 
 /**
@@ -4788,6 +4940,8 @@ function previewRestore(changes, label, note, removals = []) {
   document.getElementById('kiln-previewbar')?.remove();
   const applied = [];
   for (const { key, value, attrs } of changes) {
+    const target = elementForKey(key);
+    if (target) beginKey(key, target);   // what Undo goes back to, should this be kept
     const before = value === undefined ? undefined : currentDomHtmlFor(key);
     if (value !== undefined && before === undefined) continue;              // section not on this page
     const el = value === undefined ? elementForKey(key) : applyKeyDom(key, value);
@@ -4796,11 +4950,15 @@ function previewRestore(changes, label, note, removals = []) {
     let attrsBefore = null;
     if (attrs) {
       attrsBefore = {};
-      for (const [name, v] of Object.entries(attrs)) { attrsBefore[name] = el.getAttribute(name); el.setAttribute(name, v); }
+      for (const [name, v] of Object.entries(attrs)) {
+        attrsBefore[name] = name === 'style' ? (ownStyle(el) ?? null) : el.getAttribute(name);
+        if (name === 'style') showStyle(el, v); else el.setAttribute(name, v);
+      }
     }
     el.classList.add('kiln-modified', 'kiln-flash');
     setTimeout(() => el.classList.remove('kiln-flash'), 1600);
     applied.push({ key, value, before, el, attrs, attrsBefore });
+    previewing.add(key);
   }
   // Sections that must DISAPPEAR for this restore (e.g. a gallery that publish
   // added): preview by hiding; Keep stages a removeSection op.
@@ -4832,6 +4990,7 @@ function previewRestore(changes, label, note, removals = []) {
     <button class="kiln-btn-publish" id="kiln-pv-keep" title="Keep this on the page as unpublished edits">Keep</button>`;
   noticeColumn().appendChild(bar);
   bar.querySelector('#kiln-pv-keep').onclick = () => {
+    previewing.clear();
     undoGroup(() => {
       for (const a of applied) {
         if (a.value !== undefined) stagePending(a.key, { html: a.value });
@@ -4852,9 +5011,12 @@ function previewRestore(changes, label, note, removals = []) {
     setStatus(`Kept. Press Publish to make ${applied.length + removed.length > 1 ? 'these changes' : 'this change'} live.`, 'saved', { hold: 9000 });
   };
   bar.querySelector('#kiln-pv-cancel').onclick = () => {
+    previewing.clear();
     for (const a of applied) {
       if (a.value !== undefined) applyKeyDom(a.key, a.before);
-      for (const [name, v] of Object.entries(a.attrsBefore || {})) { if (v === null) a.el.removeAttribute(name); else a.el.setAttribute(name, v); }
+      for (const [name, v] of Object.entries(a.attrsBefore || {})) {
+        if (name === 'style') showStyle(a.el, v); else if (v === null) a.el.removeAttribute(name); else a.el.setAttribute(name, v);
+      }
       if (!state.pending.has(a.key)) {
         const esc = CSS.escape(a.key);
         document.querySelectorAll(`[data-cms="${esc}"],[data-cms-repeat="${esc}"]`).forEach(n => n.classList.remove('kiln-modified'));
@@ -5460,7 +5622,8 @@ async function checkForDraft() {
       if (value === liveValue) continue;
       const el = document.querySelector(`[data-cms="${CSS.escape(key)}"]`);
       if (el && !el.closest('[data-cms-repeat]')) {
-        el.innerHTML = value;
+        beginKey(key, el);
+        writeInside(el, value);
         el.classList.add('kiln-modified');
         stagePending(key, { html: value });
         applied++;
@@ -7029,6 +7192,8 @@ async function restoreSaved(saved, kept, signedInAgain) {
   const files = filesToRestore(await kept, saved.edits);
   for (const f of files) { state.pendingBinaries.set(f.path, f.base64); keptHere.add(f.path); }
   for (const [key, edit] of Object.entries(saved.edits)) {
+    const target = elementForKey(key);
+    if (target && !state.pending.has(key)) beginKey(key, target);   // what Undo goes back to: the part before these edits
     state.pending.set(key, edit);
     const esc = CSS.escape(key);
     // applyKeyDom handles BOTH plain fields and repeat containers (re-wiring the
@@ -7038,7 +7203,10 @@ async function restoreSaved(saved, kept, signedInAgain) {
     if (edit.html !== undefined) applyKeyDom(key, edit.html);
     if (edit.attrs) {
       document.querySelectorAll(`[data-cms="${esc}"]`).forEach(n => {
-        for (const [a, v] of Object.entries(edit.attrs)) if (v !== undefined && v !== null) n.setAttribute(a, v);
+        for (const [a, v] of Object.entries(edit.attrs)) {
+          if (v === undefined || v === null) continue;
+          if (a === 'style') showStyle(n, v); else n.setAttribute(a, v);
+        }
       });
     }
     document.querySelectorAll(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`)

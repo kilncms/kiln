@@ -284,6 +284,42 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Undo could leave what it restored invisible, and a publish wrote one
+  visit's state into the page file.** The editor copied each field's markup as
+  it started, while the site was still animating in. On a site whose headline
+  slides in, Undo put back the start of the slide, which cannot be seen, and so
+  did "Drop" in the publish sheet and History's "Undo this change" in try-out
+  mode, which then published it. A field's HTML was also read off the live
+  page, so a publish wrote whatever the site's scripts had put there: an
+  animation library's `opacity` and `transform` on a headline's lines, the
+  class a fade-in adds to a paragraph.
+  - What Undo goes back to is taken when the person begins to change a part (a
+    press on it, its toolbar opening, a press on one of a list's buttons), for
+    as long as no change to it is waiting. A link's address and a picture's
+    address, description and size have a baseline the same way, so a picture
+    a lazy loader has put in place is the one Undo returns to.
+  - A field is published as the page's file would hold it. An element the file
+    has inside the field keeps the file's `class` and `style`, plus what the
+    person changed while editing; what a script added is not written, and a
+    class or style the file has is not lost when a script takes it off. The
+    same holds inside the fields of a list's blocks, and for the size a
+    picture is dragged to.
+  - Undo, Redo, Esc, "Drop", History's two ways back, a draft and "Pick up
+    where you left off?" no longer write a field with `innerHTML`. The
+    elements that are there stay, with whatever the site's scripts are doing
+    to them; one that was typed away comes back as itself; a new one is given
+    what the scripts gave another of its kind. A part that fades in on scroll
+    still does after a draft is put back on it.
+  - A field counts as unchanged when it reads as its baseline does, so an
+    animation that moved on while the field was open is not an edit.
+  - Undo of a link's new address, or of a picture's new size, puts the old one
+    back on the page; it used to leave the new one there with nothing staged.
+  - Try-out mode: a demo stored by the editor that had the fault is mended once
+    per page as it opens, so a headline that was stored invisible shows again.
+  Not covered: words a script splits into pieces of its own inside a field, a
+  class or style a script first sets on an element while it is being edited,
+  and the address of an editable picture that a lazy loader also changes.
+  Those are published as they are on the page, as before.
 - **On a site a generator builds, nothing is written over unasked and nothing
   is offered that cannot be done** (source mode):
   - A field someone else changed since the page was built was written over
