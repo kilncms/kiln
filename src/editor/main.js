@@ -33,7 +33,7 @@ import { initBlocks } from './blocks.js';
 import { publishLabel, editCommitMessage, goingLiveLabel, initGuide, guideSync, guidePublished, guideUndone, guideWaiting, START_URL, START_LABEL } from './firstrun.js';
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
-import { hasGrant, offersMakeEditable, helpUrl } from './grants.js';
+import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
 import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, blockNames, blockChange,
@@ -288,7 +288,9 @@ async function init() {
   if (journalAll().length) runJournal();
   checkForDraft();
   startPresence();
-  initComments(cfg, mode, state, { ask, say, stopped }, modal, setStatus, hasFeature, KILN_CHROME);
+  // A comment is filed under the page's file. A page the site builds from
+  // content files has none, and the worker would refuse every comment on it.
+  if (state.page?.path) initComments(cfg, mode, state, { ask, say, stopped }, modal, setStatus, hasFeature, KILN_CHROME);
   bootBlocks();
   // An invited editor's first session: the same three steps the demo shows,
   // once per browser. Only for someone who can publish this page themselves.
@@ -825,6 +827,10 @@ function canMakeEditable() {
 
 /** Hide menu items an invited editor hasn't been granted (applied after the bar renders). */
 function applyFeatureGating() {
+  // Comments are filed under the page's file, and a page the site builds from
+  // content files has none: not offered there, to anyone (startLine says so
+  // to the person who came only to comment).
+  if (!cfg.sandbox && state.page && !state.page.path) { const c = document.getElementById('kiln-comments'); if (c) c.style.display = 'none'; }
   if (mode === 'admin' || cfg.sandbox) return;
   // 'suggestreview' is deliberately not in the worker's GRANTABLE_FEATURES, so
   // no invited editor ever has it — the review queue stays admin-only.
@@ -2717,8 +2723,10 @@ async function publish(opts = {}) {
   const told = guideWaiting() ? describePublish() : null;
   // Suggest-mode editors don't publish — their Publish proposes. (The worker's
   // proxy guard enforces this server-side; the reroute here is the good UX.)
-  // Source edits aren't pre-blocked client-side: /source/commit answers suggest
-  // sessions with its own 403 copy, which publishSource surfaces as-is.
+  // A suggestion cannot carry an edit to a content file yet, so those fields
+  // are read-only for a suggest-only editor from the start (lockReason). One
+  // that is staged all the same (a draft from before) gets the worker's 403,
+  // which publishSource tells in a sentence.
   if (isSuggestMode()) {
     if (state.pendingSource.size) await publishSource(opts.note);
     if (state.pending.size) return opts.note !== undefined ? sendSuggestionFromSheet(opts.note) : suggestChanges();
@@ -3103,13 +3111,16 @@ async function initSourceFields() {
     for (const el of f.els) {
       // Read-only is decided here, before anyone types: the worker would turn
       // each of these away at Publish, or take words that are not the value.
-      const why = lockReason({ parsed: f.parsed, tag: el.tagName, caps: state.sourceCaps, paths: state.scope?.paths, adapter: cfg.adapter || 'astro', plain: !!plainBody(el) });
+      const why = lockReason({ parsed: f.parsed, tag: el.tagName, caps: state.sourceCaps, paths: state.scope?.paths, adapter: cfg.adapter || 'astro', plain: !!plainBody(el),
+        seat: isSuggestMode() ? 'suggest' : null });
       if (why) { lockSourceField(el, why); firstWhy = firstWhy || why; } else { decorateSourceField(el, ref, f.parsed); open++; }
     }
   }
   // Nothing on this page can be edited by this person: say so once, in sight.
   if (!open && firstWhy) {
     const limited = (state.scope?.paths || []).some(p => p && p !== '*' && p !== '**');
+    // A suggest-only editor was told by the first line (grants.js startLine).
+    if (isSuggestMode() && !state.page?.path && (!state.sourceCaps || state.sourceCaps.source)) return;
     if (mode === 'editor' && limited && (!state.sourceCaps || state.sourceCaps.source)) renderScopeNote();
     else setStatus(firstWhy, 'idle', { hold: 12000 });
     return;
@@ -6328,9 +6339,11 @@ function renderAdminBar() {
   applyFeatureGating();
   refreshPublishButton();   // suggest-mode label ("Suggest changes") from the first paint
   updateOnlineChip();
+  // What this person can do here, in one true sentence (grants.js startLine).
   // A phone has no click, and its outlines are always on.
-  const touch = window.matchMedia('(hover: none)').matches;
-  setStatus(`Signed in as ${state.user}. ${touch ? 'Tap' : 'Click'} any outlined text to edit.`, 'idle');
+  const seat = mode === 'editor' && !cfg.sandbox ? state.scope?.mode || null : null;
+  setStatus(startLine({ user: state.user, touch: window.matchMedia('(hover: none)').matches, scopeMode: seat,
+    comments: hasFeature('comments'), pageFile: !!state.page?.path || !!cfg.sandbox }), 'idle', seat === 'review' || (seat === 'suggest' && !state.page?.path) ? { hold: 12000 } : undefined);
 }
 
 /**
@@ -6799,6 +6812,9 @@ function refreshPublishButton() {
   if (btn) {
     btn.disabled = !anything;
     btn.textContent = label;
+    // A suggest-only editor on a page the site builds from content files has
+    // nothing a suggestion can carry: the button is not in the menu there.
+    btn.hidden = isSuggestMode() && !!state.page && !state.page.path && !anything;
   }
   if (quick) {
     quick.textContent = label;

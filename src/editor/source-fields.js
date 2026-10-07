@@ -440,10 +440,14 @@ function inFolders(file, paths) {
  *   paths    the folders this person was given (absent or [''] = the whole site)
  *   adapter  the site's adapter id
  *   plain    for an entry's text: whether it is one plain paragraph (plainBody)
+ *   seat     'suggest' for an editor whose Publish only proposes
  */
-export function lockReason({ parsed, tag = '', caps, paths, adapter = 'astro', plain = true } = {}) {
+export function lockReason({ parsed, tag = '', caps, paths, adapter = 'astro', plain = true, seat = null } = {}) {
   if (!parsed) return 'This text can’t be edited here. For the site’s owner: its data-kiln-source value is not a reference Kiln can read.';
   if (caps && !caps.source) return 'This page can’t be edited yet. The site’s owner needs to update Kiln first.';
+  // A suggest-only editor: the worker takes no suggestion for a content file
+  // yet, so nothing here is offered to type into and then refused.
+  if (seat === 'suggest') return 'A suggestion can’t be made to this text yet, because it comes from the site’s content files. Ask the site’s owner to change it.';
   if (!inFolders(parsed.path, paths)) return `${NOT_YOURS}. Ask the site’s owner if it needs changing.`;
   const kinds = EDITABLE[adapter];
   if (kinds && !kinds.test(parsed.path)) return `${OWN_FILE}, so it can’t be edited here. Ask the site’s owner.`;

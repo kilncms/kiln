@@ -43,3 +43,25 @@ export function helpUrl(who) {
   if (who.role === 'member') return 'https://kilncms.com/members';
   return 'https://kilncms.com/editors';
 }
+
+/**
+ * The line a signed-in person reads first: what they can do on this page, in
+ * one true sentence. It used to tell everyone to click any outlined text,
+ * including a comment-only editor, for whom nothing is outlined.
+ *
+ *   who: { user, touch, scopeMode, comments, pageFile }
+ *   comments   the Comments tool is theirs (granted, or the owner)
+ *   pageFile   the page is a file of its own in the repository. A page the
+ *              site builds from content files is not, and neither a
+ *              suggestion nor a comment can be filed against it yet.
+ */
+export function startLine(who) {
+  const hello = `Signed in as ${who.user}.`;
+  const built = 'because the site builds this page from its content files';
+  if (who.scopeMode === 'review') {
+    if (!who.comments) return `${hello} You can read this page. Nothing on it can be changed with this sign-in.`;
+    return who.pageFile ? `${hello} You can comment on this page. Comments is in the menu.` : `${hello} Comments can’t be left here yet, ${built}.`;
+  }
+  if (who.scopeMode === 'suggest' && !who.pageFile) return `${hello} Suggestions can’t be made here yet, ${built}.`;
+  return `${hello} ${who.touch ? 'Tap' : 'Click'} any outlined text to edit.`;
+}
