@@ -63,7 +63,7 @@ test('source e2e, a full run: two fields of one content file are published as an
   const r = await s.go();
   assert.deepEqual(names(r, false), [], s.out());
   assert.equal(r.ok, true);
-  assert.equal(r.checks.length, 28, s.out());
+  assert.equal(r.checks.length, 32, s.out());
   const passed = names(r, true);
   for (const name of [
     'worker answers /healthz and can edit Astro sources',
@@ -71,6 +71,10 @@ test('source e2e, a full run: two fields of one content file are published as an
     'editor publishes two fields of one content file',
     'on GitHub: one commit, by the editor, touching only that file',
     'on GitHub: exactly the two edited lines changed; every other line is what it was',
+    'someone else changes the title (a second editor, saying what the title was)',
+    'the first editor publishes the old title and the venue: the title is left out with what the file says now, the venue is saved',
+    'on GitHub: their title is still there, and only the venue line changed',
+    'the first editor chooses their own title: the same edit, saying what the file holds now, is written',
     'refused: text that lives in the page template, as a source edit (source mode edits content files only)',
     'refused: the page template written directly through the proxy',
     'refused: a content file outside the editor\'s folders', 'refused: the site\'s configuration',
@@ -78,12 +82,23 @@ test('source e2e, a full run: two fields of one content file are published as an
     'refused: script markup in a value', 'refused: a time that is not a time', 'refused: a suggest-only editor publishing a source edit',
     'none of the refused requests changed the branch',
     'editor undoes the change (what the editor offers after a failed build)',
-    'on GitHub: the content file is byte for byte what it was, in a second commit by the editor',
+    'on GitHub: the content file is byte for byte what it was, in one more commit by the editor',
     'cleanup: the repository is as it was found',
   ]) assert.ok(passed.includes(name), `missing: ${name}`);
-  // What the repository saw: exactly two commits by the editor, each touching only the content file.
+  // What the repository saw: the publish, the second editor's title, the venue (the title left out),
+  // the title once it said what the file held, and the undo. Each touched only the content file.
   const byEditor = [...s.gh.commits.entries()].filter(([, c]) => c.author.email === EDITOR);
-  assert.deepEqual(byEditor.map(([, c]) => c.author.name), ['Kiln E2E events (via Kiln)', 'Kiln E2E events (via Kiln)']);
+  assert.deepEqual(byEditor.map(([, c]) => c.author.name), ['Kiln E2E events (via Kiln)', 'Kiln E2E site (via Kiln)', 'Kiln E2E events (via Kiln)', 'Kiln E2E events (via Kiln)', 'Kiln E2E events (via Kiln)']);
+  const text = (i) => s.gh.blobs.get(s.gh.trees.get(byEditor[i][1].tree).get(ONE).sha).toString('utf8');
+  const first = fixture(ONE).replace('title: Interfaith Worship Service', 'title: E2E title 01010101').replace('venue: "Big Bethel AME"', 'venue: "E2E venue 01010101"');
+  assert.equal(text(1), first.replace('E2E title 01010101', 'E2E theirs 01010101'), 'the second editor changed the title');
+  assert.equal(text(2), first.replace('E2E title 01010101', 'E2E theirs 01010101').replace('E2E venue 01010101', 'E2E venue two 01010101'), 'their title was not written over; the venue was saved');
+  assert.equal(text(3), first.replace('E2E title 01010101', 'E2E mine 01010101').replace('E2E venue 01010101', 'E2E venue two 01010101'), 'the title, once the edit said what the file held');
+  assert.equal(text(4), fixture(ONE), 'the undo');
+  for (const [, c] of byEditor) {
+    const parent = s.gh.trees.get(s.gh.commits.get(c.parents[0]).tree); const tree = s.gh.trees.get(c.tree);
+    assert.deepEqual([...tree.keys()].filter(p => tree.get(p).sha !== parent.get(p)?.sha), [ONE]);
+  }
   const [publish] = byEditor;
   const before = s.gh.trees.get(s.gh.commits.get(s.startHead).tree); const after = s.gh.trees.get(publish[1].tree);
   assert.deepEqual([...after.keys()].filter(p => after.get(p).sha !== before.get(p)?.sha), [ONE]);
@@ -93,7 +108,7 @@ test('source e2e, a full run: two fields of one content file are published as an
   assert.equal(published, fixture(ONE).replace('title: Interfaith Worship Service', 'title: E2E title 01010101').replace('venue: "Big Bethel AME"', 'venue: "E2E venue 01010101"'));
   // The maintainer's token only read, and reset the branch at the end.
   assert.deepEqual(s.gh.calls.filter(c => c.method !== 'GET' && c.auth === 'Bearer owner-token').map(c => `${c.method} ${c.path}`), ['PATCH /git/refs/heads/main']);
-  assert.match(s.out(), /28\/28 checks passed/);
+  assert.match(s.out(), /32\/32 checks passed/);
   assert.match(s.out(), /Not covered here, check by hand on the built site:/);
 });
 
@@ -141,6 +156,25 @@ test('source e2e has teeth: a worker that edits the page template, lets an edito
   assert.equal(s.gh.head(), s.startHead);
 });
 
+test('source e2e has teeth: a worker that writes over a field someone else changed fails the run', async () => {
+  // A worker from before the check: it never looks at what an edit read.
+  const s = staging();
+  const env = { KILN: s.kv, ALLOWED_ORIGINS: '' };
+  s.intercept.fn = async (url, init) => {
+    if (!url.endsWith('/source/commit') || !init.body) return null;
+    const body = JSON.parse(init.body);
+    if (!(body.edits || []).some(e => 'was' in e)) return null;
+    for (const e of body.edits) delete e.was;
+    return worker.fetch(new Request(url, { ...init, body: JSON.stringify(body) }), env);
+  };
+  const r = await s.go();
+  assert.equal(r.ok, false);
+  assert.deepEqual(names(r, false), ['the first editor publishes the old title and the venue: the title is left out with what the file says now, the venue is saved']);
+  assert.match(s.out(), /the title is left out with what the file says now, the venue is saved — applied \[[^\]]*\], skipped \[\]/);
+  assert.equal(s.gh.head(), s.startHead, 'still put back');
+  assert.equal(s.gh.read(ONE), FILES[ONE]);
+});
+
 test('source e2e stops before writing when the repository is not marked, is not a source-mode site, or lacks the fields', async () => {
   const { '.kiln-e2e': _m, ...unmarked } = FILES;
   const cases = [
@@ -160,7 +194,7 @@ test('source e2e stops before writing when the repository is not marked, is not 
 test('source e2e: a failure midway still puts everything back; --smoke writes nothing', async () => {
   const s = staging();
   let puts = 0;
-  s.gh.failOn((method, path) => method === 'PUT' && path === `/contents/${ONE}` && ++puts === 2);   // GitHub breaks at the undo
+  s.gh.failOn((method, path) => method === 'PUT' && path === `/contents/${ONE}` && ++puts === 5);   // GitHub breaks at the undo
   const r = await s.go();
   assert.equal(r.ok, false);
   assert.deepEqual(names(r, false), ['editor undoes the change (what the editor offers after a failed build)']);

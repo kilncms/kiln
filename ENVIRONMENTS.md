@@ -133,12 +133,17 @@ end-to-end tests did NOT run, and the release goes on: read the output.
 `e2e-source.mjs` is the same idea for source mode: it publishes two fields of
 one content file through `/source/commit`, checks on GitHub that this was one
 commit by the editor touching only that file and that exactly the two edited
-lines changed, tries what must be refused (text in the page template, a file
+lines changed, has a second editor change a field the first is about to
+publish (the first one's edit must be left out with what the file says now,
+the other field of the same publish saved, and the edit written once it says
+what the file holds), tries what must be refused (text in the page template, a file
 outside the editor's folders, the site's configuration, a delete, script
 markup, a value of the wrong type, a suggest-only editor), undoes the change
 with `/source/revert`, and puts the repository back. Its test repository must
 be a source-mode site: content files with `title` and `venue`, and a
-`kiln-config.js` that says `mode: 'source', adapter: 'astro'`.
+`kiln-config.js` that says `mode: 'source', adapter: 'astro'`. The worker it
+runs against must be one that checks what an edit read (`sourceWas` in its
+`/healthz`): against an older worker the second editor's case fails, and says so.
 
 Both scripts make their editor sessions by writing to the staging KV with
 wrangler. If wrangler's browser sign-in is refused that write ("Authentication
