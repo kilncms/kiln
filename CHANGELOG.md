@@ -319,8 +319,9 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     changes", and was then told no. Those fields are read-only for them from
     the start and say why. A comment-only editor was told "Click any outlined
     text to edit." with nothing outlined, and Comments on a generated page
-    opened and then lost every comment made there (a comment is filed under
-    the page's file, and such a page has none): Comments is not offered there.
+    opened, and every comment written there was then refused (a comment is
+    filed under the page's file, and such a page has none): Comments is not
+    offered there.
     The first line each person reads says what they can do on that page.
 - **A comment-only editor saw a greyed Publish** at the top of the menu, on any
   site, and a "This page" heading over nothing. Neither is shown.
