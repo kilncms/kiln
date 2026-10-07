@@ -38,6 +38,21 @@ that you spread onto the element showing that value. When a signed-in Kiln
 editor opens the page, those elements become editable in place; saving commits
 to the underlying content file and your host rebuilds the site.
 
+What the editor can do with each kind of element today:
+
+- **Words** (a title, a venue, a line of text): edited in place.
+- **A date, a time, a number, a yes/no** (`opts.type`): edited as text, in the
+  form the file stores. A date is typed `2026-09-20` even if your template
+  writes it out as "September 20, 2026"; the editor says so when the field is
+  opened, and the page shows it your way again once the site has rebuilt.
+- **The body** (`kilnBody`): edited in place when it is one plain paragraph.
+  A body with formatting (bold, links, a list, more than one paragraph) is
+  read-only on the page for now, and says why when it is clicked.
+- **A link's address or a picture**: read-only for now. If you stamp
+  `{ type: 'url' }` on an `<a>`, its words are a label, not the address, so
+  the editor will not take them as one. To make a link's words editable, keep
+  them in a field of their own and stamp that.
+
 ## Loading the editor
 
 Astro builds the site from `src/` and copies `public/` into the result as it

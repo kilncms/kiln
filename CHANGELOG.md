@@ -284,6 +284,61 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Editing a page a generator built** (source mode), watched in a browser for
+  the first time, as an invited editor on pages Astro built:
+  - An entry's text was saved as the plain words on the page, so changing one
+    word of a description wrote it back without its bold, its links, its list
+    and its paragraphs. A text with formatting is now read-only on the page
+    and says why; a text that is one plain paragraph is edited in place, and
+    what is typed is saved as words.
+  - A number or a yes/no could never be saved (the editor sent words, the
+    worker takes a number and true or false). A date, a time, a number or a
+    web address of the wrong kind was staged without a word and refused at
+    Publish with the reason in a tooltip. The line now says how to write it
+    when the field is left, and before that when the page shows the value in
+    the site's own way.
+  - A link stamped with its address was edited by its label, and the label was
+    saved as the address. It is read-only, like a picture. Anything the worker
+    would turn away for what it is (the site's own files, a folder this person
+    was not given) is read-only before anyone types. A click on a read-only
+    part says why in the status line, where a phone can see it.
+  - The publish sheet, "Pick up where you left off?" and Copy my text named
+    fields by pointer ("/Frontmatter/Title"). They say "Title · Spring fair".
+  - What a publish left out is listed with its reason in a box of its own; the
+    worker's answers are told as sentences ("file type not editable by this
+    adapter" was shown as it came).
+  - While the host builds, the line reads "Saved. The site is rebuilding with
+    your change…". The first-session guide went back to "Click this and type."
+    after a publish; it now ends with a card that says saved, not published. A
+    reload during the build showed the old page and said nothing; it shows what
+    was saved and goes on watching. After a failed build, "Undo this change"
+    left words on the page that were neither saved nor unpublished; they come
+    back as an unpublished edit.
+  - History listed every commit in the repository as the page's versions, and
+    each way back ended in "That version could not be read"; Page settings
+    showed an empty form that could not be saved. Both now say that they
+    cannot show a generated page yet.
+- **A published list carried what the site's own scripts had done to it.** A
+  block that had faded in was written to the page file with the class the
+  fade-in adds, and a list staged while a filter was on carried the filter's
+  `display:none`. A list is now published as the file has each block, plus
+  what the editor changed: outside the editable fields every attribute is the
+  file's (except a block's tags), and on a field only its link, its picture
+  and the picture's description and size are taken from the page. Left as they
+  are on the page: elements a script added or removed, and words a script
+  changed outside a field.
+- **History showed a restore side by side in two frames with the scripts
+  off**, where a site that fades its sections in showed them blank. "Undo this
+  change" and "Go back to this" now show the result on the page itself, with
+  Cancel and Keep, as the demo already did.
+- **Four more questions were asked in the browser's own box**: deleting a
+  comment thread, deleting a page (two boxes), signing out with edits waiting,
+  and the note for declining a suggestion. Each is one dialog of the editor's
+  own, whose buttons say what they do. Signing out now also asks when the only
+  thing waiting is an edit to a content file, an upload or a section.
+- **A block's buttons showed on top of a site's sticky header** while the block
+  scrolled under it. They are hidden for as long as any part of them is under
+  a bar the site keeps at the top of the screen.
 - **Undo in a list could make the whole list invisible.** On a site whose
   blocks fade in as they scroll into view, Undo after removing, adding, moving
   or duplicating a block, or after changing a word in one, left the list on

@@ -111,6 +111,28 @@ that the line says the change is going live, and then **Live ✓** once visitors
 see it. You can keep editing meanwhile, or close the tab: the change is already
 saved.
 
+### On a site that rebuilds itself
+
+Some sites are put together from content files each time something changes. You
+edit them the same way, and a few things read differently:
+
+- After Publish the line says **Saved. The site is rebuilding with your change…**
+  and then **Published ✓** when the new version is live, usually in a minute or
+  two. If you reload meanwhile, the page still shows what you saved.
+- A date, a time or a number is typed the way the site stores it. A date is typed
+  like `2026-09-20`, even where the page writes it out in words; the line under
+  the page says so when you click one. If what you type is not a date, it is not
+  kept, and the line says how to write it.
+- Some parts are read-only for now: a text with formatting in it (bold, links, a
+  list, more than one paragraph), a picture, a link's address. Click one and the
+  line says why. Ask the site's owner to change those.
+- If something could not be saved, a box lists it with the reason. Your edit stays
+  on the page, outlined in yellow.
+- If the site could not be built with your change, a box says **Build failed**. The
+  site still shows the version from before. **Undo this change** takes your change
+  out again and puts it back on the page as unpublished, so you can correct it.
+- **History** and **Page settings** cannot show these pages yet, and say so.
+
 ### Closed the tab, or not ready to publish
 
 Your unpublished edits are kept in that browser as you make them, for seven days.

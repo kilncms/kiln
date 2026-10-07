@@ -188,6 +188,62 @@ Where the contract above left room, these are the decisions now in code:
   `pathInScope`/sensitive-path rules are the enforcement, and skipped-edit
   reasons surface on the field. Review-mode seats stay read-only client-side.
 
+### Changed after the editor was first watched on built pages (2026-10)
+
+The first time the editor was driven in a browser on pages Astro built, as an
+invited editor, these were put right. Where one replaces a line above, this is
+the contract now. All of it is `src/editor/source-fields.js` plus its wiring in
+main.js; nothing changes in what the worker is asked or answers.
+
+- **A field's words are staged, except where the words are not the value.**
+  `/body` is staged only when it renders as ONE plain paragraph (one `<p>` with
+  no element inside): the paragraph is the editing surface, and the value goes
+  out with markdown's own characters escaped (`markdownText`). Any other body
+  is read-only: its textContent would be committed as the whole body, without
+  its formatting. An `<a>` stamped `type=url` is read-only (its words are a
+  label, and were being saved as the address), like `<img>` and `type=image`.
+- **`number` and `boolean` go to the worker as a number and a boolean**
+  (`typedValue`, applied in `groupSourceEdits`); what is staged and saved in the
+  browser stays the text typed. They went as strings, which the worker refuses,
+  so neither could ever be saved from the page.
+- **Typed values are checked when the field is left**, by the worker's own rules
+  (rule 4): a wrong one is not staged, the words that were there come back, and
+  the status line says how to write it. A field whose words on the page are not
+  a value of its type (a date the template writes out) says so when it is
+  opened. The worker's check is unchanged and still the one that counts.
+- **Read-only is decided at decoration** (`lockReason`): a worker without source
+  mode, a path outside the folders this person was given (this REPLACES "client
+  side path scope is not applied to source fields"; the worker's `pathInScope`
+  is still the enforcement), a file the adapter does not write (for `astro`:
+  anything but `.md`, `.markdown`, `.mdx`), an `.mdx` body, and the three cases
+  above. The sentence is the element's title, and a click puts it in the status
+  line.
+- **Skipped and refused edits are listed** in their own box (`#kiln-srcskip`)
+  with a sentence each (`skipSentence`, `refusalSentence`); the reason is no
+  longer only the field's title. A 403 from `/source/commit` (scope, a
+  forbidden path, suggest-mode) is listed there too, not shown in the
+  "your sign-in does not allow this" dialog. Suggest-mode still POSTs and
+  still shows the worker's answer, as a sentence.
+- **Names**: the publish sheet, the saved-edits question and Copy my text use
+  `sourceLabel` ("Title · Spring fair"). `friendlyRef` stays for "Where does
+  this come from?" and for the owner's hover hint.
+- **States**: the line while the build is watched is "Saved. The site is
+  rebuilding with your change…". "Published ✓" is still said only on a success
+  signal. A publish is kept in `localStorage["kiln_building:<repo>"]`
+  (`buildRecord`: the commits, and each field's value before and after) for 30
+  minutes: after a reload the saved values are shown on a page that still has
+  the old ones and the build goes on being watched, and after a failed build
+  "Undo this change" re-stages that file's edits.
+- **A page with no file of its own** (`state.page.path === ''`): History and
+  Page settings open a sentence, not a list of the repository's commits and a
+  form that cannot be saved; no draft is looked for.
+
+Still open, and written down rather than patched: a formatted body edited on
+the page, a control for pictures and for link addresses, History for content
+files, adding and removing entries (`/source/duplicate` has no button), asking
+before overwriting a field someone else changed since the page was built, and
+what a click on template text should say.
+
 ## CLI + fixtures + integration (owner: cli workstream)
 
 - Wizard: detection step via `detectGenerators` on the local file listing;

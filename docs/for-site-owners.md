@@ -348,13 +348,17 @@ Two things worth knowing:
   one more ordinary commit that puts the page file back exactly as it was (never a
   force push) and returns the edits to the page, unpublished. If the file has changed
   since, it writes nothing and points to History. It covers a publish that changed
-  one page; shared headers and footers, and source-file edits, go through History.
+  one page; shared headers and footers go through History. On a site a generator
+  builds, a publish to content files has no Undo line and no History yet: a failed
+  build offers "Undo this change", and any version can be brought back in the
+  repository.
 - **Drafts** — save work privately without publishing; come back to it later.
 - **Scheduling** — publish at a chosen time. The worker re-applies the edits at fire
   time (and re-checks the author still has access).
 - **History & restore** — browse every published version in plain language and
-  restore any of them. Restores preview on the page first (keep or cancel), per
-  section or whole page. Undoing a publish that added a section removes it again.
+  restore any of them. A restore is shown on the page itself first (Keep or
+  Cancel), per section or whole page, so it looks as the site will look, fade-ins
+  and all. Undoing a publish that added a section removes it again.
 - **Site-wide tools** — the **Site menu** edits navigation across every page in one
   commit; **Find & replace** changes a phrase everywhere; **Page settings** edits
   title, description, and social image; **+ New** creates posts and pages from your
@@ -454,7 +458,7 @@ If you write one, this is what Kiln itself needs allowed:
 | `style-src` | `'self' 'unsafe-inline'` | The editor, and the gallery, filter and calendar features, style themselves from script. |
 | `img-src` | `'self' data: blob:` | Previews of images you have picked but not published yet. |
 | `connect-src` | `'self' data: blob:`, your worker's address, `https://api.github.com`, `https://raw.githubusercontent.com` | Sign-in and publishing go to the worker (`worker` in `kiln-config.js`; `https://auth.kilncms.com` on Kiln Cloud). The owner's edits go straight to GitHub, and the editor asks GitHub whether a newer version exists. |
-| `frame-src` | `'self'` | The side-by-side restore preview and the block previews. |
+| `frame-src` | `'self'` | The block previews. |
 
 A starting point, with your own worker's address in place of the example:
 

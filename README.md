@@ -126,15 +126,27 @@ Honest scope, today:
 - **In:** markdown content files — `.md` frontmatter and body, `.mdx` frontmatter
   only (MDX bodies are code, and Kiln never edits code). Frontmatter is spliced
   surgically: comments, quoting, and key order survive byte-identical.
-- **In:** typed values (`date`, `time`, `url`, `boolean`, `number`) validated
-  server-side with plain-language errors; one commit per content file; real publish
-  states — **Saved → Building… → Published ✓ / Build failed ✕** — with a one-click
-  revert when a bad edit breaks the build.
+- **In:** typed values (`date`, `time`, `url`, `boolean`, `number`). A value of
+  the wrong kind is said in a sentence when the field is left ("This needs to be
+  a date written like 2026-09-20."), and the worker checks again. One commit per
+  content file; real publish states — **Saved. The site is rebuilding… →
+  Published ✓ / Build failed** — with a one-click undo when a bad edit breaks
+  the build, which puts the edit back on the page as unpublished. A reload while
+  the site rebuilds shows what was saved, not the page from before.
 - **In:** the guard: an HTML-mode site with build tooling and committed build
   output is blocked from editing `dist/` with an explanation, instead of edits
   silently vanishing.
-- **Not yet:** date-picker-style controls (typed values are validated but edited
-  as text), Eleventy / Hugo / Jekyll adapters (Astro first), suggest-mode and
+- **Read-only on the page for now**, each with a sentence that says why when it
+  is clicked: an entry's body that has formatting (bold, links, a list, more
+  than one paragraph), because the editor reads and writes words and would save
+  it back without any of that (a body that is one plain paragraph is edited as
+  usual); a picture; a link stamped with its address (`type: 'url'` on an `<a>`,
+  whose words are a label and not the address).
+- **Not yet:** date-picker-style controls (typed values are edited as text, in
+  the form they are stored: a date is typed `2026-09-20` even where the page
+  writes it out), a formatted body edited on the page, adding, removing or
+  reordering entries, History and Page settings on a generated page (both say
+  so), Eleventy / Hugo / Jekyll adapters (Astro first), suggest-mode and
   scheduled source edits.
 
 The full design is [docs/SOURCE-MODE-SPEC.md](docs/SOURCE-MODE-SPEC.md).
