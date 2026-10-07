@@ -161,6 +161,27 @@ A worker deployed from a clone of the Kiln repo, without the wizard, is upgraded
 in that clone: pull, then `npx wrangler deploy --config wrangler.self.toml` from
 `worker/` again. KV data survives redeploys untouched.
 
+### A site a generator builds (source mode)
+
+Source mode edits the content files an Astro site is built from. Each part of
+it needs the worker to say it can, in its `/healthz`, and the editor offers only
+what the worker it talks to says; an older worker keeps those parts read-only,
+each with a sentence:
+
+| `/healthz` says | What the editor offers |
+|---|---|
+| `modes` includes `source` | plain words, dates, times, numbers, yes/no in front matter |
+| `sourceMarkdown: true` | an entry's formatted text, with the toolbar |
+| `sourceMedia: true` | replacing pictures, link addresses |
+| `sourceEntries: true` | adding, copying and removing entries, drafts, order, schedules, History and Page settings |
+
+So after an upgrade, deploy the worker as well as the editor, and check
+`/healthz`. On the site, `src/lib/kiln-astro.mjs` is the helper file the
+wizard copied in. When it is an older copy, `update` says so and asks before
+replacing it with the newer one (`kilnEntry`, the `alt` and `href` options,
+`kiln()` publishing the schema); a file there that is not Kiln's is left alone. Eleventy, Hugo and Jekyll sites have no source mode yet: Kiln edits
+only the HTML files committed in their repositories.
+
 ## One worker, many sites
 
 A single worker can serve every site and client you have. This is the agency setup,

@@ -106,6 +106,36 @@ the first one stay refused: members sign in again, tokens are made again, and an
 editor whose browser still holds the old sign-in clears this site's data in the
 browser first (the editor has no button for that when it cannot start).
 
+### If your site is built by a generator
+
+**Astro.** Kiln edits the content files the pages are built from (source mode),
+and your host rebuilds the site after each publish. The setup wizard finds the
+Astro project, asks how the site is built, writes `mode: 'source'` into the
+config, puts Kiln's files under `public/`, and copies the helper file
+`src/lib/kiln-astro.mjs` into the project. Then, once:
+
+1. In your templates, one line per field: `{...kilnSource(entry, 'title')}` on
+   what shows a value, `{...kilnBody(entry)}` on what wraps `<Content />`,
+   `{...kilnEntry(entry)}` on a card or an entry's article (the wizard prints
+   the lines).
+2. In `astro.config.mjs`, `integrations: [kiln()]` from the same file, so the
+   editor checks values against your collections' schemas before anything is
+   committed.
+3. Make sure your host builds and deploys on every push.
+
+What your editors can then do: words, dates, times, numbers, yes/no; an entry's
+formatted text with the toolbar; pictures and their descriptions; link
+addresses; new entries, copies, drafts, order, schedules; History and Page
+settings. What stays read-only says why when it is clicked: a table in a text,
+a component in MDX, a picture taken from another website. The full list is in
+the README's source mode section.
+
+**Eleventy, Hugo and Jekyll.** Not built yet: Kiln can't edit their content
+files. The wizard and `kiln doctor` recognise them and say so, and Kiln edits
+only the HTML files committed in the repository. If the repository holds the
+built pages, the editor refuses to edit them and says why: the next build would
+erase the edit.
+
 ### If your AI built a React app
 
 Kiln edits HTML files. A site made with Lovable, v0 or Bolt is usually a React

@@ -1,8 +1,42 @@
 # Kiln Source Mode — specification
 
-**Status:** phase 1–2 in implementation (2026-09-01); see SOURCE-MODE-IMPL.md for the binding contracts + the data-kiln-source naming deviation
+**Status (7 October 2026):** built for Astro; not built for Eleventy, Hugo, Jekyll or plain data files. What follows is the design as written in August; the section "What is built" below says what exists, and SOURCE-MODE-IMPL.md holds the binding contracts (including the `data-kiln-source` naming).
 **Author:** drafted 2026-08-10 for handoff to an implementation session
 **Scope:** Kiln core (`src/`, `worker/`, `cli/`) — **no customer site work**
+
+---
+
+## What is built (October 2026)
+
+**Astro, built.** With the `@kilncms/astro` helpers (`kilnSource`, `kilnBody`,
+`kilnEntry`) on the templates, and a worker whose `/healthz` says so, the editor
+on a generated page:
+
+- edits front matter values in YAML, TOML or JSON: words, dates, times,
+  numbers, yes/no, link addresses, each checked as its kind;
+- edits an entry's formatted text with the same toolbar as a plain page and
+  writes Markdown back, changing only the edited blocks (tables, code, HTML and
+  MDX components stay as written and say why);
+- replaces pictures (front matter and inside the text), with their
+  descriptions, putting the new file where the field's picture is and committing
+  it first;
+- refuses, with a sentence, a value the site's own schema would reject, when
+  the `kiln()` integration publishes `/kiln-schema.json`;
+- adds an entry from the schema's required fields, copies and removes entries,
+  marks drafts by the site's own field, orders entries by an order field,
+  schedules a draft or any staged edit, and shows History (preview, go back,
+  bring back a removed entry) and Page settings for the page's entry file;
+- shows the real build: saved, rebuilding, published, or failed with a one-click
+  undo.
+
+**Not built.** Eleventy, Hugo, Jekyll, and the data-file adapter (§16.2): on
+those sites the setup wizard and `kiln doctor` say Kiln can't edit their content
+files yet, and Kiln edits only HTML files committed in the repository; a page
+that is a generator's build output is refused with that sentence, not a
+suggestion to switch to a source mode that does not exist for it. Also not
+built: the automatic Astro transform (§16.1 "Automatic"), date and time pickers
+(values are typed in the form they are stored), suggestions and comments on a
+generated page.
 
 ---
 

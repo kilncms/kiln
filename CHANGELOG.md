@@ -352,6 +352,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **On an Eleventy, Hugo or Jekyll site nothing suggests a source mode that
+  does not exist for it.** The editor's "This page is build output" box, the
+  setup wizard and `kiln doctor` say that Kiln can't edit that generator's
+  content files yet (Astro is the one it edits) and what HTML mode does there,
+  instead of telling the owner to switch to source mode.
+- `kiln update` on an Astro site whose `src/lib/kiln-astro.mjs` is an older
+  copy of Kiln's helper says so and offers the newer one (asked first; a file
+  that is not Kiln's is left alone).
 - A formatted text from a content file, saved in the browser and brought back
   after a reload, is published as Markdown again (it was sent as plain words),
   and a picture put in it or in a picture field comes back with its file.

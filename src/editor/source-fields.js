@@ -493,6 +493,25 @@ export function lockReason({ parsed, tag = '', caps, paths, adapter = 'astro', p
   return null;
 }
 
+// ─── A page that is build output ─────────────────────────────────────────────
+
+/** The generators Kiln edits the content files of (its source-mode adapters). */
+export const SOURCE_GENERATORS = ['astro'];
+
+/**
+ * What the editor says on a page whose file is a generator's build output
+ * (§7.3): { title, body: [paragraphs] }. Where Kiln has a source mode for the
+ * generator it says to switch to it; where it has none (Eleventy, Hugo,
+ * Jekyll today) it says so, and not to switch to a mode that does not exist.
+ */
+export function buildOutputCopy({ path, gen, id }) {
+  const first = `Kiln can see ${path}, but this site is built by ${gen}. That file is made again on every build, so an edit here would be erased the next time the site publishes.`;
+  if (SOURCE_GENERATORS.includes(id)) {
+    return { title: 'This page is build output', body: [first, 'Switch this site to source mode (mode: \'source\' in kiln-config.js, with one line per field in the templates) to edit the content it is built from.'] };
+  }
+  return { title: 'This page is build output', body: [first, `Kiln can’t edit ${gen} content files yet: Astro is the one generator it edits today. Until it can, change this page in the site’s own files.`] };
+}
+
 // ─── Not saved, and why ──────────────────────────────────────────────────────
 
 /** Why the worker left one edit out of a commit (its `skipped[].reason`), as a sentence. */

@@ -108,7 +108,7 @@ test('wizard §7.2: generator tree asks the mode question; choosing source write
     // answers: Cloud → pages-are-generated → no autotag → no commit/push
     const out = await runWizard(dir, ['1', '2', 'n', 'n']);
     assert.match(out, /How is this site built\?/);
-    assert.match(out, /Found astro\.config\.mjs and 3 content files — this looks like an Astro site\./);
+    assert.match(out, /Found astro\.config\.mjs and 3 content files: this looks like an Astro site\./);
     assert.match(out, /The pages are generated from content files/);
     // The helper's package is not on npm: the wizard adds the one file instead of naming an install that fails.
     assert.doesNotMatch(out, /npm install @kilncms\/astro/);
@@ -144,5 +144,40 @@ test('wizard §7.3: choosing HTML mode with committed build output prints the gu
     const cfg = readFileSync(path.join(dir, 'assets', 'kiln-config.js'), 'utf8');
     assert.ok(!/mode\s*:/.test(cfg), 'html mode stays implicit — no mode line (§13 default-on-absence)');
     assert.ok(existsSync(path.join(dir, 'kiln.html')));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('wizard on a Hugo site: it says it found Hugo, that Kiln cannot edit its content files yet, and stays in HTML mode', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'kiln-cli-hugo-'));
+  try {
+    writeFileSync(path.join(dir, 'hugo.toml'), 'title = "Fair"\n');
+    mkdirSync(path.join(dir, 'content', 'posts'), { recursive: true });
+    writeFileSync(path.join(dir, 'content', 'posts', 'fair.md'), '---\ntitle: Fair\n---\nHi.\n');
+    mkdirSync(path.join(dir, 'layouts'), { recursive: true });
+    writeFileSync(path.join(dir, 'layouts', 'index.html'), '<html></html>\n');
+    spawnSync('git', ['init', '-b', 'main'], { cwd: dir, encoding: 'utf8' });
+    spawnSync('git', ['remote', 'add', 'origin', 'https://github.com/example/site.git'], { cwd: dir, encoding: 'utf8' });
+    const out = await runWizard(dir, ['1', 'n', 'n', 'n']);
+    assert.match(out, /this looks like a Hugo site/);
+    assert.match(out, /Kiln can't edit Hugo content files yet: Astro is the one generator it edits today\. Setup goes on in HTML mode, which edits the HTML files in this repository\./);
+    assert.doesNotMatch(out, /Astro ships first/);
+    assert.doesNotMatch(out, /How is this site built\?[\s\S]*1\. The pages are files/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('wizard on a Jekyll site with its built pages committed: the warning does not send it to a source mode it has none of', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'kiln-cli-jekyll-'));
+  try {
+    writeFileSync(path.join(dir, '_config.yml'), 'title: Fair\n');
+    mkdirSync(path.join(dir, '_posts'), { recursive: true });
+    writeFileSync(path.join(dir, '_posts', '2026-05-02-fair.md'), '---\ntitle: Fair\n---\nHi.\n');
+    mkdirSync(path.join(dir, '_site'), { recursive: true });
+    writeFileSync(path.join(dir, '_site', 'index.html'), '<!doctype html><title>built</title>\n');
+    spawnSync('git', ['init', '-b', 'main'], { cwd: dir, encoding: 'utf8' });
+    spawnSync('git', ['remote', 'add', 'origin', 'https://github.com/example/site.git'], { cwd: dir, encoding: 'utf8' });
+    const out = await runWizard(dir, ['1', 'n', 'n', 'n']);
+    assert.match(out, /Kiln can see _site\/index\.html, but this site is built by Jekyll\. That file is/);
+    assert.match(out, /Kiln can't edit Jekyll content files yet, so the\s+editor refuses to edit that file and says why/);
+    assert.doesNotMatch(out, /switch to source mode/i);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

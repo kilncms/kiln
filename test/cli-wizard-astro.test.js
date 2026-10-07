@@ -189,3 +189,26 @@ test('update on an Astro site refreshes the editor under public/', async () => {
   assert.equal(s.read('public/assets/kiln-editor.js'), readFileSync(path.join(ROOT, 'dist', 'kiln-editor.js'), 'utf8'));
   assert.ok(!s.has('assets'), 'nothing is written at the top of the repository');
 });
+
+test('update offers the newer Astro helper when the site has an older one, and leaves one that is not Kiln\'s alone', async () => {
+  const s = astroSite();
+  await wizard(s.dir);
+  const current = readFileSync(path.join(ROOT, 'integrations', 'astro', 'index.mjs'), 'utf8');
+  const older = current.slice(0, current.indexOf('export function kilnEntry'));
+  writeFileSync(path.join(s.dir, 'src/lib/kiln-astro.mjs'), older);
+  const yes = await run(s.dir, ['update'], ['y', 'n']);
+  assert.equal(yes.code, 0, yes.out);
+  assert.match(yes.out, /src\/lib\/kiln-astro\.mjs is an older copy of Kiln's Astro helper/);
+  assert.equal(s.read('src/lib/kiln-astro.mjs'), current);
+  // asked, and answered no: the file stays as it is
+  writeFileSync(path.join(s.dir, 'src/lib/kiln-astro.mjs'), older);
+  const no = await run(s.dir, ['update'], ['n', 'n']);
+  assert.equal(no.code, 0, no.out);
+  assert.equal(s.read('src/lib/kiln-astro.mjs'), older);
+  // not Kiln's file at all: nothing asked, nothing written
+  writeFileSync(path.join(s.dir, 'src/lib/kiln-astro.mjs'), '// mine\n');
+  const mine = await run(s.dir, ['update'], ['n']);
+  assert.equal(mine.code, 0, mine.out);
+  assert.doesNotMatch(mine.out, /older copy of Kiln's Astro helper/);
+  assert.equal(s.read('src/lib/kiln-astro.mjs'), '// mine\n');
+});

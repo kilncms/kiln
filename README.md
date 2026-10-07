@@ -88,6 +88,12 @@ points Kiln at the sources instead. You still click the text on the live page an
 type; Kiln saves the change to the underlying content file, commits it, and your
 host rebuilds the site.
 
+Source mode exists for **Astro**. It does not exist yet for Eleventy, Hugo or
+Jekyll: on those sites the wizard and `kiln doctor` say Kiln can't edit their
+content files, Kiln edits only HTML files committed in the repository, and a
+page that is their build output is refused with a sentence instead of being
+edited and then erased by the next build.
+
 The generated page says where each value lives, with one attribute:
 
 ```html
@@ -117,7 +123,7 @@ commit to content files. On an Astro site it puts the editor, the config, the
 sign-in page and the `_headers` file under `public/`, the folder Astro copies into
 the built site as it is, and offers to add the two script tags to the template
 that closes `<body>`. An existing install needs `npx github:kilncms/kiln#release update`
-plus a redeploy of its worker. `kiln doctor` warns when a repo looks generator-built
+(which also offers a newer copy of the helper file) plus a redeploy of its worker. `kiln doctor` warns when a repo looks generator-built
 but the site is still in HTML mode — the silent-data-loss trap this mode exists to
 close.
 

@@ -154,13 +154,19 @@ function detectionEvidence(files) {
   return bits.join(' and ');
 }
 
-/** Print the §7.3 warning — the guard against editing regenerated output. */
-function warnBuiltOutput(builtHtml, generatorName) {
-  warn(`Kiln can see ${builtHtml}, but this site is built by ${generatorName} — that file is`);
+/** Print the §7.3 warning: the guard against editing regenerated output.
+ *  `editable`: Kiln has a source mode for this generator (Astro). */
+function warnBuiltOutput(builtHtml, generatorName, editable = true) {
+  warn(`Kiln can see ${builtHtml}, but this site is built by ${generatorName}. That file is`);
   console.log(`     regenerated on every build, and any edit to it would be erased the next time`);
-  console.log(`     the site publishes. To let editors change the content this site is built`);
-  console.log(`     from, switch to source mode (re-run this wizard, or set mode: 'source' in`);
-  console.log(`     assets/kiln-config.js).`);
+  if (editable) {
+    console.log(`     the site publishes. To let editors change the content this site is built`);
+    console.log(`     from, switch to source mode (re-run this wizard, or set mode: 'source' in`);
+    console.log(`     assets/kiln-config.js).`);
+  } else {
+    console.log(`     the site publishes. Kiln can't edit ${generatorName} content files yet, so the`);
+    console.log(`     editor refuses to edit that file and says why.`);
+  }
 }
 
 /** Wizard detection step (§7.1–§7.2). Looks at the local tree; when it looks
@@ -186,10 +192,10 @@ async function detectSiteMode() {
   } catch { /* registry needs the yaml package; detection alone works without it */ }
 
   hr('How is this site built?');
-  info(`Found ${evidence} — this looks like ${an} ${gen.displayName} site.`);
+  info(`Found ${evidence}: this looks like ${an} ${gen.displayName} site.`);
   if (!adapter) {
-    warn(`Kiln can't edit ${gen.displayName} sources yet (Astro ships first) — continuing in HTML mode.`);
-    if (builtHtml) warnBuiltOutput(builtHtml, gen.displayName);
+    warn(`Kiln can't edit ${gen.displayName} content files yet: Astro is the one generator it edits today. Setup goes on in HTML mode, which edits the HTML files in this repository.`);
+    if (builtHtml) warnBuiltOutput(builtHtml, gen.displayName, false);
     return { mode: 'html' };
   }
   console.log(`
@@ -304,10 +310,15 @@ async function doctor(args) {
       const { files, builtHtml } = listLocalTree();
       const sig = generatorSignals(builtHtml ? [...files, builtHtml] : files);
       const gen = sig.detected[0];
-      if (mode !== 'source' && gen) {
+      const editable = gen && ['astro'].includes(gen.id);
+      if (mode !== 'source' && gen && !editable) {
+        // A generator Kiln has no source mode for: say what HTML mode does there, and nothing about a mode that does not exist.
+        warn(`this repo looks like a generator build (${gen.displayName}). Kiln can't edit ${gen.displayName} content files yet (Astro is the one generator it edits today), so it edits only the HTML files committed here${builtHtml ? `: ${builtHtml} is made again on every build, and an edit to it is erased the next time the site publishes` : ''}`);
+      }
+      if (mode !== 'source' && editable) {
         // §7.3 — the highest-value check in the spec: generator build + HTML mode.
-        if (builtHtml) warn(`this repo looks like a generator build (${gen.displayName}), but the site is in HTML mode — Kiln can see ${builtHtml}, and that file is regenerated on every build: any edit to it is erased the next time the site publishes. Switch to source mode (mode: 'source' in kiln-config.js) to edit the content it is built from`);
-        else warn(`this repo looks like a generator build (${gen.displayName}), but the site is in HTML mode — edits to generated pages don't survive a rebuild. Switch to source mode (mode: 'source' in kiln-config.js) to edit the content files it is built from`);
+        if (builtHtml) warn(`this repo looks like a generator build (${gen.displayName}), but the site is in HTML mode. Kiln can see ${builtHtml}, and that file is regenerated on every build: any edit to it is erased the next time the site publishes. Switch to source mode (mode: 'source' in kiln-config.js) to edit the content it is built from`);
+        else warn(`this repo looks like a generator build (${gen.displayName}), but the site is in HTML mode: edits to generated pages don't survive a rebuild. Switch to source mode (mode: 'source' in kiln-config.js) to edit the content files it is built from`);
       }
       if (mode === 'source') {
         check('source mode configured', !!adapterId, adapterId ? `adapter: ${adapterId}` : "kiln-config.js sets mode: 'source' but no adapter — add adapter: 'astro'");
@@ -1251,14 +1262,14 @@ async function update() {
   // one gets the current gate, but only when its worker can answer the gate's
   // question: the new gate against an older worker would lock members out.
   const gate = path.join('functions', 'members', '_middleware.js');
-  const gateFiles = [];
+  const alsoCommit = [];
   if (existsSync(gate)) {
     const cfgFile = path.join(dir, 'kiln-config.js');
     const workerUrl = existsSync(cfgFile) ? readFileSync(cfgFile, 'utf8').match(/worker:\s*'([^']+)'/)?.[1] : null;
     const health = workerUrl ? await fetch(`${workerUrl}/healthz`).then(r => r.json()).catch(() => null) : null;
     if (health && health.memberSessions) {
       cpSync(path.join(PKG_ROOT, 'templates', 'functions'), 'functions', { recursive: true });
-      gateFiles.push(path.join('functions', '_kiln.js'), gate, path.join('functions', 'api', 'member-redeem-google.js'));
+      alsoCommit.push(path.join('functions', '_kiln.js'), gate, path.join('functions', 'api', 'member-redeem-google.js'));
       ok('refreshed the members gate in functions/ — removing a member now ends their sign-in within 5 minutes');
       info('after the next deploy every member signs in once more (their old sign-in cannot be re-checked)');
     } else if (health) {
@@ -1267,12 +1278,28 @@ async function update() {
       warn('left the members gate as it is: the worker did not answer, so it is not known whether it supports the current gate');
     }
   }
+  // The Astro helper is Kiln's file in the site too. An older copy is offered
+  // the newer one (its new helpers need it); a file that is not Kiln's is left alone.
+  const helper = path.join('src', 'lib', 'kiln-astro.mjs');
+  if (existsSync(helper)) {
+    const theirs = readFileSync(helper, 'utf8');
+    const ours = readFileSync(path.join(PKG_ROOT, 'integrations', 'astro', 'index.mjs'), 'utf8');
+    if (theirs !== ours && /@kilncms\/astro/.test(theirs.slice(0, 400))) {
+      info('src/lib/kiln-astro.mjs is an older copy of Kiln\'s Astro helper. The newer one adds kilnEntry, picture descriptions and link addresses, and publishes your schema.');
+      info('If you changed that file yourself, answer no and copy integrations/astro/index.mjs in by hand.');
+      if (await yes('Replace it with the newer helper?', 'y')) {
+        writeFileSync(helper, ours);
+        alsoCommit.push(helper);
+        ok('replaced src/lib/kiln-astro.mjs');
+      }
+    }
+  }
   if (await yes('Commit and push now?', 'y')) {
     // Add all three bundles: kiln-features.js is lazy-loaded by kiln.js, so leaving
     // it out ships a stale features runtime (e.g. event calendars) to visitors.
     // argv form, no shell: `dir` is read out of the site's own HTML, and a folder
     // name with a space, a quote or a `$(…)` in it must reach git as a path.
-    const files = [...['kiln.js', 'kiln-editor.js', 'kiln-features.js'].map(f => path.join(dir, f)), ...gateFiles];
+    const files = [...['kiln.js', 'kiln-editor.js', 'kiln-features.js'].map(f => path.join(dir, f)), ...alsoCommit];
     let gitError = null;
     for (const argv of [['add', '--', ...files], ['commit', '-m', 'Update Kiln editor to latest'], ['push']]) {
       const r = spawnSync('git', argv, { encoding: 'utf8' });

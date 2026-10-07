@@ -21,7 +21,7 @@ import {
   scanSourceRefs, groupSourceEdits, matchAppliedRefs, matchSkippedRefs, resolveBuildState,
   revertRequest, parseSourceCapabilities, saveSummary, friendlyRef, STILL_BUILDING_COPY,
   sourceLabel, typedValue, keptText, typeHint, isBody, plainBody, lockReason, skipSentence, refusalSentence,
-  readAs, changedRefs, theirsText, theirsOrMine, isMarkdownField,
+  readAs, changedRefs, theirsText, theirsOrMine, isMarkdownField, buildOutputCopy,
   SAVED_BUILDING_COPY, BUILD_FAILED_COPY, BUILD_WATCH_MS, buildRecord, buildStanding, resumePlan,
 } from './source-fields.js';
 import {
@@ -5233,7 +5233,7 @@ async function wrongModeGuard() {
       const listing = await state.gh.request('GET', `/repos/${cfg.repo}/contents`);
       const files = (Array.isArray(listing) ? listing : []).map(f => f.type === 'dir' ? `${f.path}/` : f.path);
       const s = generatorSignals(files);
-      sig = { gen: s.detected[0]?.displayName || null, builtHtml: s.builtHtml };
+      sig = { gen: s.detected[0]?.displayName || null, id: s.detected[0]?.id || null, builtHtml: s.builtHtml };
     } catch {
       sig = { gen: null, builtHtml: false };   // listing unreachable — never block on a blip
     }
@@ -5241,13 +5241,11 @@ async function wrongModeGuard() {
   }
   const pageInBuildDir = /^(dist|_site|build|out)\//i.test(state.page.path);
   if (!sig.gen || !(sig.builtHtml || pageInBuildDir)) return false;
+  // A cached look from before the generator's id was kept: read it again next time.
+  const copy = buildOutputCopy({ path: state.page.path, gen: sig.gen, id: sig.id || String(sig.gen).toLowerCase() });
   modal(`
-    <h3>This page is build output</h3>
-    <p class="kiln-dim">Kiln can see <code>${escapeHtml(state.page.path)}</code>, but this site is built
-    by <strong>${escapeHtml(sig.gen)}</strong> — that file is regenerated on every build, and any edit
-    here would be erased the next time the site publishes.</p>
-    <p class="kiln-dim">Switch this site to <strong>Source Mode</strong> (<code>mode: 'source'</code> in
-    kiln-config.js, with provenance on the templates) to edit the content it’s built from.</p>
+    <h3>${escapeHtml(copy.title)}</h3>
+    ${copy.body.map(p => `<p class="kiln-dim">${escapeHtml(p)}</p>`).join('')}
     <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Dismiss</button></div>`);
   return true;
 }
