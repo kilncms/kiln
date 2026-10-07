@@ -1743,7 +1743,7 @@ async function peopleHome(env, repo) {
 async function peopleList(request, env, url) {
   const repo = url.searchParams.get('repo') || '';
   if (!(await requirePush(request, repo, env))) return forbidden(request);
-  return json({ people: await getPeople(env, repo), googleConfigured: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) });
+  return json({ people: await getPeople(env, repo), googleConfigured: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET), aiConfigured: !!env.AI_API_KEY });
 }
 
 // Menu features an admin can grant an editor. People/settings stay owner-only.

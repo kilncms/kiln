@@ -381,6 +381,10 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   owner's words, its help text is larger, and the AI assist box is not offered
   when the worker says the site has no AI key (`aiConfigured: false` from
   `/admin/people`; a worker that says nothing leaves the box as it was).
+- **The worker says whether it has an AI key.** `GET /admin/people` now
+  answers `aiConfigured` beside `googleConfigured`, so People & access does not
+  offer "AI assist" on a worker with no `AI_API_KEY`. The key itself is never
+  sent. Self-hosters get it with `kiln update --worker`.
 - **On a site a generator builds, nothing is written over unasked and nothing
   is offered that cannot be done** (source mode):
   - A field someone else changed since the page was built was written over
