@@ -284,6 +284,60 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **On a site a generator builds, nothing is written over unasked and nothing
+  is offered that cannot be done** (source mode):
+  - A field someone else changed since the page was built was written over
+    without a question: the owner renames an event, an editor whose page still
+    shows the old name publishes another, and the owner's is gone. An edit now
+    says what its field showed when the page was read, the worker leaves that
+    one edit out when the content file no longer says that, and the editor asks
+    **Someone else changed this**, showing Theirs and Yours, with **Keep
+    theirs** and **Use mine**. The other edits of the same publish are saved.
+    An editor from before this sends nothing about what it read and is saved
+    as before; this editor against a worker from before this is saved without
+    the question, as before. `/healthz` says `sourceWas: true`.
+  - A `url` field took any words ("Get tickets" was saved as an address). It
+    takes a web address (`http:`, `https:`), `mailto:`, `tel:`, or a place on
+    the site (`/about`, `./about`, `#top`), and the editor says so when the
+    field is left.
+  - An edited value lost the quotes its line had: `start: '18:00'` became
+    `start: 18:30`, which a YAML 1.1 reader takes for the number 1110. A quoted
+    line stays quoted, in its own quotes, and on an unquoted line a time and
+    any text a reader could take for something else (yes, no, on, off, a
+    number with a leading zero, a date) is quoted. Text beginning with `#` was
+    written unquoted, which made it a comment and the field empty; it is
+    quoted. Inside a bracketed list a value with a comma is quoted.
+  - Saving an entry's text removed the blank line after the frontmatter. The
+    file stays as it was around the text.
+  - Search & jump listed `/public/kiln.html`, the sign-in page under an address
+    that does not exist, as the site's only page. It lists the site's real
+    pages: from the adapter's routes, the links on the pages and the sitemap,
+    each checked against the built site before it is listed. "Search site
+    text" searches those pages, and "On this page" lists the fields that can
+    be edited.
+  - A suggest-only editor could type into a field, was offered "Suggest
+    changes", and was then told no. Those fields are read-only for them from
+    the start and say why. A comment-only editor was told "Click any outlined
+    text to edit." with nothing outlined, and Comments on a generated page
+    opened and then lost every comment made there (a comment is filed under
+    the page's file, and such a page has none): Comments is not offered there.
+    The first line each person reads says what they can do on that page.
+- **A comment-only editor saw a greyed Publish** at the top of the menu, on any
+  site, and a "This page" heading over nothing. Neither is shown.
+- **On a phone, three bars lay on the status line**: the failed-build banner,
+  the box that lists what was not saved, and the bar a History preview shows,
+  which was a narrow box over the site's own header. They share one column,
+  above the pencil and its buttons, as wide as the screen. The History bar
+  read "Keep — then Publish"; it says "Nothing is live yet. Keep it, then
+  press Publish.", with Cancel and Keep.
+- **The first tip of a first session lay on the paragraph under the heading.**
+  It goes beside the heading's words when there is a paragraph under it and no
+  room over it. (On a phone, with a heading as wide as the screen at the very
+  top of the page, it is under the heading still.)
+- **The last two questions asked in the browser's own box** are the editor's:
+  a preview link that could not be copied is shown selected in its dialog, and
+  making text editable whose words in the page's file differ from those on
+  screen is asked in one dialog that shows both.
 - **Editing a page a generator built** (source mode), watched in a browser for
   the first time, as an invited editor on pages Astro built:
   - An entry's text was saved as the plain words on the page, so changing one

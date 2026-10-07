@@ -51,7 +51,8 @@ Rules, in order:
 3. `edits` array 1..100; each pointer must `parsePointer`.
 4. Typed validation before applying (§9), skip-with-reason per edit:
    `date` → `/^\d{4}-\d{2}-\d{2}$/`; `time` → `/^([01]\d|2[0-3]):[0-5]\d$/`;
-   `url` → engine `safeUrl(value) === value`; `boolean` → true/false;
+   `url` → engine `safeUrl(value) === value`, and (since 2026-10) the shape
+   of an address, `isAddress`; `boolean` → true/false;
    `number` → finite. Every STRING-carrying value (string/text/markdown and
    untyped) additionally runs `checkFragment(value)` from sanitize-guard —
    markdown can contain raw HTML and is not inert (§14); a hit skips the edit
@@ -179,7 +180,7 @@ Where the contract above left room, these are the decisions now in code:
 - **Suggest-mode Publish with staged source edits POSTs /source/commit anyway**
   and surfaces the worker's 403 copy verbatim (no client-side pre-block, per
   §13's server-enforcement rule); staged HTML edits still reroute to
-  suggestions.
+  suggestions. (Replaced in 2026-10: see "Nothing overwritten unasked" below.)
 - **The §7.3 guard caches the root-listing verdict in
   `sessionStorage["kiln_srcguard:<repo>"]`** ({ gen, builtHtml }); the
   page-path condition re-evaluates per page. A listing failure never blocks.
@@ -240,9 +241,90 @@ main.js; nothing changes in what the worker is asked or answers.
 
 Still open, and written down rather than patched: a formatted body edited on
 the page, a control for pictures and for link addresses, History for content
-files, adding and removing entries (`/source/duplicate` has no button), asking
-before overwriting a field someone else changed since the page was built, and
+files, adding and removing entries (`/source/duplicate` has no button), and
 what a click on template text should say.
+
+### Nothing overwritten unasked, nothing offered that cannot be done (2026-10)
+
+What changed in the contract after that round. The worker changed here, so
+each point says what an older editor or an older worker does.
+
+- **An edit may say what its field held when the editor read it**: `was`, a
+  string, number or boolean, beside `value`. In `/source/commit`, after the
+  typed checks and before `applyEdits`, `changedSinceRead` reads each such
+  field from the current file (`adapter.read`) and, when it no longer says
+  `was` and does not already say `value`, leaves that edit out with
+  `{ key, reason: "changed since it was read", current }`. `current` is the
+  file's value as read (a body trimmed). The rest of the edits are applied as
+  before; none applied is still a 422 with `skipped`. The check runs again on
+  the retry after a sha conflict, against the file as it is then. A field that
+  is gone, or holds a list, is left to `applyEdits` and its own reasons.
+  To write over the other change knowingly the editor sends the same edit with
+  `was` set to the `current` it was given.
+- **Compared as a reader sees it** (`sameAsRead`): runs of white space are one
+  space and the ends are trimmed (a template may put the value on a line of
+  its own); a number is a number however written; a yes/no likewise; `/body`
+  is compared as its words, since the file holds markdown and the page shows
+  it without the backslash escapes and with typeset quotes, dashes and dots.
+- **Compatibility.** No `was` on an edit, no check: an editor from before this
+  is written as it always was. A worker from before this ignores `was` and
+  writes; the editor then has nothing to ask. `/healthz` gains
+  `"sourceWas": true` so a script can tell which worker it is talking to
+  (`scripts/e2e-source.mjs` says so when its case fails).
+- **What the editor sends as `was`** (`readAs`, `sourceWas` in main.js): what
+  the field's first place on the page showed when the page was read, when that
+  is the value itself; for a typed field, the first place whose words are a
+  value of that type (a date written out as "September 20, 2026" is not, and
+  then nothing is sent). After a publish from the page, what was published.
+  After "Use mine", the `current` the worker gave.
+- **What the person sees** (`changedRefs`, `theirsOrMine`, `askWhich`): such an
+  edit is not in the "not saved" box. One dialog per field, "Someone else
+  changed this", with Theirs and Yours, **Keep theirs** (the edit is dropped;
+  the page shows their value, or for a body says to reload once the site has
+  rebuilt and takes no edit meanwhile) and **Use mine** (published again with
+  `was: current`). Put away without an answer, the edit stays staged.
+- **A `url` is an address** (`isAddress`, in the worker and, by the same rule,
+  in the editor's `typedValue`): `http://` or `https://` and something after
+  it, `mailto:`, `tel:`, or a place on the site (`/…` but not `//…`, `./`,
+  `../`, `#…`, `?…`), with no white space. Words are skipped with
+  `"not a safe URL: it needs to start with http:, https:, mailto: or tel:, or
+  be a path on this site such as /about"`; the first three words are what an
+  older editor matches, so it says its own sentence about addresses. An
+  unsafe scheme keeps the bare `"not a safe URL"`. An empty value is still
+  taken (it clears the field).
+- **A value is written the way its line was** (`serializeScalar`): a line that
+  was single- or double-quoted stays so, whatever the type (an apostrophe on a
+  single-quoted line is doubled; a line break moves it to double quotes). On
+  an unquoted line, or a key with no value: `boolean`, `number` and `date` are
+  bare; `time` is double-quoted; other text is bare only when YAML 1.2 and 1.1
+  both read it back as the same text and it is none of yes/no/on/off/y/n,
+  true/false, null, a number in any spelling, sixty-based digits, a date. A
+  leading `#` is quoted (it was written bare, as a comment). Inside `[ ]` or
+  `{ }` a value with a comma or a bracket is quoted.
+- **A body is written where the body was** (`astro.applyEdits`): the blank
+  lines between the frontmatter and the text, and whatever ends the file, stay;
+  blank lines sent around the new text are not added to them.
+- **Suggest-only and comment-only editors.** This REPLACES "Suggest-mode
+  Publish with staged source edits POSTs /source/commit anyway": for a
+  suggest-only editor every source field is read-only at decoration
+  (`lockReason`, `seat: 'suggest'`), and on a page with no file the menu has
+  no Suggest button. The worker's 403 is unchanged and is still what counts.
+  The first line (`startLine` in grants.js) says what this person can do on
+  this page. Comments are filed under the page's file, so on a page with no
+  file `initComments` is not started and the Comments button is hidden, for
+  everyone: the worker answers 400 to every comment there.
+- **Search & jump on a generated site** (`site-pages.js`): the list is not the
+  repository's `.html` files. Candidates are the adapter's routes (for
+  `astro`: files under `src/pages` that are one page each, and `public/*.html`
+  except the sign-in page), the same-site links on the page and on every page
+  found, and the sitemap's addresses. Each is fetched from the built site and
+  listed only if it answers with HTML that is not what the site answers for an
+  address that cannot exist. At most 60 addresses are asked for. The words
+  fetched are what "Search site text" searches.
+
+Still open after this: a field whose stored value the page does not show (a
+date written out) is saved without the question; suggestions and comments for
+content files and generated pages.
 
 ## CLI + fixtures + integration (owner: cli workstream)
 

@@ -128,11 +128,22 @@ Honest scope, today:
   surgically: comments, quoting, and key order survive byte-identical.
 - **In:** typed values (`date`, `time`, `url`, `boolean`, `number`). A value of
   the wrong kind is said in a sentence when the field is left ("This needs to be
-  a date written like 2026-09-20."), and the worker checks again. One commit per
+  a date written like 2026-09-20."), and the worker checks again. A `url` is a
+  web address, `mailto:`, `tel:` or a place on the site, never words. A value
+  is written in the quoting its line had, and text a YAML reader could take for
+  something else (a time, yes/no, a number with a leading zero) is quoted. One commit per
   content file; real publish states — **Saved. The site is rebuilding… →
   Published ✓ / Build failed** — with a one-click undo when a bad edit breaks
   the build, which puts the edit back on the page as unpublished. A reload while
   the site rebuilds shows what was saved, not the page from before.
+- **In:** nothing is written over unasked. If someone else changed the same
+  field since the page was built, the editor asks **Someone else changed this**
+  and shows theirs and yours; the other fields of the same publish are saved.
+  (Each edit says what its field showed; the worker checks it against the
+  file. An older editor or an older worker saves without the question, as
+  both did before.)
+- **In:** Search & jump lists the site's real pages: the adapter's routes, the
+  links on the pages and the sitemap, each checked against the built site.
 - **In:** the guard: an HTML-mode site with build tooling and committed build
   output is blocked from editing `dist/` with an explanation, instead of edits
   silently vanishing.
@@ -147,7 +158,9 @@ Honest scope, today:
   writes it out), a formatted body edited on the page, adding, removing or
   reordering entries, History and Page settings on a generated page (both say
   so), Eleventy / Hugo / Jekyll adapters (Astro first), suggest-mode and
-  scheduled source edits.
+  scheduled source edits, and comments on a generated page. A suggest-only
+  editor finds these fields read-only, and Comments is not in the menu on such
+  a page: nothing is offered there that would then be refused.
 
 The full design is [docs/SOURCE-MODE-SPEC.md](docs/SOURCE-MODE-SPEC.md).
 

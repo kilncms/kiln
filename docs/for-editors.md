@@ -126,12 +126,22 @@ edit them the same way, and a few things read differently:
 - Some parts are read-only for now: a text with formatting in it (bold, links, a
   list, more than one paragraph), a picture, a link's address. Click one and the
   line says why. Ask the site's owner to change those.
+- If someone else changed the same thing since the page was made, nothing of
+  theirs is replaced without asking. A box says **Someone else changed this** and
+  shows theirs and yours. **Keep theirs** drops your edit and shows their words.
+  **Use mine** publishes yours in their place. Your other changes are saved either
+  way.
 - If something could not be saved, a box lists it with the reason. Your edit stays
   on the page, outlined in yellow.
 - If the site could not be built with your change, a box says **Build failed**. The
   site still shows the version from before. **Undo this change** takes your change
   out again and puts it back on the page as unpublished, so you can correct it.
 - **History** and **Page settings** cannot show these pages yet, and say so.
+- **Search & jump** lists the site's pages by their address, with each page's
+  title beside it.
+- If you were invited to suggest changes, or only to comment, these pages cannot
+  take a suggestion or a comment yet. The line says so when the page opens, and the
+  text is read-only for you there.
 
 ### Closed the tab, or not ready to publish
 

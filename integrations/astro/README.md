@@ -52,6 +52,16 @@ What the editor can do with each kind of element today:
   `{ type: 'url' }` on an `<a>`, its words are a label, not the address, so
   the editor will not take them as one. To make a link's words editable, keep
   them in a field of their own and stamp that.
+- **An address shown as itself** (`{ type: 'url' }` on anything but an `<a>`):
+  edited as text. It takes a web address (`https://…`), `mailto:`, `tel:` or a
+  place on the site (`/about`, `#top`); words are turned away with a sentence.
+- **What is written back**: only the edited line changes. A value keeps the
+  quotes its line had, and on an unquoted line a time, or any text YAML could
+  read as something else (`yes`, `007`, a date), is quoted.
+- **Someone else changed the same field** since the page was built: the editor
+  asks before anything of theirs is replaced, and shows both versions. This
+  works where the page shows the stored value itself; a date your template
+  writes out in words is saved without the question.
 
 ## Loading the editor
 
