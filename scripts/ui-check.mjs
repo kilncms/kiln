@@ -331,7 +331,12 @@ async function run(browser, size, firstVisit) {
       await page.waitForTimeout(250);
       check(scope, 'the "more" button stays in its corner when the bar opens', Math.abs((await box(more)).left - m.left) < 1 && Math.abs((await box(more)).top - m.top) < 1);
     } else {
-      await item.hover();
+      // The pointer goes onto the block where it is. (hover() first scrolls a
+      // block taller than the screen to the top of it, which on a site with a
+      // header pinned there is under that header, where a block's buttons are
+      // hidden: see the "real sites" pass.)
+      const at = await box(item);
+      await page.mouse.move(at.left + at.width / 2, at.top + Math.min(at.height / 2, 120));
       await page.waitForTimeout(350);
     }
     const b = await box(bar), it = await box(item);
