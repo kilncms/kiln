@@ -7242,8 +7242,8 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-source-locked:hover{outline-color:rgba(156,163,175,.85)}
 /* §12 build-failed banner: per-file one-click revert. */
 #kiln-notices{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999998;display:flex;flex-direction:column;
-  align-items:center;gap:8px;box-sizing:border-box;max-width:92vw;max-height:calc(100vh - 24px);overflow-y:auto;pointer-events:none}
-#kiln-notices>*{pointer-events:auto;flex:none}
+  align-items:center;gap:8px;box-sizing:border-box;max-width:92vw;pointer-events:none}
+#kiln-notices>*{pointer-events:auto;flex:none;box-sizing:border-box}
 #kiln-srcfail{display:flex;
   flex-direction:column;gap:8px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
   color:#d6d8e1;font:13px/1.45 var(--kiln-font);padding:12px 16px;border-radius:13px;
@@ -7737,8 +7737,8 @@ body:has(#kiln-topbar){padding-top:56px!important}
 /* The bars that wait for an answer: as wide as the screen, above the pencil
    and its row of buttons. The top is the status line's, and the site's header's. */
 #kiln-notices{left:8px;right:8px;top:auto;bottom:calc(140px + env(safe-area-inset-bottom,0px));transform:none;max-width:none;
-  align-items:stretch;max-height:calc(100dvh - 240px)}
-#kiln-notices>*{max-width:none;width:auto}
+  align-items:stretch}
+#kiln-notices>*{max-width:none;width:auto;max-height:36dvh;overflow-y:auto}
 #kiln-previewbar{flex-wrap:wrap;gap:8px 10px}
 #kiln-previewbar>span{flex:1 1 100%}
 #kiln-previewbar button{flex:1 1 0}
