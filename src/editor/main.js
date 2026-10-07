@@ -14,12 +14,14 @@ import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValu
 import {
   makeGh, getFile, resolvePageFile, editFile, putFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
-import { SOURCE_ATTR } from '../adapters/pointer.js';
+import { SOURCE_ATTR, parseSourceRef } from '../adapters/pointer.js';
 import { uploadProblem, fileRefusalText, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../file-policy.js';
 import { generatorSignals } from '../adapters/detect.js';
 import {
   scanSourceRefs, groupSourceEdits, matchAppliedRefs, matchSkippedRefs, resolveBuildState,
-  revertRequest, parseSourceCapabilities, saveSummary, friendlyRef, SOURCE_LOCKED_TIP, STILL_BUILDING_COPY,
+  revertRequest, parseSourceCapabilities, saveSummary, friendlyRef, STILL_BUILDING_COPY,
+  sourceLabel, typedValue, typeHint, isBody, plainBody, lockReason, skipSentence, refusalSentence,
+  SAVED_BUILDING_COPY, BUILD_FAILED_COPY, BUILD_WATCH_MS, buildRecord, buildStanding, resumePlan,
 } from './source-fields.js';
 import { initPalette, openPalette } from './palette.js';
 import { initSuggest, suggestChanges, sendSuggestion, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
@@ -360,7 +362,7 @@ function unpublishedText() {
     if (v.attrs && 'alt' in v.attrs) items.push({ label: `${humanizeKey(key)} (picture description)`, text: v.attrs.alt });
     if (v.attrs && 'href' in v.attrs) items.push({ label: `${humanizeKey(key)} (link goes to)`, text: v.attrs.href });
   }
-  for (const [ref, v] of state.pendingSource) items.push({ label: humanizeKey(String(ref).split('#').pop().split('/').pop()), text: v.value });
+  for (const [ref, v] of state.pendingSource) items.push({ label: sourceName(ref), text: v.value });
   return editsAsText(items);
 }
 
@@ -844,7 +846,7 @@ function renderScopeNote() {
   const paths = (state.scope?.paths || []).filter(p => p && p !== '**' && p !== '*');
   const note = document.createElement('div');
   note.id = 'kiln-scope-note';
-  note.innerHTML = `<span class="kiln-presence-dot"></span>Read-only here — your editing access covers: <strong>${paths.map(escapeHtml).join(', ') || 'other pages'}</strong>`;
+  note.innerHTML = `<span class="kiln-presence-dot"></span>Read-only here. Your editing access covers: <strong>${paths.map(escapeHtml).join(', ') || 'other pages'}</strong>`;
   document.body.appendChild(note);
 }
 
@@ -876,7 +878,9 @@ function updatePresenceUI(others) {
 
 function decorateFields() {
   // Out-of-scope page for this editor: leave everything read-only, say why.
-  if (mode === 'editor' && !pageInScope()) { renderScopeNote(); return; }
+  // (A page built from content files has no file of its own: what this person
+  // may edit on it is decided field by field, in initSourceFields.)
+  if (mode === 'editor' && state.page.path && !pageInScope()) { renderScopeNote(); return; }
   // Review-mode seats comment; they never see edit affordances.
   if (mode === 'editor' && state.scope?.mode === 'review') return;
 
@@ -2496,7 +2500,7 @@ function publishItems() {
     items.push({ id: key, key, label: readableName(key), parts, warnings, links: links.filter(l => l.problem === 'check'), drop: () => dropPending(key) });
   }
   for (const [ref, v] of state.pendingSource) {
-    items.push({ id: 'source:' + ref, key: null, sourceRef: ref, label: readableName(String(ref).split('#').pop().split(':').pop()),
+    items.push({ id: 'source:' + ref, key: null, sourceRef: ref, label: sourceName(ref),
       parts: [{ type: 'text', before: state.sourceBase.get(ref) ?? '', after: v.value }], warnings: [],
       drop: () => { state.pendingSource.delete(ref); syncSourceDom(ref); refreshPublishButton(); } });
   }
@@ -2950,7 +2954,22 @@ async function publishPartials(edits, noteMsg = '') {
 // /source/commit, then the build is watched (§11/§12). Feature-detected: a page
 // without the attribute runs none of this (§13).
 
-let sourceActive = null;   // { el, ref, parsed, originalText } — the source field being edited
+let sourceActive = null;   // { el, surface, ref, parsed, originalText } — the source field being edited
+
+/** A field's name for the person editing ("Title · Spring fair"). */
+function sourceName(ref) {
+  return sourceLabel(state.sourceFields?.get(ref)?.parsed || parseSourceRef(ref)) || String(ref);
+}
+
+/** The hover hint: the name, and for the owner the file and field it is stored in. */
+function sourceHint(parsed) {
+  return mode === 'admin' ? `Edit: ${sourceLabel(parsed)} (${friendlyRef(parsed)})` : `Edit: ${sourceLabel(parsed)}`;
+}
+
+/** Where a field's words are read and written. An entry's plain text lives in its one paragraph. */
+function sourceSurface(el, parsed) {
+  return isBody(parsed) ? (plainBody(el) || el) : el;
+}
 
 async function initSourceFields() {
   const els = [...document.querySelectorAll(`[${SOURCE_ATTR}]`)].filter(el => !isKilnChrome(el));
@@ -2961,28 +2980,40 @@ async function initSourceFields() {
   for (const i of scan.dual) {
     console.warn('[kiln] element carries both data-cms and data-kiln-source — source wins:', els[i]);
   }
-  for (const m of scan.malformed) {
-    // §8.1: malformed provenance → field not editable, ONE console warn with the element.
-    console.warn(`[kiln] malformed ${SOURCE_ATTR} — field is not editable:`, els[m.indexes[0]].outerHTML);
-    for (const i of m.indexes) lockSourceField(els[i], 'This text can’t be edited — its source reference is malformed.');
-  }
   state.sourceFields = new Map();
   for (const f of scan.fields) {
-    state.sourceFields.set(f.ref, { parsed: f.parsed, els: f.indexes.map(i => els[i]) });
-    if (!state.sourceBase.has(f.ref)) state.sourceBase.set(f.ref, els[f.indexes[0]].textContent);
+    const own = f.indexes.map(i => els[i]);
+    // What each place showed when the page loaded. One value can be written
+    // two ways on a page (a date, say), and each place gets its own words back.
+    const shown = own.map(el => sourceSurface(el, f.parsed).textContent);
+    state.sourceFields.set(f.ref, { parsed: f.parsed, els: own, shown, boot: shown[0] });
+    if (!state.sourceBase.has(f.ref)) state.sourceBase.set(f.ref, shown[0]);
   }
   // Review-mode seats never see edit affordances (matches decorateFields).
   if (mode === 'editor' && state.scope?.mode === 'review') return;
+  for (const m of scan.malformed) {
+    // §8.1: malformed provenance → field not editable, ONE console warn with the element.
+    console.warn(`[kiln] malformed ${SOURCE_ATTR} — field is not editable:`, els[m.indexes[0]].outerHTML);
+    for (const i of m.indexes) lockSourceField(els[i], lockReason({ parsed: null }));
+  }
   // Capability handshake (§13), once per boot. The sandbox stages locally.
-  if (!cfg.sandbox) {
-    state.sourceCaps = await fetchSourceCaps();
-    if (!state.sourceCaps.source) {
-      for (const f of state.sourceFields.values()) f.els.forEach(el => lockSourceField(el, SOURCE_LOCKED_TIP));
-      return;
+  if (!cfg.sandbox) state.sourceCaps = await fetchSourceCaps();
+  let open = 0;
+  let firstWhy = '';
+  for (const [ref, f] of state.sourceFields) {
+    for (const el of f.els) {
+      // Read-only is decided here, before anyone types: the worker would turn
+      // each of these away at Publish, or take words that are not the value.
+      const why = lockReason({ parsed: f.parsed, tag: el.tagName, caps: state.sourceCaps, paths: state.scope?.paths, adapter: cfg.adapter || 'astro', plain: !!plainBody(el) });
+      if (why) { lockSourceField(el, why); firstWhy = firstWhy || why; } else { decorateSourceField(el, ref, f.parsed); open++; }
     }
   }
-  for (const [ref, f] of state.sourceFields) {
-    f.els.forEach(el => decorateSourceField(el, ref, f.parsed));
+  // Nothing on this page can be edited by this person: say so once, in sight.
+  if (!open && firstWhy) {
+    const limited = (state.scope?.paths || []).some(p => p && p !== '*' && p !== '**');
+    if (mode === 'editor' && limited && (!state.sourceCaps || state.sourceCaps.source)) renderScopeNote();
+    else setStatus(firstWhy, 'idle', { hold: 12000 });
+    return;
   }
   // Click-away saves, Esc reverts — the same semantics data-cms fields have.
   // Registered here so pages without source fields add no listeners.
@@ -2994,6 +3025,7 @@ async function initSourceFields() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && sourceActive) cancelSourceEdit();
   });
+  resumeSourceBuilds();
 }
 
 /** GET /healthz once per boot; anything that isn't new-style JSON = old worker. */
@@ -3007,21 +3039,28 @@ async function fetchSourceCaps() {
   }
 }
 
-/** §10 read-only affordance: visibly locked, with the reason a hover away. */
-function lockSourceField(el, tip) {
+/**
+ * §10 read-only: it looks untouchable, and says why. The sentence is the
+ * tooltip, and a click puts it in the status line, because a tooltip needs a
+ * mouse that waits and a phone has none.
+ */
+function lockSourceField(el, why) {
+  if (el.classList.contains('kiln-source-locked')) return;
   el.classList.add('kiln-source-field', 'kiln-source-locked');
-  el.title = `🔒 ${tip}`;
+  el.title = why;
+  el.addEventListener('click', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.target.closest('a')) return;
+    // A link inside a read-only text is still a link.
+    const link = e.target.closest('a[href]');
+    if (link && link !== el && el.contains(link)) return;
+    e.preventDefault();
+    setStatus(why, 'idle', { hold: 9000 });
+  });
 }
 
 function decorateSourceField(el, ref, parsed) {
-  // Image-typed provenance needs the picker pipeline (§6) — that control ships
-  // with typed fields; until then the field is honestly read-only, not broken.
-  if (el.tagName === 'IMG' || parsed.type === 'image') {
-    lockSourceField(el, 'Image source fields aren’t editable yet.');
-    return;
-  }
   el.classList.add('kiln-field', 'kiln-source-field');
-  el.title = `Edit: ${friendlyRef(parsed)}`;
+  el.title = sourceHint(parsed);
   el.addEventListener('click', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.target.closest('a')) return;
     e.preventDefault(); e.stopPropagation();
@@ -3034,20 +3073,31 @@ function startSourceEditing(el, ref, parsed) {
   // An in-progress data-cms edit commits first (its click-away can't see this
   // click — decorateSourceField stopped propagation).
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
-  sourceActive = { el, ref, parsed, originalText: el.textContent };
+  const surface = sourceSurface(el, parsed);
+  sourceActive = { el, surface, ref, parsed, originalText: surface.textContent };
   el.classList.add('kiln-editing');
   // Source values are text, not markup (§6 degrades every type to string in
   // v1) — prefer plaintext-only where the browser has it.
-  el.setAttribute('contenteditable', 'plaintext-only');
-  if (!el.isContentEditable) el.setAttribute('contenteditable', 'true');
-  el.focus();
+  surface.setAttribute('contenteditable', 'plaintext-only');
+  if (!surface.isContentEditable) surface.setAttribute('contenteditable', 'true');
+  surface.focus();
   const range = document.createRange();
-  range.selectNodeContents(el);
+  range.selectNodeContents(surface);
   range.collapse(false);
   const sel = window.getSelection();
   sel.removeAllRanges();
   sel.addRange(range);
   renderSourceToolbar(el, ref, parsed);
+  // The page may show a date or a number in the site's own way ("September
+  // 20, 2026"). What is typed here is the value itself: say how it is written.
+  if (!typedValue(surface.textContent, parsed.type).ok) setStatus(typeHint(parsed.type), 'idle', { hold: 12000 });
+}
+
+/** The field is no longer being typed in: nothing of the editing is left on it. */
+function endSourceEditing(a) {
+  a.surface.removeAttribute('contenteditable');
+  if (a.surface.getAttribute('style') === '') a.surface.removeAttribute('style');   // a browser leaves an empty one behind
+  a.el.classList.remove('kiln-editing');
 }
 
 /** Click-away/Done for a source field: stage its text if it changed (§10). */
@@ -3055,17 +3105,25 @@ function commitSourceEdit() {
   const a = sourceActive;
   if (!a) return;
   sourceActive = null;
-  a.el.removeAttribute('contenteditable');
-  a.el.classList.remove('kiln-editing');
+  endSourceEditing(a);
   removeToolbar();
-  const value = a.el.textContent;
+  const value = a.surface.textContent;
+  if (value === a.originalText) return;   // nothing was typed here
+  const f = state.sourceFields.get(a.ref);
   const base = state.sourceBase.get(a.ref);
   const prev = state.pendingSource.get(a.ref);
-  if (prev && value === base) {
-    stageSourcePending(a.ref, null);          // back to the original → un-stage (undoable)
-  } else if (value !== (prev ? prev.value : base)) {
-    stageSourcePending(a.ref, value);
+  // A date that is not a date, a number that is not one: nothing is staged,
+  // the words that were there come back, and the line says how to write it.
+  const typed = typedValue(value, a.parsed.type);
+  if (!typed.ok) {
+    a.surface.textContent = a.originalText;
+    setStatus(`“${value.trim().slice(0, 40)}” was not kept. ${typed.why}`, 'error');
+    return;
   }
+  // Back to what this place showed before any edit → un-stage (undoable).
+  const own = base === f.boot ? f.shown[f.els.indexOf(a.el)] : base;
+  if (prev && (value === own || value === base)) stageSourcePending(a.ref, null);
+  else stageSourcePending(a.ref, value);
 }
 
 /** Esc: throw the in-progress edit away (staged value, else the pre-edit text). */
@@ -3073,10 +3131,8 @@ function cancelSourceEdit() {
   const a = sourceActive;
   if (!a) return;
   sourceActive = null;
-  a.el.removeAttribute('contenteditable');
-  a.el.classList.remove('kiln-editing');
-  const pend = state.pendingSource.get(a.ref);
-  a.el.textContent = pend ? pend.value : a.originalText;
+  endSourceEditing(a);
+  a.surface.textContent = a.originalText;
   removeToolbar();
 }
 
@@ -3087,7 +3143,7 @@ function renderSourceToolbar(el, ref, parsed) {
   tb.id = 'kiln-toolbar';
   tb.innerHTML = `
     ${TB_GRIP}
-    <span class="kiln-tb-label" title="${escapeHtml(String(parsed.pointer[parsed.pointer.length - 1]))}">${escapeHtml(readableName(parsed.pointer[parsed.pointer.length - 1]))}</span>
+    <span class="kiln-tb-label" title="${escapeHtml(parsed.rawPointer)}">${escapeHtml(sourceLabel(parsed).split(' · ')[0])}</span>
     <button class="kiln-tb-fmt kiln-src-where" title="${escapeHtml(`${parsed.path}#${parsed.rawPointer}`)}">Where does this come from?</button>
     <span class="kiln-tb-gap"></span>
     <button class="kiln-tb-save" title="Keep this edit (staged for Publish)">Done</button>
@@ -3137,25 +3193,63 @@ function stageSourcePending(ref, value, opts = {}) {
   refreshPublishButton();
 }
 
-/** Every element sharing `ref` shows the staged (or baseline) text + marker. */
+/**
+ * Every place that shows `ref` shows the staged words and their marker. With
+ * nothing staged it shows what was last saved, or, when nothing has been saved
+ * since the page loaded, what that place showed then. A read-only place is
+ * never written: its words are not the value (a link's label, a formatted text).
+ */
 function syncSourceDom(ref) {
   const f = state.sourceFields.get(ref);
   if (!f) return;
   const pend = state.pendingSource.get(ref);
-  const text = pend ? pend.value : state.sourceBase.get(ref);
-  for (const el of f.els) {
-    if (el === sourceActive?.el) continue;   // never rewrite under the caret
-    if (text !== undefined && el.textContent !== text) el.textContent = text;
+  const base = state.sourceBase.get(ref);
+  f.els.forEach((el, i) => {
+    if (el === sourceActive?.el || el.classList.contains('kiln-source-locked')) return;   // never rewrite under the caret
+    const text = pend ? pend.value : (base === f.boot ? f.shown[i] : base);
+    const surface = sourceSurface(el, f.parsed);
+    if (text !== undefined && surface.textContent !== text) surface.textContent = text;
     el.classList.toggle('kiln-modified', !!pend);
-    if (!el.classList.contains('kiln-source-locked')) el.title = `Edit: ${friendlyRef(f.parsed)}`;
-  }
+    el.title = sourceHint(f.parsed);
+  });
 }
 
-/** Surface a per-field save problem where the user will see it (title + marker stays). */
-function markSourceFieldIssue(ref, reason) {
+/** A field whose edit was not saved keeps its marker, and its hint says why. */
+function markSourceFieldIssue(ref, why) {
   const f = state.sourceFields.get(ref);
   if (!f) return;
-  for (const el of f.els) el.title = `Not saved: ${reason}`;
+  for (const el of f.els) if (!el.classList.contains('kiln-source-locked')) el.title = `Not saved. ${why}`;
+}
+
+/**
+ * What a publish left out, and why, in a box of its own: the status line goes
+ * on to say that the site is rebuilding with what WAS saved, and a tooltip on
+ * the field is not something a phone can show. Each row goes to its field.
+ */
+function showNotSaved(list) {
+  document.getElementById('kiln-srcskip')?.remove();
+  if (!list.length) return;
+  const bar = document.createElement('div');
+  bar.id = 'kiln-srcskip';
+  bar.setAttribute('role', 'status');
+  const one = list.length === 1;
+  bar.innerHTML = `
+    <div class="kiln-srcfail-head"><strong>${one ? 'One change was not saved.' : `${list.length} changes were not saved.`}</strong>
+      ${one ? 'It is' : 'They are'} still on the page, outlined in yellow.</div>
+    ${list.map((x, i) => `<div class="kiln-srcskip-row"><button type="button" class="kiln-status-link" data-i="${i}">${escapeHtml(x.label)}</button>
+      <span>${escapeHtml(x.why)}</span></div>`).join('')}
+    <button class="kiln-btn-ghost" id="kiln-srcskip-x">Got it</button>`;
+  document.body.appendChild(bar);
+  bar.querySelector('#kiln-srcskip-x').onclick = () => bar.remove();
+  bar.querySelectorAll('button[data-i]').forEach(btn => {
+    btn.onclick = () => {
+      const el = state.sourceFields?.get(list[+btn.dataset.i].ref)?.els.find(n => n.isConnected);
+      if (!el) return;
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.classList.add('kiln-flash');
+      setTimeout(() => el.classList.remove('kiln-flash'), 1500);
+    };
+  });
 }
 
 /**
@@ -3170,58 +3264,66 @@ async function publishSource(note = '') {
   const groups = groupSourceEdits(state.pendingSource,
     { repo: cfg.repo, branch: cfg.branch || 'main', adapter: cfg.adapter || 'astro' });
   if (!groups.length) return;
+  // An invited editor's first publish ends the first-session guide: note what
+  // changed now, while the edits are still staged.
+  const told = guideWaiting() ? describePublish() : null;
   const snapshot = new Map();
   for (const [ref, v] of state.pendingSource) snapshot.set(ref, JSON.stringify(v));
   setStatus(saveSummary(state.pendingSource.size, groups.length), 'saving');
   disablePublish(true);
+  document.getElementById('kiln-srcskip')?.remove();
   const committed = [];
+  const notSaved = [];       // { ref, label, why } for every edit that stays staged
   let anyOk = false;
-  let firstError = null;
-  let firstFailure = null;   // the first refusal as readFailure takes it: the thrown error, or { status, data }
+  let firstFailure = null;   // the first refusal as readFailure takes it: the thrown error
   for (const g of groups) {
     let data = {};
-    let ok = false;
     let failure = null;
     try {
       data = await ask('/source/commit', { method: 'POST', body: g.body });
-      ok = true;
     } catch (err) {
-      // What the worker said, when it answered; else why there was no answer.
-      data = Number.isInteger(err.status) ? err.data : { error: whyNot(err) };
+      // What the worker said, when it answered.
+      data = Number.isInteger(err.status) ? (err.data || {}) : {};
       failure = err;
     }
-    if (!ok) {
+    const skipped = matchSkippedRefs(g, data.skipped);
+    if (failure) {
       firstFailure = firstFailure || failure;
-      // The whole file's batch stays pending; the worker's own words surface
-      // (suggest-mode 403s, vanished-file 404s, validation 422s — §8.1).
-      firstError = firstError || data.error || 'That was not saved.';
+      // The whole file's batch stays pending. Why, in a sentence: the worker's
+      // own refusal when it is one (a file Kiln never changes, a folder this
+      // person was not given, a field that is gone), else what any failure says.
       console.warn('[kiln] source commit failed:', g.file, data);
-      for (const ref of g.refs) markSourceFieldIssue(ref, data.error || 'save failed');
-      for (const [ref, why] of matchSkippedRefs(g, data.skipped)) {
-        console.warn('[kiln] source edit skipped:', ref, why);
+      const whole = refusalSentence(failure.status, data.error);
+      for (const ref of g.refs) {
+        const why = skipped.has(ref) ? skipSentence(skipped.get(ref)) : (whole || whyNot(failure));
+        notSaved.push({ ref, label: sourceName(ref), why });
         markSourceFieldIssue(ref, why);
       }
       continue;
     }
     anyOk = true;
     const appliedRefs = new Set(matchAppliedRefs(g, data.applied));
+    const done = [];
     for (const ref of g.refs) {
       if (!appliedRefs.has(ref)) continue;
       // Retire only if unchanged since the snapshot — same discipline publish()
       // uses so an edit made DURING the commit round-trip is never dropped.
       if (state.pendingSource.has(ref) && JSON.stringify(state.pendingSource.get(ref)) === snapshot.get(ref)) {
         const v = state.pendingSource.get(ref);
+        done.push({ ref, value: v.value, was: state.sourceBase.get(ref), ...(v.type && { type: v.type }) });
         state.pendingSource.delete(ref);
         state.sourceBase.set(ref, v.value);   // the committed value is the new baseline
         syncSourceDom(ref);
       }
     }
-    for (const [ref, why] of matchSkippedRefs(g, data.skipped)) {
-      console.warn('[kiln] source edit skipped:', ref, why);
+    for (const [ref, reason] of skipped) {
+      console.warn('[kiln] source edit skipped:', ref, reason);
+      const why = skipSentence(reason);
+      notSaved.push({ ref, label: sourceName(ref), why });
       markSourceFieldIssue(ref, why);
     }
     if (data.commit && !data.unchanged) {
-      committed.push({ file: data.file || g.file, sha: data.commit.sha, parent: data.commit.parent });
+      committed.push({ file: data.file || g.file, sha: data.commit.sha, parent: data.commit.parent, refs: done });
     }
   }
   if (anyOk) {
@@ -3231,19 +3333,22 @@ async function publishSource(note = '') {
   }
   refreshPublishButton();
   if (!committed.length) {
-    // Nothing was saved. An ended sign-in (401), a change the sign-in does
-    // not allow (403: the worker's reason is shown) and trouble on the way
-    // are told as they are for a page edit: the edits stay staged and saved
-    // in this browser. Anything else keeps the worker's own words.
+    // Nothing was saved. An ended sign-in (401) and trouble on the way are
+    // told as they are for a page edit: the edits stay staged and saved in
+    // this browser. Anything the worker turned away is listed with its reason.
     const f = firstFailure ? readFailure(firstFailure) : null;
     if (f) keptNote = note || '';
-    if (f && (f.kind === 'ended' || f.kind === 'refused')) stoppedDialog(f, true, noteTyped(note));
+    if (f && f.kind === 'ended') stoppedDialog(f, true, noteTyped(note));
     else if (f && f.kind === 'trouble') setStatus(publishTrouble(f, { edits: state.pending.size, source: state.pendingSource.size }), 'error');
-    else if (firstError) setStatus(firstError, 'error');
-    else if (anyOk) setStatus('Nothing changed', 'idle');
+    else if (notSaved.length) {
+      showNotSaved(notSaved);
+      setStatus(notSaved.length === 1 ? 'That was not saved. Your edit is still here.' : 'Those were not saved. Your edits are still here.', 'error');
+    } else if (anyOk) setStatus('Nothing changed', 'idle');
     return;
   }
-  if (firstError) console.warn('[kiln] some source files failed to save — they stay pending');
+  showNotSaved(notSaved);
+  if (told) guidePublished({ ...told, source: true });
+  rememberBuild(committed);
   watchSourceBuild(committed);
 }
 
@@ -3252,13 +3357,15 @@ async function publishSource(note = '') {
 // API; invited editor: the worker /gh proxy, which already allowlists commit
 // status + deployments). NEVER "Published" on commit success alone.
 const SOURCE_POLL_MS = 10000;
-const SOURCE_POLL_CAP = 5 * 60 * 1000;
 
-function watchSourceBuild(committed) {
+let sourceWatch = 0;   // the newest watcher: a later publish's build carries the earlier ones
+
+function watchSourceBuild(committed, started = Date.now()) {
   const sha = committed[committed.length - 1].sha;   // the LAST commit triggers the build that carries them all
-  setStatus('Building…', 'saving');
-  const started = Date.now();
+  const mine = ++sourceWatch;
+  setStatus(SAVED_BUILDING_COPY, 'saving');
   const tick = async () => {
+    if (mine !== sourceWatch) return;
     let status = null;
     let deployStatuses = null;
     try { status = await state.gh.request('GET', `/repos/${cfg.repo}/commits/${encodeURIComponent(sha)}/status`); } catch { /* keep polling */ }
@@ -3268,33 +3375,83 @@ function watchSourceBuild(committed) {
         deployStatuses = await state.gh.request('GET', `/repos/${cfg.repo}/deployments/${deployments[0].id}/statuses?per_page=1`);
       }
     } catch { /* keep polling */ }
+    if (mine !== sourceWatch) return;
     const verdict = resolveBuildState({
-      status, deployStatuses, elapsedMs: Date.now() - started, timeoutMs: SOURCE_POLL_CAP,
+      status, deployStatuses, elapsedMs: Date.now() - started, timeoutMs: BUILD_WATCH_MS,
     });
-    if (verdict === 'published') { setStatus('Published ✓', 'saved'); setStatusIdle(); return; }
+    if (verdict === 'published') { forgetBuild(sha); setStatus('Published ✓', 'saved'); setStatusIdle(); return; }
     if (verdict === 'timeout') { setStatus(STILL_BUILDING_COPY, 'saved'); return; }
     if (verdict === 'failed') { sourceBuildFailedBanner(committed, sha); return; }
-    setStatus('Building…', 'saving');
+    setStatus(SAVED_BUILDING_COPY, 'saving');
     setTimeout(tick, SOURCE_POLL_MS);
   };
   setTimeout(tick, SOURCE_POLL_MS);
 }
 
+// A publish to content files, kept in this browser while the site rebuilds
+// (source-fields.js buildRecord). The page a reload brings back is the page
+// from before the build: without this it shows the old words and says nothing.
+const buildsKey = () => `kiln_building:${cfg.repo}`;
+function readBuilds() {
+  try { return (JSON.parse(localStorage.getItem(buildsKey())) || []).filter(r => buildStanding(r) !== 'gone'); } catch { return []; }
+}
+function writeBuilds(list) {
+  try { if (list.length) localStorage.setItem(buildsKey(), JSON.stringify(list.slice(-5))); else localStorage.removeItem(buildsKey()); } catch { /* storage blocked: a reload shows the page as built */ }
+}
+function rememberBuild(committed) {
+  const rec = buildRecord(committed);
+  if (rec) writeBuilds([...readBuilds(), rec]);
+}
+/** That build is live (and so is every publish before it), or its change was undone. */
+function forgetBuild(sha) {
+  const list = readBuilds();
+  const at = list.find(r => r.sha === sha)?.at ?? 0;
+  writeBuilds(list.filter(r => r.at > at));
+}
+
+/** After a reload: show what was saved on a page that has not been rebuilt yet, and go on watching the build. */
+function resumeSourceBuilds() {
+  if (cfg.sandbox) return;
+  let waiting = null;
+  for (const rec of readBuilds()) {
+    const plan = resumePlan(rec, (ref) => (state.sourceFields?.has(ref) ? state.sourceBase.get(ref) : undefined));
+    for (const r of plan.show) { state.sourceBase.set(r.ref, r.value); syncSourceDom(r.ref); }
+    if (plan.waiting) waiting = rec;
+  }
+  if (!waiting) return;
+  if (buildStanding(waiting) === 'building') watchSourceBuild(waiting.files, waiting.at);
+  else setStatus('Your last change is saved. The site has not shown it yet, so this page shows it from this browser.', 'idle', { hold: 12000 });
+}
+
+/** Undo after a failed build took a file back: its words are on the page again as an unpublished edit. */
+function restageAfterUndo(c) {
+  for (const r of c.refs || []) {
+    if (!state.sourceFields?.has(r.ref)) continue;
+    state.sourceBase.set(r.ref, r.was);
+    if (!state.pendingSource.has(r.ref)) state.pendingSource.set(r.ref, r.type ? { value: r.value, type: r.type } : { value: r.value });
+    syncSourceDom(r.ref);
+  }
+  // Nothing of that file is waiting for a build any more.
+  writeBuilds(readBuilds().map(rec => ({ ...rec, files: rec.files.filter(f => f.sha !== c.sha) })).filter(rec => rec.files.length));
+  refreshPublishButton();
+}
+
 /**
  * §12: a failed build blocks EVERYONE's publishes until the bad commit is gone,
  * so the banner offers one-click revert per committed file (POST /source/revert
- * back to that commit's parent).
+ * back to that commit's parent). Each row is named by what was changed, and
+ * the link to the commit on GitHub is for the owner, who can open it.
  */
 function sourceBuildFailedBanner(committed, sha) {
-  setStatus('Build failed ✕ — your change is saved but not live', 'error');
+  setStatus(BUILD_FAILED_COPY, 'error');
   document.getElementById('kiln-srcfail')?.remove();
   const bar = document.createElement('div');
   bar.id = 'kiln-srcfail';
   bar.innerHTML = `
-    <div class="kiln-srcfail-head"><strong>Build failed ✕</strong> — the site kept its previous version.
-      <a class="kiln-status-link" href="https://github.com/${escapeHtml(cfg.repo)}/commit/${escapeHtml(sha)}"
-        target="_blank" rel="noopener">what happened</a></div>
-    ${committed.map((c, i) => `<div class="kiln-srcfail-row"><span>${escapeHtml(c.file)}</span>
+    <div class="kiln-srcfail-head"><strong>Build failed.</strong> The site still shows the version from before.
+      ${mode === 'admin' ? `<a class="kiln-status-link" href="https://github.com/${escapeHtml(cfg.repo)}/commit/${escapeHtml(sha)}"
+        target="_blank" rel="noopener">See what happened</a>` : 'Undo your change here, or ask the site’s owner to look.'}</div>
+    ${committed.map((c, i) => `<div class="kiln-srcfail-row"><span>${escapeHtml((c.refs || []).length ? c.refs.map(r => sourceName(r.ref)).join(', ') : c.file)}</span>
       <button class="kiln-btn-ghost" data-i="${i}">${UNDO_ICON} Undo this change</button></div>`).join('')}
     <button class="kiln-btn-ghost" id="kiln-srcfail-x">Dismiss</button>`;
   document.body.appendChild(bar);
@@ -3303,13 +3460,14 @@ function sourceBuildFailedBanner(committed, sha) {
     btn.onclick = async () => {
       const c = committed[+btn.dataset.i];
       const body = revertRequest(c, { repo: cfg.repo, branch: cfg.branch || 'main' });
-      if (!body) { setStatus('Nothing safe to revert to for that file', 'error'); return; }
+      if (!body) { setStatus('There is no earlier version of that to go back to.', 'error'); return; }
       btn.disabled = true;
-      btn.textContent = 'Reverting…';
+      btn.textContent = 'Undoing…';
       try {
         await ask('/source/revert', { method: 'POST', body });
-        btn.textContent = 'Reverted ✓';
-        setStatus(`Reverted ${c.file} — the site rebuilds without that change`, 'saved');
+        btn.textContent = 'Undone ✓';
+        restageAfterUndo(c);
+        setStatus('Undone. The site rebuilds without that change, and your edit is back on this page, not published.', 'saved', { hold: 12000 });
       } catch (err) {
         btn.disabled = false;
         btn.innerHTML = `${UNDO_ICON} Undo this change`;
@@ -4591,6 +4749,15 @@ function demoHistory(m) {
 
 /** `resume`: { sha, name } puts a name that was being typed back on that version's row (after signing in again). */
 async function historyPanel(resume = null) {
+  // A page built from content files has no file of its own to show versions of.
+  if (!cfg.sandbox && !state.page.path) {
+    modal(`
+      <h3>Page history</h3>
+      <p class="kiln-dim">This page is built from the site’s content files, and History can’t show their
+      versions here yet. Every change you publish is still kept, and the site’s owner can bring any of them back.</p>
+      <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
+    return;
+  }
   const m = modal(`
     <h3>Page history</h3>
     <p class="kiln-dim">Every publish saves a version of this page. <strong>Undo this change</strong> takes
@@ -4871,6 +5038,15 @@ function histPreview(html) {
 // ─── Page settings (title + meta description) ────────────────────────────────
 
 function pageSettingsPanel() {
+  // A page built from content files has no file of its own to change.
+  if (!cfg.sandbox && !state.page.path) {
+    modal(`
+      <h3>Page settings</h3>
+      <p class="kiln-dim">This page’s title and description come from the site’s own files, so they can’t be
+      changed here. Ask the site’s owner.</p>
+      <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
+    return;
+  }
   const cur = readHead(state.page.text);
   const m = modal(`
     <h3>Page settings — ${escapeHtml(state.page.path)}</h3>
@@ -5083,6 +5259,7 @@ function offerDraftSandbox() {
 }
 
 async function checkForDraft() {
+  if (!state.page.path) return;   // a page built from content files has no file a draft could be of
   let draft;
   try { draft = await getFile(state.gh, cfg.repo, state.page.path, DRAFT_BRANCH); } catch { return; }
   if (!draft || djb2(draft.text) === djb2(state.page.text)) return;
@@ -6618,7 +6795,7 @@ function offerPendingRestore() {
   // The demo starts over after a day, and what was not published goes with it.
   if (cfg.sandbox && Date.now() - ts > SANDBOX_TTL) { clearSavedPending(); return; }
   if (back) { restoreSaved(saved, kept, true); return; }
-  const names = [...Object.keys(saved.edits).map(readableName), ...Object.keys(saved.source).map(ref => friendlyRef(state.sourceFields.get(ref).parsed))];
+  const names = [...Object.keys(saved.edits).map(readableName), ...Object.keys(saved.source).map(sourceName)];
   const when = new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   // What was being typed when a sign-in ended (a comment, a note, a time) is offered back with the edits, or on its own.
   const typedName = saved.typed ? TYPED[saved.typed.where] : '';
@@ -6859,9 +7036,20 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   border:1px solid rgba(248,113,113,.5);box-shadow:0 12px 40px rgba(0,0,0,.4);max-width:min(560px,92vw)}
 #kiln-srcfail strong{color:var(--kiln-err)}
 .kiln-srcfail-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.kiln-srcfail-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.kiln-srcfail-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:#fff}
 #kiln-srcfail .kiln-btn-ghost{white-space:nowrap}
 #kiln-srcfail-x{align-self:flex-end}
+/* What a publish left out, and why: under the failed-build banner when both are up. */
+#kiln-srcskip{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999997;display:flex;
+  flex-direction:column;gap:8px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  color:#d6d8e1;font:13px/1.45 var(--kiln-font);padding:12px 16px;border-radius:13px;box-sizing:border-box;
+  border:1px solid rgba(251,191,36,.5);box-shadow:0 12px 40px rgba(0,0,0,.4);width:max-content;max-width:min(560px,92vw);
+  max-height:60vh;overflow-y:auto}
+#kiln-srcfail ~ #kiln-srcskip,#kiln-srcskip:has(~ #kiln-srcfail){top:auto;bottom:96px}
+#kiln-srcskip strong{color:var(--kiln-warn)}
+.kiln-srcskip-row{display:flex;flex-direction:column;gap:1px}
+.kiln-srcskip-row .kiln-status-link{background:none;border:0;padding:0;font:600 13px/1.4 var(--kiln-font);color:#fff;text-align:left;cursor:pointer;text-decoration:underline}
+#kiln-srcskip-x{align-self:flex-end}
 .kiln-flash{animation:kilnflash 1.4s ease}
 @keyframes kilnflash{0%{outline:3px solid var(--kiln-ok);outline-offset:6px}100%{outline:3px solid transparent;outline-offset:4px}}
 #kiln-toolbar{position:absolute;background:var(--kiln-bg);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);

@@ -55,9 +55,16 @@ export function guideStep({ done = false, published = false, undone = false, unp
  * `invited` is an editor on a real site, who is told what happened to their
  * change, not what Git is or where to get Kiln. `diff` is whether the card
  * shows the before and after texts; `message` is the commit message it shows,
- * or null for none. `edits` is how many edits Undo brought back.
+ * or null for none. `edits` is how many edits Undo brought back. `source` is
+ * a publish to the content files of a site that has to rebuild.
  */
-export function guideCardCopy({ invited = false, undone = false, edits = 1, message = '' } = {}) {
+export function guideCardCopy({ invited = false, undone = false, edits = 1, message = '', source = false } = {}) {
+  // A site a generator builds: the change is saved to its content, and it is
+  // live only once the site has rebuilt. Nothing here may say "published".
+  if (source && !undone) {
+    return { title: 'That is saved', diff: true, message: null,
+      sub: 'Your change is saved to the site’s content, and the site is rebuilding with it. It goes live when that is done, usually in a minute or two. Every version is kept, so nothing is lost for good.' };
+  }
   if (undone) {
     const many = edits > 1;
     const title = many ? 'Your edits are back, not published' : 'Your edit is back, not published';
@@ -370,7 +377,7 @@ function showCard() {
   }
   card.dataset.kind = kind;
   const invited = deps.audience === 'editor';
-  const copy = guideCardCopy({ invited, undone: undone > 0, edits: undone, message: published.message });
+  const copy = guideCardCopy({ invited, undone: undone > 0, edits: undone, message: published.message, source: !!published.source });
   const title = el('h3', null, copy.title);
   title.id = 'kiln-guide-title';
   const parts = [title, el('p', 'kiln-guide-sub', copy.sub)];
