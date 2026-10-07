@@ -56,3 +56,14 @@ test('block controls: "Removed. Undo" is put away once another change is made, s
   assert.match(status, /if \(opts\?\.tag\) el\.dataset\.tag = opts\.tag; else delete el\.dataset\.tag;/);
   assert.match(status, /opts\?\.hold \|\| \(isMobileEditor\(\) \? 4000 : 6000\)/);
 });
+
+test('a tap on plain words folds an open bar away on an iPhone too, where such a tap makes no click', () => {
+  const after = main.slice(main.indexOf('function closeItemControls('));
+  const taps = after.slice(0, after.indexOf('function editItemTags('));
+  // the click listener stays for a mouse and a keyboard
+  assert.match(taps, /addEventListener\('click', \(e\) => \{\s*if \(!e\.target\.closest\?\.\('\.kiln-item-ctl'\)\) closeItemControls\(\);/);
+  // a finger down and up in the same place is a tap; the mouse is left to click
+  assert.match(taps, /addEventListener\('pointerdown'[\s\S]*e\.pointerType === 'mouse' \? null/);
+  assert.match(taps, /addEventListener\('pointerup'[\s\S]*Math\.hypot\([^)]*\) > 10\) return;[\s\S]*closest\?\.\('\.kiln-item-ctl'\)\) closeItemControls\(\);/);
+});
+

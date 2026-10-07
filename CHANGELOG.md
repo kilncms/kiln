@@ -352,6 +352,10 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **On an iPhone a tap elsewhere now folds a block's open control bar away.**
+  Safari makes no click for a tap on plain words or empty space, so the bar
+  stayed open until a button or a field was tapped. A finger put down and
+  lifted in the same place now counts wherever it lands; a swipe does not.
 - **On a phone the editor's controls are one row.** Undo and Redo (as icons,
   named for screen readers), Publish and the Kiln button sit side by side at the
   bottom, where they used to be two floating rows over the bottom of the page.

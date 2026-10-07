@@ -1439,6 +1439,20 @@ function closeItemControls() {
 document.addEventListener('click', (e) => {
   if (!e.target.closest?.('.kiln-item-ctl')) closeItemControls();
 }, true);
+// On an iPhone a tap on plain words or on empty space makes no click at all:
+// Safari only clicks what looks clickable. So there the bar stayed open until
+// a button or a field was tapped. A finger put down and lifted in the same
+// place is a tap wherever it lands; a swipe to scroll is not.
+let tapFrom = null;
+document.addEventListener('pointerdown', (e) => {
+  tapFrom = e.pointerType === 'mouse' ? null : { x: e.clientX, y: e.clientY };
+}, true);
+document.addEventListener('pointerup', (e) => {
+  const from = tapFrom;
+  tapFrom = null;
+  if (!from || Math.hypot(e.clientX - from.x, e.clientY - from.y) > 10) return;
+  if (!e.target.closest?.('.kiln-item-ctl')) closeItemControls();
+}, true);
 
 /** Comma-tags on a repeat block → visitors get automatic filter pills. */
 function editItemTags(container, key, item) {
