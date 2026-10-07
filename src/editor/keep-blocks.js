@@ -23,6 +23,8 @@
  * planBlocks and carriedClass are pure and tested in node; the rest needs a page.
  */
 
+import { fileTrue, noteAsWritten } from './file-state.js';
+
 const KEPT_MAX = 80;   // blocks kept aside per list
 let aside = new WeakMap();   // list element → blocks taken off the page, oldest first
 
@@ -146,7 +148,13 @@ export function writeBlocks(list, html, tidy) {
   const kept = aside.get(list) || [];
   const read = (nodes) => {
     const box = list.cloneNode(false);
-    for (const n of nodes) box.appendChild(n.cloneNode(true));
+    for (const n of nodes) {
+      // As the file has it: what a script has added to a block since (file-state.js)
+      // must not make it look like a different block from the one in `html`.
+      const copy = n.cloneNode(true);
+      fileTrue(copy, n);
+      box.appendChild(copy);
+    }
     tidy(box);
     // a block the tidying dropped or split cannot be told apart safely: none of them is matched
     return box.children.length === nodes.length ? [...box.children].map(shapeOf) : nodes.map(() => null);
@@ -159,6 +167,9 @@ export function writeBlocks(list, html, tidy) {
     const p = plan[i++];
     if (p.from === 'live') { usedLive.add(p.at); return live[p.at]; }
     if (p.from === 'kept') { usedKept.add(p.at); return kept[p.at]; }
+    // A new element: what `html` says of it is what the file would say. Noted
+    // before it is given the classes the site's scripts gave its neighbours.
+    noteAsWritten(node);
     if (p.like === null) alone.push(node); else carry(node, live[p.like], { place: true });
     return node;
   });

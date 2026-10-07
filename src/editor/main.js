@@ -41,6 +41,7 @@ import { draftRecord, readDraft, draftHolds, TYPED } from './saved-edits.js';
 import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
+import { noteList, noteCopy, fileTrue } from './file-state.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { plainName, readableName } from './names.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS } from './link-dialog.js';
@@ -694,6 +695,7 @@ async function loadPageSource() {
   // ANOTHER editor changed the same field while we were editing (see publish()).
   state.baseline = readValues(state.page.text);
   for (const w of state.fields.warnings) console.warn('[kiln]', w);
+  noteFileLists();
 }
 
 /** Auth headers for worker endpoints, whichever way this session signed in. */
@@ -1064,6 +1066,7 @@ function setupRepeat(container, key) {
     const last = [...container.children].filter(c => !c.classList.contains('kiln-repeat-add')).pop();
     if (!last) return;
     const clone = last.cloneNode(true);
+    noteCopy(last, clone);   // published as the file has the block it was copied from
     clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, #kiln-toolbar').forEach(n => n.remove());
     clone.classList.remove('kiln-repeat-item');
     clone.querySelectorAll('[data-cms]').forEach(n => {
@@ -1156,6 +1159,7 @@ function attachItemControls(container, key, item) {
   dup.onclick = (e) => {
     e.stopPropagation();
     const clone = item.cloneNode(true);
+    noteCopy(item, clone);   // published as the file has the block it was copied from
     clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, #kiln-toolbar').forEach(n => n.remove());
     clone.classList.remove('kiln-repeat-item');
     clone.querySelectorAll('[data-cms]').forEach(n => {
@@ -1488,7 +1492,51 @@ function eventForm(container, key, item) {
 /** A repeat container's content with every Kiln editing artifact stripped —
  *  the exact HTML that staging/publishing would write for it. */
 function containerCleanHtml(container) {
-  return cleanBlocks(container.cloneNode(true));
+  // As the file has each block, plus what the editor changed: not what the
+  // site's own scripts have done to it since the page opened (file-state.js).
+  const copy = container.cloneNode(true);
+  fileTrue(copy, container);
+  return cleanBlocks(copy);
+}
+
+/**
+ * Note, for every list on the page, what the page's file says of its blocks.
+ * Run whenever the file is read: when editing starts, and after each publish
+ * and each undo of one, when the file has just become what was published.
+ */
+function noteFileLists() {
+  for (const list of document.querySelectorAll('[data-cms-repeat]')) {
+    if (isKilnChrome(list)) continue;
+    const f = state.fields.fields.get(list.getAttribute('data-cms-repeat'));
+    if (f?.inner) noteList(list, state.page.text.slice(f.inner.start, f.inner.end));
+  }
+}
+
+/**
+ * The demo has no repository. Its "file" is the page as the site serves it
+ * (read once), or, for a list this visitor has published in the demo, what
+ * that publish holds.
+ */
+let servedPage = null;
+async function noteSandboxLists() {
+  try {
+    if (!servedPage) {
+      const res = await fetch(location.pathname + location.search);
+      if (!res.ok) return;
+      const text = await res.text();
+      servedPage = { text, fields: indexHtml(text).fields };
+    }
+  } catch { return; }   // the page could not be read again: lists are published as they are on the page, as before
+  const mine = sandboxStore().pages?.[sandboxPath()] || {};
+  for (const list of document.querySelectorAll('[data-cms-repeat]')) {
+    if (isKilnChrome(list)) continue;
+    const key = list.getAttribute('data-cms-repeat');
+    const f = servedPage.fields.get(key);
+    const html = mine[key]?.html ?? (f?.inner ? servedPage.text.slice(f.inner.start, f.inner.end) : null);
+    if (html == null || !noteList(list, html)) continue;
+    // What Undo goes back to is the list as the file has it, too.
+    if (!state.pending.has(key)) state.undoBase.set(key, containerCleanHtml(list).innerHTML);
+  }
 }
 
 /** The same, on a detached copy, in place. */
@@ -2895,6 +2943,7 @@ function undoSandboxPublish(rec) {
   const n = restageRecord(rec) + (rec.source?.length || 0);
   setStatus(`Undone: ${editsWaiting(n)}.`, 'saved');
   guideUndone(n);   // the demo's last card stops saying a commit happened
+  noteSandboxLists();
 }
 
 /**
@@ -3676,6 +3725,7 @@ function publishSandbox(noteMsg = '') {
   offerUndo(record);
   guidePublished(told);
   syncSandboxLink();
+  noteSandboxLists();   // what was published is what the demo's "file" says now
 }
 
 function renderSandboxBanner() {
@@ -3765,6 +3815,7 @@ async function initSandbox() {
   state.fields = indexHtml(state.page.text);
   renderAdminBar();
   decorateFields();
+  noteSandboxLists();
   await initSourceFields();   // demo source fields stage + preview locally (no worker)
   revealFields();
   renderSandboxBanner();
