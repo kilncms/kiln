@@ -85,4 +85,8 @@ test('bar: on a phone the editor\'s line of words goes below the site\'s own bar
   const place = main.slice(main.indexOf('function siteBarsBottom('), main.indexOf('function placeStatus('));
   assert.match(place, /isSiteBar\(/);
   assert.match(main, /top:calc\(10px \+ var\(--kiln-under,0px\) \+ env\(safe-area-inset-top,0px\)\)/);
+  // with the menu or a dialog up from the bottom it is at the very top, clear of the sheet's first rows
+  assert.match(main, /\.kiln-menu-open #kiln-fab-wrap \.kiln-status,body:has\(#kiln-modal\) #kiln-fab-wrap \.kiln-status,\s*\nbody:has\(#kiln-guide-card\) #kiln-fab-wrap \.kiln-status\{top:calc\(10px \+ env\(safe-area-inset-top,0px\)\)\}/);
+  // an editor that does not start takes every sheet of its own out of the page, the plain look for added sections too
+  assert.match(main, /document\.querySelectorAll\('style\[data-kiln\]'\)\.forEach\(st => st\.remove\(\)\);/);
 });

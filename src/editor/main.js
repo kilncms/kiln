@@ -375,7 +375,7 @@ function signInAgain() {
  */
 function notStarted(over) {
   if (over.drop) localStorage.removeItem(mode === 'admin' ? ADMIN_KEY : EDITOR_KEY);
-  document.querySelector('style[data-kiln]')?.remove();
+  document.querySelectorAll('style[data-kiln]').forEach(st => st.remove());   // every sheet the editor put in the page
   showNotice(over.notice, over.action === 'reload' ? () => location.reload() : signInAgain);
 }
 
@@ -8105,6 +8105,11 @@ body:has(#kiln-topbar){padding-top:46px!important}
    setStatus() takes it away after a few seconds, and a tap dismisses it. */
 #kiln-fab-wrap .kiln-status{position:fixed;left:50%;right:auto;bottom:auto;
   top:calc(10px + var(--kiln-under,0px) + env(safe-area-inset-top,0px));transform:translateX(-50%);max-width:92vw;font-size:13px}
+/* With the menu or a dialog up from the bottom, or the guide's last card in the
+   middle of the screen, the line is at the very top again: below the site's
+   bars it would lie on them. */
+.kiln-menu-open #kiln-fab-wrap .kiln-status,body:has(#kiln-modal) #kiln-fab-wrap .kiln-status,
+body:has(#kiln-guide-card) #kiln-fab-wrap .kiln-status{top:calc(10px + env(safe-area-inset-top,0px))}
 #kiln-fab-wrap .kiln-status--act{font-size:14.5px;padding:6px 6px 6px 16px}
 .kiln-status-act{min-height:40px;padding:6px 20px;font-size:14.5px}
 /* Top-bar mode: same bar, thumb-height targets, finger-scrollable. */
