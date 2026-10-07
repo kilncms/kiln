@@ -86,7 +86,7 @@ test('typed: a value of the wrong kind is told in a sentence that says how to wr
   assert.deepEqual(typedValue('maybe', 'boolean'), { ok: false, why: 'This needs to be yes or no.' });
   assert.deepEqual(typedValue('https://example.org/a', 'url'), { ok: true, value: 'https://example.org/a' });
   assert.deepEqual(typedValue('/about', 'url'), { ok: true, value: '/about' });
-  assert.deepEqual(typedValue('Get tickets', 'url'), { ok: false, why: 'This needs to be a web address, or a page of this site such as /about.' });
+  assert.deepEqual(typedValue('Get tickets', 'url'), { ok: false, why: 'This needs to be a web address that starts with https://, or a page of this site such as /about.' });
   // plain text is whatever was typed
   assert.deepEqual(typedValue('  two  spaces ', undefined), { ok: true, value: '  two  spaces ' });
   assert.deepEqual(typedValue('x', 'string'), { ok: true, value: 'x' });
@@ -222,7 +222,7 @@ test('refused: the worker\'s words are told as sentences', () => {
   assert.equal(skipSentence('needs to be a time, like 14:30'), 'This needs to be a time written like 14:30.');
   assert.equal(skipSentence('needs to be a number'), 'This needs to be a number, such as 120.');
   assert.equal(skipSentence('needs to be true or false'), 'This needs to be yes or no.');
-  assert.equal(skipSentence('not a safe URL'), 'This needs to be a web address, or a page of this site such as /about.');
+  assert.equal(skipSentence('not a safe URL'), 'This needs to be a web address that starts with https://, or a page of this site such as /about.');
   assert.equal(skipSentence('value may not contain script markup'), 'It can’t contain code, such as a script tag.');
   assert.equal(skipSentence('pointer not found in source'), 'The site’s content no longer has this, so reload the page to see how it is now.');
   assert.equal(skipSentence('type mismatch'), 'This holds something other than words, so it can’t be changed here.');

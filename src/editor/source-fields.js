@@ -71,11 +71,14 @@ export function scanSourceRefs(items) {
  * applied/skipped arrays map straight back onto state.pendingSource keys (the
  * adapter echoes `e.key ?? e.pointer`).
  *
+ * `was(ref)` says what a field held when this page was read (readAs), or
+ * undefined when that is not known; it is sent with the edit.
+ *
  * Returns [{ file, refs, body }] in first-seen file order; refs[i] corresponds
  * to body.edits[i]. Unparseable refs are skipped defensively (they can never be
  * staged by the editor, but a bad entry must not poison the batch — §8.1).
  */
-export function groupSourceEdits(pending, { repo, branch, adapter } = {}) {
+export function groupSourceEdits(pending, { repo, branch, adapter, was } = {}) {
   const groups = new Map();     // path → { file, refs, body }
   const entries = pending instanceof Map ? pending.entries() : pending || [];
   for (const [ref, staged] of entries) {
@@ -92,6 +95,10 @@ export function groupSourceEdits(pending, { repo, branch, adapter } = {}) {
     const type = staged?.type ?? parsed.type;
     const edit = { pointer: parsed.rawPointer, value: wireValue(staged?.value, type, parsed), key: ref };
     if (type) edit.type = type;
+    // What the field held when the page was read, when that is known: the
+    // worker leaves the edit out if the file no longer says so (changedRefs).
+    const read = typeof was === 'function' ? was(ref) : undefined;
+    if (read !== undefined) edit.was = read;
     g.refs.push(ref);
     g.body.edits.push(edit);
   }
@@ -114,6 +121,70 @@ export function matchSkippedRefs(group, skipped) {
     if (i !== -1) out.set(group.refs[i], s.reason || 'skipped');
   }
   return out;
+}
+
+// ─── A field someone else changed ────────────────────────────────────────────
+
+/** The worker's reason for leaving out an edit whose field no longer says what the page showed. */
+const CHANGED_SINCE_READ = /^changed since it was read/;
+
+/**
+ * What a field held when this page was read, to send with its edit so that
+ * the worker does not write over a change someone else made since: the first
+ * of `texts` (what each place showing the field showed) that is the value
+ * itself. A date the page writes out as "September 20, 2026" is not the
+ * value; with no place that shows it as stored, nothing is said (undefined)
+ * and the worker writes as it always did.
+ */
+export function readAs(texts, type) {
+  const typedKind = Object.hasOwn(TYPE_HELP, type || '');
+  for (const t of texts || []) {
+    if (typeof t !== 'string') continue;
+    if (!typedKind) return t;
+    const typed = typedValue(t, type);
+    if (typed.ok) return typed.value;
+  }
+  return undefined;
+}
+
+/**
+ * The edits of `group` the worker left out because someone else changed the
+ * field since the page was built: Map(ref → what the file says now). These
+ * are asked about (theirsOrMine), not listed as "not saved".
+ */
+export function changedRefs(group, skipped) {
+  const out = new Map();
+  for (const s of skipped || []) {
+    if (!CHANGED_SINCE_READ.test(String(s?.reason || '')) || !('current' in s)) continue;
+    let i = group.refs.indexOf(s.key);
+    if (i === -1) i = group.body.edits.findIndex(e => e.pointer === s.key);
+    if (i !== -1) out.set(group.refs[i], s.current);
+  }
+  return out;
+}
+
+/** What the file says now, as words for the page and for the question: a yes/no reads "yes" or "no". */
+export function theirsText(current) {
+  if (current === true) return 'yes';
+  if (current === false) return 'no';
+  return String(current ?? '');
+}
+
+/**
+ * The question about one such field: both versions, and what each button
+ * does. `mine` is the text as typed.
+ */
+export function theirsOrMine({ label, theirs, mine } = {}) {
+  const clip = (t) => (t.length > 600 ? `${t.slice(0, 600)}…` : t);
+  return {
+    title: 'Someone else changed this',
+    body: `${label} was changed on the site after this page was made. Publishing yours would replace theirs.`,
+    theirs: clip(theirsText(theirs)) || '(nothing)',
+    mine: clip(String(mine ?? '')) || '(nothing)',
+    keep: 'Keep theirs',
+    use: 'Use mine',
+    note: 'Keep theirs drops your edit. Use mine publishes yours in its place.',
+  };
 }
 
 /**
@@ -221,8 +292,18 @@ const TYPE_HELP = {
   time: 'This needs to be a time written like 14:30.',
   number: 'This needs to be a number, such as 120.',
   boolean: 'This needs to be yes or no.',
-  url: 'This needs to be a web address, or a page of this site such as /about.',
+  url: 'This needs to be a web address that starts with https://, or a page of this site such as /about.',
 };
+
+/**
+ * A web address (http or https), an email or phone link, or a place on this
+ * site: the worker's rule for a url field (worker/source.js isAddress), minus
+ * the empty value, which nobody types on purpose. "Get tickets" is a label.
+ */
+function isAddress(t) {
+  if (!t || /[\s\u0000-\u001f\u007f]/.test(t)) return false;
+  return /^(?:https?:\/\/.|mailto:.|tel:.|\/(?!\/)|\.\.?\/|[#?])/i.test(t);
+}
 
 /**
  * What was typed into a field of a given type, as the value to save:
@@ -249,7 +330,7 @@ export function typedValue(text, type) {
     if (/^(false|no|off)$/i.test(t)) return { ok: true, value: false };
     return no;
   }
-  if (type === 'url') return t && !/\s/.test(t) ? { ok: true, value: t } : no;
+  if (type === 'url') return isAddress(t) ? { ok: true, value: t } : no;
   return { ok: true, value: raw };
 }
 
@@ -267,7 +348,7 @@ const TYPE_HINT = {
   time: 'A time is typed here like 14:30.',
   number: 'A number is typed here in digits, such as 120.',
   boolean: 'Type yes or no here.',
-  url: 'A web address is typed here, or a page of this site such as /about.',
+  url: 'A web address is typed here, starting with https://, or a page of this site such as /about.',
 };
 
 /**
@@ -386,6 +467,7 @@ export function skipSentence(reason) {
   if (/^not a safe URL/.test(r)) return TYPE_HELP.url;
   if (/script markup/.test(r)) return 'It can’t contain code, such as a script tag.';
   if (/^pointer not found/.test(r)) return GONE;
+  if (CHANGED_SINCE_READ.test(r)) return 'Someone else changed this. Reload the page to see how it is now.';
   if (/^type mismatch|^unsupported value type/.test(r)) return 'This holds something other than words, so it can’t be changed here.';
   return 'The site did not accept it.';
 }

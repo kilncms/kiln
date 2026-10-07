@@ -21,6 +21,7 @@ import {
   scanSourceRefs, groupSourceEdits, matchAppliedRefs, matchSkippedRefs, resolveBuildState,
   revertRequest, parseSourceCapabilities, saveSummary, friendlyRef, STILL_BUILDING_COPY,
   sourceLabel, typedValue, keptText, typeHint, isBody, plainBody, lockReason, skipSentence, refusalSentence,
+  readAs, changedRefs, theirsText, theirsOrMine,
   SAVED_BUILDING_COPY, BUILD_FAILED_COPY, BUILD_WATCH_MS, buildRecord, buildStanding, resumePlan,
 } from './source-fields.js';
 import { initPalette, openPalette } from './palette.js';
@@ -45,7 +46,7 @@ import { noteList, noteCopy, fileTrue } from './file-state.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { plainName, readableName } from './names.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS } from './link-dialog.js';
-import { askFirst, ownDialogCopy } from './own-dialogs.js';
+import { askFirst, askWhich, ownDialogCopy } from './own-dialogs.js';
 import { coverBottom, isUnder } from './under-bar.js';
 import { demoSays, demoShort, DEMO_DRAFT_SAVED, DEMO_HISTORY_EMPTY, DEMO_HISTORY_NOTE,
   historyEntry, withEntry, undoChanges, goBackChanges, partVersions, hasPublished } from './tryout.js';
@@ -123,6 +124,7 @@ const state = {
   pendingSource: new Map(),   // ref → { value, type? } staged for /source/commit
   sourceFields: null,         // ref → { parsed, els: [Element] } from the boot scan
   sourceBase: new Map(),      // ref → pre-edit text (undo baseline; updated on publish)
+  sourceTheirs: new Map(),    // ref → what the worker said the file holds, once the person chose their own words over it
   // What was being typed into a panel when a request found the sign-in ended,
   // while the person is being told: it goes into the saved copy with the edits
   // (saved-edits.js `typed`) and is put back after signing in again.
@@ -3160,6 +3162,7 @@ function decorateSourceField(el, ref, parsed) {
   el.title = sourceHint(parsed);
   el.addEventListener('click', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.target.closest('a')) return;
+    if (el.classList.contains('kiln-source-locked')) return;   // made read-only since (keepTheirs): its own click says why
     e.preventDefault(); e.stopPropagation();
     if (!sourceActive || sourceActive.el !== el) startSourceEditing(el, ref, parsed);
   });
@@ -3364,21 +3367,24 @@ function showNotSaved(list) {
  * survive, mirroring publish()), keep skipped refs pending with their reasons
  * (§8.1), then hand the last commit to the §11/§12 build watcher.
  */
-async function publishSource(note = '') {
-  if (!state.pendingSource.size) return;
-  const groups = groupSourceEdits(state.pendingSource,
-    { repo: cfg.repo, branch: cfg.branch || 'main', adapter: cfg.adapter || 'astro' });
+async function publishSource(note = '', opts = {}) {
+  // All that is staged, or (opts.only) the fields just answered "Use mine".
+  const staged = opts.only ? new Map([...state.pendingSource].filter(([ref]) => opts.only.has(ref))) : state.pendingSource;
+  if (!staged.size) return;
+  const groups = groupSourceEdits(staged,
+    { repo: cfg.repo, branch: cfg.branch || 'main', adapter: cfg.adapter || 'astro', was: sourceWas });
   if (!groups.length) return;
   // An invited editor's first publish ends the first-session guide: note what
   // changed now, while the edits are still staged.
   const told = guideWaiting() ? describePublish() : null;
   const snapshot = new Map();
-  for (const [ref, v] of state.pendingSource) snapshot.set(ref, JSON.stringify(v));
-  setStatus(saveSummary(state.pendingSource.size, groups.length), 'saving');
+  for (const [ref, v] of staged) snapshot.set(ref, JSON.stringify(v));
+  setStatus(saveSummary(staged.size, groups.length), 'saving');
   disablePublish(true);
   document.getElementById('kiln-srcskip')?.remove();
   const committed = [];
   const notSaved = [];       // { ref, label, why } for every edit that stays staged
+  const changed = [];        // { ref, theirs }: someone else changed the field; the person is asked which stands
   let anyOk = false;
   let firstFailure = null;   // the first refusal as readFailure takes it: the thrown error
   for (const g of groups) {
@@ -3392,6 +3398,11 @@ async function publishSource(note = '') {
       failure = err;
     }
     const skipped = matchSkippedRefs(g, data.skipped);
+    // A field someone else changed since the page was built is not "not
+    // saved": it is asked about, with both versions, once the rest is done.
+    const theirs = changedRefs(g, data.skipped);
+    for (const [ref, current] of theirs) { changed.push({ ref, theirs: current }); skipped.delete(ref); }
+    if (failure && theirs.size === g.refs.length) continue;   // nothing of this file was refused: all of it waits for an answer
     if (failure) {
       firstFailure = firstFailure || failure;
       // The whole file's batch stays pending. Why, in a sentence: the worker's
@@ -3400,6 +3411,7 @@ async function publishSource(note = '') {
       console.warn('[kiln] source commit failed:', g.file, data);
       const whole = refusalSentence(failure.status, data.error);
       for (const ref of g.refs) {
+        if (theirs.has(ref)) continue;
         const why = skipped.has(ref) ? skipSentence(skipped.get(ref)) : (whole || whyNot(failure));
         notSaved.push({ ref, label: sourceName(ref), why });
         markSourceFieldIssue(ref, why);
@@ -3417,6 +3429,7 @@ async function publishSource(note = '') {
         const v = state.pendingSource.get(ref);
         done.push({ ref, value: v.value, was: state.sourceBase.get(ref), ...(v.type && { type: v.type }) });
         state.pendingSource.delete(ref);
+        state.sourceTheirs.delete(ref);
         state.sourceBase.set(ref, v.value);   // the committed value is the new baseline
         syncSourceDom(ref);
       }
@@ -3448,13 +3461,79 @@ async function publishSource(note = '') {
     else if (notSaved.length) {
       showNotSaved(notSaved);
       setStatus(notSaved.length === 1 ? 'That was not saved. Your edit is still here.' : 'Those were not saved. Your edits are still here.', 'error');
-    } else if (anyOk) setStatus('Nothing changed', 'idle');
+    } else if (changed.length) setStatus('Nothing was published yet.', 'idle');
+    else if (anyOk) setStatus('Nothing changed', 'idle');
+    if (changed.length && !(f && (f.kind === 'ended' || f.kind === 'trouble'))) await askTheirsOrMine(changed, note);
     return;
   }
   showNotSaved(notSaved);
   if (told) guidePublished({ ...told, source: true });
   rememberBuild(committed);
   watchSourceBuild(committed);
+  if (changed.length) await askTheirsOrMine(changed, note);
+}
+
+/**
+ * What a field held when this page was read, sent with its edit so the worker
+ * does not write over a change someone else made since (source-fields.js
+ * readAs). Once the person has chosen their own words over someone else's, it
+ * is what the worker said the file holds. After a publish from this page it
+ * is what was published.
+ */
+function sourceWas(ref) {
+  if (state.sourceTheirs.has(ref)) return state.sourceTheirs.get(ref);
+  const f = state.sourceFields?.get(ref);
+  if (!f) return undefined;
+  const base = state.sourceBase.get(ref);
+  if (base !== f.boot) return readAs([base], f.parsed.type);
+  // A read-only place shows something that is not the value (a link's label).
+  return readAs(f.els.map((el, i) => (el.classList.contains('kiln-source-locked') ? null : f.shown[i])), f.parsed.type);
+}
+
+/**
+ * Someone else changed these fields since the page was built, and the worker
+ * left the edits out. Each is asked about with both versions in sight. "Keep
+ * theirs" drops the edit and shows their words; "Use mine" publishes it in
+ * their place, knowingly. Put away without an answer, the edit stays on the
+ * page, not published.
+ */
+async function askTheirsOrMine(changed, note) {
+  const mine = new Set();
+  let kept = 0, waiting = 0;
+  for (const c of changed) {
+    const pend = state.pendingSource.get(c.ref);
+    if (!pend) continue;
+    const answer = await askWhich(modal, theirsOrMine({ label: sourceName(c.ref), theirs: c.theirs, mine: pend.value }));
+    if (answer === 'theirs') { keepTheirs(c.ref, c.theirs); kept++; }
+    else if (answer === 'mine') { state.sourceTheirs.set(c.ref, c.theirs); mine.add(c.ref); }
+    else waiting++;
+  }
+  refreshPublishButton();
+  if (mine.size) return publishSource(note, { only: mine });
+  if (waiting) setStatus(waiting === 1 ? 'Your edit is still on the page, not published.' : 'Your edits are still on the page, not published.', 'idle', { hold: 9000 });
+  else if (kept) setStatus(kept === 1 ? 'Theirs is kept. Your edit was dropped.' : 'Theirs are kept. Your edits were dropped.', 'idle', { hold: 9000 });
+}
+
+/** "Keep theirs": the edit is dropped, and the page shows what the file says now. */
+function keepTheirs(ref, theirs) {
+  const f = state.sourceFields?.get(ref);
+  state.pendingSource.delete(ref);
+  state.sourceTheirs.delete(ref);
+  forgetEditHistory();   // Undo must not bring the dropped edit back as if nobody had been asked
+  if (!f) return;
+  if (isBody(f.parsed)) {
+    // Their text is markdown, and the page can only show it once the site has
+    // made a page of it. Until then this place shows the words from before,
+    // and takes no edit that would be compared against them.
+    syncSourceDom(ref);
+    for (const el of f.els) {
+      el.classList.remove('kiln-field', 'kiln-modified');
+      lockSourceField(el, 'Someone else changed this text. Reload the page to see it once the site has rebuilt.');
+    }
+    return;
+  }
+  state.sourceBase.set(ref, theirsText(theirs));
+  syncSourceDom(ref);
 }
 
 // §11/§12: Saved → Building… → Published ✓ / Build failed ✕ / still-building.
@@ -7368,6 +7447,10 @@ body:has(#kiln-topbar){padding-top:46px!important}
 .kiln-modal-body input.kiln-nv-input{width:170px;margin:0;padding:7px 9px;font-size:13px}
 .kiln-nv-form .kiln-btn-ghost{font-size:11.5px;padding:5px 10px;white-space:nowrap}
 /* Visual restore preview: current page beside the restored one, stacked when narrow */
+.kiln-which{margin:10px 0 0}
+.kiln-which strong{display:block;font:600 12px/1.4 var(--kiln-font);color:#555}
+.kiln-which-text{margin-top:3px;padding:8px 10px;border:1px solid #ddd;border-radius:8px;background:#fafafa;color:#111;font:14px/1.45 var(--kiln-font);white-space:pre-wrap;overflow-wrap:anywhere;max-height:9.5em;overflow:auto}
+.kiln-ask-which .kiln-which + .kiln-dim{margin-top:12px}
 .kiln-ask .kiln-btn-risky{background:#c62828}
 .kiln-ask .kiln-btn-risky:hover:not(:disabled){background:#a81f1f}
 /* ⌘K palette — dark card matching the Kiln chrome, riding on the modal() shell. */

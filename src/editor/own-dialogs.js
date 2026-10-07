@@ -9,6 +9,9 @@
  * now, whose buttons say what they do.
  *
  * ownDialogCopy and answerOf are pure and tested in node; askFirst needs a page.
+ *
+ * A fifth kind of question has two real answers and is asked by askWhich:
+ * whose version of a field stands, when someone else changed it meanwhile.
  */
 
 /**
@@ -94,5 +97,33 @@ export function askFirst(modal, copy) {
     // The keyboard starts on the box when there is one, and otherwise on the
     // button that changes nothing: Enter must not delete anything by itself.
     (input || m.querySelector('.kiln-modal-actions [data-close]')).focus();
+  });
+}
+
+/**
+ * Ask which of two versions of one field stands, when someone else changed it
+ * since the page was built (source-fields.js theirsOrMine): both are shown,
+ * and each button says whose it keeps. Resolves 'theirs', 'mine', or null
+ * when it was put away without choosing (the ✕, Escape, a click outside).
+ * The keyboard starts on the button that leaves the site as it is.
+ */
+export function askWhich(modal, copy) {
+  return new Promise((resolve) => {
+    let answer = null;
+    const m = modal(`
+      <h3>${esc(copy.title)}</h3>
+      <p class="kiln-dim">${esc(copy.body)}</p>
+      <div class="kiln-which"><strong>Theirs</strong><div class="kiln-which-text">${esc(copy.theirs)}</div></div>
+      <div class="kiln-which"><strong>Yours</strong><div class="kiln-which-text">${esc(copy.mine)}</div></div>
+      <p class="kiln-dim">${esc(copy.note)}</p>
+      <div class="kiln-modal-actions">
+        <button class="kiln-btn-ghost" id="kiln-which-theirs">${esc(copy.keep)}</button>
+        <button class="kiln-btn-publish" id="kiln-which-mine">${esc(copy.use)}</button>
+      </div>`, { over: true, onClose: () => resolve(answer) });
+    m.classList.add('kiln-ask', 'kiln-ask-which');
+    const pick = (which) => () => { answer = which; m._kilnClose(); };
+    m.querySelector('#kiln-which-theirs').onclick = pick('theirs');
+    m.querySelector('#kiln-which-mine').onclick = pick('mine');
+    m.querySelector('#kiln-which-theirs').focus();
   });
 }
