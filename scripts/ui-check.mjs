@@ -37,6 +37,12 @@
  * the page was open, so that one changed word changes one word in the file;
  * History shows a way back on the page itself, in no frames; and signing out
  * with an edit waiting asks in the editor's own dialog.
+ * Then a page a generator built ("generated"), a small one of this script's
+ * own on a site in source mode: a field someone else changed is asked about
+ * with theirs and yours and each answer does what it says; a failed build's
+ * banner lies on nothing else of Kiln's; Search & jump lists the site's real
+ * pages and never the sign-in page; a suggest-only and a comment-only editor
+ * read what they can do there and are offered nothing that would be refused.
  * Both passes go through the publish sheet (open it, drop one edit, publish)
  * and press Undo; the signed-in pass also has someone else publish in between.
  * A last pass has the worker end the editor's sign-in: on page load the page
@@ -916,6 +922,15 @@ async function runSafetyNet(browser, size) {
   const bar = page.locator('#kiln-previewbar');
   check(scope, '"Go back to this" shows the earlier version on the page first', (await bar.isVisible().catch(() => false)) && (await read()) === 'First version', `${await read()} / ${(await words(bar)).slice(0, 50)}`);
   await shot('history-preview');
+  const barWords = (await words(bar).catch(() => '')).replace(/\s+/g, ' ');
+  check(scope, 'the bar says what is left to do, and its buttons are Cancel and Keep', /Nothing is live yet\. Keep it, then press Publish\./.test(barWords) && (await page.locator('#kiln-pv-keep').innerText().catch(() => '')) === 'Keep' && !/—/.test(barWords), barWords.slice(0, 140));
+  if (phone && await bar.isVisible().catch(() => false)) {
+    const b = await box(bar);
+    const line = page.locator('#kiln-status');
+    const st = (await line.isVisible().catch(() => false)) ? await box(line) : null;
+    check(scope, 'on a phone it is as wide as the screen, clear of the top and of the status line', b.width > size.width - 40 && b.top > 120 && (!st || apart(b, st)), `${Math.round(b.left)},${Math.round(b.top)} ${Math.round(b.width)}x${Math.round(b.height)}`);
+    check(scope, 'and clear of the pencil', apart(b, await box(pencil)));
+  }
   if (await page.locator('#kiln-pv-keep').count()) await press(page.locator('#kiln-pv-keep'));
   await page.waitForTimeout(400);
   await publishNow();
@@ -2492,6 +2507,221 @@ async function runRealSites(browser, size) {
   }
 }
 
+/**
+ * A page a generator built ("generated"): a small page of this script's own,
+ * as Astro would build it, on a site in source mode, with the worker played
+ * here. What is looked at is what the person is asked and offered: a field
+ * someone else changed is asked about with both versions and never listed as
+ * "not saved"; Search & jump lists the site's real pages and not the sign-in
+ * page; a suggest-only and a comment-only editor read what they can do there
+ * and are offered nothing that would be refused; and on a phone the bars that
+ * wait for an answer lie on nothing else of Kiln's.
+ */
+async function runGenerated(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} generated   `;
+  const WORKER = 'https://worker.invalid';
+  const REPO = 'acme/site';
+  const AT = '/uicheck-generated/';
+  const ONE = 'src/content/events/one.md';
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+  const head = '<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font:17px/1.5 system-ui,sans-serif;max-width:40rem;margin:0 auto;padding:0 16px 200px}header{position:sticky;top:0;background:#fff;border-bottom:1px solid #ddd;padding:12px 0;display:flex;gap:16px}h1{margin:28px 0 8px}</style>';
+  const tail = '<script src="/assets/kiln-config.js"></script><script src="/assets/kiln.js" defer></script>';
+  const nav = `<header><strong>Remembrance</strong><a href="${AT}">Home</a><a href="${AT}about/">About</a><a href="/kiln.html">Sign in</a></header>`;
+  const pages = {
+    [AT]: `<!doctype html><html lang="en"><head>${head}<title>Week of Remembrance</title></head><body>${nav}<main>
+      <h1 data-kiln-source="src/content/site/home.md#/frontmatter/heading">Week of Remembrance</h1>
+      <p data-kiln-source="src/content/site/home.md#/frontmatter/intro">Three gatherings, one week.</p>
+      <article><h3 data-kiln-source="${ONE}#/frontmatter/title">Interfaith Worship Service</h3>
+      <time data-kiln-source="${ONE}#/frontmatter/start?type=time">18:00</time>
+      <p data-kiln-source="${ONE}#/frontmatter/venue">Big Bethel AME</p>
+      <a href="${AT}events/one/">Details</a></article></main>${tail}</body></html>`,
+    [`${AT}about/`]: `<!doctype html><html lang="en"><head>${head}<title>About the week</title></head><body>${nav}<main><h1>About the week</h1><p>Seven days, open to everyone.</p></main>${tail}</body></html>`,
+    [`${AT}events/one/`]: `<!doctype html><html lang="en"><head>${head}<title>Interfaith Worship Service</title></head><body>${nav}<main><h1 data-kiln-source="${ONE}#/frontmatter/title">Interfaith Worship Service</h1></main>${tail}</body></html>`,
+  };
+  const TREE = ['astro.config.mjs', 'public/kiln.html', 'src/pages/uicheck-generated/index.astro', 'src/pages/uicheck-generated/about.astro', 'src/pages/uicheck-generated/events/[id].astro', 'src/pages/uicheck-generated/pricing.astro', ONE, 'src/content/site/home.md'];
+
+  /** One visit by one person. `who` is the scope the worker gives them; `theirs` what the file says of the title by now. */
+  const visit = async (who, fn) => {
+    const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+    await context.addInitScript(([repo]) => {
+      try { localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' })); localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ }
+    }, [REPO]);
+    const worker = { commits: [], asked: [], build: 'none', theirs: null };
+    const blocked = [];
+    await context.route('**/*', async (route) => {
+      const req = route.request();
+      const u = new URL(req.url());
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': ORIGIN }, body: JSON.stringify(body) });
+      if (u.origin === ORIGIN && u.pathname.endsWith('kiln-config.js')) {
+        return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', mode: 'source', adapter: 'astro', styles: [] };` });
+      }
+      if (u.origin === ORIGIN && u.pathname.startsWith(AT)) {
+        return pages[u.pathname] ? route.fulfill({ contentType: 'text/html; charset=utf-8', body: pages[u.pathname] }) : route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Not found</h1>' });
+      }
+      if (u.origin === ORIGIN && /^\/(sitemap|kiln-no-such-page)/.test(u.pathname)) return route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Not found</h1>' });
+      if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
+      if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+      const p = decodeURIComponent(u.pathname);
+      if (req.method() === 'OPTIONS') {
+        return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
+      }
+      worker.asked.push(`${req.method()} ${p}`);
+      if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: null, mode: null, ...who } });
+      if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'], sourceWas: true });
+      if (p === '/source/commit') {
+        const body = JSON.parse(req.postData());
+        worker.commits.push(body);
+        // The worker's own rule: an edit that says what it read is left out when the file says something else by now.
+        const skipped = []; const applied = [];
+        for (const e of body.edits) {
+          const moved = worker.theirs !== null && e.pointer === '/frontmatter/title' && 'was' in e && e.was !== worker.theirs && e.value !== worker.theirs;
+          if (moved) skipped.push({ key: e.key, reason: 'changed since it was read', current: worker.theirs }); else applied.push(e.key);
+        }
+        if (!applied.length) return json({ error: 'no edits could be applied', skipped }, 422);
+        return json({ ok: true, file: body.file, commit: { sha: `c${worker.commits.length}`.padEnd(40, 'a'), parent: 'b'.repeat(40) }, applied, skipped });
+      }
+      if (p === '/source/revert') return json({ ok: true, file: ONE, commit: { sha: 'd'.repeat(40), parent: 'c'.repeat(40) } });
+      if (p.startsWith(`/gh/repos/${REPO}/git/trees/`)) return json({ tree: TREE.map(path => ({ path, type: 'blob' })) });
+      if (p.endsWith('/status')) return json(worker.build === 'failure' ? { state: 'failure', total_count: 1 } : { total_count: 0 });
+      if (p.includes('/deployments')) return json([]);
+      if (p === '/comments' || p === '/comments/counts') return json({ error: 'bad path' }, 400);
+      return json({ message: 'Not Found' }, 404);
+    });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    const boxes = [];
+    page.on('dialog', async (d) => { boxes.push(d.message()); await d.dismiss().catch(() => {}); });
+    await page.goto(`${ORIGIN}${AT}`, { waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(700);
+    try { await fn({ page, worker, boxes, shot: async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); } }); }
+    finally {
+      check(scope, `${who.mode || 'publishing'} editor: no script errors, no browser box, nothing outside the local server`, errors.length === 0 && boxes.length === 0 && blocked.length === 0, [...errors, ...boxes, ...blocked].join(' | ').slice(0, 200));
+      await context.close();
+    }
+  };
+  const statusLine = (page) => page.evaluate(() => { const el = document.getElementById('kiln-status'); return el && !el.hidden ? el.textContent.trim() : ''; });
+  const title = (page) => page.locator(`[data-kiln-source="${ONE}#/frontmatter/title"]`).first();
+  const retitle = async (page, text) => {
+    await title(page).scrollIntoViewIfNeeded();
+    await press(title(page));
+    await page.waitForTimeout(250);
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
+    await page.keyboard.type(text);
+    await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(250);
+  };
+  const publish = async (page) => {
+    await press(page.locator('#kiln-publish-quick'));
+    await page.waitForTimeout(450);
+    if (await page.locator('#kiln-pubsheet-go').count()) await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(1300);
+  };
+  const dialogWords = (page) => page.locator('#kiln-modal .kiln-modal-body').innerText().catch(() => '');
+  const menuWords = async (page) => {
+    if (!(await page.locator('#kiln-fab-menu').isVisible().catch(() => false))) { await press(page.locator('#kiln-fab')); await page.waitForTimeout(350); }
+    return page.evaluate(() => [...document.querySelectorAll('#kiln-fab-menu button, #kiln-fab-menu .kiln-fab-label')].filter(b => b.getClientRects().length && getComputedStyle(b).display !== 'none' && getComputedStyle(b).visibility !== 'hidden').map(b => b.textContent.trim().replace(/\s+/g, ' ')));
+  };
+
+  // ── someone else changed the title: asked, then "Use mine" ─────────────────
+  await visit({}, async ({ page, worker, shot }) => {
+    worker.theirs = 'The owner renamed this';
+    await retitle(page, 'The editor renamed this');
+    const venue = page.locator(`[data-kiln-source="${ONE}#/frontmatter/venue"]`);
+    await press(venue); await page.waitForTimeout(200);
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A'); await page.keyboard.type('Ebenezer Baptist');
+    await press(page.locator('#kiln-toolbar .kiln-tb-save')); await page.waitForTimeout(200);
+    await publish(page);
+    const first = worker.commits[0]?.edits || [];
+    check(scope, 'each edit says what its field showed when the page was read', first.length === 2 && first[0].was === 'Interfaith Worship Service' && first[1].was === 'Big Bethel AME', JSON.stringify(first.map(e => e.was)));
+    const words = await dialogWords(page);
+    check(scope, 'a field someone else changed is asked about, with theirs and yours', /Someone else changed this/.test(words) && /Theirs\s+The owner renamed this/.test(words) && /Yours\s+The editor renamed this/.test(words), words.replace(/\s+/g, ' ').slice(0, 160));
+    check(scope, 'its two buttons say what they do', (await page.locator('#kiln-which-theirs').innerText().catch(() => '')) === 'Keep theirs' && (await page.locator('#kiln-which-mine').innerText().catch(() => '')) === 'Use mine');
+    check(scope, 'it is not listed as "not saved"', (await page.locator('#kiln-srcskip').count()) === 0);
+    check(scope, 'the other edit of that publish was saved meanwhile', !(await venue.evaluate(el => el.classList.contains('kiln-modified'))) && (await title(page).evaluate(el => el.classList.contains('kiln-modified'))));
+    await shot('generated-theirs-or-mine');
+    await press(page.locator('#kiln-which-mine'));
+    await page.waitForTimeout(1300);
+    const second = worker.commits[1]?.edits || [];
+    check(scope, '"Use mine" publishes that edit again, saying what the file holds now', worker.commits.length === 2 && second.length === 1 && second[0].value === 'The editor renamed this' && second[0].was === 'The owner renamed this', JSON.stringify(second));
+    check(scope, 'and it is saved: nothing is waiting, and the line says the site is rebuilding', (await page.locator('.kiln-modified').count()) === 0 && /Saved\. The site is rebuilding/.test(await statusLine(page)), await statusLine(page));
+  });
+
+  // ── …and "Keep theirs"; then the bars on top of one another ────────────────
+  await visit({}, async ({ page, worker, shot }) => {
+    worker.theirs = 'The owner renamed this';
+    await retitle(page, 'The editor renamed this');
+    await publish(page);
+    check(scope, 'with only that field edited, nothing is saved until the person answers', worker.commits.length === 1 && (await page.locator('#kiln-which-theirs').count()) === 1 && !/rebuilding|Published/.test(await statusLine(page)), await statusLine(page));
+    await press(page.locator('#kiln-which-theirs'));
+    await page.waitForTimeout(500);
+    check(scope, '"Keep theirs" drops the edit and shows their words', (await title(page).innerText()) === 'The owner renamed this' && (await page.locator('.kiln-modified').count()) === 0 && worker.commits.length === 1, await title(page).innerText());
+    check(scope, 'and no Publish is offered for it', !(await page.locator('#kiln-publish-quick').isVisible().catch(() => false)));
+    // A publish whose build then fails: the banner, the status line, the Publish row and the pencil.
+    worker.theirs = null;
+    await retitle(page, 'A title that breaks the build');
+    const start = page.locator(`[data-kiln-source="${ONE}#/frontmatter/start?type=time"]`);
+    await publish(page);
+    worker.build = 'failure';
+    await page.locator('#kiln-srcfail').waitFor({ state: 'visible', timeout: 16000 }).catch(() => {});
+    await press(start); await page.waitForTimeout(200);
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A'); await page.keyboard.type('19:00');
+    await press(page.locator('#kiln-toolbar .kiln-tb-save')); await page.waitForTimeout(300);
+    const at = await page.evaluate(() => {
+      const r = (sel) => { const el = document.querySelector(sel); if (!el || el.hidden || !el.getClientRects().length) return null; const b = el.getBoundingClientRect(); return { left: b.left, top: b.top, right: b.right, bottom: b.bottom }; };
+      return { status: r('#kiln-status'), banner: r('#kiln-srcfail'), publish: r('#kiln-publish-quick'), pencil: r('#kiln-fab') };
+    });
+    const names = Object.keys(at).filter(k => at[k]);
+    const on = [];
+    for (let i = 0; i < names.length; i++) for (let j = i + 1; j < names.length; j++) if (!apart(at[names[i]], at[names[j]])) on.push(`${names[i]} on ${names[j]}`);
+    check(scope, 'a failed build: the banner, the status line, the Publish button and the pencil are all there', names.length === 4, names.join(', '));
+    check(scope, 'and none of them lies on another', on.length === 0, on.join(', '));
+    if (phone) check(scope, 'on a phone the banner is as wide as the screen and clear of the top, which is the status line\'s', !!at.banner && at.banner.right - at.banner.left > size.width - 40 && at.banner.top > 120, JSON.stringify(at.banner));
+    await shot('generated-failed-build');
+  });
+
+  // ── Search & jump ──────────────────────────────────────────────────────────
+  await visit({}, async ({ page, shot }) => {
+    await press(page.locator('#kiln-fab')); await page.waitForTimeout(300);
+    await press(page.locator('#kiln-palette-btn'));
+    await page.locator('#kiln-pal-list .kiln-pal-item').first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(1800);
+    const rows = await page.evaluate(() => { const out = []; let sec = ''; for (const n of document.querySelectorAll('#kiln-pal-list > *')) { if (n.classList.contains('kiln-pal-sec')) sec = n.textContent; else if (n.classList.contains('kiln-pal-item')) out.push(`${sec}: ${n.querySelector('.kiln-pal-name')?.textContent}`); } return out; });
+    const listed = rows.filter(r => r.startsWith('Pages: ')).map(r => r.slice(7));
+    check(scope, 'Search & jump lists the site\'s real pages, the one behind a parameter route included', JSON.stringify(listed) === JSON.stringify([AT, `${AT}about/`, `${AT}events/one/`]), listed.join(' '));
+    check(scope, 'never the sign-in page, a repository path, or a route the built site does not have', !listed.some(p => /kiln|public|pricing|\.astro/.test(p)), listed.join(' '));
+    check(scope, 'and the fields that can be edited on this page', rows.some(r => r === 'On this page: Title · One') && rows.some(r => r === 'On this page: Heading · Home'), rows.filter(r => r.startsWith('On this page')).join(' | '));
+    await shot('generated-search');
+  });
+
+  // ── a suggest-only editor ──────────────────────────────────────────────────
+  await visit({ mode: 'suggest' }, async ({ page, worker, shot }) => {
+    const line = await statusLine(page);
+    check(scope, 'a suggest-only editor reads at once that suggestions cannot be made on this page', /Suggestions can’t be made here yet, because the site builds this page from its content files\.$/.test(line), line);
+    const fields = await page.evaluate(() => ({ editable: document.querySelectorAll('[data-kiln-source].kiln-field:not(.kiln-source-locked)').length, readOnly: document.querySelectorAll('[data-kiln-source].kiln-source-locked').length }));
+    check(scope, 'no field invites typing; each is read-only', fields.editable === 0 && fields.readOnly === 5, JSON.stringify(fields));
+    await press(title(page));
+    await page.waitForTimeout(350);
+    check(scope, 'a click on one says why, and it takes no typing', /A suggestion can’t be made to this text yet/.test(await statusLine(page)) && !(await title(page).evaluate(el => el.isContentEditable)), await statusLine(page));
+    const menu = await menuWords(page);
+    check(scope, 'no "Suggest changes" is offered, in the menu or beside the pencil', !menu.some(t => /Suggest|Publish/.test(t)) && !(await page.locator('#kiln-publish-quick').isVisible().catch(() => false)), menu.join(' | '));
+    check(scope, 'and the worker was never asked to save anything', worker.commits.length === 0);
+    await shot('generated-suggest-only');
+  });
+
+  // ── a comment-only editor ──────────────────────────────────────────────────
+  await visit({ mode: 'review', features: ['comments'] }, async ({ page, worker, shot }) => {
+    const line = await statusLine(page);
+    check(scope, 'a comment-only editor reads that comments cannot be left on this page, and nothing about outlines', /Comments can’t be left here yet, because the site builds this page from its content files\.$/.test(line) && !/outlined/.test(line), line);
+    const menu = await menuWords(page);
+    check(scope, 'the menu offers neither Comments nor Publish, and no heading with nothing under it', !menu.some(t => /Comments|Publish|This page/.test(t)), menu.join(' | '));
+    check(scope, 'and no comment is asked of the worker, which would refuse it', !worker.asked.some(a => /\/comments/.test(a)), worker.asked.filter(a => /comments/.test(a)).join(', '));
+    await shot('generated-comment-only');
+  });
+}
+
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
   if (ONLY && !label.includes(ONLY)) return;
@@ -2512,6 +2742,8 @@ try {
   await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
   // what only shows on a real site: a bar pinned to the top, blocks its own scripts change, History's way back, the editor's own questions
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} real sites  `, () => runRealSites(browser, size));
+  // a page a generator built: a field someone else changed, the site's real pages, and what a suggest-only or comment-only editor is offered
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} generated   `, () => runGenerated(browser, size));
   // the worker ends an invited editor's sign-in
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} sign-in ended`, () => runSignInEnded(browser, size));
   // …and they find out anywhere else in the editor
