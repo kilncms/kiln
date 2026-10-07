@@ -147,11 +147,17 @@ export default {
       // Recompute the body offset against the (possibly re-spliced) text.
       const now = parseSource(out, path);
       const start = now.bodyStart;
-      // Preserve the file's final-newline convention.
-      const hadFinalNl = /\r?\n$/.test(out) || out.length === start;
-      let v = bodyEdit.value;
-      if (hadFinalNl && !/\n$/.test(v)) v += '\n';
-      out = out.slice(0, start) + v;
+      const old = out.slice(start);
+      // The file stays as it was around the text: the blank lines between the
+      // frontmatter and the text, and whatever ends the file after it. Blank
+      // lines sent around the new text are not added to those.
+      const lead = /^(?:[ \t]*\r?\n)*/.exec(old)[0];
+      const had = old.slice(lead.length);
+      const text = bodyEdit.value.replace(/^(?:[ \t]*\r?\n)+/, '').replace(/\s+$/, '');
+      let tail = /\s*$/.exec(had)[0];
+      // A file with no text yet: the new text ends with a line break.
+      if (!had && text) tail = /\r\n/.test(out) ? '\r\n' : '\n';
+      out = out.slice(0, start) + lead + (text ? text + tail : '');
       applied.push(bodyEdit.key);
     }
 

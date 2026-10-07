@@ -148,7 +148,7 @@ test('fixture astro-min: ?type= hints on page refs parse and validate at apply t
   const src = readRepo('astro-min', timed.path);
   const good = astro.applyEdits(src, [{ pointer: formatPointer(timed.pointer), value: '19:15', type: timed.type }], timed.path);
   assert.deepEqual(good.applied, [formatPointer(timed.pointer)]);
-  assert.equal(good.content, src.replace("'18:00'", '19:15'));
+  assert.equal(good.content, src.replace("'18:00'", "'19:15'"));   // the line keeps its quotes
 });
 
 // ── fixture astro-broken: a bad parse never writes a byte ────────────────────

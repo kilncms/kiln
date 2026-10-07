@@ -98,6 +98,27 @@ export function validateSourceRequest({ file, edits, adapter: adapterId, actor }
 }
 
 /**
+ * What a `url` field holds: a web address, an email or a phone link, or a
+ * place on this site (a path from its root, a path from here, a place on the
+ * page). Nothing with a space in it, and no words: "Get tickets" is a label.
+ * An empty value is let through: it clears the field.
+ */
+export function isAddress(value) {
+  const v = String(value);
+  if (v === '') return true;
+  if (/[\s\u0000-\u001f\u007f]/.test(v)) return false;
+  return /^(?:https?:\/\/.|mailto:.|tel:.|\/(?!\/)|\.\.?\/|[#?])/i.test(v);
+}
+
+/**
+ * The reason for words in a url field. It begins the way the reason for an
+ * unsafe scheme does, so an editor from before this rule says its own
+ * sentence about addresses.
+ */
+export const NOT_AN_ADDRESS =
+  'not a safe URL: it needs to start with http:, https:, mailto: or tel:, or be a path on this site such as /about';
+
+/**
  * Rule 4: typed validation before applying (§9), per-edit and never fatal
  * (§8.1 — a bad value skips its edit, the rest of the batch still lands).
  * Returns [{ key, reason }] for the edits the commit must skip.
@@ -126,7 +147,9 @@ export function typedEditProblems(edits, { safeUrl, checkFragment }) {
       continue;
     }
     if (type === 'url') {
+      // A scheme that could run code, as always; then words that are no address at all.
       if (typeof value !== 'string' || safeUrl(value) !== value) skips.push({ key, reason: 'not a safe URL' });
+      else if (!isAddress(value)) skips.push({ key, reason: NOT_AN_ADDRESS });
       continue;
     }
     if (type === 'boolean') {

@@ -47,7 +47,7 @@ test('nested map value keeps its double-quoted style', () => {
 test('sequence element by index; quoted style preserved', () => {
   const r = applyYamlEdits(SRC, [{ key: 'a', segs: ['tags', '1'], value: 'remembrance' }]);
   assert.deepEqual(r.applied, ['a']);
-  assert.ok(r.text.includes('- "remembrance"'), r.text.match(/tags:[\s\S]*?venue/)[0]);
+  assert.ok(r.text.includes("- 'remembrance'"), r.text.match(/tags:[\s\S]*?venue/)[0]);
   assert.ok(r.text.includes('- faith'));
 });
 
@@ -104,13 +104,14 @@ test('block scalar replacement swaps the whole value safely', () => {
   assert.equal(validateYaml(r.text), null);
 });
 
-test('typed date/time values emit bare ISO; junk is refused', () => {
+test('typed date/time values are written as their lines were; junk is refused', () => {
   const r = applyYamlEdits(SRC, [
     { key: 'd', segs: ['date'], value: '2026-10-01', type: 'date' },
     { key: 's', segs: ['start'], value: '19:30', type: 'time' },
   ]);
   assert.deepEqual(r.applied.sort(), ['d', 's']);
   assert.ok(r.text.includes('date: 2026-10-01'));
+  assert.ok(r.text.includes("start: '19:30'"));
   assert.equal(serializeScalar('not a date\n', { type: 'date' }), null);
 });
 

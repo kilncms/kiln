@@ -18,7 +18,7 @@
  *    byte", §8.1) — locate errors surface as per-key skip reasons.
  */
 
-import { Parser, CST, parseDocument } from 'yaml';
+import { Parser, CST, parseDocument, parse } from 'yaml';
 
 const MAX_YAML = 512 * 1024; // frontmatter far beyond this is not a content file
 
@@ -89,12 +89,19 @@ function finishItem(item, parent) {
   return { token: v, item, parent };
 }
 
-/** Values YAML would silently retype if left unquoted. */
+/**
+ * Text a YAML reader would take for something else if it stood unquoted: a
+ * yes/no in any of its spellings, nothing at all, a number (a leading zero,
+ * an underscore, hex and octal included), a time or any other run of
+ * sixty-based digits (YAML 1.1 reads 18:30 as the number 1110), a date.
+ */
 function looksLikeYamlLiteral(s) {
-  return /^(true|false|yes|no|on|off|null|~|)$/i.test(s)
-    || /^[+-]?(\d[\d_]*)(\.\d*)?([eE][+-]?\d+)?$/.test(s)
+  return /^(true|false|yes|no|on|off|y|n|null|~|)$/i.test(s)
+    || /^[+-]?(\d[\d_]*(\.[\d_]*)?|\.\d[\d_]*)([eE][+-]?\d+)?$/.test(s)
+    || /^[+-]?0[xob][0-9a-f_]+$/i.test(s)
+    || /^[+-]?\d[\d_]*(:[0-5]?\d)+(\.[\d_]*)?$/.test(s)
     || /^[+-]?\.(inf|Inf|INF)$/.test(s) || /^\.(nan|NaN|NAN)$/.test(s)
-    || /^\d{4}-\d{2}-\d{2}/.test(s);
+    || /^\d{4}-\d{1,2}-\d{1,2}/.test(s);
 }
 
 /** Is this string safe to emit as a plain (unquoted) YAML scalar? */
@@ -102,31 +109,53 @@ function plainSafe(s) {
   if (s === '' || s !== s.trim()) return false;
   if (s.includes('\n') || s.includes(': ') || s.includes(' #')) return false;
   if (/[:#]$/.test(s)) return false;
-  if (/^[-?:,\[\]{}&*!|>'"%@`]/.test(s)) return false;
+  // A leading # would turn the whole value into a comment, and the field into nothing.
+  if (/^[-?:,\[\]{}&*!|>'"%@`#]/.test(s)) return false;
   if (/[\u0000-\u001f\u007f]/.test(s)) return false;
   return true;
 }
 
+/** Does `text`, standing as a value, read back as exactly the string `s`, in YAML 1.2 and in 1.1? */
+function readsBackAs(text, s) {
+  try {
+    return ['1.2', '1.1'].every(version => parse(`k: ${text}\n`, { version, logLevel: 'silent' }).k === s);
+  } catch { return false; }
+}
+
+/** `s` between single quotes, or null when it cannot stand on one single-quoted line. */
+function singleQuoted(s) {
+  if (/[\u0000-\u001f\u007f]/.test(s)) return null;
+  return `'${s.replaceAll("'", "''")}'`;
+}
+
 /**
- * Serialise one replacement value in a style that fits where it lands.
- *  - typed booleans/numbers emit bare literals;
- *  - dates/times emit bare ISO text (validated by the caller);
- *  - strings stay plain only when the original was plain AND the new value is
- *    unambiguous; anything else emits a double-quoted scalar. JSON string
- *    escaping is a strict subset of YAML double-quoted style, so
+ * Serialise one replacement value the way its line was written.
+ *  - a line that was quoted stays quoted, in the quotes it had, whatever the
+ *    value is: a number between quotes is text to the site that reads it;
+ *  - on an unquoted line (or a field that had no value) a yes/no, a number
+ *    and a date are written bare, because that is what they are meant to be;
+ *  - a time is quoted there, and so is any text a YAML reader could take for
+ *    something else (looksLikeYamlLiteral) or could not read back as written;
+ *  - everything else stays unquoted (inside [ ] or { }, only without a comma
+ *    or a bracket, which would end the value there). New quotes are double quotes: JSON
+ *    string escaping is a strict subset of YAML double-quoted style, so
  *    JSON.stringify output is always valid YAML.
  */
-export function serializeScalar(value, { type, originalStyle } = {}) {
-  if (type === 'boolean') return value === true || value === 'true' ? 'true' : 'false';
-  if (type === 'number') {
+export function serializeScalar(value, { type, originalStyle, flow = false } = {}) {
+  let s;
+  if (type === 'boolean') s = value === true || value === 'true' ? 'true' : 'false';
+  else if (type === 'number') {
     const n = Number(value);
     if (!Number.isFinite(n)) return null;
-    return String(n);
-  }
-  const s = String(value);
-  if (type === 'date' || type === 'time') return plainSafe(s) ? s : null;
+    s = String(n);
+  } else s = String(value);
+  if ((type === 'date' || type === 'time') && !plainSafe(s)) return null;
+  if (originalStyle === 'single') return singleQuoted(s) ?? JSON.stringify(s);
+  if (originalStyle === 'double') return JSON.stringify(s);
+  if (type === 'boolean' || type === 'number' || type === 'date') return s;
+  if (type === 'time') return JSON.stringify(s);
   const wantPlain = (originalStyle === 'plain' || originalStyle === undefined)
-    && plainSafe(s) && !looksLikeYamlLiteral(s);
+    && plainSafe(s) && !looksLikeYamlLiteral(s) && readsBackAs(s, s) && !(flow && /[,\[\]{}]/.test(s));
   return wantPlain ? s : JSON.stringify(s);
 }
 
@@ -158,7 +187,8 @@ export function locateValue(yamlText, segs) {
   // A block scalar's source runs through its final line break; the break
   // belongs to the document's line structure, not the value — keep it.
   while (end > start && (yamlText[end - 1] === '\n' || yamlText[end - 1] === '\r')) end--;
-  return { start, end, style: styleOf(res.token) };
+  // Inside [ ] or { } a comma or a bracket ends an unquoted value.
+  return { start, end, style: styleOf(res.token), flow: res.parent?.type === 'flow-collection' };
 }
 
 /**
@@ -179,7 +209,7 @@ export function applyYamlEdits(yamlText, edits) {
   for (const e of edits) {
     const loc = locateValue(yamlText, e.segs);
     if (loc.error) { skipped.push({ key: e.key, reason: loc.error }); continue; }
-    const out = serializeScalar(e.value, { type: e.type, originalStyle: loc.style });
+    const out = serializeScalar(e.value, { type: e.type, originalStyle: loc.style, flow: loc.flow });
     if (out === null) { skipped.push({ key: e.key, reason: 'value does not fit the field type' }); continue; }
     if (loc.insertAt !== undefined) {
       splices.push({ start: loc.insertAt, end: loc.insertAt, text: ' ' + out, key: e.key });
