@@ -3541,6 +3541,226 @@ async function runMedia(browser, size) {
   }
 }
 
+/**
+ * Entries on a generated page ("entries"): the list Astro built from a
+ * collection, and one entry's own page, on a site whose worker adds, removes,
+ * lists and schedules entries. The person moves an entry down, adds one from
+ * the collection's schema (told what is missing first; a name that is taken
+ * is passed over), removes one after the editor's own question, opens the
+ * draft that the list does not show and schedules it, publishes the new
+ * order, then on the entry's page goes back to an earlier version from
+ * History and changes the description in Page settings. The pages, the files
+ * and the schema are the real ones in test/fixtures/astro-entries.
+ */
+async function runEntries(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} entries     `;
+  const WORKER = 'https://worker.invalid';
+  const REPO = 'acme/site';
+  const AT = '/uicheck-entries/';
+  const DIR = 'src/content/posts';
+  const FIX = path.join(path.dirname(path.dirname(new URL(import.meta.url).pathname)), 'test', 'fixtures', 'astro-entries');
+  const files = Object.fromEntries(readdirSync(path.join(FIX, 'src', 'content', 'posts')).map(f => [`${DIR}/${f}`, readFileSync(path.join(FIX, 'src', 'content', 'posts', f), 'utf8')]));
+  const front = (text) => {
+    const fm = /^---\n([\s\S]*?)\n---/.exec(text)[1];
+    const out = {};
+    for (const line of fm.split('\n')) {
+      const m = /^([A-Za-z]+):\s*(.*)$/.exec(line);
+      if (!m) continue;
+      out[m[1]] = m[2] === 'true' ? true : m[2] === 'false' ? false : /^\d+$/.test(m[2]) ? Number(m[2]) : m[2];
+    }
+    return out;
+  };
+  const schema = readFileSync(path.join(FIX, 'built', 'kiln-schema.json'));
+  const pageOf = (name) => {
+    const built = readFileSync(path.join(FIX, 'built', name), 'utf8');
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${/<head>([\s\S]*?)<\/head>/.exec(built)[1]}<style>body{font:17px/1.55 system-ui,sans-serif;max-width:40rem;margin:0 auto;padding:0 16px 220px}ul.posts{list-style:none;padding:0}ul.posts li{border:1px solid #ddd;border-radius:10px;padding:10px 14px;margin:10px 0}</style></head><body>${/<body>([\s\S]*)<\/body>/.exec(built)[1]}<script src="/assets/kiln-config.js"></script><script src="/assets/kiln.js" defer></script></body></html>`;
+  };
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+  const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+  await context.addInitScript(([repo]) => {
+    try { localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' })); localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ }
+  }, [REPO]);
+  const worker = { created: [], removed: [], commits: [], schedules: [], reverts: [], taken: new Set([`${DIR}/autumn-fair-crafts.md`]) };
+  const blocked = [];
+  await context.route('**/*', async (route) => {
+    const req = route.request();
+    const u = new URL(req.url());
+    const json = (b, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': ORIGIN }, body: JSON.stringify(b) });
+    if (u.origin === ORIGIN && u.pathname.endsWith('kiln-config.js')) return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', mode: 'source', adapter: 'astro', styles: [] };` });
+    if (u.origin === ORIGIN && u.pathname === `${AT}posts/`) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: pageOf('posts.html') });
+    if (u.origin === ORIGIN && u.pathname === `${AT}posts/spring-fair/`) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: pageOf('spring-fair.html') });
+    if (u.origin === ORIGIN && u.pathname === '/kiln-schema.json') return route.fulfill({ contentType: 'application/json', body: schema });
+    if (u.origin === ORIGIN && u.pathname.startsWith(AT)) return route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Not found</h1>' });
+    if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
+    if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+    const p = decodeURIComponent(u.pathname);
+    const m = req.method();
+    const body = () => JSON.parse(req.postData() || '{}');
+    if (m === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
+    if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: ['newpost', 'history', 'schedule', 'pagesettings', 'draft'], mode: null } });
+    if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'], sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true });
+    const commit = (n) => ({ sha: String(n).padStart(40, 'c'), parent: 'b'.repeat(40) });
+    if (p === '/source/fields') {
+      const b = body();
+      if (!files[b.file]) return json({ error: 'content file no longer exists' }, 404);
+      const text = b.at ? files[b.file].replace('The village spring fair', 'The spring fair') : files[b.file];
+      return json({ format: 'yaml', fields: front(text), body: text.split('\n---\n')[1] || '', sha: 'f'.repeat(40) });
+    }
+    if (p === '/source/read') { const b = body(); return json({ value: String(front(files[b.file] || '')[b.pointer.split('/').pop()] ?? ''), sha: 'f'.repeat(40) }); }
+    if (p === '/source/create') {
+      const b = body();
+      if (worker.taken.has(b.file) || files[b.file]) return json({ error: 'a file with that name is already there' }, 409);
+      worker.created.push(b);
+      return json({ ok: true, file: b.file, commit: commit(1) });
+    }
+    if (p === '/source/remove') { worker.removed.push(body().file); return json({ ok: true, file: body().file, commit: commit(2) }); }
+    if (p === '/source/history') {
+      const b = body();
+      if (b.folder) return json({ versions: [] });
+      return json({ versions: [
+        { sha: 'a1'.padEnd(40, '1'), parent: 'a0'.padEnd(40, '0'), when: '2026-10-05T10:00:00Z', who: 'Sam', what: 'Kiln: update src/content/posts/spring-fair.md' },
+        { sha: 'a0'.padEnd(40, '0'), parent: null, when: '2026-09-01T09:00:00Z', who: 'Site Owner', what: 'Add the spring fair' },
+      ] });
+    }
+    if (p === '/source/revert') { worker.reverts.push(body()); return json({ ok: true, file: body().file, commit: commit(3) }); }
+    if (p === '/source/commit') { const b = body(); worker.commits.push(b); return json({ ok: true, file: b.file, commit: commit(4 + worker.commits.length), applied: b.edits.map(e => e.key), skipped: [] }); }
+    if (p === '/schedule' && m === 'POST') { worker.schedules.push(body()); return json({ ok: true, id: 'e'.repeat(32), at: Date.parse(body().at) }); }
+    if (p === '/schedules') return json({ schedules: [] });
+    const gh = `/gh/repos/${REPO}`;
+    if (p.startsWith(`${gh}/git/trees/`)) return json({ tree: Object.keys(files).map(x => ({ path: x, type: 'blob' })), truncated: false });
+    if (p.startsWith(`${gh}/commits/`) && p.endsWith('/status')) return json({ state: 'success', total_count: 1, statuses: [{ state: 'success' }] });
+    if (p.includes('/deployments')) return json([]);
+    if (p === '/comments' || p === '/comments/counts') return json({ error: 'bad path' }, 400);
+    return json({ message: 'Not Found' }, 404);
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  const boxes = [];
+  page.on('dialog', async (d) => { boxes.push(d.message()); await d.dismiss().catch(() => {}); });
+  const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+  const statusLine = () => page.evaluate(() => { const el = document.getElementById('kiln-status'); return el && !el.hidden ? el.textContent.trim() : ''; });
+  const modalText = () => page.locator('#kiln-modal').innerText().catch(() => '');
+  const button = (text) => page.locator('#kiln-modal button', { hasText: text }).first();
+  const menuItem = async (id) => { await press(page.locator('#kiln-fab')); await page.waitForTimeout(350); await press(page.locator(`#${id}`)); };
+  try {
+    await page.goto(`${ORIGIN}${AT}posts/`, { waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(800);
+    const items = page.locator('ul.posts > li');
+    check(scope, 'each entry in the list has its own Entry button', await page.locator('ul.posts > li > .kiln-entry-ctl').count() === 2);
+    check(scope, 'and the list has a way to add one', await page.locator('.kiln-entry-add').count() === 1);
+    const ctl = await box(page.locator('ul.posts > li > .kiln-entry-ctl').first());
+    check(scope, 'the Entry button is on screen and big enough to press', ctl.left >= 0 && ctl.right <= size.width && ctl.height >= (phone ? 36 : 20), `${Math.round(ctl.left)}–${Math.round(ctl.right)} × ${Math.round(ctl.height)}`);
+
+    // Move the first entry down.
+    await press(items.nth(0).locator('.kiln-entry-ctl'));
+    await page.locator('#kiln-modal .kiln-entry-acts button').first().waitFor({ state: 'visible', timeout: 5000 });
+    const panel = await modalText();
+    await shot('entries-panel');
+    check(scope, 'the entry\'s box says it is on the site and offers what can be done', /On the site\./.test(panel) && ['Make it a draft', 'Move down', 'Copy', 'History', 'Remove'].every(t => panel.includes(t)) && !panel.includes('Move up'), panel.replace(/\s+/g, ' ').slice(0, 160));
+    await press(button('Move down'));
+    await page.waitForTimeout(400);
+    check(scope, 'moving it down shows the new order on the page at once', (await items.nth(0).innerText()).includes('Summer fete') && (await items.nth(1).innerText()).includes('Spring fair'));
+
+    // Add an entry: what is missing is said first; a name that is taken is passed over.
+    await press(page.locator('.kiln-entry-add'));
+    await page.locator('#kiln-ne-title').waitFor({ state: 'visible', timeout: 5000 });
+    check(scope, 'the new-entry box asks for the title and the date the schema requires, and starts it as a draft', await page.locator('#kiln-ne-date').count() === 1 && await page.locator('#kiln-ne-draft').isChecked());
+    await page.locator('#kiln-ne-title').fill('Autumn fair: crafts');
+    await press(page.locator('#kiln-ne-go'));
+    await page.waitForTimeout(250);
+    check(scope, 'without a date it says the date is needed, and adds nothing', /Date is needed/.test(await modalText()) && worker.created.length === 0, (await modalText()).replace(/\s+/g, ' ').slice(-80));
+    await page.locator('#kiln-ne-date').fill('2026-09-26');
+    await shot('entries-new');
+    await press(page.locator('#kiln-ne-go'));
+    await page.waitForTimeout(900);
+    const made = worker.created[0];
+    check(scope, 'the entry is made under a name from its title that is not taken, as a draft', made?.file === `${DIR}/autumn-fair-crafts-2.md` && made.fields.title === 'Autumn fair: crafts' && made.fields.date === '2026-09-26' && made.fields.draft === true, JSON.stringify(made));
+    check(scope, 'and the line says where to find it', /as a draft/.test(await statusLine()), await statusLine());
+
+    // Remove one, asked in the editor's own box.
+    await press(items.nth(0).locator('.kiln-entry-ctl'));
+    await button('Remove').waitFor({ state: 'visible', timeout: 5000 });
+    await press(button('Remove'));
+    await page.waitForTimeout(300);
+    const asked = await modalText();
+    check(scope, 'removing asks first, in the editor\'s own box, and says History brings it back', /Remove “Summer fete”\?/.test(asked) && /History can bring it back/.test(asked), asked.replace(/\s+/g, ' ').slice(0, 160));
+    await press(page.locator('#kiln-modal button', { hasText: /^Remove$/ }));
+    await page.waitForTimeout(700);
+    check(scope, 'it is removed in one commit, and dimmed on the page until the site has rebuilt', JSON.stringify(worker.removed) === JSON.stringify([`${DIR}/summer-fete.md`]) && await items.nth(0).evaluate(el => el.classList.contains('kiln-entry-removed')));
+    check(scope, 'and the entry\'s box is put away', await page.locator('#kiln-modal').count() === 0);
+
+    // The draft the list does not show, from Entries & drafts; scheduled.
+    await menuItem('kiln-entries');
+    await page.locator('#kiln-el-list .kiln-inv-row').first().waitFor({ state: 'visible', timeout: 5000 });
+    const listed = await page.locator('#kiln-el-list').innerText();
+    await shot('entries-list');
+    check(scope, 'Entries & drafts lists the collection with its draft first', /^Autumn walk\s+Draft/.test(listed.trim()) && /Spring fair/.test(listed), listed.replace(/\s+/g, ' ').slice(0, 120));
+    await press(page.locator('#kiln-el-list .kiln-inv-row').first().locator('button'));
+    await button('Put it on the site later').waitFor({ state: 'visible', timeout: 5000 });
+    check(scope, 'the draft\'s box says it is a draft', /A draft: it is not on the site\./.test(await modalText()));
+    await press(button('Put it on the site later'));
+    await page.locator('#kiln-es-at').waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('#kiln-es-at').fill('2026-10-30T09:00');
+    await press(page.locator('#kiln-es-go'));
+    await page.waitForTimeout(500);
+    const sched = worker.schedules[0];
+    check(scope, 'scheduling hands the worker the draft mark to take off, at that time', sched?.source?.file === `${DIR}/autumn-walk.md` && sched.source.edits[0].pointer === '/frontmatter/draft' && sched.source.edits[0].value === false && /Scheduled/.test(await modalText()), JSON.stringify(sched).slice(0, 200));
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+
+    // Publish the new order.
+    await press(page.locator('#kiln-publish-quick'));
+    await page.waitForTimeout(450);
+    const sheet = await page.locator('.kiln-pubsheet').innerText().catch(() => '');
+    check(scope, 'the publish sheet says the entries moved, in words', (sheet.match(/Moved in the list\./g) || []).length === 2, sheet.replace(/\s+/g, ' ').slice(0, 160));
+    if (await page.locator('#kiln-pubsheet-go').count()) await press(page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(1200);
+    const orders = Object.fromEntries(worker.commits.map(c => [c.file.split('/').pop(), c.edits.map(e => [e.pointer, e.value])]));
+    check(scope, 'one commit per entry, each with its new order', JSON.stringify(orders) === JSON.stringify({ 'spring-fair.md': [['/frontmatter/order', 2]], 'summer-fete.md': [['/frontmatter/order', 1]] }), JSON.stringify(orders));
+
+    // The entry's own page: History and Page settings.
+    worker.commits.length = 0;
+    await page.goto(`${ORIGIN}${AT}posts/spring-fair/`, { waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(800);
+    check(scope, 'on its own page the entry has its Entry button too', await page.locator('article > .kiln-entry-ctl').count() === 1);
+    await menuItem('kiln-history');
+    await page.locator('#kiln-sh-list .kiln-hist-row').first().waitFor({ state: 'visible', timeout: 5000 });
+    const hist = await page.locator('#kiln-sh-list').innerText();
+    await shot('entries-history');
+    check(scope, 'History lists the versions of the page\'s file, newest first, with who made them', /now/.test(hist) && /Sam/.test(hist) && /Site Owner/.test(hist), hist.replace(/\s+/g, ' ').slice(0, 160));
+    await press(page.locator('#kiln-sh-list .kiln-hist-row').nth(1).locator('button', { hasText: 'Preview' }));
+    await page.locator('#kiln-pv .kiln-pv-fields').waitFor({ state: 'visible', timeout: 5000 });
+    check(scope, 'Preview shows that version\'s fields and text', /The spring fair, from ten until four/.test(await page.locator('#kiln-pv').innerText()));
+    await press(page.locator('#kiln-pv-back'));
+    await page.waitForTimeout(300);
+    check(scope, 'going back asks first, in the editor\'s own box', /Go back to this version\?/.test(await modalText()));
+    await press(page.locator('#kiln-modal button', { hasText: /^Go back to this$/ }));
+    await page.waitForTimeout(600);
+    check(scope, 'and puts the file back as it was at that version', worker.reverts[0]?.file === `${DIR}/spring-fair.md` && worker.reverts[0]?.toSha === 'a0'.padEnd(40, '0'), JSON.stringify(worker.reverts[0]));
+
+    await menuItem('kiln-pagesettings');
+    await page.locator('#kiln-sp-title').waitFor({ state: 'visible', timeout: 5000 });
+    check(scope, 'Page settings shows the entry\'s title, description and social picture', await page.locator('#kiln-sp-title').inputValue() === 'Spring fair' && /from ten until four/.test(await page.locator('#kiln-sp-desc').inputValue()) && /social\.png/.test(await page.locator('#kiln-sp-picname').innerText()));
+    await page.locator('#kiln-sp-desc').fill('x'.repeat(170));
+    await press(page.locator('#kiln-sp-go'));
+    await page.waitForTimeout(250);
+    check(scope, 'a description longer than the schema takes is not published, and that is said', /at most 160 characters/.test(await page.locator('#kiln-sp-said').innerText()) && worker.commits.length === 0);
+    await page.locator('#kiln-sp-desc').fill('The village spring fair, with stalls from ten until four.');
+    await shot('entries-settings');
+    await press(page.locator('#kiln-sp-go'));
+    await page.waitForTimeout(1200);
+    const sent = worker.commits[0]?.edits || [];
+    check(scope, 'Publish sends the new description, and only that, to the entry\'s file', worker.commits.length === 1 && worker.commits[0].file === `${DIR}/spring-fair.md` && sent.length === 1 && sent[0].pointer === '/frontmatter/description' && sent[0].value === 'The village spring fair, with stalls from ten until four.', JSON.stringify(worker.commits).slice(0, 200));
+  } finally {
+    check(scope, 'no script errors, no browser box, nothing outside the local server', errors.length === 0 && boxes.length === 0 && blocked.length === 0, [...errors, ...boxes, ...blocked].join(' | ').slice(0, 200));
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
   if (ONLY && !label.includes(ONLY)) return;
@@ -3571,6 +3791,8 @@ try {
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} formatted   `, () => runFormatted(browser, size));
   // pictures and link addresses from a content file: replaced, described, checked against the site's schema, the pictures committed first
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} media       `, () => runMedia(browser, size));
+  // entries of a collection: move, add from the schema, remove, a draft scheduled, the new order published, History and Page settings
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} entries     `, () => runEntries(browser, size));
   // the worker ends an invited editor's sign-in
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} sign-in ended`, () => runSignInEnded(browser, size));
   // …and they find out anywhere else in the editor

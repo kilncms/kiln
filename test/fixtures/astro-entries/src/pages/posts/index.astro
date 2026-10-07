@@ -1,0 +1,16 @@
+---
+import { getCollection } from 'astro:content';
+import { kilnSource, kilnEntry } from '../../lib/kiln-astro.mjs';
+const posts = (await getCollection('posts', ({ data }) => !data.draft)).sort((a, b) => (a.data.order ?? 0) - (b.data.order ?? 0));
+---
+<html><head><title>News</title></head><body>
+<h1>News</h1>
+<ul class="posts">
+{posts.map(p => (
+  <li {...kilnEntry(p)}>
+    <h2><a href={`/posts/${p.id}/`} {...kilnSource(p, 'title')}>{p.data.title}</a></h2>
+    <p {...kilnSource(p, 'summary')}>{p.data.summary}</p>
+  </li>
+))}
+</ul>
+</body></html>

@@ -95,6 +95,8 @@ export function validateSourceRequest({ file, edits, adapter: adapterId, actor }
       return { status: 400, error: 'bad pointer', detail: String((e && e.pointer) ?? '') };
     }
     const clean = { pointer: e.pointer, value: e.value, type: e.type, key: e.key ?? e.pointer };
+    // A top-level field the file may not have yet (a draft mark, an order, a description): added on a line of its own.
+    if (e.add === true) clean.add = true;
     // What the field held when the editor read it, when the editor says so (changedSinceRead).
     if (isSingleValue(e.was)) clean.was = e.was;
     cleanEdits.push(clean);
@@ -320,6 +322,61 @@ function addedToken(before, after) {
     return t;
   }
   return null;
+}
+
+// ─── Entries: a new one, a copy, one removed ────────────────────────────────
+
+/** Said when a new entry would take the name of a file that is there. */
+export const ENTRY_EXISTS = 'a file with that name is already there';
+
+const FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
+const FIELDS_MAX = 50;
+const BODY_MAX = 512 * 1024;
+
+/**
+ * POST /source/create, rules 1–4: who may, which file, what goes in it.
+ * `fields` are the new entry's top-level front matter values (text, numbers,
+ * yes/no, dates, lists of those); `body` its Markdown text (none of it may
+ * run: nothing is there to keep); `copyOf` another entry to copy, with these
+ * fields written over it (or added). Returns { status, error, detail? } to
+ * refuse, or { adapter, file, copyOf, edits, content } to go on (`content`
+ * is the new file's text when it is not a copy).
+ */
+export function entryRequest({ file, fields, body = '', copyOf, adapter: adapterId, actor } = {}, deps) {
+  const refuse = sourceModeRefusal(actor);
+  if (refuse) return refuse;
+  const adapter = getAdapter(adapterId);
+  if (!adapter || typeof adapter.newEntry !== 'function') return { status: 400, error: 'unknown adapter', detail: String(adapterId || '') };
+  const p = refuseSourcePath(file, actor, deps, { adapter });
+  if (p.error) return { status: p.status, error: p.error };
+  let from = null;
+  if (copyOf !== undefined && copyOf !== null) {
+    const c = refuseSourcePath(copyOf, actor, deps, { adapter });
+    if (c.error) return { status: c.status, error: c.error };
+    from = c.file;
+    if (from === p.file) return { status: 409, error: ENTRY_EXISTS };
+  }
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return { status: 400, error: 'bad fields' };
+  const names = Object.keys(fields);
+  if (names.length > FIELDS_MAX) return { status: 400, error: 'bad fields' };
+  const scalar = (v) => (typeof v === 'string' && v.length <= 10000) || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v));
+  for (const k of names) {
+    const v = fields[k];
+    if (!FIELD_NAME.test(k)) return { status: 400, error: 'bad field name', detail: k };
+    if (!(scalar(v) || (Array.isArray(v) && v.length <= 50 && v.every(scalar)))) return { status: 400, error: 'bad field value', detail: k };
+    for (const t of Array.isArray(v) ? v : [v]) {
+      if (typeof t === 'string' && deps.checkFragment(t)) return { status: 422, error: 'value may not contain script markup', detail: k };
+    }
+  }
+  if (typeof body !== 'string' || body.length > BODY_MAX) return { status: 400, error: 'bad body' };
+  if (body && markdownProblems([{ pointer: '/body', value: body, key: 'body' }], () => '', { checkFragmentWrite: deps.checkFragmentWrite, mdx: /\.mdx$/i.test(p.file) }).length) {
+    return { status: 422, error: 'value may not contain script markup', detail: 'body' };
+  }
+  // A copy's fields are written over the ones it has: as yes/no, a number or a date where that is what they are.
+  const typeOf = (v) => (typeof v === 'boolean' ? 'boolean' : typeof v === 'number' ? 'number'
+    : typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? 'date' : undefined);
+  const edits = names.map(k => ({ pointer: `/frontmatter/${k}`, value: fields[k], key: k, add: true, ...(typeOf(fields[k]) && { type: typeOf(fields[k]) }) }));
+  return { adapter, file: p.file, copyOf: from, edits, content: from ? null : adapter.newEntry(fields, body) };
 }
 
 /**

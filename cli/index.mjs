@@ -214,10 +214,11 @@ async function detectSiteMode() {
       same mental model as data-cms). The helper for that is one file,
       src/lib/kiln-astro.mjs, which this wizard adds below (the
       @kilncms/astro package is not on npm yet):
-        import { kilnSource, kilnBody } from '../lib/kiln-astro.mjs';
+        import { kilnSource, kilnBody, kilnEntry } from '../lib/kiln-astro.mjs';
         <h3 {...kilnSource(entry, 'title')}>{entry.data.title}</h3>
         <Image {...kilnSource(entry, 'cover', { type: 'image', alt: 'coverAlt' })} … />
         <div {...kilnBody(entry)}><Content /></div>
+        <li {...kilnEntry(entry)}>…</li>   (a card in a list: drafts, order, copy, remove)
       So that the editor turns away a value your build would reject, add
       the same file's integration to astro.config.mjs:
         import kiln from './src/lib/kiln-astro.mjs';

@@ -79,6 +79,19 @@ export function fakeGitHub({ repo = 'acme/site', files = {}, defaultBranch = 'ma
           if (!e) return notFound();
           return jsonRes({ type: 'file', path: file, sha: e.sha, size: blobs.get(e.sha).length, encoding: 'base64', content: blobs.get(e.sha).toString('base64').replace(/(.{60})/g, '$1\n') });
         }
+        if (method === 'DELETE') {
+          const branch = body.branch || defaultBranch;
+          const parent = refs.get(`heads/${branch}`);
+          if (!parent) return jsonRes({ message: `Branch ${branch} not found` }, 404);
+          const map = new Map(trees.get(commits.get(parent).tree));
+          const had = map.get(file);
+          if (!had) return notFound();
+          if (body.sha !== had.sha) return jsonRes({ message: `${file} does not match ${body.sha}` }, 409);
+          map.delete(file);
+          const c = putCommit({ tree: putTree(map), parents: [parent], author: body.author || author, message: body.message });
+          refs.set(`heads/${branch}`, c);
+          return wrote(jsonRes({ content: null, commit: { sha: c, parents: [{ sha: parent }] } }));
+        }
         if (method === 'PUT') {
           const branch = body.branch || defaultBranch;
           const parent = refs.get(`heads/${branch}`);
@@ -96,6 +109,22 @@ export function fakeGitHub({ repo = 'acme/site', files = {}, defaultBranch = 'ma
         }
       }
 
+      // The commits that changed one file, newest first (first parents only, as a plain history reads).
+      if (path === '/commits' && method === 'GET' && q.get('path')) {
+        const file = q.get('path');
+        const out = [];
+        for (let c = resolve(q.get('sha') || defaultBranch); c && out.length < Number(q.get('per_page') || 30);) {
+          const cm = commits.get(c);
+          const parent = cm.parents[0];
+          // A folder: any file under it changed.
+          const under = (t) => JSON.stringify([...t].filter(([p]) => p === file || p.startsWith(`${file}/`)));
+          const now = under(trees.get(cm.tree));
+          const was = parent ? under(trees.get(commits.get(parent).tree)) : '[]';
+          if (now !== was) out.push({ sha: c, parents: cm.parents.map(sha => ({ sha })), commit: { author: { ...cm.author, date: '2026-10-07T12:00:00Z' }, message: cm.message } });
+          c = parent;
+        }
+        return jsonRes(out);
+      }
       if ((m = /^\/git\/ref\/(.+)$/.exec(path)) && method === 'GET') return refs.has(m[1]) ? jsonRes({ ref: `refs/${m[1]}`, object: { type: 'commit', sha: refs.get(m[1]) } }) : notFound();
       if ((m = /^\/git\/commits\/(\w+)$/.exec(path)) && method === 'GET') {
         const c = commits.get(m[1]);

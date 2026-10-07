@@ -47,6 +47,26 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   path only when the picture is in the repository, and refuses a new picture in
   Markdown that is not there (`/healthz` says `sourceMedia`; with an older
   worker these stay read-only).
+- **Entries on a site Astro builds.** `kilnEntry(entry)` marks a card or an
+  entry's article, and the editor gives it an Entry button: make it a draft or
+  put it on the site, put a draft on the site later with the worker's
+  scheduler, move it up or down by the collection's order field, copy it, see
+  its History, remove it (asked first in the editor's own box; a commit that
+  History undoes). **New post or page** adds an entry from the collection's
+  schema: the box asks for the title and each required field, the file is named
+  from the title and never written over. **Entries & drafts** lists a
+  collection with its drafts first. Drafts follow `draft: true`, or the field
+  `kiln-config.js` names (`draftField`, `draftValue`). New worker routes:
+  `/source/create`, `/source/remove`, `/source/fields`, `/source/history`, and
+  `/schedule` with `source` edits; `/healthz` says `sourceEntries`.
+- **History and Page settings on a generated page.** History lists the
+  versions of the page's entry file with a preview and **Go back to this**, and
+  the entries removed from the page's collections with **Bring it back**. Page
+  settings changes the entry's title, description and social picture in its
+  front matter. **Schedule for later…** takes staged content-file edits.
+- **A field an entry does not have yet** can be added by an edit that asks for
+  it (`add: true`), in YAML, TOML or JSON front matter: a draft mark, an
+  order, a description.
 - **The site's own schema, before the build.** `kiln()` in `astro.config.mjs`
   publishes the collections' schemas at `/kiln-schema.json` at the end of each
   build, from what Astro writes in `.astro/collections/`. The editor reads it

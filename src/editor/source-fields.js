@@ -95,6 +95,8 @@ export function groupSourceEdits(pending, { repo, branch, adapter, was } = {}) {
     const type = staged?.type ?? parsed.type;
     const edit = { pointer: parsed.rawPointer, value: wireValue(staged?.value, type, parsed, staged?.md), key: ref };
     if (type) edit.type = type;
+    // A field the entry may not have yet (a draft mark, an order, a description): added on its own line.
+    if (staged?.add === true) edit.add = true;
     // What the field held when the page was read, when that is known: the
     // worker leaves the edit out if the file no longer says so (changedRefs).
     const read = typeof was === 'function' ? was(ref) : undefined;
@@ -235,7 +237,7 @@ export function revertRequest(committed, { repo, branch } = {}) {
  */
 export function parseSourceCapabilities(body) {
   if (!body || typeof body !== 'object' || !Array.isArray(body.modes)) {
-    return { legacy: true, source: false, adapters: [], markdown: false, media: false };
+    return { legacy: true, source: false, adapters: [], markdown: false, media: false, entries: false };
   }
   return {
     legacy: false,
@@ -247,6 +249,9 @@ export function parseSourceCapabilities(body) {
     // A worker that writes a picture field only with a picture that is in the
     // repository, and checks a link address field (picturesToCheck).
     media: body.sourceMedia === true,
+    // A worker that adds, copies, removes, lists and schedules entries
+    // (/source/create, /source/remove, /source/fields, /source/history).
+    entries: body.sourceEntries === true,
   };
 }
 

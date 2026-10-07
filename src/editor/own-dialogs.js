@@ -53,6 +53,16 @@ export function ownDialogCopy(kind, info = {}) {
       body: `On screen: “${info.onScreen}”. In the file: “${info.inFile}”. A script on the site may change it when the page loads. If you make it editable, edits replace the words in the file, and the script may go on changing what visitors see.`,
       cancel: 'Leave it', go: 'Make it editable' };
   }
+  if (kind === 'remove-entry') {
+    return { title: `Remove “${info.title}”?`,
+      body: `It comes off the site once the site has rebuilt, in a minute or two. ${info.path} stays in the site’s history, and History can bring it back.`,
+      cancel: 'Keep it', go: 'Remove' };
+  }
+  if (kind === 'go-back') {
+    return { title: 'Go back to this version?',
+      body: `${info.path} is put back as it was ${info.when}, and the site rebuilds with it. The version it has now stays in History.`,
+      cancel: 'Cancel', go: 'Go back to this' };
+  }
   if (kind === 'start-over') {
     // The demo: what this browser holds of it, named, so the question says what the answer costs.
     const n = info.unpublished || 0;

@@ -1,0 +1,17 @@
+---
+import { getCollection, render } from 'astro:content';
+import { kilnSource, kilnBody, kilnEntry } from '../../lib/kiln-astro.mjs';
+export async function getStaticPaths() {
+  const posts = await getCollection('posts', ({ data }) => !data.draft);
+  return posts.map(p => ({ params: { id: p.id }, props: { post: p } }));
+}
+const { post } = Astro.props;
+const { Content } = await render(post);
+const d = post.data;
+---
+<html><head><title>{d.title}</title>{d.description && <meta name="description" content={d.description} />}{d.image && <meta property="og:image" content={d.image} />}</head><body>
+<article {...kilnEntry(post)}>
+<h1 {...kilnSource(post, 'title')}>{d.title}</h1>
+<div class="post-body" {...kilnBody(post)}><Content /></div>
+</article>
+</body></html>

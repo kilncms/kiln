@@ -186,14 +186,38 @@ Honest scope, today:
   names a picture on another site, or uses a path alias (`~/assets/…`), since
   there is no folder to follow. Choosing a picture that is already in the
   repository, instead of uploading one, is not offered for content pictures yet.
+- **In:** entries. An element stamped `kilnEntry(entry)` (a card in a list,
+  the article on the entry's page) gets an **Entry** button: make it a draft or
+  put it on the site, put a draft on the site later (the worker's scheduler),
+  move it up or down where the collection has an order field, copy it, see its
+  History, remove it. **New post or page** adds an entry to a collection on the
+  page: the editor's own box asks for the title and every field the
+  collection's schema requires, names the file from the title, and never
+  writes over a file that is there. **Entries & drafts** lists a collection's
+  files with its drafts first, so a draft the site does not show can be
+  reached. Drafts follow the site's own mark: `draft: true`, unless the Kiln
+  config names another field (`draftField`, with `draftValue: false` for a
+  field like `published`); a site whose schema has no such field is not
+  offered drafts. Adding, copying and removing are commits the moment they are
+  confirmed (and need the "New posts & pages" grant); a removed entry comes
+  back from History. A draft mark and a new order are staged and published
+  like any edit. **Schedule for later…** schedules staged content-file edits.
+- **In:** History and Page settings on a generated page. History lists the
+  versions of the page's own entry file (and of the other files it shows),
+  with a preview of each and **Go back to this**; it also lists entries
+  removed from the page's collections, each with **Bring it back**. Page
+  settings changes the entry's title, its description (`description`,
+  `summary` or `excerpt`) and its social picture (`image`, `ogImage`,
+  `socialImage`, `cover` or `heroImage`), whichever the entry or its schema has.
+  (These need a worker that says `sourceEntries` in its `/healthz`; with an
+  older one both say they can't, as before.)
 - **Not yet:** date-picker-style controls (typed values are edited as text, in
   the form they are stored: a date is typed `2026-09-20` even where the page
-  writes it out), adding, removing or
-  reordering entries, History and Page settings on a generated page (both say
-  so), Eleventy / Hugo / Jekyll adapters (Astro first), suggest-mode and
-  scheduled source edits, and comments on a generated page. A suggest-only
-  editor finds these fields read-only, and Comments is not in the menu on such
-  a page: nothing is offered there that would then be refused.
+  writes it out), Eleventy / Hugo / Jekyll adapters (Astro first; none of the
+  three is built yet), suggestions for content files, and comments on a
+  generated page. A suggest-only editor finds these fields read-only, and
+  Comments is not in the menu on such a page: nothing is offered there that
+  would then be refused.
 
 The full design is [docs/SOURCE-MODE-SPEC.md](docs/SOURCE-MODE-SPEC.md).
 

@@ -68,6 +68,8 @@ What the editor can do with each kind of element today:
   that uses an alias (`~/assets/…`) stays as it is and says why.
 - **A picture inside the body**: click it while the text is open, and it is
   replaced and described the same way; only its line of Markdown changes.
+- **An entry** (`kilnEntry(entry)` on the element that shows it): drafts,
+  order, a copy, removing it, its History; see `kilnEntry` below.
 - **A link** (`opts.href` on an `<a>`): its words are edited in place and its
   address is typed in the toolbar beside them. `{ type: 'url' }` on an `<a>`
   makes the address the field: the toolbar takes the address and the words
@@ -133,6 +135,34 @@ find the field in the collection's schema.
 Attrs for the entry's whole markdown body. Put it on the element that wraps
 `<Content />`. Both `.md` and `.mdx` bodies are edited with the toolbar; in
 `.mdx` the code (imports, exports, components, expressions) stays as written.
+
+### `kilnEntry(entry)`
+
+Attrs for the element that shows one entry: a card in a list, or the article
+on the entry's own page. Stamped as `data-kiln-entry`.
+
+```astro
+<ul>{posts.map(p => <li {...kilnEntry(p)}><h2 {...kilnSource(p, 'title')}>{p.data.title}</h2></li>)}</ul>
+```
+
+The editor puts an **Entry** button there: make it a draft or put it on the
+site, put a draft on the site later, move it up or down, copy it, its
+History, remove it. On a list of two or more, an **Add an entry** button
+follows the last one.
+
+- **Drafts** follow your site's own mark: `draft: true`, unless
+  `kiln-config.js` names another field (`draftField: 'published', draftValue:
+  false` for a site that publishes on `published: true`). A collection whose
+  schema has no such field is not offered drafts. Your pages decide what a
+  draft does (usually `getCollection('posts', ({ data }) => !data.draft)`).
+- **Order** uses a number field named `order`, `sort`, `weight`, `position` or
+  `priority`, or the one `kiln-config.js` names as `orderField`. Your pages
+  sort by it.
+- **A new entry** is a file in the folder the collection's entries on the page
+  share, named from its title. With the integration's schema the editor asks
+  for every field the schema requires; a required field it cannot ask for (a
+  group of fields, a picture) is said instead of making a file the build would
+  reject.
 
 ### `kiln()` (default export)
 

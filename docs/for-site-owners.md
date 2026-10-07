@@ -354,9 +354,9 @@ Two things worth knowing:
   force push) and returns the edits to the page, unpublished. If the file has changed
   since, it writes nothing and points to History. It covers a publish that changed
   one page; shared headers and footers go through History. On a site a generator
-  builds, a publish to content files has no Undo line and no History yet: a failed
-  build offers "Undo this change", and any version can be brought back in the
-  repository.
+  builds, a publish to content files has no Undo line: a failed build offers
+  "Undo this change", and History lists each content file's versions with
+  **Go back to this** (and brings back a removed entry).
 - **Drafts** — save work privately without publishing; come back to it later.
 - **Scheduling** — publish at a chosen time. The worker re-applies the edits at fire
   time (and re-checks the author still has access).

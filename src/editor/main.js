@@ -14,7 +14,7 @@ import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValu
 import {
   makeGh, getFile, resolvePageFile, editFile, putFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
-import { SOURCE_ATTR, parseSourceRef } from '../adapters/pointer.js';
+import { SOURCE_ATTR, parseSourceRef, safeSourcePath } from '../adapters/pointer.js';
 import { uploadProblem, fileRefusalText, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../file-policy.js';
 import { generatorSignals } from '../adapters/detect.js';
 import {
@@ -27,7 +27,8 @@ import {
 import {
   prepare as richPrepare, plan as richPlan, prepSentence, planSentence, keepSentence, sheetWords, KEEP_ATTR,
 } from './source-rich.js';
-import { pictureTarget, inlinePicture, pictureName, addressValue } from './source-media.js';
+import { pictureTarget, inlinePicture, pictureName, addressValue, placeSentence } from './source-media.js';
+import { collectionsOn, entryFileName, entryForm, entryValues, cannotSentence, draftRule, isDraft, orderRule, moveEntry, versionWords } from './source-entries.js';
 import { pictureValue, pictureFileName } from '../adapters/pictures.js';
 import { fieldSchema, valueProblem, problemSentence, readSchemaDoc } from './source-schema.js';
 import { initPalette, openPalette } from './palette.js';
@@ -2958,7 +2959,8 @@ function publishItems({ light = false } = {}) {
     const was = state.sourceBase.get(ref) ?? '';
     const attr = rf?.attrEls?.[0]?.attr;
     let parts;
-    if (rf?.picture) parts = [{ type: 'image', before: rf.shownDisplay || rf.pictureWas?.[0]?.src || '', after: v.display || '' }, { type: 'note', tone: 'plain', text: `New picture: ${pictureName(v.value)}` }];
+    if (rf?.hidden && v.note) parts = [{ type: 'note', tone: 'plain', text: v.note }];
+    else if (rf?.picture) parts = [{ type: 'image', before: rf.shownDisplay || rf.pictureWas?.[0]?.src || '', after: v.display || '' }, { type: 'note', tone: 'plain', text: `New picture: ${pictureName(v.value)}` }];
     else if (attr === 'alt') parts = [{ type: 'text', name: 'Picture description', before: was, after: String(v.value ?? '') }];
     else if (attr === 'href' || (rf?.parsed?.type === 'url' && rf.els.some(el => el.tagName === 'A'))) parts = [{ type: 'text', name: 'Link goes to', before: was, after: String(v.value ?? '') }];
     else if (v.md && v.words === rf?.richWords) parts = [{ type: 'note', tone: 'plain', text: 'The formatting changed: the words are the same.' }];
@@ -3070,11 +3072,15 @@ async function sendSuggestionFromSheet(note) {
  * no page uses, so it is left out (and forgotten). `haystack` is every value
  * about to be committed, as one string.
  */
-async function commitStagedFiles(haystack) {
+async function commitStagedFiles(haystack, { prune = true } = {}) {
   if (!state.pendingBinaries.size) return;
-  for (const path of [...state.pendingBinaries.keys()]) {
-    const base = path.split('/').pop();
-    if (base && !haystack.includes(base)) {
+  const named = (path) => { const base = path.split('/').pop(); return !!base && haystack.includes(base); };
+  // A publish of everything: what nothing names is dropped. A publish of a
+  // few fields (Page settings) commits what they name and leaves the rest queued.
+  if (prune) {
+    for (const path of [...state.pendingBinaries.keys()]) {
+      if (named(path)) continue;
+      const base = path.split('/').pop();
       state.pendingBinaries.delete(path);
       try {
         document.querySelectorAll('img[data-kiln-src]').forEach(img => {
@@ -3083,8 +3089,8 @@ async function commitStagedFiles(haystack) {
       } catch {}
     }
   }
-  if (!state.pendingBinaries.size) return;
-  const files = [...state.pendingBinaries].map(([path, base64]) => ({ path, base64 }));
+  const files = [...state.pendingBinaries].filter(([path]) => named(path)).map(([path, base64]) => ({ path, base64 }));
+  if (!files.length) return;
   await commitFiles(state.gh, cfg.repo, cfg.branch || 'main', files,
     `Upload ${files.length} file${files.length > 1 ? 's' : ''} (via Kiln)`);
   // Retire only the paths we sent; a file queued during the commit survives.
@@ -3530,6 +3536,8 @@ async function initSourceFields() {
     if (c.attr === 'alt') { decorateSourcePicture(c.el, null, null); open++; }
     else { decorateSourceField(c.el, c.ref, { ...c.parsed, type: 'url' }); open++; }
   }
+  // Entries: their own controls, where the worker can add, remove and list them.
+  initSourceEntries();
   // Nothing on this page can be edited by this person: say so once, in sight.
   if (!open && firstWhy) {
     const limited = (state.scope?.paths || []).some(p => p && p !== '*' && p !== '**');
@@ -4117,6 +4125,604 @@ function richToolbar(el, parsed) {
     onSave: () => commitSourceEdit(), onCancel: () => cancelSourceEdit() });
 }
 
+// ─── Entries: add, copy, remove, drafts, order, schedule, History ────────────
+// A page a generator built shows entries of collections: a list of posts, or
+// one post. Where the worker can (`sourceEntries`), each element stamped
+// data-kiln-entry gets an Entry button, the menu's "New post or page" adds an
+// entry to a collection on the page, "Entries & drafts" lists a collection's
+// entries with their drafts, and History and Page settings work on the
+// page's own entry file. Adding, copying and removing are commits the moment
+// they are asked for (each asked in the editor's own box first); a draft
+// mark, a new order and Page settings are staged like any edit and published
+// with Publish. The decisions are in source-entries.js.
+
+let sourceEntriesOn = false;     // the worker adds, removes, lists and schedules entries
+const entryInfo = new Map();     // file → { file, collection, els: [] }
+
+/** 'src/content/posts/a.md?c=posts' → { file, collection } or null. */
+function parseEntryRef(v) {
+  const [p, q = ''] = String(v || '').split('?');
+  const file = safeSourcePath(p);
+  if (!file) return null;
+  const c = /(?:^|&)c=([A-Za-z0-9_-]{1,64})(?:&|$)/.exec(q);
+  return { file, collection: c ? c[1] : null };
+}
+
+/** The worker, for an entry: the repository, the branch and the adapter go with every call. */
+function entryCall(path, body) {
+  return ask(path, { method: 'POST', body: { repo: cfg.repo, branch: cfg.branch || 'main', adapter: cfg.adapter || 'astro', ...body } });
+}
+
+/** An entry's title as the page shows it, else its file's name in words. */
+function entryTitle(file) {
+  for (const [ref, f] of state.sourceFields || []) {
+    if (f.hidden || f.parsed.path !== file || f.parsed.pointer.join('/') !== 'frontmatter/title') continue;
+    const v = state.pendingSource.get(ref)?.value ?? state.sourceBase.get(ref) ?? f.shown?.[0];
+    if (v && String(v).trim()) return String(v).trim();
+  }
+  return readableName(file.split('/').pop().replace(/\.[^.]+$/, ''));
+}
+
+/** Which collection a file is in, from what the page says about it. */
+function entryCollection(file) {
+  if (entryInfo.get(file)?.collection) return entryInfo.get(file).collection;
+  for (const f of state.sourceFields?.values() || []) if (f.parsed.path === file && f.parsed.collection) return f.parsed.collection;
+  // An entry the page does not show (a draft): the collection whose folder it is in.
+  for (const c of state.sourceCollections?.values() || []) if (c.folder && file.startsWith(`${c.folder}/`)) return c.name;
+  return null;
+}
+
+function initSourceEntries() {
+  for (const el of document.querySelectorAll('[data-kiln-entry]')) {
+    if (isKilnChrome(el)) continue;
+    const e = parseEntryRef(el.getAttribute('data-kiln-entry'));
+    if (!e) continue;
+    if (!entryInfo.has(e.file)) entryInfo.set(e.file, { file: e.file, collection: e.collection, els: [] });
+    entryInfo.get(e.file).els.push(el);
+  }
+  // The page's own entry: the one whose text is on it, else the one entry it shows.
+  const bodies = [...(state.sourceFields?.values() || [])].filter(f => isBody(f.parsed)).map(f => f.parsed.path);
+  const own = bodies[0] || (entryInfo.size === 1 ? [...entryInfo.keys()][0] : null);
+  state.pageEntry = own ? { file: own, collection: entryCollection(own) } : null;
+  state.sourceCollections = collectionsOn([
+    ...[...(state.sourceFields?.values() || [])].map(f => f.parsed),
+    ...[...entryInfo.values()].map(e => ({ path: e.file, collection: e.collection })),
+  ]);
+  sourceEntriesOn = !!state.sourceCaps?.entries && !!state.gh && !cfg.sandbox && !isSuggestMode();
+  if (!sourceEntriesOn) return;
+  const menuItem = document.getElementById('kiln-entries');
+  if (menuItem && state.sourceCollections.size) menuItem.hidden = false;
+  for (const info of entryInfo.values()) {
+    for (const el of info.els) {
+      if (el.querySelector(':scope > .kiln-entry-ctl') || el.previousElementSibling?.classList.contains('kiln-entry-ctl')) continue;
+      el.classList.add('kiln-entry');
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'kiln-entry-ctl';
+      b.textContent = 'Entry';
+      b.setAttribute('aria-label', `Entry: ${entryTitle(info.file)}`);
+      // A card is often a link: pressing its button must not open the page.
+      b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openEntryPanel(info.file); }, true);
+      // An element that is itself a field (its text, say) keeps its inside to itself: the button goes just before it.
+      if (el.hasAttribute(SOURCE_ATTR)) { b.classList.add('kiln-entry-ctl-before'); el.before(b); }
+      else el.appendChild(b);
+    }
+  }
+  // "Add an entry" after the last one of each collection on the page.
+  if (hasFeature('newpost')) {
+    for (const c of state.sourceCollections.values()) {
+      const els = [...entryInfo.values()].filter(e => e.collection === c.name).flatMap(e => e.els);
+      const last = els[els.length - 1];
+      if (els.length < 2) continue;   // one entry's own page: "New post or page" in the menu adds one
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'kiln-entry-add';
+      add.textContent = '＋ Add an entry';
+      add.onclick = (e) => { e.preventDefault(); e.stopPropagation(); newEntryPanel({ collection: c.name }); };
+      const list = last.parentElement && /^(UL|OL|TBODY|TABLE|DL)$/.test(last.parentElement.tagName) ? last.parentElement : last;
+      list.after(add);
+    }
+  }
+}
+
+/** The pending marker on an entry's own elements, while any field of its file waits for Publish. */
+function markEntry(file) {
+  const any = [...state.pendingSource.keys()].some(ref => parseSourceRef(ref)?.path === file);
+  for (const el of entryInfo.get(file)?.els || []) el.classList.toggle('kiln-modified', any);
+}
+
+/**
+ * A field of an entry that the page does not show (a draft mark, an order,
+ * a description), registered so it can be staged and published like any
+ * other. `value` is what the file holds now (undefined: the file does not
+ * have it, and the edit adds it).
+ */
+function hiddenField(file, name, type, value) {
+  const c = entryCollection(file);
+  const ref = `${file}#/frontmatter/${name}${type || c ? '?' : ''}${[type && `type=${type}`, c && `c=${c}`].filter(Boolean).join('&')}`;
+  if (!state.sourceFields.has(ref)) {
+    const shown = value === undefined ? '' : String(value);
+    state.sourceFields.set(ref, { parsed: parseSourceRef(ref), els: [], shown: [], boot: shown, hidden: true, ...(value !== undefined && { read: value }) });
+    state.sourceBase.set(ref, shown);
+  }
+  return ref;
+}
+
+/** Stage a hidden field: the value, a line for the publish sheet, and `add` when the file does not have it yet. */
+function stageHidden(file, name, type, now, value, note) {
+  const ref = hiddenField(file, name, type, now);
+  if (now !== undefined && String(now) === String(value)) stageSourcePending(ref, null);
+  else stageSourcePending(ref, { value: type === 'boolean' || type === 'number' ? String(value) : value, note, ...(now === undefined && { add: true }) });
+  markEntry(file);
+  return ref;
+}
+
+/** An entry's fields now, read through the worker: { fields, format } (cached for this page while nothing changes it). */
+const entryRead = new Map();
+async function readEntry(file, { fresh = false } = {}) {
+  if (!fresh && entryRead.has(file)) return entryRead.get(file);
+  const p = entryCall('/source/fields', { file }).then(r => ({ fields: r.fields || {}, format: r.format, body: r.body || '' }));
+  entryRead.set(file, p);
+  p.catch(() => entryRead.delete(file));
+  return p;
+}
+
+/** The value a hidden field of `file` will have: staged, else the file's. */
+function entryValue(file, name, fields) {
+  for (const [ref, v] of state.pendingSource) {
+    const pr = parseSourceRef(ref);
+    if (pr?.path === file && pr.pointer.join('/') === `frontmatter/${name}`) {
+      return pr.type === 'boolean' ? v.value === 'true' || v.value === true : pr.type === 'number' ? Number(v.value) : v.value;
+    }
+  }
+  return fields[name];
+}
+
+/** The site's way of marking drafts, and its order field, for one collection. */
+async function entryRules(collection, seen = []) {
+  await loadSiteSchema();
+  const doc = state.siteSchema;
+  return { draft: draftRule({ doc, collection, cfg, seen }), order: orderRule({ doc, collection, cfg, seen }) };
+}
+
+/** The editor's box for one entry: what it is, and what can be done with it. */
+async function openEntryPanel(file) {
+  if (sourceActive) commitSourceEdit({ away: true });
+  const title = entryTitle(file);
+  const m = modal(`
+    <h3>${escapeHtml(title)}</h3>
+    <p class="kiln-dim" id="kiln-en-state">Reading this entry…</p>
+    <div class="kiln-entry-acts" id="kiln-en-acts"></div>
+    <p class="kiln-np-step" id="kiln-en-said" role="status"></p>`);
+  m.classList.add('kiln-keeps-edit');
+  const say = (t) => { m.querySelector('#kiln-en-said').textContent = t; };
+  let read;
+  try { read = await readEntry(file); }
+  catch (err) { m.querySelector('#kiln-en-state').textContent = stopped(err) || 'This entry could not be read just now. Close this and try again.'; return; }
+  if (!m.isConnected) return;
+  const collection = entryCollection(file);
+  const rules = await entryRules(collection, Object.keys(read.fields));
+  const draft = rules.draft && isDraft(rules.draft, { [rules.draft.name]: entryValue(file, rules.draft.name, read.fields) });
+  const scheduled = await entrySchedules(file);
+  m.querySelector('#kiln-en-state').textContent = [
+    rules.draft ? (draft ? 'A draft: it is not on the site.' : 'On the site.') : '',
+    scheduled.length ? `Goes on the site ${new Date(scheduled[0].at).toLocaleString()}.` : '',
+    mode === 'admin' ? `File: ${file}` : '',
+  ].filter(Boolean).join(' ');
+  const acts = m.querySelector('#kiln-en-acts');
+  const add = (label, fn, cls = 'kiln-btn-ghost') => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = cls;
+    b.textContent = label;
+    b.onclick = fn;
+    acts.append(b);
+    return b;
+  };
+  if (rules.draft) {
+    const now = read.fields[rules.draft.name];
+    add(draft ? 'Put it on the site' : 'Make it a draft', () => {
+      const value = draft ? !rules.draft.value : rules.draft.value;
+      stageHidden(file, rules.draft.name, 'boolean', now, value, draft ? 'Goes on the site.' : 'Becomes a draft: it comes off the site.');
+      m._kilnClose();
+      setStatus(draft ? 'It goes on the site when you publish.' : 'It comes off the site when you publish.', 'saved');
+    });
+    if (draft && hasFeature('schedule')) add('Put it on the site later…', () => scheduleEntry(file, title, rules.draft, m));
+  }
+  if (rules.order) {
+    const same = [...entryInfo.values()].filter(e => e.collection === collection && e.els.length);
+    const at = same.findIndex(e => e.file === file);
+    if (same.length > 1 && at !== -1) {
+      const move = async (step) => {
+        say('Reading the order…');
+        let list;
+        try { list = await Promise.all(same.map(async e => ({ file: e.file, order: entryValue(e.file, rules.order, (await readEntry(e.file)).fields) }))); }
+        catch (err) { say(stopped(err) || 'The order could not be read just now.'); return; }
+        const plan = moveEntry(list, at, step);
+        if (!plan.length) { say(step < 0 ? 'It is first already.' : 'It is last already.'); return; }
+        for (const p of plan) {
+          const was = (await readEntry(p.file)).fields[rules.order];
+          stageHidden(p.file, rules.order, 'number', was, p.value, 'Moved in the list.');
+        }
+        // The page shows the new order at once.
+        const a = same[at].els[0], b = same[at + step]?.els[0];
+        if (a && b && a.parentNode === b.parentNode) { if (step < 0) b.before(a); else b.after(a); }
+        m._kilnClose();
+        setStatus('The new order is published when you publish.', 'saved');
+      };
+      if (at > 0) add('Move up', () => move(-1));
+      if (at < same.length - 1) add('Move down', () => move(1));
+    }
+  }
+  if (hasFeature('newpost')) add('Copy…', () => newEntryPanel({ collection, copyOf: file, title }));
+  if (hasFeature('history')) add('History', () => sourceHistoryPanel(file));
+  if (hasFeature('newpost')) add('Remove…', async () => {
+    if (!(await askFirst(modal, ownDialogCopy('remove-entry', { title, path: file })))) return;
+    if (m.isConnected) m._kilnClose();
+    setStatus('Removing…', 'saving');
+    try {
+      const r = await entryCall('/source/remove', { file });
+      for (const el of entryInfo.get(file)?.els || []) el.classList.add('kiln-entry-removed');
+      entryRead.delete(file);
+      const committed = [{ file, sha: r.commit.sha, parent: r.commit.parent, refs: [] }];
+      rememberBuild(committed);
+      watchSourceBuild(committed);
+    } catch (err) {
+      setStatus(stopped(err, 'removed') || notDone('It was not removed.', err), 'error');
+    }
+  }, 'kiln-btn-ghost kiln-btn-danger');
+}
+
+/** The schedules that will publish edits to `file`, soonest first. */
+async function entrySchedules(file) {
+  if (!hasFeature('schedule')) return [];
+  try {
+    const data = await ask(`/schedules?repo=${encodeURIComponent(cfg.repo)}`);
+    return (data.schedules || []).filter(s => s.kind === 'source' && s.path === file);
+  } catch { return []; }
+}
+
+/** "Put it on the site later…": the draft mark taken off at the time picked, by the worker's scheduler. */
+function scheduleEntry(file, title, rule, over) {
+  over?._kilnClose?.();
+  const inOneHour = new Date(Date.now() + 3600000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  const m = modal(`
+    <h3>Put “${escapeHtml(title)}” on the site later</h3>
+    <p class="kiln-dim">At the time you pick, Kiln takes off its draft mark and the site rebuilds with it. Kiln checks every 5 minutes.</p>
+    <label>On the site from <input type="datetime-local" id="kiln-es-at" value="${inOneHour}"></label>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Cancel</button>
+      <button class="kiln-btn-publish" id="kiln-es-go">Schedule</button>
+    </div>
+    <p class="kiln-np-step" id="kiln-es-said" role="status"></p>`);
+  m.querySelector('#kiln-es-go').onclick = async () => {
+    const at = m.querySelector('#kiln-es-at').value;
+    const said = m.querySelector('#kiln-es-said');
+    if (!at) return;
+    said.textContent = 'Scheduling…';
+    try {
+      const data = await ask('/schedule', { method: 'POST', body: { repo: cfg.repo, branch: cfg.branch || 'main', at: new Date(at).toISOString(),
+        desc: `${title} goes on the site`,
+        source: { adapter: cfg.adapter || 'astro', file, edits: [{ pointer: `/frontmatter/${rule.name}`, value: !rule.value, type: 'boolean', add: true }] } } });
+      said.textContent = `Scheduled: it goes on the site ${new Date(data.at).toLocaleString()}. You can close this.`;
+    } catch (err) {
+      said.textContent = stopped(err, 'scheduled') || notDone('Nothing was scheduled.', err);
+    }
+  };
+}
+
+/**
+ * The editor's own box for a new entry, or a copy of one: the fields the
+ * collection needs, and whether it starts as a draft. The file is named
+ * from the title, never over a file that is there.
+ */
+async function newEntryPanel({ collection = null, copyOf = null, title = '' } = {}) {
+  if (sourceActive) commitSourceEdit({ away: true });
+  const cols = [...(state.sourceCollections?.values() || [])];
+  const col = (collection && state.sourceCollections.get(collection)) || cols[0];
+  if (!col) { setStatus('This page shows no collection Kiln can add an entry to.', 'idle', { hold: 9000 }); return; }
+  await loadSiteSchema();
+  const doc = state.siteSchema;
+  const rules = await entryRules(col.name);
+  const pictures = [...(state.sourceFields?.values() || [])].filter(f => f.parsed.type === 'image' && f.parsed.pointer.length === 2).map(f => f.parsed.pointer[1]);
+  const form = copyOf ? { fields: [{ name: 'title', label: 'Title', kind: 'text', required: true }], cannot: [] }
+    : entryForm(doc, col.name, { skip: rules.draft ? [rules.draft.name] : [], pictures });
+  const input = (f) => {
+    const id = `kiln-ne-${f.name}`;
+    if (f.kind === 'choice') return `<label>${escapeHtml(f.label)} <select id="${id}" data-name="${escapeHtml(f.name)}">${f.options.map(o => `<option>${escapeHtml(o)}</option>`).join('')}</select></label>`;
+    if (f.kind === 'yesno') return `<label class="kiln-check"><input type="checkbox" id="${id}" data-name="${escapeHtml(f.name)}"> ${escapeHtml(f.label)}</label>`;
+    const type = f.kind === 'date' ? 'date' : f.kind === 'number' ? 'number' : 'text';
+    const value = f.name === 'title' && title ? (copyOf ? `${title} (copy)` : title) : '';
+    return `<label>${escapeHtml(f.label)}${f.kind === 'list' ? ' <small>(separated by commas)</small>' : ''}
+      <input type="${type}" id="${id}" data-name="${escapeHtml(f.name)}" value="${escapeHtml(value)}"${f.max ? ` maxlength="${f.max}"` : ''}${f.kind === 'url' ? ' placeholder="https://…"' : ''}></label>`;
+  };
+  const m = modal(`
+    <h3>${copyOf ? `Copy “${escapeHtml(title)}”` : 'New entry'}</h3>
+    ${!copyOf && cols.length > 1 ? `<label>Add it to <select id="kiln-ne-col">${cols.map(c => `<option value="${escapeHtml(c.name)}"${c === col ? ' selected' : ''}>${escapeHtml(readableName(c.name))}</option>`).join('')}</select></label>` : ''}
+    ${form.cannot.length ? `<p class="kiln-dim">${escapeHtml(cannotSentence(form.cannot))}</p>` : form.fields.map(input).join('')}
+    ${rules.draft && !form.cannot.length ? '<label class="kiln-check"><input type="checkbox" id="kiln-ne-draft" checked> Start it as a draft, not on the site yet</label>' : ''}
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Cancel</button>
+      ${form.cannot.length ? '' : `<button class="kiln-btn-publish" id="kiln-ne-go">${copyOf ? 'Make the copy' : 'Add it'}</button>`}
+    </div>
+    <p class="kiln-np-step" id="kiln-ne-said" role="status"></p>`);
+  m.classList.add('kiln-keeps-edit');
+  const colSel = m.querySelector('#kiln-ne-col');
+  if (colSel) colSel.onchange = () => newEntryPanel({ collection: colSel.value, title: m.querySelector('#kiln-ne-title')?.value || '' });
+  m.querySelector('input,select')?.focus();
+  const go = m.querySelector('#kiln-ne-go');
+  if (!go) return;
+  go.onclick = async () => {
+    const said = m.querySelector('#kiln-ne-said');
+    const typed = {};
+    for (const el of m.querySelectorAll('[data-name]')) typed[el.dataset.name] = el.type === 'checkbox' ? String(el.checked) : el.value;
+    const v = entryValues(form, typed, { doc, collection: col.name });
+    if (v.problem) { said.textContent = v.problem.sentence; m.querySelector(`#kiln-ne-${CSS.escape(v.problem.name)}`)?.focus(); return; }
+    const fields = { ...v.fields };
+    const asDraft = !!m.querySelector('#kiln-ne-draft')?.checked;
+    if (rules.draft && (asDraft || copyOf)) fields[rules.draft.name] = asDraft ? rules.draft.value : !rules.draft.value;
+    go.disabled = true;
+    said.textContent = copyOf ? 'Making the copy…' : 'Adding it…';
+    const taken = new Set(col.files);
+    for (let tries = 0; tries < 6; tries++) {
+      const file = entryFileName(fields.title || 'entry', { folder: copyOf ? copyOf.split('/').slice(0, -1).join('/') : col.folder, ext: copyOf ? (/\.[^./]+$/.exec(copyOf) || ['.md'])[0] : col.ext, taken });
+      try {
+        const r = await entryCall('/source/create', { file, fields, ...(copyOf && { copyOf }) });
+        col.files.push(r.file);
+        m._kilnClose();
+        const committed = [{ file: r.file, sha: r.commit.sha, parent: r.commit.parent, refs: [], created: true }];
+        rememberBuild(committed);
+        watchSourceBuild(committed);
+        setStatus(asDraft ? `Added “${fields.title}” as a draft. Find it in Entries & drafts to put it on the site.` : `Added “${fields.title}”. It shows on the site once the site has rebuilt.`, 'saving', { hold: 9000 });
+        return;
+      } catch (err) {
+        if (err.status === 409) { taken.add(file); continue; }
+        go.disabled = false;
+        said.textContent = stopped(err, copyOf ? 'created' : 'added') || notDone(copyOf ? 'The copy was not made.' : 'The entry was not added.', err);
+        return;
+      }
+    }
+    go.disabled = false;
+    said.textContent = 'Every name Kiln tried for this entry is taken. Change the title a little and try again.';
+  };
+}
+
+/** "Entries & drafts": a collection's entries, drafts first, each opening its own box. */
+async function entriesPanel(collection = null) {
+  const cols = [...(state.sourceCollections?.values() || [])];
+  const col = (collection && state.sourceCollections.get(collection)) || cols[0];
+  if (!col) { setStatus('This page shows no collection of entries.', 'idle', { hold: 9000 }); return; }
+  const m = modal(`
+    <h3>Entries &amp; drafts</h3>
+    ${cols.length > 1 ? `<label>Collection <select id="kiln-el-col">${cols.map(c => `<option value="${escapeHtml(c.name)}"${c === col ? ' selected' : ''}>${escapeHtml(readableName(c.name))}</option>`).join('')}</select></label>` : ''}
+    <div class="kiln-modal-actions" style="justify-content:flex-start">${hasFeature('newpost') ? '<button class="kiln-btn-publish" id="kiln-el-new">＋ Add an entry</button>' : ''}</div>
+    <div id="kiln-el-list" class="kiln-inv-list">Reading the entries…</div>`);
+  m.classList.add('kiln-keeps-edit');
+  const sel = m.querySelector('#kiln-el-col');
+  if (sel) sel.onchange = () => entriesPanel(sel.value);
+  const nb = m.querySelector('#kiln-el-new');
+  if (nb) nb.onclick = () => newEntryPanel({ collection: col.name });
+  const list = m.querySelector('#kiln-el-list');
+  let files;
+  try {
+    const tree = await state.gh.request('GET', `/repos/${cfg.repo}/git/trees/${encodeURIComponent(cfg.branch || 'main')}?recursive=1`);
+    const pre = col.folder ? `${col.folder}/` : '';
+    files = (tree.tree || []).filter(t => t.type === 'blob' && t.path.startsWith(pre) && /\.(md|mdx|markdown)$/i.test(t.path)).map(t => t.path).slice(0, 60);
+  } catch (err) { list.textContent = stopped(err) || 'The entries could not be read just now.'; return; }
+  if (!files.length) { list.textContent = 'There are no entries in this collection yet.'; return; }
+  const read = [];
+  for (let i = 0; i < files.length; i += 6) {
+    read.push(...await Promise.all(files.slice(i, i + 6).map(f => readEntry(f).then(r => ({ file: f, fields: r.fields })).catch(() => ({ file: f, fields: {} })))));
+    if (!m.isConnected) return;
+  }
+  const rules = await entryRules(col.name, [...new Set(read.flatMap(r => Object.keys(r.fields)))]);
+  read.sort((a, b) => Number(isDraft(rules.draft, b.fields)) - Number(isDraft(rules.draft, a.fields)) || String(a.fields.title || a.file).localeCompare(String(b.fields.title || b.file)));
+  list.textContent = '';
+  for (const r of read) {
+    const row = document.createElement('div');
+    row.className = 'kiln-inv-row';
+    const name = document.createElement('span');
+    const strong = document.createElement('strong');
+    strong.textContent = String(r.fields.title || readableName(r.file.split('/').pop().replace(/\.[^.]+$/, '')));
+    const small = document.createElement('small');
+    small.textContent = rules.draft ? (isDraft(rules.draft, r.fields) ? 'Draft' : 'On the site') : r.file.split('/').pop();
+    name.append(strong, small);
+    const open = document.createElement('button');
+    open.className = 'kiln-btn-ghost';
+    open.textContent = 'Open';
+    open.onclick = () => openEntryPanel(r.file);
+    row.append(name, open);
+    list.append(row);
+  }
+}
+
+/** History for a page built from content files: each file's versions, a preview, and a way back. */
+async function sourceHistoryPanel(file = null) {
+  const files = [...new Set([state.pageEntry?.file, ...entryInfo.keys(), ...[...(state.sourceFields?.values() || [])].map(f => f.parsed.path)].filter(Boolean))];
+  const current = file || files[0];
+  if (!current) {
+    modal(`<h3>History</h3><p class="kiln-dim">Nothing on this page comes from a file Kiln can show the history of.</p>
+      <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
+    return;
+  }
+  const label = (f) => `${entryTitle(f)}${mode === 'admin' ? ` (${f})` : ''}`;
+  const m = modal(`
+    <h3>History</h3>
+    <p class="kiln-dim">Every publish saves a version of the file. <strong>Preview</strong> shows a version; <strong>Go back to this</strong> puts the file back as it was then, and the site rebuilds.</p>
+    ${files.length > 1 ? `<label>Of <select id="kiln-sh-file">${files.map(f => `<option value="${escapeHtml(f)}"${f === current ? ' selected' : ''}>${escapeHtml(label(f))}</option>`).join('')}</select></label>` : ''}
+    <div id="kiln-sh-list" class="kiln-inv-list">Reading the history…</div>
+    <div id="kiln-sh-gone"></div>
+    <p class="kiln-np-step" id="kiln-sh-said" role="status"></p>`);
+  m.classList.add('kiln-keeps-edit');
+  const sel = m.querySelector('#kiln-sh-file');
+  if (sel) sel.onchange = () => sourceHistoryPanel(sel.value);
+  const list = m.querySelector('#kiln-sh-list');
+  const said = m.querySelector('#kiln-sh-said');
+  const when = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
+  const goBack = async (f, sha, at, wording = 'go-back') => {
+    if (!(await askFirst(modal, ownDialogCopy(wording, { path: f, when: at })))) return;
+    if (m.isConnected) m._kilnClose();
+    setStatus('Going back…', 'saving');
+    try {
+      const r = await entryCall('/source/revert', { file: f, toSha: sha });
+      entryRead.delete(f);
+      if (r.unchanged) { setStatus('The file is already as it was then.', 'idle'); return; }
+      const committed = [{ file: f, sha: r.commit.sha, parent: r.commit.parent, refs: [] }];
+      rememberBuild(committed);
+      watchSourceBuild(committed);
+    } catch (err) {
+      setStatus(stopped(err, 'changed') || notDone('That version was not put back.', err), 'error');
+    }
+  };
+  let versions;
+  try { versions = (await entryCall('/source/history', { file: current })).versions || []; }
+  catch (err) { list.textContent = stopped(err) || 'The history could not be read just now.'; return; }
+  list.textContent = versions.length ? '' : 'No versions yet.';
+  versions.forEach((v, i) => {
+    const row = document.createElement('div');
+    row.className = 'kiln-inv-row kiln-hist-row';
+    const name = document.createElement('span');
+    const strong = document.createElement('strong');
+    strong.textContent = versionWords(v.what);
+    const small = document.createElement('small');
+    small.textContent = [i === 0 ? 'now' : '', when(v.when), v.who].filter(Boolean).join(' · ');
+    name.append(strong, small);
+    const acts = document.createElement('span');
+    acts.className = 'kiln-hist-acts';
+    const btn = (text, fn) => { const b = document.createElement('button'); b.className = 'kiln-btn-ghost'; b.textContent = text; b.onclick = fn; acts.append(b); };
+    const removed = /^Kiln: remove /.test(v.what);
+    if (removed) btn('Bring it back', () => goBack(current, v.parent, when(v.when) ? `before ${when(v.when)}` : 'before it was removed'));
+    else {
+      btn('Preview', () => previewVersion(current, v, () => goBack(current, v.sha, when(v.when))));
+      if (i > 0) btn('Go back to this', () => goBack(current, v.sha, when(v.when)));
+    }
+    row.append(name, acts);
+    list.append(row);
+  });
+  // Entries removed from this page's collections: brought back from their last version.
+  const gone = m.querySelector('#kiln-sh-gone');
+  for (const c of state.sourceCollections?.values() || []) {
+    let vs = [];
+    try { vs = (await entryCall('/source/history', { folder: c.folder })).versions || []; } catch { continue; }
+    const removed = vs.filter(v => /^Kiln: remove /.test(v.what)).slice(0, 5);
+    if (!removed.length || !m.isConnected) continue;
+    const h = document.createElement('h4');
+    h.textContent = `Removed from ${readableName(c.name)}`;
+    gone.append(h);
+    for (const v of removed) {
+      const f = v.what.replace(/^Kiln: remove /, '');
+      const row = document.createElement('div');
+      row.className = 'kiln-inv-row';
+      const name = document.createElement('span');
+      const strong = document.createElement('strong');
+      strong.textContent = readableName(f.split('/').pop().replace(/\.[^.]+$/, ''));
+      const small = document.createElement('small');
+      small.textContent = [when(v.when), v.who].filter(Boolean).join(' · ');
+      name.append(strong, small);
+      const b = document.createElement('button');
+      b.className = 'kiln-btn-ghost';
+      b.textContent = 'Bring it back';
+      b.onclick = () => goBack(f, v.parent, `before ${when(v.when)}`);
+      row.append(name, b);
+      gone.append(row);
+    }
+  }
+  said.textContent = '';
+}
+
+/** One version of a content file, read whole: its fields and its text, and a way back to it. */
+async function previewVersion(file, v, back) {
+  const m = modal(`<h3>${escapeHtml(versionWords(v.what))}</h3><p class="kiln-dim" id="kiln-pv-state">Reading this version…</p>
+    <div id="kiln-pv"></div>
+    <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button><button class="kiln-btn-publish" id="kiln-pv-back">Go back to this</button></div>`, { over: true });
+  m.classList.add('kiln-keeps-edit');
+  m.querySelector('#kiln-pv-back').onclick = () => { m._kilnClose(); back(); };
+  let r;
+  try { r = await entryCall('/source/fields', { file, at: v.sha }); }
+  catch (err) { m.querySelector('#kiln-pv-state').textContent = stopped(err) || 'This version could not be read just now.'; return; }
+  m.querySelector('#kiln-pv-state').textContent = `${v.when ? new Date(v.when).toLocaleString() : ''}${v.who ? ` · ${v.who}` : ''}`;
+  const box = m.querySelector('#kiln-pv');
+  const dl = document.createElement('dl');
+  dl.className = 'kiln-pv-fields';
+  for (const [k, val] of Object.entries(r.fields || {})) {
+    const dt = document.createElement('dt'); dt.textContent = readableName(k);
+    const dd = document.createElement('dd'); dd.textContent = Array.isArray(val) ? val.join(', ') : String(val);
+    dl.append(dt, dd);
+  }
+  const pre = document.createElement('pre');
+  pre.className = 'kiln-pv-text';
+  pre.textContent = String(r.body || '').trim().slice(0, 4000) || '(no text)';
+  box.append(dl, pre);
+}
+
+/** Page settings for a page built from an entry: its title, description and social picture, from the entry's front matter. */
+async function sourcePageSettings() {
+  const pe = state.pageEntry;
+  if (!pe) {
+    modal(`<h3>Page settings</h3><p class="kiln-dim">This page’s title and description come from the site’s own files, so they can’t be changed here. Ask the site’s owner.</p>
+      <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
+    return;
+  }
+  const m = modal(`<h3>Page settings</h3><p class="kiln-dim" id="kiln-sp-state">Reading this page’s entry…</p><div id="kiln-sp-form"></div>`);
+  m.classList.add('kiln-keeps-edit');
+  let read;
+  try { read = await readEntry(pe.file); }
+  catch (err) { m.querySelector('#kiln-sp-state').textContent = stopped(err) || 'This page’s entry could not be read just now.'; return; }
+  await loadSiteSchema();
+  const props = Object.keys(state.siteSchema?.collections?.[pe.collection]?.properties || {});
+  const has = (n) => Object.hasOwn(read.fields, n) || props.includes(n);
+  const descField = ['description', 'summary', 'excerpt'].find(has) || null;
+  const picField = ['image', 'ogImage', 'socialImage', 'cover', 'heroImage'].find(has) || null;
+  const val = (n) => String(entryValue(pe.file, n, read.fields) ?? '');
+  const parsedOf = (n) => parseSourceRef(`${pe.file}#/frontmatter/${n}${pe.collection ? `?c=${pe.collection}` : ''}`);
+  const target = picField ? pictureTarget({ file: pe.file, value: read.fields[picField] ?? '', paths: mode === 'editor' ? (state.scope?.paths || null) : null, field: sourceSchema(parsedOf(picField)) }) : null;
+  m.querySelector('#kiln-sp-state').textContent = 'These go with the page in search results and when it is shared.';
+  m.querySelector('#kiln-sp-form').innerHTML = `
+    <label>Title <input type="text" id="kiln-sp-title" value="${escapeHtml(val('title'))}"></label>
+    ${descField ? `<label>Description <textarea id="kiln-sp-desc" rows="3">${escapeHtml(val(descField))}</textarea></label>` : '<p class="kiln-dim">This collection has no description field.</p>'}
+    ${picField ? `<div class="kiln-sp-pic"><span>Social picture: <strong id="kiln-sp-picname">${escapeHtml(pictureName(val(picField)) || 'none')}</strong></span>
+      <button class="kiln-btn-ghost" id="kiln-sp-pick" type="button">Replace picture…</button></div>` : ''}
+    <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Cancel</button><button class="kiln-btn-publish" id="kiln-sp-go">Publish</button></div>
+    <p class="kiln-np-step" id="kiln-sp-said" role="status"></p>`;
+  const said = m.querySelector('#kiln-sp-said');
+  let picture = null;   // { value, path } once one is chosen
+  const pick = m.querySelector('#kiln-sp-pick');
+  if (pick) pick.onclick = () => {
+    if (!target?.place) { said.textContent = target?.sentence || placeSentence('empty'); return; }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async () => {
+      const made = input.files[0] && await sitePicture(input.files[0], pe.file, target.place);
+      if (!made) return;
+      picture = made;
+      m.querySelector('#kiln-sp-picname').textContent = pictureName(made.value);
+      setStatus('', 'idle');
+    };
+    input.click();
+  };
+  m.querySelector('#kiln-sp-go').onclick = async () => {
+    const want = [['title', m.querySelector('#kiln-sp-title').value.trim(), undefined]];
+    if (descField) want.push([descField, m.querySelector('#kiln-sp-desc').value.trim(), undefined]);
+    if (picture) want.push([picField, picture.value, 'image']);
+    const refs = new Set();
+    for (const [name, value, type] of want) {
+      const was = read.fields[name];
+      if (String(was ?? '') === value) continue;
+      const no = schemaSays(parsedOf(name), value);
+      if (no) { said.textContent = `${readableName(name)}: ${no}`; return; }
+      refs.add(stageHidden(pe.file, name, type, was === undefined ? undefined : String(was), value, `${readableName(name)}: ${value || '(empty)'}`));
+    }
+    if (!refs.size) { said.textContent = 'Nothing changed.'; return; }
+    said.textContent = 'Publishing…';
+    try { await commitStagedFiles([...refs].map(r => String(state.pendingSource.get(r)?.value ?? '')).join('\n'), { prune: false }); }
+    catch (err) { said.textContent = stopped(err, 'published') || notDone('The settings were not published.', err); return; }
+    m._kilnClose();
+    entryRead.delete(pe.file);
+    await publishSource('', { only: refs });
+  };
+}
+
 /** The floating control for a source field — label, provenance (§10), Done/Revert. */
 function renderSourceToolbar(el, ref, parsed) {
   removeToolbar();
@@ -4588,12 +5194,14 @@ function sourceBuildFailedBanner(committed, sha) {
   bar.querySelectorAll('button[data-i]').forEach(btn => {
     btn.onclick = async () => {
       const c = committed[+btn.dataset.i];
-      const body = revertRequest(c, { repo: cfg.repo, branch: cfg.branch || 'main' });
-      if (!body) { setStatus('There is no earlier version of that to go back to.', 'error'); return; }
+      // A new entry is undone by taking it away again; anything else by its version before.
+      const body = c.created ? null : revertRequest(c, { repo: cfg.repo, branch: cfg.branch || 'main' });
+      if (!body && !c.created) { setStatus('There is no earlier version of that to go back to.', 'error'); return; }
       btn.disabled = true;
       btn.textContent = 'Undoing…';
       try {
-        await ask('/source/revert', { method: 'POST', body });
+        if (c.created) await entryCall('/source/remove', { file: c.file });
+        else await ask('/source/revert', { method: 'POST', body });
         btn.textContent = 'Undone ✓';
         restageAfterUndo(c);
         setStatus('Undone. The site rebuilds without that change, and your edit is back on this page, not published.', 'saved', { hold: 12000 });
@@ -6460,6 +7068,8 @@ async function checkForDraft() {
 
 /** `at`: the time that was chosen before (after signing in again), as the time box holds it. */
 function schedulePanel(at) {
+  // Edits to content files only: the worker's scheduler applies them to the files at that time.
+  if (!state.pending.size && state.pendingSource.size && sourceEntriesOn) return scheduleSourcePanel(at);
   if (!state.pending.size) return;
   // Scheduling re-applies text edits later against the live source; it can't
   // carry queued image uploads or added sections (same reason as drafts).
@@ -6536,6 +7146,49 @@ function schedulePanel(at) {
         return chosen ? { name: TYPED.schedule, text: new Date(chosen).toLocaleString(), keep: { where: 'schedule', at: chosen } } : null;
       }) || notDone('Nothing was scheduled.', err);
     }
+  };
+}
+
+/** "Schedule for later…" with edits to content files: one schedule per file, applied to it as it is then. */
+function scheduleSourcePanel(at) {
+  if (state.pendingBinaries.size) {
+    setStatus('Publish your new pictures first. Scheduling covers words and values only.', 'error');
+    return;
+  }
+  const inOneHour = new Date(Date.now() + 3600000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  const n = state.pendingSource.size;
+  const m = modal(`
+    <h3>Publish ${n === 1 ? 'this edit' : `these ${n} edits`} later</h3>
+    <p class="kiln-dim">Kiln publishes ${n === 1 ? 'it' : 'them'} at the time you pick (it checks every 5 minutes), and the site rebuilds. Anything published before then stays.</p>
+    <label>Publish at <input type="datetime-local" id="kiln-ss-at" value="${typeof at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(at) ? at : inOneHour}"></label>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close>Cancel</button>
+      <button class="kiln-btn-publish" id="kiln-ss-go">Schedule</button>
+    </div>
+    <p class="kiln-np-step" id="kiln-ss-said" role="status"></p>`);
+  m.querySelector('#kiln-ss-go').onclick = async () => {
+    const when = m.querySelector('#kiln-ss-at').value;
+    const said = m.querySelector('#kiln-ss-said');
+    if (!when) return;
+    said.textContent = 'Scheduling…';
+    const groups = groupSourceEdits(state.pendingSource, { repo: cfg.repo, branch: cfg.branch || 'main', adapter: cfg.adapter || 'astro' });
+    let done = 0;
+    for (const g of groups) {
+      try {
+        await ask('/schedule', { method: 'POST', body: { repo: cfg.repo, branch: cfg.branch || 'main', at: new Date(when).toISOString(),
+          desc: `${entryTitle(g.file)}: ${g.refs.map(r => sourceName(r).split(' · ')[0]).join(', ')}`.slice(0, 200),
+          source: { adapter: cfg.adapter || 'astro', file: g.file, edits: g.body.edits } } });
+        for (const ref of g.refs) { state.pendingSource.delete(ref); syncSourceDom(ref); }
+        markEntry(g.file);
+        done++;
+      } catch (err) {
+        said.textContent = stopped(err, 'scheduled') || notDone(done ? 'Some of them were scheduled; the rest are still here.' : 'Nothing was scheduled.', err);
+        refreshPublishButton();
+        return;
+      }
+    }
+    refreshPublishButton();
+    said.textContent = `Scheduled for ${new Date(when).toLocaleString()}. You can close this.`;
   };
 }
 
@@ -7126,6 +7779,7 @@ function renderAdminBar() {
       <div class="kiln-fab-group">
         <div class="kiln-fab-label">This page</div>
         <button id="kiln-newpost" class="kiln-fab-item">＋ New post or page</button>
+        <button id="kiln-entries" class="kiln-fab-item"${sourceEntriesOn && state.sourceCollections?.size ? '' : ' hidden'}>Entries &amp; drafts</button>
         <button id="kiln-pagesettings" class="kiln-fab-item">Page settings</button>
         <button id="kiln-history" class="kiln-fab-item">History &amp; restore</button>
         <button id="kiln-comments" class="kiln-fab-item">💬 Comments</button>
@@ -7341,13 +7995,17 @@ function renderAdminBar() {
 
   const close = (fn) => () => { setMenu(false); fn(); };
   fab.querySelector('#kiln-publish').onclick = close(requestPublish);
-  fab.querySelector('#kiln-newpost').onclick = close(newContent);
+  // On a page built from content files these work on its entries.
+  const generated = () => !cfg.sandbox && !state.page?.path && sourceEntriesOn;
+  fab.querySelector('#kiln-newpost').onclick = close(() => (generated() ? newEntryPanel({ collection: state.pageEntry?.collection }) : newContent()));
   fab.querySelector('#kiln-menu').onclick = close(menuEditor);
   fab.querySelector('#kiln-theme').onclick = close(openThemePanel);
-  fab.querySelector('#kiln-history').onclick = close(historyPanel);
+  fab.querySelector('#kiln-history').onclick = close(() => (generated() ? sourceHistoryPanel() : historyPanel()));
   fab.querySelector('#kiln-done').onclick = close(doneEditing);
   fab.querySelector('#kiln-discard').onclick = close(discardEdits);
-  fab.querySelector('#kiln-pagesettings').onclick = close(pageSettingsPanel);
+  fab.querySelector('#kiln-pagesettings').onclick = close(() => (generated() ? sourcePageSettings() : pageSettingsPanel()));
+  const entriesBtn = fab.querySelector('#kiln-entries');
+  if (entriesBtn) entriesBtn.onclick = close(() => entriesPanel(state.pageEntry?.collection));
   fab.querySelector('#kiln-findreplace').onclick = close(findReplacePanel);
   fab.querySelector('#kiln-palette-btn').onclick = close(openPalette);
   fab.querySelector('#kiln-schedule').onclick = close(schedulePanel);
@@ -8425,6 +9083,13 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   width:100%;box-sizing:border-box;padding:10px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:14px;margin-top:4px;
   font-family:var(--kiln-font);transition:border-color .15s;outline:none}
 .kiln-modal-body input:focus{border-color:var(--kiln-accent)}
+.kiln-modal-body textarea,.kiln-modal-body input[type=date],.kiln-modal-body input[type=datetime-local],.kiln-modal-body select{
+  width:100%;box-sizing:border-box;padding:10px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:14px;margin-top:4px;
+  font-family:var(--kiln-font);outline:none;background:#fff;color:#1c1c28}
+.kiln-modal-body textarea{resize:vertical;line-height:1.45}
+.kiln-modal-body textarea:focus,.kiln-modal-body select:focus{border-color:var(--kiln-accent)}
+.kiln-entry-acts .kiln-btn-ghost,.kiln-sp-pic .kiln-btn-ghost{color:#1c1c28;border:1.5px solid #e5e7eb;background:#f9fafb;border-radius:10px;padding:8px 14px;font:600 13px var(--kiln-font)}
+.kiln-entry-acts .kiln-btn-ghost:hover,.kiln-sp-pic .kiln-btn-ghost:hover{background:#f3f4f6;border-color:#d1d5db}
 .kiln-2col{display:grid;grid-template-columns:1.4fr 1fr;gap:10px}
 @media(max-width:480px){.kiln-2col{grid-template-columns:1fr}
   .kiln-tb-fmt{min-width:34px;height:34px}
@@ -8526,6 +9191,28 @@ td.kiln-editing:empty,th.kiln-editing:empty{display:table-cell}
   border:1.5px dashed rgba(99,102,241,.5);border-radius:10px;padding:8px 18px;cursor:pointer;
   font-size:13px;font-weight:600;font-family:var(--kiln-font);transition:all .15s}
 .kiln-repeat-add:hover{background:rgba(99,102,241,.16)}
+/* An entry of a collection on a generated page: its own button, top right. */
+.kiln-entry{position:relative}
+.kiln-entry-ctl{position:absolute;top:6px;right:6px;z-index:9999;opacity:0;transition:opacity .15s;background:#1c1c28;color:#fff;
+  border:none;border-radius:8px;padding:5px 10px;font:600 12px/1.2 var(--kiln-font);cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.25)}
+.kiln-entry:hover>.kiln-entry-ctl,.kiln-entry-ctl:focus-visible{opacity:1}
+.kiln-entry-ctl:hover{background:var(--kiln-accent)}
+@media (hover:none){.kiln-entry-ctl{opacity:1}}
+.kiln-entry-ctl.kiln-entry-ctl-before{position:static;display:inline-block;opacity:1;margin:6px 0}
+.kiln-entry-removed{opacity:.45;filter:grayscale(1)}
+.kiln-entry-add{display:block;margin:10px 0;background:rgba(99,102,241,.08);color:var(--kiln-accent);
+  border:1.5px dashed rgba(99,102,241,.5);border-radius:10px;padding:8px 18px;cursor:pointer;
+  font-size:13px;font-weight:600;font-family:var(--kiln-font)}
+.kiln-entry-add:hover{background:rgba(99,102,241,.16)}
+.kiln-entry-acts{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 4px}
+.kiln-entry-acts .kiln-btn-ghost.kiln-btn-danger{color:#b42318;border-color:#fecaca}
+.kiln-check{display:flex;align-items:center;gap:8px;margin:10px 0}
+.kiln-check input{width:auto;margin:0}
+.kiln-pv-fields{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin:8px 0 12px;font-size:13px}
+.kiln-pv-fields dt{color:#6b7280}
+.kiln-pv-fields dd{margin:0;overflow-wrap:anywhere}
+.kiln-pv-text{max-height:260px;overflow:auto;white-space:pre-wrap;background:#f6f7f9;border-radius:10px;padding:10px 12px;font:12.5px/1.5 ui-monospace,Menlo,monospace}
+.kiln-sp-pic{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:10px 0;flex-wrap:wrap}
 /* Gallery thumbnail grid — mirrors features.js so EDITORS see thumbnails too
    (the visitor runtime stands down during editing sessions). */
 .kiln-gallery-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--kiln-thumb,180px),1fr));gap:10px}
@@ -8781,6 +9468,9 @@ body:has(#kiln-topbar){padding-top:56px!important}
 .kiln-ctl-cell .kiln-item-ctl .kiln-ctl-more{position:static;order:99}
 .kiln-ctl-cell .kiln-item-ctl.kiln-ctl-open{padding:0}
 .kiln-repeat-add{min-height:44px;font-size:14px}
+.kiln-entry-ctl{padding:9px 14px;font-size:13.5px;min-height:40px}
+.kiln-entry-add{min-height:44px;font-size:14px;width:100%}
+.kiln-entry-acts button{min-height:44px;flex:1 1 40%}
 /* Comments: thumb-size pins; popover + composer → bottom sheets. */
 .kiln-cmt-pin{width:40px;height:40px;font-size:14px;border-radius:50% 50% 50% 5px}
 #kiln-cmt-pop,#kiln-cmt-composer{left:0!important;right:0!important;top:auto!important;bottom:0!important;

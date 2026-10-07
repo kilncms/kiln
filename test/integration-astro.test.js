@@ -171,3 +171,15 @@ test('at the end of a build, the collections\' schemas are published as /kiln-sc
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('kilnEntry marks the element that shows one entry, with its collection', async () => {
+  const { kilnEntry } = await import('../integrations/astro/index.mjs');
+  assert.deepEqual(kilnEntry(layerEntry), { 'data-kiln-entry': 'src/content/events/service.md?c=events' });
+  assert.deepEqual(kilnEntry(legacyEntry), { 'data-kiln-entry': 'src/content/events/service.md?c=events' });
+  assert.deepEqual(kilnEntry(null), {});
+  assert.deepEqual(kilnEntry({ filePath: '/etc/passwd' }), {});
+  const prev = process.env.KILN_DISABLE;
+  process.env.KILN_DISABLE = '1';
+  try { assert.deepEqual(kilnEntry(layerEntry), {}); }
+  finally { if (prev === undefined) delete process.env.KILN_DISABLE; else process.env.KILN_DISABLE = prev; }
+});

@@ -170,7 +170,20 @@ edit them the same way, and a few things read differently:
 - If the site could not be built with your change, a box says **Build failed**. The
   site still shows the version from before. **Undo this change** takes your change
   out again and puts it back on the page as unpublished, so you can correct it.
-- **History** and **Page settings** cannot show these pages yet, and say so.
+- An article or a card in a list has an **Entry** button. It can make the entry
+  a draft (it comes off the site when you publish), put a draft on the site now
+  or at a time you pick, move it up or down the list, copy it, show its History,
+  or remove it. Removing asks first, and History can bring it back.
+- **New post or page** in the Kiln menu adds an entry. A box asks for the title
+  and anything else the site needs for every entry, such as a date. It starts as
+  a draft unless you untick that.
+- **Entries & drafts** in the Kiln menu lists the entries with the drafts first,
+  because a draft does not show on the site and has no page to click on.
+- **History** lists the versions of this page's entry. **Preview** shows one;
+  **Go back to this** puts it back, and the site rebuilds. Entries removed from
+  this page's list are there too, with **Bring it back**.
+- **Page settings** changes the title, description and social picture that go
+  with the page in search results and when it is shared.
 - **Search & jump** lists the site's pages by their address, with each page's
   title beside it.
 - If you were invited to suggest changes, or only to comment, these pages cannot

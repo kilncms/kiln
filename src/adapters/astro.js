@@ -21,7 +21,7 @@
  */
 
 import { parsePointer } from './pointer.js';
-import { frontmatterRange as findFrontmatter, applyFrontmatterEdits, readFrontmatterValue, validateFrontmatter, formatName } from './frontmatter.js';
+import { frontmatterRange as findFrontmatter, applyFrontmatterEdits, readFrontmatterValue, validateFrontmatter, formatName, frontmatterText } from './frontmatter.js';
 import { mdxCode } from './markdown.js';
 import { detectScore } from './detect.js';
 
@@ -84,6 +84,33 @@ export default {
     return parseSource(String(text), path);
   },
 
+  /**
+   * An entry at a glance: { format, fields, body }. `fields` holds the
+   * top-level front matter values that are text, numbers, yes/no, dates
+   * (written YYYY-MM-DD) or lists of those; a group of fields is left out.
+   */
+  fields(text, path) {
+    const src = parseSource(String(text), path);
+    const out = { format: src.format, fields: {}, body: src.body };
+    if (src.fmText == null) return out;
+    const all = readFrontmatterValue(src.format, src.fmText, []);
+    if (!all || typeof all !== 'object' || Array.isArray(all)) return out;
+    const plain = (v) => (v instanceof Date ? (Number.isNaN(v.getTime()) ? undefined : v.toISOString().slice(0, 10))
+      : ['string', 'number', 'boolean'].includes(typeof v) ? v : undefined);
+    for (const [k, v] of Object.entries(all)) {
+      if (Array.isArray(v)) { const items = v.map(plain); if (items.every(i => i !== undefined)) out.fields[k] = items; continue; }
+      const p = plain(v);
+      if (p !== undefined) out.fields[k] = p;
+    }
+    return out;
+  },
+
+  /** The text of a new entry: YAML front matter from `fields`, a blank line, and its text. */
+  newEntry(fields, body = '') {
+    const text = String(body || '').replace(/\r\n/g, '\n').replace(/\s+$/, '');
+    return `---\n${frontmatterText('yaml', fields)}---\n${text ? `\n${text}\n` : ''}`;
+  },
+
   /** Read one pointer's current value (editor prefill, tests). */
   read(parsed, pointer) {
     const segs = Array.isArray(pointer) ? pointer : parsePointer(String(pointer));
@@ -119,7 +146,7 @@ export default {
       const segs = parsePointer(String(e.pointer || ''));
       if (!segs || !segs.length) { skipped.push({ key, reason: 'malformed pointer' }); continue; }
       if (segs[0] === 'frontmatter' && segs.length > 1) {
-        fmEdits.push({ key, segs: segs.slice(1), value: e.value, type: e.type });
+        fmEdits.push({ key, segs: segs.slice(1), value: e.value, type: e.type, ...(e.add === true && { add: true }) });
       } else if (segs[0] === 'body' && segs.length === 1) {
         if (bodyEdit) { skipped.push({ key, reason: `duplicate pointer of "${bodyEdit.key}"` }); continue; }
         if (typeof e.value !== 'string') { skipped.push({ key, reason: 'body must be text' }); continue; }

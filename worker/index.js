@@ -43,6 +43,10 @@
  *   POST /source/read      source mode: what one field of a content file holds now (a Markdown body, before it is edited)
  *   POST /source/revert    source mode: restore a file to its content at a given sha
  *   POST /source/duplicate source mode: copy a content file to a free -copy sibling
+ *   POST /source/create    source mode: a new entry from its fields, or a copy of one; never over a file that is there
+ *   POST /source/remove    source mode: an entry's file deleted in one commit (revert to its parent brings it back)
+ *   POST /source/fields    source mode: an entry's top-level fields and text, now or at a commit
+ *   POST /source/history   source mode: the commits that changed one content file
  *
  * KV (binding: KILN):
  *   app:creds   {app_id, slug, client_id, client_secret, pk8}
@@ -76,8 +80,8 @@ const WORKER_VERSION = '0.4.0';
 import { handleCloud, expireStaleTrials, cloudSiteForOrigin } from './cloud.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
-import { adapterIds } from '../src/adapters/index.js';
-import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, changedSinceRead, markdownProblems, picturesToCheck, duplicateCandidates, SOURCE_FILE_GONE } from './source.js';
+import { adapterIds, getAdapter } from '../src/adapters/index.js';
+import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, changedSinceRead, markdownProblems, picturesToCheck, duplicateCandidates, entryRequest, ENTRY_EXISTS, SOURCE_FILE_GONE } from './source.js';
 import { uploadProblem, editorFileKind, isUploadKind, base64Bytes, base64Head, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../src/file-policy.js';
 
 // UTF-8-safe base64 (GitHub content is base64; edits re-applied at cron time).
@@ -127,7 +131,10 @@ export default {
         // keeping the markup and the code it holds (markdownProblems, astro sameCode).
         // `sourceMedia`: a picture field is written only with a picture that is in
         // the repository, and Markdown may not name a new one that is not (picturesToCheck).
-        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, ...deployedBuild(env) };
+        // `sourceEntries`: entries are added, copied and removed (/source/create,
+        // /source/remove), read whole (/source/fields), listed by version
+        // (/source/history), and content-file edits can be scheduled.
+        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ...deployedBuild(env) };
         // ?deep=1 asks the things publishing depends on. A plain GET stays a
         // constant 200 that touches nothing, as every editor and monitor expects.
         if (url.searchParams.get('deep') === '1') {
@@ -184,6 +191,10 @@ export default {
       if (path === '/source/read' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceReadField(request, env));
       if (path === '/source/revert' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceRevert(request, env));
       if (path === '/source/duplicate' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceDuplicate(request, env));
+      if (path === '/source/create' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceCreate(request, env));
+      if (path === '/source/remove' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceRemove(request, env));
+      if (path === '/source/fields' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceFields(request, env));
+      if (path === '/source/history' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceHistory(request, env));
       if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
       if (path === '/google/callback') return googleCallback(url, env);
       if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
@@ -548,7 +559,9 @@ async function authActor(request, env, repo) {
 }
 
 async function scheduleCreate(request, env) {
-  const { repo, path, branch = 'main', edits, content, message, at, desc } = await request.json().catch(() => ({}));
+  const body = await request.json().catch(() => ({}));
+  if (body.source) return scheduleSourceCreate(request, env, body);
+  const { repo, path, branch = 'main', edits, content, message, at, desc } = body;
   // Prefer field-level `edits` (re-applied against fresh source at fire time so
   // interim edits aren't clobbered). `content` (a full-page snapshot) is still
   // accepted for backward compatibility but is the lossy path.
@@ -600,6 +613,37 @@ async function scheduleCreate(request, env) {
   return json({ ok: true, id, at: when });
 }
 
+/**
+ * A scheduled publish of content-file edits: POST /schedule { repo, branch?,
+ * at, desc?, source: { adapter, file, edits } }. The same checks as
+ * /source/commit now (who, which file, what kind of value), and again when it
+ * fires: then the edits are applied to the file as it is at that moment, so
+ * anything published meanwhile stays (an edit's `was` is not kept: the
+ * schedule says what the field is to become, whatever it says then).
+ */
+async function scheduleSourceCreate(request, env, body) {
+  const { repo, branch = 'main', at, desc, source } = body;
+  if (!repo || !source || typeof source !== 'object' || !at) return json({ error: 'missing fields' }, 400);
+  if (!/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
+  const actor = await authActor(request, env, repo);
+  if (!actor) return json({ error: 'forbidden' }, 403);
+  const v = validateSourceRequest({ file: source.file, edits: source.edits, adapter: source.adapter, actor }, { isSensitivePath, pathInScope });
+  if (v.error) return json({ error: v.error, ...(v.detail !== undefined && { detail: v.detail }) }, v.status);
+  if (!hasGrant(actor, 'schedule')) return grantRefusal('schedule');
+  const bad = typedEditProblems(v.cleanEdits, { safeUrl, checkFragment });
+  if (bad.length) return json({ error: 'a scheduled edit is not one the file can take', skipped: bad }, 422);
+  const when = Date.parse(at);
+  if (!when || when < Date.now() - 60000 || when > Date.now() + 366 * 24 * 3600 * 1000) return json({ error: 'bad time' }, 400);
+  const id = crypto.randomUUID().replaceAll('-', '');
+  const { home } = await shelf(env, repo);
+  const edits = v.cleanEdits.map(({ was, ...e }) => e);
+  await env.KILN.put(`sched:${id}`,
+    JSON.stringify({ repo: home, kind: 'source', adapter: v.adapter.id, path: v.file, branch, edits, message: `Scheduled publish: ${v.file} (via Kiln)`,
+      at: when, desc: typeof desc === 'string' && desc.trim() ? desc.trim().slice(0, 200) : v.file, by: actor.name, byEmail: actor.email, admin: !!actor.admin }),
+    { expirationTtl: Math.ceil((when - Date.now()) / 1000) + 14 * 24 * 3600 });
+  return json({ ok: true, id, at: when });
+}
+
 async function scheduleList(request, env, url) {
   const repo = url.searchParams.get('repo') || '';
   const actor = await authActor(request, env, repo);
@@ -611,7 +655,7 @@ async function scheduleList(request, env, url) {
     const page = await env.KILN.list({ prefix: 'sched:', cursor });
     for (const k of page.keys) {
       const v = await env.KILN.get(k.name, 'json');
-      if (v && mine.has(v.repo)) out.push({ id: k.name.slice(6), at: v.at, desc: v.desc, path: v.path, by: v.by });
+      if (v && mine.has(v.repo)) out.push({ id: k.name.slice(6), at: v.at, desc: v.desc, path: v.path, by: v.by, kind: v.kind === 'source' ? 'source' : 'page' });
     }
     cursor = page.list_complete ? null : page.cursor;
   } while (cursor);
@@ -676,10 +720,26 @@ async function runDueSchedules(env) {
       if (v.admin === false) {
         const people = await getPeople(env, v.repo);
         const p = people.find(x => x.email === v.byEmail && x.role === 'editor');
-        if (!p || isSensitivePath(v.path) || !pathInScope(v.path, p.paths) || !isHtmlPath(v.path)) {
+        const kindOk = v.kind === 'source' ? !!getAdapter(v.adapter)?.canEdit(v.path) : isHtmlPath(v.path);
+        if (!p || isSensitivePath(v.path) || !pathInScope(v.path, p.paths) || !kindOk) {
           await env.KILN.delete(k.name);
           continue;
         }
+      }
+      // Content files: the same checks and the same commit as /source/commit.
+      if (v.kind === 'source') {
+        try {
+          const h = await installationHeaders(env, target);
+          if (!h) continue;
+          const vs = validateSourceRequest({ file: v.path, edits: v.edits, adapter: v.adapter, actor: { name: v.by, admin: true } }, { isSensitivePath, pathInScope });
+          if (vs.error) { console.log(`[kiln-cron] ${k.name} not published: ${vs.error}`); await env.KILN.delete(k.name); continue; }
+          const r = await commitSourceEdits(h, target, v.branch, vs, { message: v.message, author: `${v.by} (via Kiln, scheduled)` });
+          if (r.status === 200 || r.status === 422 || r.status === 404) await env.KILN.delete(k.name);
+          if (r.status !== 200) console.log(`[kiln-cron] ${k.name}: ${r.body.error}`);
+        } catch (err) {
+          console.error('[kiln-cron]', k.name, err);
+        }
+        continue;
       }
       try {
         const itok = await installationToken(env, target);
@@ -1567,18 +1627,35 @@ async function sourceCommit(request, env) {
   // Rules 1–3 (actor mode, adapter, path gauntlet, edit shape) — pure.
   const v = validateSourceRequest({ file, edits, adapter, actor }, { isSensitivePath, pathInScope });
   if (v.error) return json({ error: v.error, ...(v.detail !== undefined && { detail: v.detail }) }, v.status);
+  const itok = await installationToken(env, repo);
+  if (!itok) return json({ error: 'app not installed on repo', repo }, 503);
+  const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
+  const r = await commitSourceEdits(h, repo, branch, v, {
+    message: (typeof message === 'string' && message.trim()) ? message : `Kiln: update ${v.file}`,
+    author: `${actor.name} (via Kiln)`,
+  });
+  return json(r.body, r.status);
+}
+
+/**
+ * The edits of one content file, checked and committed (rules 4 to 6): a
+ * typed value of the wrong kind, a field someone else changed since it was
+ * read, Markdown that would add markup, a picture that is not in the
+ * repository are each left out with the reason, and the rest are written in
+ * one commit guarded by the file's sha (tried twice). Shared by
+ * /source/commit and a scheduled publish of content files.
+ * `v`: { adapter, file, cleanEdits } from validateSourceRequest.
+ * Returns { status, body } for the answer.
+ */
+async function commitSourceEdits(h, repo, branch, v, { message, author }) {
   // Rule 4: typed validation skips a bad edit, never the batch (§8.1/§9).
   const typedSkips = typedEditProblems(v.cleanEdits, { safeUrl, checkFragment });
   const badKeys = new Set(typedSkips.map(s => s.key));
   const runnable = v.cleanEdits.filter(e => !badKeys.has(e.key));
-
-  const itok = await installationToken(env, repo);
-  if (!itok) return json({ error: 'app not installed on repo', repo }, 503);
-  const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
       const cur = await sourceRead(h, repo, v.file, branch);
-      if (!cur) return json({ error: SOURCE_FILE_GONE }, 404);
+      if (!cur) return { status: 404, body: { error: SOURCE_FILE_GONE } };
       const source = utf8FromB64(cur.content);
       // A field that no longer says what the editor read was changed by
       // someone else: that edit is left out, with what the file says now, and
@@ -1587,15 +1664,10 @@ async function sourceCommit(request, env) {
       const moved = changedSinceRead(v.adapter, source, v.file, runnable);
       // Markdown may keep the markup it holds and add none (rule 4, second half).
       let parsed = null;
-      const marked = markdownProblems(runnable.filter(e => !moved.some(m => m.key === e.key)), (e) => {
-        parsed = parsed || v.adapter.parse(source, v.file);
-        return v.adapter.read(parsed, e.pointer);
-      }, { checkFragmentWrite, mdx: /\.mdx$/i.test(v.file) });
+      const currentOf = (e) => { parsed = parsed || v.adapter.parse(source, v.file); return v.adapter.read(parsed, e.pointer); };
+      const marked = markdownProblems(runnable.filter(e => !moved.some(m => m.key === e.key)), currentOf, { checkFragmentWrite, mdx: /\.mdx$/i.test(v.file) });
       // A picture is named only once it is in the repository (rule 4, third part).
-      const pics = picturesToCheck(runnable.filter(e => !moved.some(m => m.key === e.key)), v.file, {
-        currentOf: (e) => { parsed = parsed || v.adapter.parse(source, v.file); return v.adapter.read(parsed, e.pointer); },
-        mdx: /\.mdx$/i.test(v.file),
-      });
+      const pics = picturesToCheck(runnable.filter(e => !moved.some(m => m.key === e.key)), v.file, { currentOf, mdx: /\.mdx$/i.test(v.file) });
       const missing = [];
       for (const c of pics.check) {
         if (missing.some(m => m.key === c.key)) continue;
@@ -1604,31 +1676,192 @@ async function sourceCommit(request, env) {
       const leftOut = new Set([...moved, ...marked, ...pics.skips, ...missing].map(s => s.key));
       const { content, applied, skipped } = v.adapter.applyEdits(source, runnable.filter(e => !leftOut.has(e.key)), v.file);
       const allSkipped = [...typedSkips, ...moved, ...marked, ...pics.skips, ...missing, ...skipped];
-      if (!applied.length) return json({ error: 'no edits could be applied', skipped: allSkipped }, 422);
+      if (!applied.length) return { status: 422, body: { error: 'no edits could be applied', skipped: allSkipped } };
       // Cheap pre-commit parse check (§9) — the build is the real judge (§12).
       const invalid = v.adapter.validate(content, v.file);
-      if (invalid) return json({ error: invalid }, 422);
-      if (content === source) return json({ ok: true, unchanged: true, applied, skipped: allSkipped });
+      if (invalid) return { status: 422, body: { error: invalid } };
+      if (content === source) return { status: 200, body: { ok: true, unchanged: true, applied, skipped: allSkipped } };
       const put = await fetch(`${GH}/repos/${repo}/contents/${encodeURIComponent(v.file)}`, {
         method: 'PUT', headers: h,
         body: JSON.stringify({
-          message: (typeof message === 'string' && message.trim()) ? message : `Kiln: update ${v.file}`,
-          content: b64FromUtf8(content), branch, sha: cur.sha,
-          author: { name: `${actor.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' },
+          message, content: b64FromUtf8(content), branch, sha: cur.sha,
+          author: { name: author, email: 'kiln-editor@users.noreply.github.com' },
         }),
       });
       if (put.ok) {
         const out = await put.json();
         // `parent` is what /source/revert restores to after a failed build (§12).
-        return json({ ok: true, file: v.file, commit: { sha: out.commit?.sha, parent: out.commit?.parents?.[0]?.sha || null }, applied, skipped: allSkipped });
+        return { status: 200, body: { ok: true, file: v.file, commit: { sha: out.commit?.sha, parent: out.commit?.parents?.[0]?.sha || null }, applied, skipped: allSkipped } };
       }
       const err = await put.json().catch(() => ({}));
       const conflict = put.status === 409 || (put.status === 422 && /sha/i.test(err.message || ''));
-      if (!conflict) return json({ error: 'commit failed', detail: err.message || String(put.status) }, 502);
+      if (!conflict) return { status: 502, body: { error: 'commit failed', detail: err.message || String(put.status) } };
     }
-    return json({ error: 'conflict: the file changed while saving — try again' }, 409);
+    return { status: 409, body: { error: 'conflict: the file changed while saving — try again' } };
   } catch {
-    return json({ error: 'could not apply edits safely' }, 502);
+    return { status: 502, body: { error: 'could not apply edits safely' } };
+  }
+}
+
+/** The door every entry request goes through first: the repository, the branch, the token. */
+async function sourceDoor(request, env, body) {
+  const { repo, branch = 'main' } = body;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return { refused: json({ error: 'bad repo' }, 400) };
+  if (!/^[\w./-]{1,100}$/.test(branch)) return { refused: json({ error: 'bad ref' }, 400) };
+  const actor = await authActor(request, env, repo);
+  return { repo, branch, actor };
+}
+
+async function installationHeaders(env, repo) {
+  const itok = await installationToken(env, repo);
+  return itok ? { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' } : null;
+}
+
+/**
+ * POST /source/create { repo, branch?, adapter, file, fields, body?, copyOf?, message? }
+ * A new entry: a content file that is not there yet, made from `fields` (the
+ * collection's required fields, asked for in the editor) and `body`, or a copy
+ * of the entry `copyOf` with `fields` written over it. A file that is there
+ * is never written over: 409 with ENTRY_EXISTS, and the editor tries another
+ * name. Needs the "New posts & pages" grant.
+ */
+async function sourceCreate(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const d = await sourceDoor(request, env, body);
+  if (d.refused) return d.refused;
+  const plan = entryRequest({ file: body.file, fields: body.fields, body: body.body ?? '', copyOf: body.copyOf, adapter: body.adapter, actor: d.actor },
+    { isSensitivePath, pathInScope, checkFragment, checkFragmentWrite });
+  if (plan.error) return json({ error: plan.error, ...(plan.detail !== undefined && { detail: plan.detail }) }, plan.status);
+  if (!hasGrant(d.actor, 'newpost')) return grantRefusal('newpost', plan.file);
+  const h = await installationHeaders(env, d.repo);
+  if (!h) return json({ error: 'app not installed on repo', repo: d.repo }, 503);
+  try {
+    if (await repoHas(h, d.repo, plan.file, d.branch)) return json({ error: ENTRY_EXISTS, file: plan.file }, 409);
+    let content = plan.content;
+    if (plan.copyOf) {
+      const from = await sourceRead(h, d.repo, plan.copyOf, d.branch);
+      if (!from) return json({ error: SOURCE_FILE_GONE }, 404);
+      const r = plan.adapter.applyEdits(utf8FromB64(from.content), plan.edits, plan.copyOf);
+      if (r.skipped.length) return json({ error: 'the copy could not be made', skipped: r.skipped }, 422);
+      content = r.content;
+    }
+    const invalid = plan.adapter.validate(content, plan.file);
+    if (invalid) return json({ error: invalid }, 422);
+    const message = typeof body.message === 'string' && body.message.trim() ? body.message.trim().slice(0, 200)
+      : `Kiln: ${plan.copyOf ? `copy ${plan.copyOf} to` : 'add'} ${plan.file}`;
+    const put = await fetch(`${GH}/repos/${d.repo}/contents/${plan.file.split('/').map(encodeURIComponent).join('/')}`, {
+      method: 'PUT', headers: h,
+      body: JSON.stringify({ message, content: b64FromUtf8(content), branch: d.branch,
+        author: { name: `${d.actor.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' } }),
+    });
+    if (put.ok) {
+      const out = await put.json();
+      return json({ ok: true, file: plan.file, commit: { sha: out.commit?.sha, parent: out.commit?.parents?.[0]?.sha || null } });
+    }
+    const err = await put.json().catch(() => ({}));
+    // Taken between the look and the write: never written over.
+    if (put.status === 409 || (put.status === 422 && /sha/i.test(err.message || ''))) return json({ error: ENTRY_EXISTS, file: plan.file }, 409);
+    return json({ error: 'commit failed', detail: err.message || String(put.status) }, 502);
+  } catch {
+    return json({ error: 'could not add the entry safely' }, 502);
+  }
+}
+
+/**
+ * POST /source/remove { repo, branch?, adapter, file, message? }
+ * An entry taken off the site: its file is deleted in one commit. The commit
+ * stays in the repository's history, and /source/revert to its parent brings
+ * the file back. Needs the "New posts & pages" grant.
+ */
+async function sourceRemove(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const d = await sourceDoor(request, env, body);
+  if (d.refused) return d.refused;
+  const refuse = sourceModeRefusal(d.actor);
+  if (refuse) return json({ error: refuse.error }, refuse.status);
+  const adapter = getAdapter(body.adapter);
+  if (!adapter) return json({ error: 'unknown adapter' }, 400);
+  const p = refuseSourcePath(body.file, d.actor, { isSensitivePath, pathInScope }, { adapter });
+  if (p.error) return json({ error: p.error }, p.status);
+  if (!hasGrant(d.actor, 'newpost')) return grantRefusal('newpost', p.file);
+  const h = await installationHeaders(env, d.repo);
+  if (!h) return json({ error: 'app not installed on repo', repo: d.repo }, 503);
+  try {
+    const cur = await sourceRead(h, d.repo, p.file, d.branch);
+    if (!cur) return json({ error: SOURCE_FILE_GONE }, 404);
+    const del = await fetch(`${GH}/repos/${d.repo}/contents/${p.file.split('/').map(encodeURIComponent).join('/')}`, {
+      method: 'DELETE', headers: h,
+      body: JSON.stringify({ message: `Kiln: remove ${p.file}`, sha: cur.sha, branch: d.branch,
+        author: { name: `${d.actor.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' } }),
+    });
+    if (del.ok) {
+      const out = await del.json();
+      return json({ ok: true, file: p.file, commit: { sha: out.commit?.sha, parent: out.commit?.parents?.[0]?.sha || null } });
+    }
+    const err = await del.json().catch(() => ({}));
+    if (del.status === 409 || (del.status === 422 && /sha/i.test(err.message || ''))) return json({ error: 'conflict: the file changed while removing it — try again' }, 409);
+    return json({ error: 'commit failed', detail: err.message || String(del.status) }, 502);
+  } catch {
+    return json({ error: 'could not remove the entry safely' }, 502);
+  }
+}
+
+/**
+ * POST /source/fields { repo, branch?, adapter, file, at? } → { format, fields, body, sha }
+ * An entry at a glance, now or (`at`, a commit) as it was then: its top-level
+ * front matter values and its text. For Page settings, a new entry's
+ * neighbours, and History's preview. Same door as /source/read.
+ */
+async function sourceFields(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const d = await sourceDoor(request, env, body);
+  if (d.refused) return d.refused;
+  const v = validateSourceRequest({ file: body.file, edits: [{ pointer: '/body', value: '' }], adapter: body.adapter, actor: d.actor }, { isSensitivePath, pathInScope });
+  if (v.error) return json({ error: v.error }, v.status);
+  if (body.at !== undefined && !/^[a-f0-9]{40}$/.test(String(body.at))) return json({ error: 'bad at' }, 400);
+  const h = await installationHeaders(env, d.repo);
+  if (!h) return json({ error: 'app not installed on repo', repo: d.repo }, 503);
+  try {
+    const cur = await sourceRead(h, d.repo, v.file, body.at || d.branch);
+    if (!cur) return json({ error: SOURCE_FILE_GONE }, 404);
+    const f = v.adapter.fields(utf8FromB64(cur.content), v.file);
+    return json({ ...f, sha: cur.sha });
+  } catch {
+    return json({ error: 'could not read the file' }, 502);
+  }
+}
+
+/**
+ * POST /source/history { repo, branch?, adapter, file | folder } → { versions: [{ sha, parent, when, who, what }] }
+ * The commits that changed one content file, newest first (at most 30), for
+ * History. A file that is no longer there still has its history: its last
+ * commit is the one that removed it, and /source/revert to that commit's
+ * parent brings it back. Same door as /source/read.
+ */
+async function sourceHistory(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const d = await sourceDoor(request, env, body);
+  if (d.refused) return d.refused;
+  // A collection's folder (`folder`) instead of one file: what was removed from it is found there.
+  const folder = typeof body.folder === 'string' ? body.folder.replace(/\/+$/, '') : null;
+  const asked = folder !== null ? `${folder}/entry.md` : body.file;
+  const v = validateSourceRequest({ file: asked, edits: [{ pointer: '/body', value: '' }], adapter: body.adapter, actor: d.actor }, { isSensitivePath, pathInScope });
+  if (v.error) return json({ error: v.error }, v.status);
+  const path = folder !== null ? v.file.slice(0, -'/entry.md'.length) : v.file;
+  const h = await installationHeaders(env, d.repo);
+  if (!h) return json({ error: 'app not installed on repo', repo: d.repo }, 503);
+  try {
+    const res = await fetch(`${GH}/repos/${d.repo}/commits?sha=${encodeURIComponent(d.branch)}&path=${encodeURIComponent(path)}&per_page=30`, { headers: h });
+    if (!res.ok) return json({ error: 'could not read the history' }, 502);
+    const list = await res.json();
+    const versions = (Array.isArray(list) ? list : []).map(c => ({
+      sha: c.sha, parent: c.parents?.[0]?.sha || null, when: c.commit?.author?.date || c.commit?.committer?.date || null,
+      who: String(c.commit?.author?.name || '').replace(/ \(via Kiln(?:, scheduled)?\)$/, ''),
+      what: String(c.commit?.message || '').split('\n')[0].slice(0, 200),
+    }));
+    return json({ versions });
+  } catch {
+    return json({ error: 'could not read the history' }, 502);
   }
 }
 

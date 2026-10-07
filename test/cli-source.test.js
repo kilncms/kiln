@@ -112,7 +112,8 @@ test('wizard §7.2: generator tree asks the mode question; choosing source write
     assert.match(out, /The pages are generated from content files/);
     // The helper's package is not on npm: the wizard adds the one file instead of naming an install that fails.
     assert.doesNotMatch(out, /npm install @kilncms\/astro/);
-    assert.match(out, /import \{ kilnSource, kilnBody \} from '\.\.\/lib\/kiln-astro\.mjs';/);
+    assert.match(out, /import \{ kilnSource, kilnBody, kilnEntry \} from '\.\.\/lib\/kiln-astro\.mjs';/);
+    assert.match(out, /kilnEntry\(entry\)/);
     assert.match(out, /wrote src\/lib\/kiln-astro\.mjs/);
     assert.equal(readFileSync(path.join(dir, 'src', 'lib', 'kiln-astro.mjs'), 'utf8'), readFileSync(path.join(path.dirname(CLI), '..', 'integrations', 'astro', 'index.mjs'), 'utf8'));
     assert.match(out, /kilnSource\(entry, 'title'\)/);

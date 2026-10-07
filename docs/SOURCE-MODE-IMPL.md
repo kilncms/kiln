@@ -445,6 +445,56 @@ is the contract now.
   is a plain string in Astro's JSON Schema; the reference's `?type=image` is
   what makes a field a picture.
 
+### Entries, drafts, order, schedules, History and Page settings (2026-10)
+
+- **Stamping.** `kilnEntry(entry)` → `data-kiln-entry="<path>?c=<collection>"`
+  on the element that shows one entry. The page's own entry is the file whose
+  body (`kilnBody`) is on the page, else the one entry the page stamps.
+- **Adding a field.** An edit with `add: true` writes a top-level field the
+  file does not have yet, on a line of its own (`applyFrontmatterEdits`:
+  YAML at the end, TOML before the first table, JSON before the closing
+  brace); every other edit still only changes a value that is there. Only a
+  plain name (`[A-Za-z_][A-Za-z0-9_-]*`), never a nested field.
+- **The worker.**
+  `POST /source/create { file, fields, body?, copyOf? }`: a new entry from its
+  top-level fields (`astro.newEntry`: YAML front matter, a blank line, the
+  text) or a copy of `copyOf` with `fields` written over it (or added). The
+  path gauntlet for both files, no script in a field and none in the text
+  (`entryRequest`), the "New posts & pages" grant, and never over a file
+  that is there (`HEAD` first, and a PUT without a sha): 409
+  `a file with that name is already there`.
+  `POST /source/remove { file }`: DELETE with the file's sha, message
+  `Kiln: remove <file>`, same grant.
+  `POST /source/fields { file, at? }`: `{ format, fields, body, sha }`, the
+  top-level values (text, numbers, yes/no, dates, lists of those) and the
+  text, now or at a commit (`astro.fields`).
+  `POST /source/history { file | folder }`: the commits that changed the file,
+  or any file under the folder, newest first, at most 30:
+  `{ sha, parent, when, who, what }`. `/source/revert` to a remove commit's
+  parent brings the file back.
+  `POST /schedule { at, desc?, source: { adapter, file, edits } }`: checked as
+  `/source/commit` checks (no `was` is kept), and when it fires applied to the
+  file as it is then through the same `commitSourceEdits`, under the
+  scheduler's existing rules (the editor's current scope, the Schedule grant).
+  `/schedules` says `kind: 'source'`. `/healthz` gains `sourceEntries: true`.
+- **The editor** (`src/editor/source-entries.js`, pure): `collectionsOn`
+  (collection → folder, usual extension), `entryFileName` (slug of the title,
+  `-2`… when taken), `entryForm` (the title and the schema's required fields
+  without defaults, each as text, date, number, yes/no, choice, list or URL;
+  `cannot` lists a required group of fields or picture), `entryValues`,
+  `draftRule` (config `draftField`/`draftValue`, else a boolean `draft` in the
+  schema, else, without a schema, a `draft` field the entries have),
+  `orderRule` (config `orderField`, else `order`/`sort`/`weight`/`position`/
+  `priority`), `moveEntry` (swap two distinct values, else number again from
+  1), `versionWords`. main.js: the Entry button and box, **Add an entry**,
+  **Entries & drafts** (the collection folder from the git tree, each file's
+  fields read, drafts first), the new-entry box, scheduling a draft, History
+  (`sourceHistoryPanel`, `previewVersion`) and Page settings
+  (`sourcePageSettings`). A draft mark, an order and Page settings are hidden
+  fields (`hiddenField`) staged with `stageSourcePending`, shown in the publish
+  sheet by a line of words (`note`). A failed build after an entry was added
+  is undone by removing it again.
+
 ## CLI + fixtures + integration (owner: cli workstream)
 
 - Wizard: detection step via `detectGenerators` on the local file listing;
