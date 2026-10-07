@@ -124,6 +124,8 @@ test('typed: a date, a time, a number or an address is kept without the spaces t
   assert.match(commit, /else stageSourcePending\(a\.ref, kept\);/);
   // a line break typed into an entry's one paragraph leaves it one paragraph of words
   assert.match(commit, /if \(a\.surface\.children\.length\) a\.surface\.textContent = value;/);
+  // …and it is a line break in every browser: WebKit puts an element where Enter was pressed
+  assert.match(commit, /for \(const br of a\.surface\.querySelectorAll\('br'\)\) br\.replaceWith\('\\n'\);\s*\n\s*const value = a\.surface\.textContent;/);
 });
 
 // ─── The text of an entry ────────────────────────────────────────────────────

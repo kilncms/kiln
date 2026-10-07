@@ -3204,9 +3204,12 @@ function commitSourceEdit() {
   sourceActive = null;
   endSourceEditing(a);
   removeToolbar();
+  // Where Enter was pressed WebKit puts an element and Chromium a line break:
+  // either way it is a line break.
+  for (const br of a.surface.querySelectorAll('br')) br.replaceWith('\n');
   const value = a.surface.textContent;
-  // A line break typed into an entry's one paragraph can leave an element in
-  // it: the paragraph holds words and nothing else.
+  // Anything else a browser left in an entry's one paragraph goes: the
+  // paragraph holds words and nothing else.
   if (a.surface.children.length) a.surface.textContent = value;
   if (value === a.originalText) return;   // nothing was typed here
   const f = state.sourceFields.get(a.ref);
