@@ -76,7 +76,7 @@ import { handleCloud, expireStaleTrials, cloudSiteForOrigin } from './cloud.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, isHtmlPath } from './sanitize-guard.js';
 import { adapterIds } from '../src/adapters/index.js';
-import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, duplicateCandidates, SOURCE_FILE_GONE } from './source.js';
+import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, changedSinceRead, duplicateCandidates, SOURCE_FILE_GONE } from './source.js';
 import { uploadProblem, editorFileKind, isUploadKind, base64Bytes, base64Head, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../src/file-policy.js';
 
 // UTF-8-safe base64 (GitHub content is base64; edits re-applied at cron time).
@@ -120,7 +120,9 @@ export default {
       if (path === '/healthz') {
         // `renameMovesAll` tells `kiln doctor` that this worker brings everything a
         // site stores along when its repository is renamed, not the people list alone.
-        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, ...deployedBuild(env) };
+        // `sourceWas`: an edit to a content file that says what its field held is
+        // left out when the file no longer says that (worker/source.js changedSinceRead).
+        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, sourceWas: true, ...deployedBuild(env) };
         // ?deep=1 asks the things publishing depends on. A plain GET stays a
         // constant 200 that touches nothing, as every editor and monitor expects.
         if (url.searchParams.get('deep') === '1') {
@@ -1564,8 +1566,14 @@ async function sourceCommit(request, env) {
       const cur = await sourceRead(h, repo, v.file, branch);
       if (!cur) return json({ error: SOURCE_FILE_GONE }, 404);
       const source = utf8FromB64(cur.content);
-      const { content, applied, skipped } = v.adapter.applyEdits(source, runnable, v.file);
-      const allSkipped = [...typedSkips, ...skipped];
+      // A field that no longer says what the editor read was changed by
+      // someone else: that edit is left out, with what the file says now, and
+      // the rest go through. Looked at again on the retry, against the file
+      // as it is then.
+      const moved = changedSinceRead(v.adapter, source, v.file, runnable);
+      const movedKeys = new Set(moved.map(s => s.key));
+      const { content, applied, skipped } = v.adapter.applyEdits(source, runnable.filter(e => !movedKeys.has(e.key)), v.file);
+      const allSkipped = [...typedSkips, ...moved, ...skipped];
       if (!applied.length) return json({ error: 'no edits could be applied', skipped: allSkipped }, 422);
       // Cheap pre-commit parse check (§9) — the build is the real judge (§12).
       const invalid = v.adapter.validate(content, v.file);

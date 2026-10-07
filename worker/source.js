@@ -92,9 +92,89 @@ export function validateSourceRequest({ file, edits, adapter: adapterId, actor }
     if (!e || typeof e !== 'object' || typeof e.pointer !== 'string' || !parsePointer(e.pointer)) {
       return { status: 400, error: 'bad pointer', detail: String((e && e.pointer) ?? '') };
     }
-    cleanEdits.push({ pointer: e.pointer, value: e.value, type: e.type, key: e.key ?? e.pointer });
+    const clean = { pointer: e.pointer, value: e.value, type: e.type, key: e.key ?? e.pointer };
+    // What the field held when the editor read it, when the editor says so (changedSinceRead).
+    if (isSingleValue(e.was)) clean.was = e.was;
+    cleanEdits.push(clean);
   }
   return { adapter, file: p.file, cleanEdits };
+}
+
+const isSingleValue = (v) => ['string', 'number', 'boolean'].includes(typeof v);
+
+// ─── A field someone else changed is not written over ────────────────────────
+// An edit may say what its field held when the editor read it (`was`: what
+// the built page showed). When the file no longer says that, somebody changed
+// the field since the page was built, and writing the edit would replace
+// their change without anyone having seen it. That one edit is left out, with
+// what the file says now, so the editor can show both and let the person
+// choose. An edit that says nothing is written as it always was: that is how
+// an editor from before this check keeps working.
+
+/** The skip reason for an edit whose field no longer says what the editor read. */
+export const CHANGED_SINCE_READ = 'changed since it was read';
+
+const spaced = (s) => String(s).replace(/\s+/g, ' ').trim();
+
+/**
+ * An entry's text as the page shows it. The file holds markdown and the page
+ * what the site made of it: a backslash before a mark is gone, the common
+ * entities are their characters, and quotes, dashes and dots may have been
+ * typeset. Both sides are brought to the same plain form before comparing.
+ */
+function proseWords(text) {
+  return spaced(String(text)
+    .replace(/\\([\\`*_{}[\]()#+\-.!<>~|])/g, '$1')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&nbsp;/g, ' ')
+    .replace(/[\u2018\u2019\u201A\u2032]/g, "'").replace(/[\u201C\u201D\u201E\u2033]/g, '"')
+    .replace(/\u2026/g, '...').replace(/[\u2013\u2014]|-{2,3}/g, '-'));
+}
+
+const YES = /^(true|yes|on)$/i;
+const NO = /^(false|no|off)$/i;
+
+/**
+ * Does the file's value say what was read? Compared as a reader sees it:
+ * spacing does not count (a template may put the value on a line of its own),
+ * a number is a number however it is written, and an entry's text is its
+ * words (proseWords).
+ */
+export function sameAsRead(current, was, { pointer, type } = {}) {
+  if (current === null || current === undefined) return spaced(was) === '';
+  if (pointer === '/body') return proseWords(current) === proseWords(was);
+  if (typeof current === 'boolean' || type === 'boolean') {
+    const truth = (v) => (typeof v === 'boolean' ? v : YES.test(spaced(v)) ? true : NO.test(spaced(v)) ? false : null);
+    return truth(current) !== null && truth(current) === truth(was);
+  }
+  if (typeof current === 'number' || type === 'number') {
+    const n = (v) => (spaced(v) === '' ? NaN : Number(spaced(v)));
+    if (!Number.isNaN(n(current)) || !Number.isNaN(n(was))) return n(current) === n(was);
+  }
+  return spaced(current) === spaced(was);
+}
+
+/**
+ * The edits whose field no longer says what the editor read, as skip entries
+ * with what the file says now: [{ key, reason, current }]. Looked at only when
+ * an edit says what it read, and only for a single value: a field that is
+ * gone, or holds a list, is the adapter's to refuse, with its own reason. An
+ * edit that would write what the file already says is nobody's to ask about.
+ */
+export function changedSinceRead(adapter, text, file, edits) {
+  const out = [];
+  let parsed = null;
+  for (const e of edits || []) {
+    if (!isSingleValue(e.was)) continue;
+    let current;
+    try {
+      parsed = parsed || adapter.parse(text, file);
+      current = adapter.read(parsed, e.pointer);
+    } catch { continue; }
+    if (current === undefined || (current !== null && typeof current === 'object')) continue;
+    if (sameAsRead(current, e.was, e) || sameAsRead(current, e.value, e)) continue;
+    out.push({ key: e.key ?? e.pointer, reason: CHANGED_SINCE_READ, current: typeof current === 'string' ? current.trim() : (current ?? '') });
+  }
+  return out;
 }
 
 /**
