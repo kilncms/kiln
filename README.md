@@ -294,6 +294,15 @@ live site you own, localizes the assets, strips the builder's runtime scripts
 (fixing the lazy-loaded images that depend on them), auto-tags the result, and
 writes a report — a folder ready to push, host free, and edit with Kiln.
 
+Pages are found by following links and by reading the sitemap, including the
+sitemap *indexes* WordPress and Yoast publish (`sitemap.xml`,
+`sitemap_index.xml`, `wp-sitemap.xml`). A WordPress media library can outgrow
+the asset caps (5 MB a file, 25 MB a run): `--max-asset-mb` and
+`--max-total-mb` raise them. The report ends with **What freezing cost** — the
+contact and search forms that posted into the CMS and now send nowhere, the
+comment threads that are kept as shown, and any links to the old sign-in — so
+nothing stops silently.
+
 ### If your AI built a React app
 
 Lovable, v0 and Bolt usually build a React app. The file the server sends is

@@ -874,6 +874,7 @@ function helpText() {
                      --from <owner/repo>  --name <title>  --dry
   rescue <url>     Copy a site out of a website builder into plain HTML.
                      --out <dir>  --max-pages <n>  --delay <ms>  --dry  --no-tag  --keep-scripts
+                     --max-asset-mb <n>  --max-total-mb <n>  (raise the 5 MB / 25 MB asset caps)
 
   --help, -h       This text. With a command too: nothing is run, nothing is changed.
   --version        The version of this tool.
@@ -1428,7 +1429,7 @@ async function addSiteCloud() {
 
 const [, , cmd, ...rest] = process.argv;
 // Flags accept --flag=value AND --flag value; bare flags become true.
-const VALUE_FLAGS = new Set(['site', 'repo', 'worker', 'from', 'name', 'out', 'delay', 'max-pages', 'browser']);
+const VALUE_FLAGS = new Set(['site', 'repo', 'worker', 'from', 'name', 'out', 'delay', 'max-pages', 'max-asset-mb', 'max-total-mb', 'browser']);
 const args = {};
 const positional = [];
 for (let i = 0; i < rest.length; i++) {

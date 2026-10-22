@@ -113,6 +113,40 @@ async function lsStoreMode(env) {
   } catch { return { mode: 'unknown' }; }
 }
 
+/**
+ * One short mail to the operator (a new site, a billing change) through the
+ * send_email binding. Production-only wiring: without the NOTIFY binding and
+ * the NOTIFY_TO secret (a verified Email Routing destination) this does
+ * nothing. A failure to send never fails the request — it leaves a log line.
+ * Exported for tests, which pass a fake binding; production wraps the same
+ * fields in cloudflare:email's EmailMessage.
+ */
+export async function notifyOwner(env, subject, lines) {
+  if (!env.NOTIFY || !env.NOTIFY_TO) return;
+  try {
+    const from = env.NOTIFY_FROM || 'notify@kilncms.com';
+    const raw = [
+      `From: Kiln <${from}>`,
+      `To: <${env.NOTIFY_TO}>`,
+      `Subject: ${String(subject).replace(/[\r\n]+/g, ' ').slice(0, 180)}`,
+      `Date: ${new Date().toUTCString()}`,
+      `Message-ID: <${uuid()}@kilncms.com>`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      ...lines.map(String), '',
+    ].join('\r\n');
+    let message = { from, to: env.NOTIFY_TO, raw };
+    try {
+      const { EmailMessage } = await import('cloudflare:email');
+      message = new EmailMessage(from, env.NOTIFY_TO, raw);
+    } catch { /* node (tests, local dev): the fake binding takes the plain shape */ }
+    await env.NOTIFY.send(message);
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'notify_failed', err: String(e?.message || e).slice(0, 200) }));
+  }
+}
+
 async function lsCheckout(env, site) {
   const variant = lsVariant(env, site.plan);
   if (!lsConfigured(env) || !variant) return null;
@@ -253,9 +287,22 @@ const TRIAL_GRACE_DAYS = 7;
 export async function expireStaleTrials(env) {
   if (!env.kiln_cloud) return;
   const cutoff = Date.now() - TRIAL_GRACE_DAYS * 86400 * 1000;
+  // Read what is about to expire first, so the operator hears WHICH sites went
+  // quiet. The cron is the only writer of this transition, so the gap between
+  // the read and the write cannot double-report.
+  let expiring = null;
+  try {
+    expiring = await env.kiln_cloud.prepare(
+      "SELECT repo, origin FROM sites WHERE status = 'trialing' AND ls_subscription_id IS NULL AND created_at < ?"
+    ).bind(cutoff).all();
+  } catch { /* a reduced D1 stand-in has no .all(): expiry still proceeds, just unannounced */ }
   await env.kiln_cloud.prepare(
     "UPDATE sites SET status = 'canceled' WHERE status = 'trialing' AND ls_subscription_id IS NULL AND created_at < ?"
   ).bind(cutoff).run();
+  const rows = expiring?.results || [];
+  if (rows.length) {
+    await notifyOwner(env, `Kiln: ${rows.length} trial${rows.length === 1 ? '' : 's'} expired unpaid`, rows.map(r => `${r.repo} (${r.origin})`));
+  }
 }
 
 /**
@@ -366,6 +413,12 @@ export async function handleCloud(request, env, url, path) {
     await env.kiln_cloud.prepare('INSERT INTO sites (id, account_id, repo, origin, plan, status, created_at) VALUES (?,?,?,?,?,?,?)')
       .bind(site.id, site.account_id, site.repo, site.origin, site.plan, site.status, site.created_at).run();
     const checkout = await lsCheckout(env, site);
+    await notifyOwner(env, `New Kiln site: ${site.repo}`, [
+      `Plan: ${site.plan} (trialing)`,
+      `Origin: ${site.origin}`,
+      `Registered by: ${sess.login}`,
+      checkout ? 'A checkout link was issued.' : 'No checkout: billing is not configured.',
+    ]);
     return json({ ok: true, site, checkout });   // checkout null until LS is configured
   }
 
@@ -461,6 +514,13 @@ export async function handleCloud(request, env, url, path) {
       );
     }
     await env.KILN.put(evtKey, '1', { expirationTtl: 7 * 24 * 3600 });
+    const siteRow = siteId || subId
+      ? await env.kiln_cloud.prepare('SELECT repo, origin FROM sites WHERE id = ? OR ls_subscription_id = ?').bind(siteId || '', subId || '').first().catch(() => null)
+      : null;
+    await notifyOwner(env, `Kiln billing: ${eventName} → ${status}`, [
+      `Site: ${siteRow?.repo || siteId || subId || 'unknown'} (${siteRow?.origin || 'origin unknown'})`,
+      `Status: ${status}${until ? `, access until ${new Date(until).toISOString()}` : ''}`,
+    ]);
     return json({ ok: true });
   }
 

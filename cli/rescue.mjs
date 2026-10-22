@@ -7,7 +7,8 @@
  * to `git init` and push to any static host.
  *
  *   npx github:kilncms/kiln#release rescue <url> [--out=dir] [--max-pages=N]
- *        [--delay=ms] [--keep-scripts] [--no-tag] [--dry]
+ *        [--delay=ms] [--max-asset-mb=N] [--max-total-mb=N]
+ *        [--keep-scripts] [--no-tag] [--dry]
  *        [--render [--browser=path] [--menu-shim]] [--try]
  *
  * --render is for sites drawn by JavaScript (Lovable, v0, Bolt and other React
@@ -16,7 +17,8 @@
  * so the copy can be served locally and edited at once.
  *
  * The pure helpers (pageIdentity, mapUrls, fileToHref, cleanPage,
- * rewriteCssUrls, extractRefs, sitemapPages, lostLines, wireKiln, appScripts,
+ * rewriteCssUrls, extractRefs, sitemapPages, sitemapIndexChildren,
+ * staticLostLines, lostLines, wireKiln, appScripts,
  * looksLikeErrorPage) are exported
  * for tests — no network there.
  */
@@ -31,8 +33,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = existsSync(path.join(HERE, 'dist', 'kiln.js')) ? HERE : path.resolve(HERE, '..');
 
 const UA = 'kiln-rescue/0.1 (+https://kilncms.com)';
-const MAX_ASSET_BYTES = 5 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
+const MAX_ASSET_BYTES = 5 * 1024 * 1024;     // per file; --max-asset-mb changes it
+const MAX_TOTAL_BYTES = 25 * 1024 * 1024;    // per run; --max-total-mb changes it
 // off-origin hosts that are really "the builder's disk" — localize these too
 const BUILDER_CDN_RE = /(^|\.)(squarespace-cdn\.com|squarespace\.com|wixstatic\.com|parastorage\.com|wp\.com|wordpress\.com|googleusercontent\.com|cloudfront\.net|fastly\.net|fastly\.com|lovable\.app|lovableproject\.com|lovable\.dev|vercel-storage\.com|supabase\.co)$/i;
 const TRACKER_RE = /googletagmanager\.com|google-analytics\.com|doubleclick\.net|googleadservices\.com|connect\.facebook\.net|facebook\.com\/tr|hotjar\.com|clarity\.ms|mc\.yandex|matomo|plausible\.io|segment\.com/i;
@@ -279,8 +281,14 @@ export function cleanPage(html, opts = {}) {
       case 'link': {
         const rels = relsOf(n);
         const as = (getAttr(n, 'as') || '').toLowerCase();
+        const linkType = (getAttr(n, 'type') || '').toLowerCase();
         if (rels.some(r => ['preconnect', 'dns-prefetch', 'modulepreload'].includes(r)) ||
             (rels.includes('preload') && as === 'script')) { removals.push(n); cruft++; }
+        // CMS leftovers that point back into the machinery that is gone:
+        // WordPress's pingback/xmlrpc, Windows Live Writer, the REST root,
+        // short links, and oEmbed/feed discovery whose endpoints die with it
+        else if (rels.some(r => ['pingback', 'edituri', 'wlwmanifest', 'shortlink', 'https://api.w.org/'].includes(r)) ||
+            (rels.includes('alternate') && /(json\+oembed|xml\+oembed|rss\+xml|atom\+xml)/.test(linkType))) { removals.push(n); cruft++; }
         else if (rels.includes('stylesheet') || rels.some(r => ICON_RELS.includes(r))) rwAttr(n, 'href', 'asset');
         else rwAttr(n, 'href', 'plain');
         break;
@@ -329,12 +337,26 @@ export function cleanPage(html, opts = {}) {
 
 // ─── pure: sitemap, Kiln wiring, the "what was lost" report ──────────────────
 
-/** Same-origin page paths listed in a sitemap.xml (nested sitemaps are not followed). */
+/** Same-origin page paths listed in one sitemap file. A sitemap INDEX (a sitemap
+ *  of sitemaps, the WordPress and Yoast default) lists only .xml files, which
+ *  NON_PAGE_RE filters out — read its children with sitemapIndexChildren. */
 export function sitemapPages(xml, origin) {
   const out = [];
   for (const m of String(xml).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) {
     const id = pageIdentity(m[1].replace(/&amp;/g, '&'), origin);
     if (id && !NON_PAGE_RE.test(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** Same-origin child sitemap URLs when the XML is a sitemap index, else []. */
+export function sitemapIndexChildren(xml, origin) {
+  if (!/<sitemapindex[\s>]/i.test(String(xml))) return [];
+  const base = new URL(origin).origin;
+  const out = [];
+  for (const m of String(xml).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) {
+    let u; try { u = new URL(m[1].replace(/&amp;/g, '&'), base); } catch { continue; }
+    if (u.origin === base && /^https?:$/.test(u.protocol) && !out.includes(u.href)) out.push(u.href);
   }
   return out;
 }
@@ -438,6 +460,63 @@ export function lostLines(pages) {
   return L;
 }
 
+/**
+ * What a plain (non-rendered) freeze costs, read from the pages' own HTML:
+ * forms that posted back into the CMS, search boxes, comment threads, links to
+ * the old sign-in. pages: [{ href, html }] with href the pretty output URL.
+ * Returns report lines, or [] when there is nothing to say.
+ */
+export function staticLostLines(pages, origin) {
+  let base = null; try { base = new URL(origin); } catch { /* relative actions stay dead-ish */ }
+  const dead = [], outside = [], searches = [], comments = [], logins = new Set();
+  for (const { href, html } of pages) {
+    const doc = parse(String(html));
+    walkTree(doc, n => {
+      if (n.tagName === 'a') {
+        if (/wp-login\.php|\/wp-admin\b/i.test(getAttr(n, 'href') || '')) logins.add(href);
+        return;
+      }
+      if (n.tagName !== 'form') return;
+      const action = String(getAttr(n, 'action') || '').trim();
+      let u = null; try { u = action ? new URL(action, base || 'http://localhost/') : null; } catch { /* unparsable action */ }
+      let fields = 0, searchInput = false;
+      walkTree(n, c => {
+        if (!['input', 'textarea', 'select'].includes(c.tagName)) return;
+        if ((getAttr(c, 'name') || '') === 's') searchInput = true;
+        if ((getAttr(c, 'type') || '').toLowerCase() !== 'hidden') fields++;
+      });
+      const label = getAttr(n, 'aria-label') || getAttr(n, 'id') || getAttr(n, 'name')
+        || (getAttr(n, 'class') || '').split(/\s+/).filter(Boolean)[0] || 'form';
+      const isComment = /wp-comments-post\.php/i.test(action) || /^comment/i.test(getAttr(n, 'id') || '');
+      const isSearch = (getAttr(n, 'role') || '').toLowerCase() === 'search' || searchInput
+        || /(^|[\s-])search(form)?([\s-]|$)/i.test(getAttr(n, 'class') || '') || /[?&]s=/.test(action);
+      if (isComment) { comments.push(href); return; }
+      if (isSearch) { searches.push(href); return; }
+      const rec = { label, fields, action: u ? u.pathname : action, href };
+      if (u && base && u.origin !== base.origin) outside.push({ ...rec, host: u.hostname });
+      else dead.push(rec);
+    });
+  }
+  if (!dead.length && !outside.length && !searches.length && !comments.length && !logins.size) return [];
+  const where = (hrefs) => { const u = [...new Set(hrefs)]; return u.length > 4 ? `${u.slice(0, 4).join(', ')} and ${u.length - 4} more` : u.join(', '); };
+  const group = (items, keyOf) => { const m = new Map(); for (const it of items) { const k = keyOf(it); if (!m.has(k)) m.set(k, []); m.get(k).push(it.href); } return m; };
+  const L = ['## What freezing cost', '',
+    'These pages are plain HTML now, with nothing running behind them. Check each item below.', ''];
+  if (dead.length) {
+    L.push(`- Forms that posted into the old site: ${dead.length}. They now send nowhere. Point each one at a form service, or replace it with an email link.`);
+    for (const [k, hrefs] of group(dead, f => `"${f.label}" (${f.fields} field${f.fields === 1 ? '' : 's'}${f.action ? `, posted to ${f.action}` : ''})`)) L.push(`  - ${k} on ${where(hrefs)}`);
+  } else L.push('- Forms that posted into the old site: none.');
+  if (outside.length) {
+    L.push(`- Forms that post to an outside service, which should still work — send one test from the new site:`);
+    for (const [k, hrefs] of group(outside, f => `"${f.label}" (posts to ${f.host})`)) L.push(`  - ${k} on ${where(hrefs)}`);
+  }
+  if (searches.length) L.push(`- Search boxes on ${where(searches)}: the old server answered them, and it is gone. Remove them, or point them at a search service.`);
+  if (comments.length) L.push(`- Comment threads on ${where(comments)}: what was said is kept as shown, and new comments cannot be left.`);
+  if (logins.size) L.push(`- Links to the old sign-in (wp-login, wp-admin) on ${where([...logins])}: remove them. Editing happens through Kiln now.`);
+  L.push('');
+  return L;
+}
+
 // ─── crawl + download + write ────────────────────────────────────────────────
 
 const get = (url) => fetch(url, {
@@ -467,13 +546,17 @@ export async function rescueCmd(startUrl, args = {}) {
   const delay = args.delay !== undefined ? Math.max(0, Number(args.delay) || 0) : 250;
   const keepScripts = !!args['keep-scripts'];
   const dry = !!args.dry;
+  // WordPress media libraries outgrow the defaults: --max-asset-mb / --max-total-mb raise them
+  const mbOf = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n * 1024 * 1024) : 0; };
+  const maxAssetBytes = mbOf(args['max-asset-mb']) || MAX_ASSET_BYTES;
+  const maxTotalBytes = mbOf(args['max-total-mb']) || MAX_TOTAL_BYTES;
 
   // ── --render: a real browser draws each page before it is saved ──
   let renderer = null;
   if (args.render) {
     if (keepScripts) { fail('--keep-scripts cannot be used with --render. A frozen page that still ran the app would be redrawn by it, and edits would be lost.'); process.exit(1); }
     const { openRenderer } = await import('./render.mjs');
-    renderer = await openRenderer({ browser: args.browser, menuShim: !!args['menu-shim'], maxAssetBytes: MAX_ASSET_BYTES, maxTotalBytes: MAX_TOTAL_BYTES });
+    renderer = await openRenderer({ browser: args.browser, menuShim: !!args['menu-shim'], maxAssetBytes, maxTotalBytes });
     if (renderer.error) { fail(renderer.error); process.exit(1); }
     info(`rendering with ${renderer.browserPath}`);
   }
@@ -493,6 +576,29 @@ export async function rescueCmd(startUrl, args = {}) {
     origin = new URL(landedUrl).origin;
     info(`${start.origin} forwards to ${origin}: copying that site`);
     return true;
+  };
+  // WordPress and Yoast publish sitemap INDEXES (a sitemap of sitemaps); most
+  // builders publish one plain file. Once the first page is in hand, try the
+  // usual addresses, follow an index into its children politely, and feed every
+  // page found into the crawl queue. Capped so a huge archive cannot stall a run.
+  let sitemapNote = null;
+  const SITEMAP_PATHS = ['/sitemap.xml', '/sitemap_index.xml', '/wp-sitemap.xml'];
+  const MAX_CHILD_SITEMAPS = 20;
+  const sitemapSweep = async () => {
+    for (const p of SITEMAP_PATHS) {
+      let xml;
+      try { const res = await get(origin + p); if (!res.ok) continue; xml = await res.text(); } catch { continue; }
+      if (!/<(urlset|sitemapindex)[\s>]/i.test(xml)) continue;
+      const children = sitemapIndexChildren(xml, origin);
+      const found = sitemapPages(xml, origin);
+      let read = 1;
+      for (const c of children.slice(0, MAX_CHILD_SITEMAPS)) {
+        await sleep(delay);
+        try { const r = await get(c); if (r.ok) { found.push(...sitemapPages(await r.text(), origin)); read++; } } catch { /* skip this child */ }
+      }
+      return { path: p, read, skipped: Math.max(0, children.length - MAX_CHILD_SITEMAPS), pages: [...new Set(found)] };
+    }
+    return null;
   };
   while (queue.length && pages.size < maxPages) {
     const id = queue.shift();
@@ -533,9 +639,13 @@ export async function rescueCmd(startUrl, args = {}) {
     const found = [...refs.pages];
     // addresses the app moved to by script, and (after the first page) the sitemap
     for (const r of rendered?.routes || []) { const p = pageIdentity(r, origin); if (p && !NON_PAGE_RE.test(p)) found.push(p); }
-    if (renderer && firstPage) {
-      try { const sm = await get(origin + '/sitemap.xml'); if (sm.ok) found.push(...sitemapPages(await sm.text(), origin)); }
-      catch { /* no sitemap */ }
+    if (firstPage) {
+      const sm = await sitemapSweep();
+      if (sm) {
+        sitemapNote = { path: sm.path, read: sm.read, skipped: sm.skipped, found: sm.pages.length };
+        info(`sitemap ${sm.path}: ${sm.pages.length} page${sm.pages.length === 1 ? '' : 's'} listed (${sm.read} file${sm.read === 1 ? '' : 's'} read${sm.skipped ? `, ${sm.skipped} more child sitemaps skipped` : ''})`);
+        found.push(...sm.pages);
+      }
     }
     for (const p of found) if (!seen.has(p)) { seen.add(p); queue.push(p); }
     for (const a of refs.assets) assetRefs.add(a);
@@ -567,12 +677,15 @@ export async function rescueCmd(startUrl, args = {}) {
   const pageMap = mapUrls([...pages.keys()]);
   for (const [from, to] of aliases) if (!pageMap.has(from) && pageMap.has(to)) pageMap.set(from, pageMap.get(to));
 
+  // what stopped working, read from the pages themselves; --render builds a richer one
+  const plainLost = renderer ? [] : staticLostLines([...pages].map(([id, p]) => ({ href: fileToHref(pageMap.get(id)), html: p.html })), origin);
+
   if (dry) {
     let scripts = 0;
     for (const [, p] of pages) scripts += cleanPage(p.html, { baseUrl: p.url, pageMap, keepScripts }).scripts;
     printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry, scripts, cruft: 0,
       localized: [], localizedBytes: 0, planned: localize.length, offOrigin: [...assetRefs].filter(k => !localize.includes(k)),
-      skippedAssets: [], tally: null, firstTitle });
+      skippedAssets: [], tally: null, firstTitle, sitemapNote, plainLost });
     process.exit(0);
   }
 
@@ -585,7 +698,7 @@ export async function rescueCmd(startUrl, args = {}) {
   while (dlQueue.length) {
     const { key, scan } = dlQueue.shift();
     if (downloads.has(key)) continue;
-    if (capped) { skippedAssets.push({ url: key, reason: '25 MB total cap reached' }); continue; }
+    if (capped) { skippedAssets.push({ url: key, reason: `${mb(maxTotalBytes)} total cap reached` }); continue; }
     // the browser already fetched most of these while rendering: no second request
     const held = renderer?.cache.get(key);
     let buf, ct;
@@ -597,16 +710,16 @@ export async function rescueCmd(startUrl, args = {}) {
       catch (e) { skippedAssets.push({ url: key, reason: e.name === 'TimeoutError' ? 'timeout' : String(e.cause?.code || e.message) }); continue; }
       if (!res.ok) { skippedAssets.push({ url: key, reason: `HTTP ${res.status}` }); continue; }
       const len = Number(res.headers.get('content-length') || 0);
-      if (len > MAX_ASSET_BYTES) { skippedAssets.push({ url: key, reason: `${mb(len)} > 5 MB` }); res.body?.cancel?.(); continue; }
+      if (len > maxAssetBytes) { skippedAssets.push({ url: key, reason: `${mb(len)} > ${mb(maxAssetBytes)} cap` }); res.body?.cancel?.(); continue; }
       try { buf = Buffer.from(await res.arrayBuffer()); }
       catch { skippedAssets.push({ url: key, reason: 'download failed' }); continue; }
       ct = (res.headers.get('content-type') || '').toLowerCase();
     }
-    if (buf.length > MAX_ASSET_BYTES) { skippedAssets.push({ url: key, reason: `${mb(buf.length)} > 5 MB` }); continue; }
-    if (totalBytes + buf.length > MAX_TOTAL_BYTES) {
+    if (buf.length > maxAssetBytes) { skippedAssets.push({ url: key, reason: `${mb(buf.length)} > ${mb(maxAssetBytes)} cap` }); continue; }
+    if (totalBytes + buf.length > maxTotalBytes) {
       capped = true;
-      warn(`hit the 25 MB total asset cap — remaining assets keep their original URLs`);
-      skippedAssets.push({ url: key, reason: '25 MB total cap reached' });
+      warn(`hit the ${mb(maxTotalBytes)} total asset cap — remaining assets keep their original URLs (--max-total-mb raises it)`);
+      skippedAssets.push({ url: key, reason: `${mb(maxTotalBytes)} total cap reached` });
       continue;
     }
     totalBytes += buf.length;
@@ -699,7 +812,7 @@ export async function rescueCmd(startUrl, args = {}) {
   printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry: false, scripts, cruft,
     localized: [...downloads.keys()], localizedBytes: totalBytes, planned: localize.length,
     offOrigin: [...offOrigin], skippedAssets, tally, rendered: !!args.render, left, wantKiln, tryOut, firstTitle,
-    requests: renderer?.requests });
+    requests: renderer?.requests, sitemapNote, plainLost });
   process.exit(0);
 }
 
@@ -724,6 +837,7 @@ function printReport(r) {
   lines.push(r.dry
     ? `- Assets to localize: ${r.planned}`
     : `- Assets localized: ${r.localized.length} (${mb(r.localizedBytes)})`);
+  if (r.sitemapNote) lines.push(`- Sitemap ${r.sitemapNote.path}: ${r.sitemapNote.found} pages listed (${r.sitemapNote.read} sitemap file${r.sitemapNote.read === 1 ? '' : 's'} read${r.sitemapNote.skipped ? `; ${r.sitemapNote.skipped} more beyond the cap` : ''})`);
   lines.push(`- Scripts stripped: ${r.scripts}${r.cruft ? ` (+ ${r.cruft} builder cruft tags removed)` : ''}`);
   if (r.firstTitle) lines.push(`- Check this first: the first page is titled "${r.firstTitle}". If that is an error page, the address is wrong or the site is not published, and this is a copy of the error.`);
   if (r.rendered && !r.dry) lines.push(`- Rendered in a browser: every page was opened, scrolled to the end and saved as it looked. App scripts left in the pages: ${r.left}. Requests the browser made to do it: ${r.requests}`);
@@ -747,6 +861,8 @@ function printReport(r) {
   lines.push('');
   if (r.rendered) {
     lines.push(...lostLines([...r.pages].map(([id, p]) => ({ href: fileToHref(r.pageMap.get(id)), rendered: p.rendered }))));
+  } else if (r.plainLost?.length) {
+    lines.push(...r.plainLost);
   }
   lines.push('## Next steps');
   lines.push('');

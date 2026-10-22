@@ -373,7 +373,12 @@ node scripts/backup-cloud.mjs --local         # the local database `npm run dev`
 Always into staging first. Unpack the archive somewhere private:
 
 ```bash
-mkdir -m 700 /tmp/kiln-restore && tar -xzf ~/Backups/kiln/kiln-production-….tar.gz -C /tmp/kiln-restore
+mkdir -m 700 /tmp/kiln-restore
+# encrypted nightly (….tar.gz.age, the default since 2026-10-22) — the key is
+# ~/.keys/kiln-backup.key on the Mini; keep a copy somewhere that is not the Mini
+age -d -i ~/.keys/kiln-backup.key ~/Backups/kiln/kiln-production-….tar.gz.age | tar -xzf - -C /tmp/kiln-restore
+# older, unencrypted archives:
+tar -xzf ~/Backups/kiln/kiln-production-….tar.gz -C /tmp/kiln-restore
 cat /tmp/kiln-restore/manifest.json
 ```
 
@@ -465,12 +470,14 @@ and are never in a file. A self-hosted worker needs only the rows marked
 | `KILN` | KV binding | the App's credentials, sign-ins, people lists, comments, scheduled posts | `npx wrangler kv namespace create KILN` | everywhere (self-host too) |
 | `kiln_cloud` | D1 binding | Kiln Cloud accounts and sites | `npx wrangler d1 create …`, then `d1 migrations apply` | staging, production |
 | `RL` | rate-limit binding | per-address limit on sign-in routes and the deep health check | declared in the config; no value | optional everywhere; the worker does not limit without it |
+| `NOTIFY` | send_email binding | mails operator notes (new signup, billing change, expired trials) to `NOTIFY_TO` | declared in the config; no value | production only; silent everywhere else |
 | `CF_VERSION_METADATA` | version-metadata binding | lets `/healthz` show Cloudflare's record of the upload | declared in the config | staging, production |
 | `ALLOWED_ORIGINS` | variable | the site addresses allowed to sign in (comma-separated). Kiln Cloud sites are allowed from the database instead | you write it | everywhere (self-host too) |
 | `CLOUD_DASHBOARD` | variable | where `/cloud/callback` sends a customer after sign-in | the dashboard's address | staging, production |
 | `CLOUD_ADMIN` | variable | GitHub login of the operator, compared only when `CLOUD_ADMIN_ID` is not set | the owner's login | staging, production |
 | `CLOUD_ADMIN_ID` | variable | numeric GitHub id of the operator; when set, it alone decides | `gh api user --jq .id` | staging, production |
 | `AI_MODEL` | variable | overrides the model AI assist uses | optional | where AI assist is on |
+| `NOTIFY_FROM` | variable | the From address on operator notes | optional; the default is `notify@kilncms.com` | with the `NOTIFY` binding |
 | `KILN_BUILD` | variable | the commit the worker was deployed from, shown by `/healthz` | `scripts/release.mjs` passes it at deploy; never set by hand | staging, production |
 | `GOOGLE_CLIENT_ID` | secret | Google sign-in for invited editors and members | Google Cloud console → Credentials → OAuth client (web). Redirect URI: `<worker>/google/callback` | production; optional for self-host and staging |
 | `GOOGLE_CLIENT_SECRET` | secret | the same client's secret | same place | with the id |
@@ -480,6 +487,7 @@ and are never in a file. A self-hosted worker needs only the rows marked
 | `LS_VARIANT_CLOUD` | secret | the variant id of the Kiln Cloud plan | Lemon Squeezy → the product → variant | with the API key |
 | `LS_VARIANT_MANAGED` | secret | the variant id of the managed plan | same | with the API key |
 | `LS_WEBHOOK_SECRET` | secret | verifies that a webhook came from Lemon Squeezy | you choose it when creating the webhook | with the API key |
+| `NOTIFY_TO` | secret | where operator notes go (new signup, billing change, trials expiring unpaid) | a VERIFIED Email Routing destination address on the account | production only, beside the `NOTIFY` send_email binding in wrangler.toml |
 
 Without the `LS_*` secrets the worker still runs: sites register as trialing
 and checkout answers "billing not configured".

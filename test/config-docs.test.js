@@ -17,7 +17,7 @@ test('KLR-23 ENVIRONMENTS.md lists every binding, variable and secret the worker
   for (const f of ['worker/index.js', 'worker/cloud.js', 'worker/source.js']) for (const m of read(f).matchAll(/\benv\.([A-Za-z_][A-Za-z0-9_]*)/g)) read_.add(m[1]);
   const doc = read('ENVIRONMENTS.md');
   const table = doc.slice(doc.indexOf('## Every name the worker reads'), doc.indexOf('## Resources (canonical instance)'));
-  const listed = new Set([...table.matchAll(/^\| `([A-Za-z_][A-Za-z0-9_]*)` \| (KV binding|D1 binding|rate-limit binding|version-metadata binding|variable|secret) \|/gm)].map(m => m[1]));
+  const listed = new Set([...table.matchAll(/^\| `([A-Za-z_][A-Za-z0-9_]*)` \| (KV binding|D1 binding|rate-limit binding|send_email binding|version-metadata binding|variable|secret) \|/gm)].map(m => m[1]));
   assert.deepEqual([...read_].filter(n => !listed.has(n)).sort(), [], 'the worker reads a name the table does not have');
   assert.deepEqual([...listed].filter(n => !read_.has(n)).sort(), [], 'the table has a name the worker never reads');
   assert.ok(listed.size >= 18);
