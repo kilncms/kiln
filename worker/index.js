@@ -78,7 +78,7 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.4.0';
 
-import { handleCloud, expireStaleTrials, cloudSiteForOrigin } from './cloud.js';
+import { handleCloud, expireStaleTrials, cloudSiteForOrigin, repoPlanEnded } from './cloud.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
 import { adapterIds, getAdapter } from '../src/adapters/index.js';
@@ -706,6 +706,10 @@ async function runDueSchedules(env) {
         if (keep !== null) await env.KILN.put(k.name, JSON.stringify(v), keep);
       }
       if (v.at > Date.now()) continue;
+      // A Cloud site whose plan has ended publishes nothing, as it edits
+      // nothing. The schedule is held, not deleted: renewed within its 14-day
+      // expiry, it goes out on the next run; otherwise it expires on its own.
+      if (await repoPlanEnded(env, v.repo)) { console.log(`[kiln-cron] ${k.name} held: the site's plan has ended`); continue; }
       // Whatever answers to the stored name now must be the repository the
       // schedule was made for. If the name has changed hands, the schedule
       // waits where it is: for its site to say where the repository went, or
@@ -2483,17 +2487,19 @@ async function apiTokenAuth(request, env) {
   // Trust the stored expiry, not only KV's TTL.
   if (!tok || (tok.exp && tok.exp < Date.now())) return null;
   if (!(await stillItsRepo(env, key, tok))) { tokenRefusal.set(request, TOKEN_REPO_CHANGED); return null; }
+  if (await repoPlanEnded(env, tok.repo)) { tokenRefusal.set(request, TOKEN_PLAN_ENDED); return null; }
   return tok;
 }
 
 // Why apiTokenAuth said no, when the token itself is good.
 const tokenRefusal = new WeakMap();
-const TOKEN_REPO_CHANGED = 'This token was made for a different repository than the one that now answers to its name, so nothing was read or changed: the site owner corrects repo in kiln-config.js if the repository was renamed or moved, or makes a new token if it was deleted and made again.';
+const TOKEN_REPO_CHANGED = { code: 'repo_changed', error: 'This token was made for a different repository than the one that now answers to its name, so nothing was read or changed: the site owner corrects repo in kiln-config.js if the repository was renamed or moved, or makes a new token if it was deleted and made again.' };
+const TOKEN_PLAN_ENDED = { code: 'plan_ended', error: "This site's Kiln plan has ended, so its API tokens stop working with it. Nothing was read or changed. They work again, as they were, once the plan is renewed in the Kiln dashboard." };
 
 /** The answer to an API request that apiTokenAuth turned down. */
 function tokenRefused(request) {
   const why = tokenRefusal.get(request);
-  return why ? json({ error: why, code: 'repo_changed' }, 403) : json({ error: 'unauthorized' }, 401);
+  return why ? json({ error: why.error, code: why.code }, 403) : json({ error: 'unauthorized' }, 401);
 }
 
 /** Section-key scope — same semantics as the editor's keyInScope: exact or prefix. */

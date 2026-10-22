@@ -6,7 +6,30 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **When a Kiln Cloud plan ends, a site's API tokens and scheduled publishes
+  stop with its editing.** A token is answered `403` with `code: "plan_ended"`
+  and a sentence saying why; it is kept, and works again once the plan is
+  renewed. A scheduled publish that falls due is held, not published and not
+  deleted: renewed within its 14-day expiry, it goes out on the next run. A
+  repository with no Cloud site (a self-hosted worker, or a site listed by
+  hand) is never affected, and neither is any site while the database cannot
+  be read.
+- The production worker no longer accepts `localhost` origins.
+
 ### Added
+
+- **`kiln rescue` reads WordPress sitemap indexes** (`sitemap.xml`,
+  `sitemap_index.xml`, `wp-sitemap.xml`), takes `--max-asset-mb` and
+  `--max-total-mb`, strips WordPress head links (pingback, RSD, wlwmanifest,
+  shortlink, REST, oEmbed and feed discovery), and ends every report with
+  **What freezing cost**: the forms, search boxes, comment threads and
+  sign-in links that stopped working, page by page. (Released as
+  prod-2026-10-22.)
+- **The worker mails the operator** on a new site, an applied billing change
+  and trials that expire unpaid (production `NOTIFY` send_email binding,
+  `NOTIFY_TO` secret). (Released as prod-2026-10-22.)
 
 - **Formatted text on a site Astro builds.** An entry's body, formatted or
   not, is edited on the page with the same toolbar as a plain HTML site: bold,

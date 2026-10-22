@@ -268,6 +268,28 @@ async function withAccessUntil(run, fallback) {
   }
 }
 
+/**
+ * True when a repository belongs to Kiln Cloud and none of its sites may be
+ * edited any more (the plan ended, or a failed payment ran out its grace).
+ * Then its API tokens and scheduled publishes stop too, as editing has. A
+ * repository with no Cloud site at all (a self-hosted worker, or a site the
+ * canonical instance lists by hand) is never "ended". If the database cannot
+ * be read, the answer is false: an outage must not stop paying sites.
+ */
+export async function repoPlanEnded(env, repo, now = Date.now()) {
+  if (!env.kiln_cloud || !repo) return false;
+  try {
+    const rows = await withAccessUntil(
+      () => env.kiln_cloud.prepare('SELECT status, access_until FROM sites WHERE lower(repo) = lower(?)').bind(String(repo)).all(),
+      () => env.kiln_cloud.prepare('SELECT status FROM sites WHERE lower(repo) = lower(?)').bind(String(repo)).all(),
+    );
+    const sites = rows?.results || [];
+    return sites.length > 0 && !sites.some(s => siteHasAccess(s, now));
+  } catch {
+    return false;
+  }
+}
+
 /** The site row for an origin that may be edited right now, or null. */
 export async function cloudSiteForOrigin(env, origin, now = Date.now()) {
   if (!env.kiln_cloud || !origin) return null;
