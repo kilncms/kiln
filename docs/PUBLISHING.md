@@ -10,7 +10,7 @@ no message or guide may ever say `npx kiln …`.
 |---|---|---|
 | `@kilncms/astro` | `integrations/astro/` | provenance helpers for Astro sites in source mode |
 | `kiln-mcp` | `mcp/` | the MCP server (scoped edits for AI agents) |
-| `create-kiln` | `cli/` | the setup tool: `npx create-kiln` |
+| `@kilncms/create` | `cli/` | the setup tool: `npm init @kilncms` (the name `create-kiln` on npm belongs to an unrelated project, KilnJS, checked 2026-10-22) |
 
 ## Once, before the first publish
 
@@ -19,8 +19,9 @@ npm login                      # as the account that will own the packages
 npm whoami
 npm org ls kilncms             # the @kilncms scope must exist and be yours;
                                # if it does not: https://www.npmjs.com/org/create
-npm view @kilncms/astro name; npm view kiln-mcp name; npm view create-kiln name
+npm view @kilncms/astro name; npm view kiln-mcp name; npm view @kilncms/create name
                                # each should answer 404: the names are still free
+                               # (never publish as create-kiln: that name is taken)
 ```
 
 ## Every time

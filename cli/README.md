@@ -7,9 +7,12 @@ invite edit them in the browser, and every edit is a git commit.
 Run it in your site's folder:
 
 ```bash
-npx create-kiln              # set Kiln up for the site in this folder
-npx create-kiln --help       # every command, and the options each one takes
+npx github:kilncms/kiln#release          # set Kiln up for the site in this folder
+npx github:kilncms/kiln#release --help   # every command, and the options each one takes
 ```
+
+Not `npx create-kiln`: that name on npm belongs to an unrelated project
+(KilnJS), and running it does not set up this Kiln.
 
 | Command | What it does |
 |---|---|
