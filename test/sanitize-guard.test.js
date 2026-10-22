@@ -81,3 +81,13 @@ test('worker/sanitize-guard.js holds no raw control characters, so git treats it
   const raw = [...bytes].filter(b => (b < 0x20 && b !== 0x0a && b !== 0x09) || b === 0x7f);
   assert.deepEqual(raw, []);
 });
+
+test('guard: an editor cannot add an SVG animation element; an owner’s existing one survives an edit elsewhere', () => {
+  const before = '<!doctype html><html><body><h1>Hi</h1><svg><circle r="4"><animate attributeName="r" values="4;6;4" dur="2s"/></circle></svg></body></html>';
+  // The owner's animation is in both versions: editing the headline is fine.
+  assert.equal(checkDocumentWrite(before, before.replace('Hi', 'Hello')), null);
+  // A new animation element is refused, whatever it animates.
+  const added = before.replace('<h1>Hi</h1>', '<h1>Hi</h1><svg><a><set attributeName="href" to="#top"/><text>x</text></a></svg>');
+  assert.match(checkDocumentWrite(before, added), /^animate:set:/);
+  assert.match(checkFragment('<svg><animateTransform attributeName="transform"/></svg>') || '', /^animate:animatetransform:/);
+});

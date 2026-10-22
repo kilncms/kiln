@@ -24,6 +24,10 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the site's Cloud plan has ended.
 - A scheduled page publish checks its branch name, as a content file's did.
 - An unexpected server error no longer returns its internal message.
+- The server's content guard treats SVG animation elements (`set`, `animate`,
+  `animateMotion`, `animateTransform`) as risky: an invited editor cannot add
+  one, since it can rewrite a link's address after the page loads; an owner's
+  existing ones survive edits elsewhere on the page.
 
 ### Changed
 

@@ -29,6 +29,7 @@
 import { parse, parseFragment } from 'parse5';
 
 const FRAMING_TAGS = new Set(['iframe', 'object', 'embed', 'form', 'base', 'frame', 'frameset']);
+const ANIMATION_TAGS = new Set(['set', 'animate', 'animatemotion', 'animatetransform']);
 const URL_ATTRS = /^(href|src|action|formaction|xlink:href|poster|data|background|ping)$/i;
 const CONTROL_WS = /[\x00-\x20]/g;
 
@@ -70,6 +71,11 @@ function collect(root) {
     } else if (FRAMING_TAGS.has(tag)) {
       const key = attrs.find(a => /^(src|srcdoc|action|data|href)$/i.test(a.name))?.value || '';
       tokens.push('tag:' + tag + ':' + key);
+    } else if (ANIMATION_TAGS.has(tag)) {
+      // SVG animation can rewrite another attribute (a link's href) after the
+      // page loads, from values the URL check below never sees.
+      const target = attrs.find(a => a.name.toLowerCase() === 'attributename')?.value || '';
+      tokens.push('animate:' + tag + ':' + target);
     }
     for (const a of attrs) {
       const name = a.name.toLowerCase();
