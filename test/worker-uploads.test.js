@@ -304,7 +304,7 @@ test('KLN-01 POST /schedule: an editor cannot schedule field edits against anyth
 
 test('KLN-01 cron: a stored editor schedule aimed at a non-HTML file is dropped, never committed', async () => {
   const env = editorEnv({}, {
-    [`people:${REPO}`]: [{ email: 'sam@example.com', name: 'Sam', role: 'editor', days: 30, paths: [''] }],
+    [`people:${REPO}`]: [{ email: 'sam@example.com', name: 'Sam', role: 'editor', days: 30, paths: [''], features: ['schedule'] }],
     'sched:old1': { repo: REPO, path: 'page.xhtml', branch: 'main', edits: [{ key: 't', html: '<x:script xmlns:x="http://www.w3.org/1999/xhtml">x</x:script>' }], message: 'm', at: Date.now() - 1000, by: 'Sam', byEmail: 'sam@example.com', admin: false },
     'sched:ok2': { repo: REPO, path: 'index.html', branch: 'main', edits: [{ key: 't', html: 'Later' }], message: 'm', at: Date.now() - 1000, by: 'Sam', byEmail: 'sam@example.com', admin: false },
   });
@@ -318,6 +318,28 @@ test('KLN-01 cron: a stored editor schedule aimed at a non-HTML file is dropped,
     assert.match(writes[0].url, /contents\/index\.html$/);
     assert.equal((await env.KILN.list({ prefix: 'sched:' })).keys.length, 0, 'both entries are gone: one fired, one dropped');
   });
+});
+
+test('cron: a scheduled publish does not go out once its author is made suggest-only or comment-only, or loses the scheduling grant', async () => {
+  const sched = { repo: REPO, path: 'index.html', branch: 'main', edits: [{ key: 't', html: 'Later' }], message: 'm', at: Date.now() - 1000, by: 'Sam', byEmail: 'sam@example.com', admin: false };
+  for (const [why, person] of [
+    ['made suggest-only', { mode: 'suggest', features: ['schedule'] }],
+    ['made comment-only', { mode: 'review', features: ['schedule'] }],
+    ['scheduling grant removed', { features: ['history'] }],
+  ]) {
+    const env = editorEnv({}, {
+      [`people:${REPO}`]: [{ email: 'sam@example.com', name: 'Sam', role: 'editor', days: 30, paths: [''], ...person }],
+      'sched:one': sched,
+    });
+    await withFetch(async (url, init) => {
+      if (init.method === 'PUT') return jsonRes({ commit: { sha: 'c1' } }, 201);
+      if (url.includes('/contents/')) return jsonRes({ sha: 'cur', content: b64(PAGE) });
+    }, async (calls) => {
+      await worker.scheduled({}, env);
+      assert.equal(githubWrites(calls).length, 0, why);
+      assert.equal((await env.KILN.list({ prefix: 'sched:' })).keys.length, 0, `${why}: the schedule is dropped`);
+    });
+  }
 });
 
 test('KLN-01 suggestions: only HTML pages can be suggested on, and a stored suggestion for anything else is never applied', async () => {

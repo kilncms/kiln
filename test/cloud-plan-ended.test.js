@@ -74,3 +74,20 @@ test('scheduled publishes: held, not published or deleted, once the plan has end
     assert.ok(calls.some(c => /api\.github\.com/.test(c.url)), 'a paying site goes on to publish');
   });
 });
+
+test('an editor session used from outside a browser cannot publish once the plan has ended', { skip: d1Skip }, async () => {
+  const SESS = 'b'.repeat(64);
+  const editor = { repo: 'ada/club', name: 'Sam', role: 'editor', email: 'sam@example.com', paths: [''], keys: [], features: null, mode: null, created: 1, exp: null };
+  const ask = (env) => worker.fetch(new Request('https://worker.example/gh/repos/ada/club/contents/index.html?ref=main', { headers: { 'X-Kiln-Session': SESS } }), env);
+  await withFetch(offline, async () => {
+    const ended = cloudEnv(fakeKV({ [`esess:${SESS}`]: editor }));
+    addSite(ended, { status: 'canceled' });
+    const res = await ask(ended);
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).code, 'plan_ended');
+    const paid = cloudEnv(fakeKV({ [`esess:${SESS}`]: editor }));
+    addSite(paid, { status: 'active' });
+    const ok = await ask(paid);
+    assert.notEqual((await ok.json().catch(() => ({}))).code, 'plan_ended');
+  });
+});

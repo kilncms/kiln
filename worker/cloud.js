@@ -56,7 +56,7 @@ async function repoInstalled(env, repo) {
 }
 
 /** Does the signed-in user (via their stored OAuth token) have push on the repo? */
-async function userCanPush(userToken, repo) {
+export async function userCanPush(userToken, repo) {
   if (!userToken) return false;
   try {
     const r = await fetch(`${GH}/repos/${repo}`, { headers: { Authorization: `Bearer ${userToken}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });

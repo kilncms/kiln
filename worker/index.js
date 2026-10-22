@@ -78,7 +78,7 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.4.0';
 
-import { handleCloud, expireStaleTrials, cloudSiteForOrigin, repoPlanEnded } from './cloud.js';
+import { handleCloud, expireStaleTrials, cloudSiteForOrigin, repoPlanEnded, userCanPush } from './cloud.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
 import { adapterIds, getAdapter } from '../src/adapters/index.js';
@@ -207,7 +207,8 @@ export default {
       return new Response('kiln-auth: not found', { status: 404 });
     } catch (err) {
       console.error('[kiln-auth]', err.stack || err);
-      return await cors(env, request, json({ error: 'internal', message: String(err.message || err) }, 500));
+      // The detail stays in the log: an error's text can name internals.
+      return await cors(env, request, json({ error: 'internal', message: 'Something went wrong on the Kiln service. Try again; if it keeps happening, write to info@kilncms.com.' }, 500));
     }
   },
 };
@@ -432,6 +433,18 @@ async function authCallback(url, env) {
     return html(`<h1>GitHub OAuth error</h1><pre>${esc(tok.error_description || JSON.stringify(tok))}</pre>`, 400);
   }
 
+  // A Cloud site's address belongs to its repository alone, and anyone can
+  // register an address for a trial. So a GitHub sign-in is handed only to an
+  // address whose repository this person may change; otherwise a stranger's
+  // trial address could collect a site owner's GitHub access.
+  const bound = await repoForOrigin(env, state.origin);
+  if (bound !== null && !(await userCanPush(tok.access_token, bound))) {
+    return html(`<h1>This site is not yours to sign in to</h1>
+      <p>You signed in with GitHub, but your account cannot change the repository behind
+      <strong>${esc(state.origin)}</strong>, so Kiln did not sign you in there. If you
+      followed a link someone sent you, nothing was shared with that site.</p>`, 403);
+  }
+
   const frag = new URLSearchParams({ 'kiln-token': tok.access_token });
   if (tok.expires_in) frag.set('kiln-exp', String(Date.now() + tok.expires_in * 1000));
   if (tok.refresh_token) {
@@ -441,6 +454,19 @@ async function authCallback(url, env) {
     frag.set('kiln-sid', sid);
   }
   return Response.redirect(`${state.origin}${state.returnTo}#${frag}`, 302);
+}
+
+/**
+ * May a sign-in for `repo` be handed to `origin`? An address Kiln Cloud lists
+ * for a repository (or that this instance maps by hand) belongs to that
+ * repository alone. An address on the operator's own static list has no
+ * repository of its own and is trusted as before.
+ */
+async function originServesRepo(env, origin, repo) {
+  const bound = await repoForOrigin(env, origin);
+  if (bound === null) return true;
+  if (String(bound).toLowerCase() === String(repo).toLowerCase()) return true;
+  return sameOnRecord(env, bound, repo);
 }
 
 async function authRefresh(request, env) {
@@ -553,7 +579,7 @@ async function authActor(request, env, repo) {
     // still has the name from before a rename or a transfer is the same site.
     // And not on a name either: if the name asked with now answers as another
     // repository than the session's, this is no session for it.
-    if (e && (!e.exp || e.exp >= Date.now()) && e.role === 'editor' && (e.repo === repo || await sameOnRecord(env, e.repo, repo)) && !(await answersAsAnother(env, repo, e.rid))) return { name: e.name, email: e.email, paths: e.paths || [''], keys: e.keys || [], mode: e.mode || null, features: e.features || null, admin: false };
+    if (e && (!e.exp || e.exp >= Date.now()) && e.role === 'editor' && (e.repo === repo || await sameOnRecord(env, e.repo, repo)) && !(await answersAsAnother(env, repo, e.rid)) && !(await repoPlanEnded(env, e.repo))) return { name: e.name, email: e.email, paths: e.paths || [''], keys: e.keys || [], mode: e.mode || null, features: e.features || null, admin: false };
   }
   if (await requirePush(request, repo, env)) return { name: 'admin', admin: true };
   return null;
@@ -568,6 +594,9 @@ async function scheduleCreate(request, env) {
   // accepted for backward compatibility but is the lossy path.
   if (!repo || !path || (!edits && !content) || !at) return json({ error: 'missing fields' }, 400);
   if (edits && (!Array.isArray(edits) || edits.length > 500)) return json({ error: 'bad edits' }, 400);
+  // The same rule as a content file's schedule: the name goes into a GitHub
+  // address and a commit, so nothing that could add to either.
+  if (typeof branch !== 'string' || branch.includes('..') || !/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
   const actor = await authActor(request, env, repo);
   if (!actor) return json({ error: 'forbidden' }, 403);
   // A schedule fires as a DIRECT commit (runDueSchedules, installation token) —
@@ -726,7 +755,10 @@ async function runDueSchedules(env) {
         const people = await getPeople(env, v.repo);
         const p = people.find(x => x.email === v.byEmail && x.role === 'editor');
         const kindOk = v.kind === 'source' ? !!getAdapter(v.adapter)?.canEdit(v.path) : isHtmlPath(v.path);
-        if (!p || isSensitivePath(v.path) || !pathInScope(v.path, p.paths) || !kindOk) {
+        // Made suggest-only or comment-only, or no longer allowed to schedule,
+        // since this was set: it does not go out.
+        const mayStillPublish = p && p.mode !== 'suggest' && p.mode !== 'review' && hasGrant(p, 'schedule');
+        if (!p || !mayStillPublish || isSensitivePath(v.path) || !pathInScope(v.path, p.paths) || !kindOk) {
           await env.KILN.delete(k.name);
           continue;
         }
@@ -2196,6 +2228,7 @@ async function googleLogin(url, env) {
   const repo = url.searchParams.get('repo') || '';
   if (!(await originAllowed(env, origin))) return html('<h1>Origin not allowed</h1>', 403);
   if (!returnTo.startsWith('/') || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return html('<h1>Bad request</h1>', 400);
+  if (!(await originServesRepo(env, origin, repo))) return html('<h1>This sign-in link is for a different site</h1><p>The address in the link does not belong to the site it asks to sign you in to, so nothing happened. Sign in from the site itself.</p>', 403);
 
   const nonce = crypto.randomUUID();
   await env.KILN.put(`gstate:${nonce}`, JSON.stringify({ origin, returnTo, repo }), { expirationTtl: 600 });
@@ -2238,6 +2271,10 @@ async function googleCallback(url, env) {
   if (!infoRes.ok || info.aud !== env.GOOGLE_CLIENT_ID || info.email_verified !== 'true') {
     return html('<h1>Could not verify your Google account</h1>', 403);
   }
+
+  // Checked again here: the site's address may have changed hands in the ten
+  // minutes since googleLogin.
+  if (!(await originServesRepo(env, state.origin, state.repo))) return html('<h1>This sign-in link is for a different site</h1><p>The address in the link does not belong to the site it asks to sign you in to, so nothing happened. Sign in from the site itself.</p>', 403);
 
   const email = String(info.email).toLowerCase();
   const person = (await getPeople(env, state.repo)).find(p => p.email === email);
@@ -2838,6 +2875,9 @@ async function ghProxy(request, env, ghPath) {
   // answers as another repository than the one the session was made for,
   // nothing is asked of it: the session is refused as an ended one is.
   if (await answersAsAnother(env, sess.repo, sess.rid)) return sessionRepoChanged();
+  // The browser is already turned away once a Cloud plan ends; this stops a
+  // session that is used from outside a browser, too.
+  if (await repoPlanEnded(env, sess.repo)) return json({ error: "This site's Kiln plan has ended, so nothing can be published through Kiln until it is renewed.", code: 'plan_ended' }, 403);
 
   // A site whose config still has the name from before a rename or a transfer
   // asks for /repos/<that name>/…. When the worker's records say it is the

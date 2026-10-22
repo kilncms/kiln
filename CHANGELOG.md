@@ -6,6 +6,25 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **A sign-in is handed only to an address that belongs to the site it is
+  for.** Any Kiln Cloud trial puts its address on the trusted list, and the
+  owner's GitHub sign-in and an invited editor's Google sign-in were sent to
+  whatever trusted address the link named. A link through auth.kilncms.com
+  could therefore carry a site owner's GitHub access, or an editor's session
+  for another site, to a stranger's trial address. Now an address registered
+  in Kiln Cloud (or mapped by hand) serves its own repository only: a Google
+  sign-in for another repository is refused, and a GitHub sign-in is handed
+  over only if the person can change that address's repository. Found in the
+  2026-10-22 security review; proven by tests that fail on the old code.
+- A scheduled publish no longer goes out once its author is made suggest-only
+  or comment-only, or loses the scheduling grant.
+- An editor session used from outside a browser can no longer publish once
+  the site's Cloud plan has ended.
+- A scheduled page publish checks its branch name, as a content file's did.
+- An unexpected server error no longer returns its internal message.
+
 ### Changed
 
 - **When a Kiln Cloud plan ends, a site's API tokens and scheduled publishes
