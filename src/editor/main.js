@@ -1960,8 +1960,23 @@ function stagePending(key, patch, opts = {}) {
 let cameBack = null;   // the block the last write of a list put on the page (applyKeyDom), if there was one
 
 /** Set a field/container's live DOM to `html` and re-wire editing handles. */
+/**
+ * A part brought back from a draft or an earlier version was written by
+ * whoever saved it, possibly another person, and it goes into the live page
+ * as markup. Nothing in it may run in this browser: when DOMPurify's default
+ * profile (which keeps a site's own structure, icons and data attributes)
+ * would take anything out of it (a script, an event handler, a javascript:
+ * link, a frame), the part is not brought back at all.
+ */
+function safeToRestore(html) {
+  if (html === undefined || html === null) return true;
+  DOMPurify.sanitize(String(html));
+  return DOMPurify.removed.length === 0;
+}
+
 function applyKeyDom(key, html) {
   if (html === undefined) return null;
+  if (!safeToRestore(html)) return null;
   const esc = CSS.escape(key);
   const rep = document.querySelector(`[data-cms-repeat="${esc}"]`);
   cameBack = null;
@@ -7028,15 +7043,18 @@ async function checkForDraft() {
   await restoreAsked;   // one question at a time, and the unpublished edits first
   const m = draftDialog(mode === 'admin');
   const status = m.querySelector('#kiln-dr-status');
-  m.querySelector('#kiln-dr-resume').onclick = () => {
+  // Bring the draft's parts onto the page as staged edits (each checked first),
+  // exactly as typing them would. Both buttons start here.
+  const resumeDraft = () => {
     const draftFields = indexHtml(draft.text).fields;
-    let applied = 0;
+    let applied = 0, refused = 0;
     for (const [key, f] of draftFields) {
       if (!f.inner) continue;
       const value = draft.text.slice(f.inner.start, f.inner.end);
       const liveF = state.fields.fields.get(key);
       const liveValue = liveF?.inner ? state.page.text.slice(liveF.inner.start, liveF.inner.end) : null;
       if (value === liveValue) continue;
+      if (!safeToRestore(value)) { refused++; continue; }
       const el = document.querySelector(`[data-cms="${CSS.escape(key)}"]`);
       if (el && !el.closest('[data-cms-repeat]')) {
         beginKey(key, el);
@@ -7050,19 +7068,15 @@ async function checkForDraft() {
       }
     }
     refreshPublishButton();
-    setStatus(`Draft loaded (${applied} change${applied === 1 ? '' : 's'}) — Publish when ready`, 'saved');
+    setStatus(`Draft loaded (${applied} change${applied === 1 ? '' : 's'}) — Publish when ready`
+      + (refused ? `. ${refused} part${refused === 1 ? ' was' : 's were'} not brought back: ${refused === 1 ? 'it holds' : 'they hold'} code that could run on the page.` : ''), 'saved');
     m.remove();
   };
-  m.querySelector('#kiln-dr-pub').onclick = async () => {
-    status.textContent = 'Publishing draft…';
-    try {
-      const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
-        () => draft.text, `Publish draft: ${state.page.path} (via Kiln)`);
-      journalAdd({ type: 'compare', target: location.pathname, expect: djb2(draft.text), desc: 'Draft publish', sha: result?.commit?.sha });
-      await loadPageSource();
-      status.textContent = 'Published ✓ — your site rebuilds now; the change goes live in about a minute.';
-    } catch (err) { status.textContent = stopped(err, 'published') || notDone('The draft was not published.', err); }
-  };
+  m.querySelector('#kiln-dr-resume').onclick = resumeDraft;
+  // Not the saved copy of the whole page over the live one: anything published
+  // since the draft was saved would be lost. The draft's parts are staged and
+  // the publish sheet shows every change before anything goes live.
+  m.querySelector('#kiln-dr-pub').onclick = () => { resumeDraft(); requestPublish(); };
   const del = m.querySelector('#kiln-dr-del');
   if (del) del.onclick = async () => {
     // How many parts of the page the draft holds differently from the page as it is.

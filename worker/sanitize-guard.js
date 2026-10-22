@@ -30,6 +30,7 @@ import { parse, parseFragment } from 'parse5';
 
 const FRAMING_TAGS = new Set(['iframe', 'object', 'embed', 'form', 'base', 'frame', 'frameset']);
 const ANIMATION_TAGS = new Set(['set', 'animate', 'animatemotion', 'animatetransform']);
+const RAW_TEXT_TAGS = new Set(['noscript', 'textarea', 'xmp', 'noembed', 'noframes', 'title', 'plaintext']);
 const URL_ATTRS = /^(href|src|action|formaction|xlink:href|poster|data|background|ping)$/i;
 const CONTROL_WS = /[\x00-\x20]/g;
 
@@ -71,6 +72,12 @@ function collect(root) {
     } else if (FRAMING_TAGS.has(tag)) {
       const key = attrs.find(a => /^(src|srcdoc|action|data|href)$/i.test(a.name))?.value || '';
       tokens.push('tag:' + tag + ':' + key);
+    } else if (RAW_TEXT_TAGS.has(tag)) {
+      // The parser keeps these elements' contents as text, so markup inside
+      // them is never seen above. But the editor reads a field's contents as
+      // markup wherever it moves them (a resumed draft, a restored version),
+      // so what they hold is checked as markup too.
+      tokens.push(...collect(parseFragment(textOf(n))));
     } else if (ANIMATION_TAGS.has(tag)) {
       // SVG animation can rewrite another attribute (a link's href) after the
       // page loads, from values the URL check below never sees.

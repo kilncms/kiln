@@ -24,6 +24,25 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the site's Cloud plan has ended.
 - A scheduled page publish checks its branch name, as a content file's did.
 - An unexpected server error no longer returns its internal message.
+- **Members pages cannot be reached through an encoded address.** Cloudflare
+  Pages decides whether a function runs from the address as written, then
+  decodes it to find the file, so `/%6Dembers/` skipped the members gate and
+  was served the page (confirmed on kiln-demo.pages.dev, fixed and re-checked
+  there). Sites get `functions/_middleware.js`, which sends an encoded address
+  into the members area to its plain form, and `_routes.json`, which routes
+  only members addresses and addresses with a `%` to functions. `kiln update`
+  installs both where it refreshes a members gate.
+- **A draft or an earlier version can no longer run code in the owner's
+  browser.** The content guard read the inside of `noscript`, `textarea`,
+  `xmp`, `noembed`, `noframes`, `title` and `plaintext` as text, so an
+  invited editor's draft could hide markup there, which the editor then put
+  into the page as markup on "Resume draft". The guard now checks what those
+  elements hold as markup, and the editor brings a part back from a draft or
+  History only when DOMPurify would remove nothing from it (a refused part is
+  named in the status line).
+- **"Publish it now" on a draft no longer writes the saved copy of the whole
+  page over the live one**, which lost anything published since the draft was
+  saved. It stages the draft's parts and opens the publish sheet.
 - The server's content guard treats SVG animation elements (`set`, `animate`,
   `animateMotion`, `animateTransform`) as risky: an invited editor cannot add
   one, since it can rewrite a link's address after the page loads; an owner's

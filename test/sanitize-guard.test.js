@@ -91,3 +91,14 @@ test('guard: an editor cannot add an SVG animation element; an owner’s existin
   assert.match(checkDocumentWrite(before, added), /^animate:set:/);
   assert.match(checkFragment('<svg><animateTransform attributeName="transform"/></svg>') || '', /^animate:animatetransform:/);
 });
+
+test('guard: markup hidden inside a plain-text element (noscript, textarea, xmp, noembed) is checked as markup', () => {
+  const before = '<!doctype html><html><body><h1 data-cms="t">Hi</h1><noscript><img src="/pixel.gif" alt=""></noscript></body></html>';
+  // The owner's own noscript is in both versions: an edit elsewhere is fine.
+  assert.equal(checkDocumentWrite(before, before.replace('Hi', 'Hello')), null);
+  for (const tag of ['noscript', 'textarea', 'xmp', 'noembed']) {
+    const hidden = before.replace('<h1 data-cms="t">Hi</h1>', `<h1 data-cms="t">Hi</h1><${tag} data-cms="x"><img src="x" onload="void 0"></${tag}>`);
+    assert.match(checkDocumentWrite(before, hidden) || '', /^on:onload=/, tag);
+  }
+  assert.match(checkFragment('<noscript><a href="javascript:void 0">x</a></noscript>') || '', /^url:javascript:/);
+});

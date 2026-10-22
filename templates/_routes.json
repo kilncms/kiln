@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "include": ["/members/*", "/api/member-redeem-google", "/*%*"],
+  "exclude": []
+}

@@ -1142,6 +1142,7 @@ crons = ["*/5 * * * *"]
   if (await yes('\nSet up a members-only area (gated pages + documents)?', 'n')) {
     cpSync(path.join(PKG_ROOT, 'templates', 'functions'), 'functions', { recursive: true });
     kilnFiles.push('functions');
+    kilnFiles.push(...installRoutes());
     if (!existsSync('members-login.html')) {
       cpSync(path.join(PKG_ROOT, 'templates', 'members-login.html'), 'members-login.html');
       kilnFiles.push('members-login.html');
@@ -1270,7 +1271,8 @@ async function update() {
     const health = workerUrl ? await fetch(`${workerUrl}/healthz`).then(r => r.json()).catch(() => null) : null;
     if (health && health.memberSessions) {
       cpSync(path.join(PKG_ROOT, 'templates', 'functions'), 'functions', { recursive: true });
-      alsoCommit.push(path.join('functions', '_kiln.js'), gate, path.join('functions', 'api', 'member-redeem-google.js'));
+      alsoCommit.push(path.join('functions', '_kiln.js'), gate, path.join('functions', 'api', 'member-redeem-google.js'), path.join('functions', '_middleware.js'));
+      alsoCommit.push(...installRoutes());
       ok('refreshed the members gate in functions/ — removing a member now ends their sign-in within 5 minutes');
       info('after the next deploy every member signs in once more (their old sign-in cannot be re-checked)');
     } else if (health) {
@@ -1423,6 +1425,26 @@ async function addSiteCloud() {
   info('your site URL, and a plan. We run the worker + the app; you keep the repo + host.');
   openUrl(dash + (repo ? `?repo=${encodeURIComponent(repo)}` : ''));
   process.exit(0);
+}
+
+/**
+ * The members gate's routing file. Cloudflare Pages runs a function only for the
+ * addresses _routes.json names, and decodes %-codes only afterwards, when it
+ * finds the file: without the "/*%*" rule, /%6Dembers/ skipped the gate and got
+ * the members page (security review, 2026-10-22). Returns the files written.
+ */
+function installRoutes() {
+  const want = ['/members/*', '/api/member-redeem-google', '/*%*'];
+  if (!existsSync('_routes.json')) {
+    cpSync(path.join(PKG_ROOT, 'templates', '_routes.json'), '_routes.json');
+    ok('wrote _routes.json (members pages cannot be reached through an encoded address)');
+    return ['_routes.json'];
+  }
+  let have = [];
+  try { have = JSON.parse(readFileSync('_routes.json', 'utf8')).include || []; } catch { /* unreadable: say so below */ }
+  const missing = want.filter(r => !have.includes(r));
+  if (missing.length) warn(`your _routes.json is your own, so it was left alone. Add ${missing.map(r => `"${r}"`).join(', ')} to its "include" list, or members pages can be reached without signing in through an encoded address (such as /%6Dembers/).`);
+  return [];
 }
 
 // ─── main ────────────────────────────────────────────────────────────────────

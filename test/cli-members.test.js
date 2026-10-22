@@ -109,8 +109,8 @@ test('S4 update: the old gate is replaced by the current one and committed with 
       assert.equal(readFileSync(path.join(s.dir, 'functions', f), 'utf8'), readFileSync(path.join(ROOT, 'templates', 'functions', f), 'utf8'), f);
     }
     const committed = s.git('show', '--name-only', '--format=', 'HEAD').stdout.trim().split('\n').sort();
-    assert.deepEqual(committed, ['assets/kiln-editor.js', 'assets/kiln-features.js', 'assets/kiln.js',
-      'functions/_kiln.js', 'functions/api/member-redeem-google.js', 'functions/members/_middleware.js']);
+    assert.deepEqual(committed, ['_routes.json', 'assets/kiln-editor.js', 'assets/kiln-features.js', 'assets/kiln.js',
+      'functions/_kiln.js', 'functions/_middleware.js', 'functions/api/member-redeem-google.js', 'functions/members/_middleware.js']);
     assert.equal(s.git('status', '--porcelain').stdout, '');
     // A second run changes nothing in functions/.
     const again = await run(s.dir, ['update'], network(), ['n']);
