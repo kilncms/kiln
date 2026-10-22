@@ -2414,6 +2414,8 @@ async function memberCheck(request, env) {
   // name now answers as another repository than the one the sign-in was made
   // for, it is not read: the sign-in is no longer good.
   if (!(await stillItsRepo(env, `msess:${sid}`, sess))) return json({ ok: false });
+  // A Cloud site whose plan has ended keeps no members area running either.
+  if (await repoPlanEnded(env, sess.repo)) return json({ ok: false });
   const listed = (await getPeople(env, sess.repo)).some(p => p.email === sess.email && p.role === 'member');
   return json({ ok: listed });
 }

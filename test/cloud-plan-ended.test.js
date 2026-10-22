@@ -91,3 +91,58 @@ test('an editor session used from outside a browser cannot publish once the plan
     assert.notEqual((await ok.json().catch(() => ({}))).code, 'plan_ended');
   });
 });
+
+const cloudCall = (env, method, pathname, body) => worker.fetch(new Request(`https://worker.example${pathname}`, {
+  method, headers: { Authorization: 'Bearer tok', 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}),
+}), env);
+
+test('after Remove, the repository counts as ended (tokens and schedules stay stopped); adding it again clears that', { skip: d1Skip }, async () => {
+  await withFetch(async () => new Response('{}', { status: 404 }), async () => {
+    const env = cloudEnv(fakeKV());
+    addSite(env, { status: 'trialing' });
+    assert.equal(await repoPlanEnded(env, 'ada/club'), false);
+    const res = await cloudCall(env, 'POST', '/cloud/sites/remove', { id: 'site-1' });
+    assert.equal(res.status, 200);
+    assert.equal(await repoPlanEnded(env, 'ada/club'), true, 'removed: still stopped');
+    assert.equal(await repoPlanEnded(env, 'someone/else'), false, 'a repository never on Cloud is unaffected');
+  });
+});
+
+test('renewing: a subscription that has run out can be replaced; one still paid up is resumed, not paid twice', { skip: d1Skip }, async () => {
+  const ls = async (url) => url.includes('/checkouts')
+    ? new Response(JSON.stringify({ data: { attributes: { url: 'https://pay.example/c' } } }), { status: 201 })
+    : undefined;
+  await withFetch(ls, async () => {
+    const ended = cloudEnv(fakeKV());
+    addSite(ended, { status: 'canceled', ls_subscription_id: '77' });
+    const r1 = await cloudCall(ended, 'GET', '/cloud/checkout?site=site-1');
+    assert.equal(r1.status, 200);
+    assert.equal((await r1.json()).url, 'https://pay.example/c');
+
+    const paidUp = cloudEnv(fakeKV());
+    addSite(paidUp, { status: 'canceled', ls_subscription_id: '77' });
+    paidUp.kiln_cloud.exec('UPDATE sites SET access_until = ?', Date.now() + 5 * DAY);
+    const r2 = await cloudCall(paidUp, 'GET', '/cloud/checkout?site=site-1');
+    assert.equal(r2.status, 409);
+    assert.match((await r2.json()).error, /resume it under Manage billing/);
+
+    const active = cloudEnv(fakeKV());
+    addSite(active, { status: 'active', ls_subscription_id: '77' });
+    assert.equal((await cloudCall(active, 'GET', '/cloud/checkout?site=site-1')).status, 409);
+  });
+});
+
+test('a members sign-in is no longer good once the site’s plan has ended', { skip: d1Skip }, async () => {
+  const SID = 'c'.repeat(32);
+  const member = { repo: 'ada/club', email: 'm@example.com', origin: 'https://club.example' };
+  const people = [{ email: 'm@example.com', name: 'M', role: 'member', days: 30 }];
+  const check = (env) => worker.fetch(new Request('https://worker.example/members/check', { method: 'POST', body: JSON.stringify({ sid: SID, origin: 'https://club.example' }) }), env).then(r => r.json());
+  await withFetch(offline, async () => {
+    const paid = cloudEnv(fakeKV({ [`msess:${SID}`]: member, 'people:ada/club': people }));
+    addSite(paid, { status: 'active' });
+    assert.equal((await check(paid)).ok, true);
+    const ended = cloudEnv(fakeKV({ [`msess:${SID}`]: member, 'people:ada/club': people }));
+    addSite(ended, { status: 'canceled' });
+    assert.equal((await check(ended)).ok, false);
+  });
+});

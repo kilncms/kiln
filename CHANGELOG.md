@@ -48,6 +48,22 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one, since it can rewrite a link's address after the page loads; an owner's
   existing ones survive edits elsewhere on the page.
 
+### Fixed
+
+- **After Remove, a site's API tokens and scheduled publishes stay stopped.**
+  A removed site left no row, which read as "never on Kiln Cloud", so both
+  started working again. Remove now leaves a `cloudgone:` marker (backed up;
+  cleared if the site is added again).
+- **A former subscriber can subscribe again.** A site whose cancelled
+  subscription has run out gets a new checkout; one still paid up is told to
+  resume it under Manage billing, which the dashboard now shows for it.
+- **When a Cloud plan ends, members already signed in lose access** within
+  about five minutes, as editing, tokens and schedules already stopped.
+- **Fully managed setup no longer cuts off a domain's existing email.**
+  `scripts/managed-onboard.mjs` refuses to turn on forwarding when the domain
+  already has mail servers, unless `--replace-mail` is given, and turns off
+  Cloudflare's Email Obfuscation, which rewrote pages so Live ✓ never matched.
+
 ### Changed
 
 - **When a Kiln Cloud plan ends, a site's API tokens and scheduled publishes

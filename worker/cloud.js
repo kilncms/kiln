@@ -284,7 +284,11 @@ export async function repoPlanEnded(env, repo, now = Date.now()) {
       () => env.kiln_cloud.prepare('SELECT status FROM sites WHERE lower(repo) = lower(?)').bind(String(repo)).all(),
     );
     const sites = rows?.results || [];
-    return sites.length > 0 && !sites.some(s => siteHasAccess(s, now));
+    // A site removed from Kiln Cloud leaves a marker: without it, a repository
+    // with no row would count as "never on Cloud" and its tokens and schedules
+    // would start working again after Remove.
+    if (!sites.length) return !!(await env.KILN?.get(`cloudgone:${String(repo).toLowerCase()}`));
+    return !sites.some(s => siteHasAccess(s, now));
   } catch {
     return false;
   }
@@ -434,6 +438,7 @@ export async function handleCloud(request, env, url, path) {
     const site = { id: uuid(), account_id: sess.account_id, repo, origin: o, plan: plan === 'managed' ? 'managed' : 'cloud', status: 'trialing', created_at: createdAt };
     await env.kiln_cloud.prepare('INSERT INTO sites (id, account_id, repo, origin, plan, status, created_at) VALUES (?,?,?,?,?,?,?)')
       .bind(site.id, site.account_id, site.repo, site.origin, site.plan, site.status, site.created_at).run();
+    await env.KILN.delete(`cloudgone:${String(site.repo).toLowerCase()}`);
     const checkout = await lsCheckout(env, site);
     await notifyOwner(env, `New Kiln site: ${site.repo}`, [
       `Plan: ${site.plan} (trialing)`,
@@ -447,13 +452,14 @@ export async function handleCloud(request, env, url, path) {
   if (path === '/cloud/sites/remove' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const { id } = await request.json().catch(() => ({}));
-    const site = await env.kiln_cloud.prepare('SELECT id, ls_subscription_id FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first();
+    const site = await env.kiln_cloud.prepare('SELECT id, repo, ls_subscription_id FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first();
     if (!site) return json({ ok: true });   // not theirs, or already gone
     // Removing the site removes Manage billing with it, so the subscription
     // is cancelled first, and the site stays if that cannot be confirmed.
     const cancel = await lsCancel(env, site.ls_subscription_id);
     if (!cancel.ok) return json({ error: NOT_CANCELLED, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
     await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).run();
+    if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
     return json({ ok: true, subscription: cancel.state, ...(cancel.ends_at ? { ends_at: cancel.ends_at } : {}) });
   }
 
@@ -471,7 +477,14 @@ export async function handleCloud(request, env, url, path) {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const site = await env.kiln_cloud.prepare('SELECT * FROM sites WHERE id = ? AND account_id = ?').bind(url.searchParams.get('site'), sess.account_id).first();
     if (!site) return json({ error: 'no such site' }, 404);
-    if (site.ls_subscription_id) return json({ error: 'already subscribed — use Manage billing' }, 409);
+    // A subscription that has run out (cancelled, nothing paid left) does not
+    // stop a new one; one still paid up is resumed under Manage billing, so
+    // nobody pays twice for the same days.
+    if (site.ls_subscription_id && !(site.status === 'canceled' && !siteHasAccess(site))) {
+      return json({ error: site.status === 'canceled'
+        ? 'This subscription is cancelled but paid up for now: resume it under Manage billing instead of paying again.'
+        : 'already subscribed — use Manage billing' }, 409);
+    }
     const checkout = await lsCheckout(env, site);
     return checkout ? json({ url: checkout }) : json({ error: 'billing not configured' }, 503);
   }

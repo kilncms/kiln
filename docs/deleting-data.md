@@ -20,6 +20,7 @@ request is answered is the operator's promise to make, in the privacy policy.
 | Scheduled publishes: who, the edits | KV `sched:…` | 14 days after they fire |
 | API tokens: a label, folders | KV `atok:…` | After their days; never when 0 |
 | When a site address was first registered (for the trial) | KV `firstseen:<origin>` | Never |
+| That a repository was removed from Kiln Cloud (keeps its tokens and schedules stopped) | KV `cloudgone:<owner/repo>` | Never; cleared if the site is added again |
 | A repository's identity (its name may be a person's login) | KV `rid:…`, `rname:…` | Never |
 | Which editor build a site last ran | KV `ebuild:<owner/repo>` | Never |
 | Who is editing which page now | KV `pres:…` | 6½ minutes |

@@ -90,7 +90,7 @@ test('KLR-03 backup: one dated archive, readable only by its owner, holding the 
   assert.equal(u.kv.find(e => e.key === 'atok:abc').expiration, FAR, 'an expiry travels with its key');
   assert.deepEqual(u.manifest.d1, { database: 'kiln-cloud', rows: { accounts: 1, sites: 2 } });
   assert.equal(u.manifest.kv.keys, 10);
-  assert.deepEqual(u.manifest.kv.byPrefix, { 'app:creds': 1, 'people:': 2, 'atok:': 1, 'cmt:': 1, 'sug:': 1, 'sched:': 1, 'firstseen:': 1, 'rid:': 1, 'rname:': 1 });
+  assert.deepEqual(u.manifest.kv.byPrefix, { 'app:creds': 1, 'people:': 2, 'atok:': 1, 'cmt:': 1, 'sug:': 1, 'sched:': 1, 'firstseen:': 1, 'rid:': 1, 'rname:': 1, 'cloudgone:': 0 });
   assert.equal(u.manifest.source, 'production');
   assert.equal(u.manifest.encrypted, false);
   assert.match(w.lines[0], /^backup ok: .*kiln-production-20261006-031000\.tar\.gz \(\d+ bytes; 1 accounts, 2 sites, 10 KV keys; not encrypted, owner-only\); kept 1, removed 0$/);
@@ -102,7 +102,7 @@ test('KLR-03 backup: sessions, tokens and caches are not in it', async () => {
   const text = JSON.stringify(u.kv);
   for (const secret of ['gho_SECRET_TOKEN', 'ghs_INSTALLATION_TOKEN']) assert.equal(text.includes(secret), false, secret);
   for (const p of ['csess:', 'esess:', 'msess:', 'sid:', 'itok:', 'gcode:', 'cstate:', 'lsevt:', 'pres:', 'rsee:']) assert.equal(u.kv.some(e => e.key.startsWith(p)), false, p);
-  assert.deepEqual(KV_PREFIXES, ['app:creds', 'people:', 'atok:', 'cmt:', 'sug:', 'sched:', 'firstseen:', 'rid:', 'rname:']);
+  assert.deepEqual(KV_PREFIXES, ['app:creds', 'people:', 'atok:', 'cmt:', 'sug:', 'sched:', 'firstseen:', 'rid:', 'rname:', 'cloudgone:']);
 });
 
 test('KLR-03 backup: it only reads from Cloudflare, and says which environment every time', async () => {

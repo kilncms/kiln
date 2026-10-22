@@ -53,7 +53,7 @@ export function kvValue(entry) {
 // rid: and rname: are which repository (by GitHub id) each stored name is: without
 // them a restored worker would take whatever answers to a name now for the
 // repository its people were added to. rsee: is a ten-minute cache and stays out.
-export const KV_PREFIXES = ['app:creds', 'people:', 'atok:', 'cmt:', 'sug:', 'sched:', 'firstseen:', 'rid:', 'rname:'];
+export const KV_PREFIXES = ['app:creds', 'people:', 'atok:', 'cmt:', 'sug:', 'sched:', 'firstseen:', 'rid:', 'rname:', 'cloudgone:'];
 const D1_NAME = { production: 'kiln-cloud', staging: 'kiln-cloud-staging', local: 'kiln-cloud-local' };
 const CHUNK = 100;   // keys per `kv bulk get`
 

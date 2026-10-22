@@ -10,6 +10,7 @@
  *     --domain=customersite.com \
  *     --project=customer-site            # Pages project name
  *     [--forward=hello --to=owner@gmail.com]   # email forwarding rule
+ *     [--replace-mail]                   # only if the domain's existing mail servers should be replaced
  *     [--repo=owner/site]                # for the printed checklist
  *
  * What it automates:
@@ -66,6 +67,16 @@ const zone = zones[0];
 if (zone.status !== 'active') info(`zone status is "${zone.status}" — nameserver change may still be propagating (everything below still gets set up)`);
 ok(`zone ${domain} (${zone.id})`);
 
+// ── 1b. Pages served as written ──────────────────────────────────────────────
+// Cloudflare's Email Obfuscation rewrites addresses in served pages, so what a
+// visitor gets no longer matches the file: Kiln's Live ✓ never appears, and an
+// editor clicking an email address sees "[email protected]".
+{
+  const eo = await cf('GET', `/zones/${zone.id}/settings/email_obfuscation`);
+  if (eo.value === 'off') ok('email obfuscation already off');
+  else { await cf('PATCH', `/zones/${zone.id}/settings/email_obfuscation`, { value: 'off' }); ok('email obfuscation turned off (pages are served exactly as written)'); }
+}
+
 // ── 2. Pages custom domain ───────────────────────────────────────────────────
 try {
   const existing = await cf('GET', `/accounts/${ACCOUNT}/pages/projects/${args.project}/domains`);
@@ -84,10 +95,21 @@ if (args.to) {
   const local = typeof args.forward === 'string' ? args.forward : 'hello';
   const addr = `${local}@${domain}`;
 
-  // 3a. enable routing on the zone (adds the MX/TXT records)
+  // 3a. enable routing on the zone (adds the MX/TXT records). Turning it on
+  // replaces the domain's mail servers, so a business that already receives
+  // mail here (Google Workspace, Microsoft 365, its old host) would stop
+  // getting it. Refused unless that is what the customer asked for.
   const routing = await cf('GET', `/zones/${zone.id}/email/routing`);
   if (routing.enabled) ok('email routing already enabled');
-  else { await cf('POST', `/zones/${zone.id}/email/routing/enable`); ok('email routing enabled (MX/TXT records added)'); }
+  else {
+    const mx = await cf('GET', `/zones/${zone.id}/dns_records?type=MX&per_page=50`);
+    const theirs = mx.filter(r => !/\.mx\.cloudflare\.net\.?$/i.test(String(r.content)));
+    if (theirs.length && !args['replace-mail']) {
+      die(`${domain} already receives email at ${theirs.map(r => r.content).join(', ')}. Turning on forwarding would cut that off. Ask the customer where their email lives; rerun with --replace-mail only if they want Kiln's forwarding instead.`);
+    }
+    await cf('POST', `/zones/${zone.id}/email/routing/enable`);
+    ok(`email routing enabled (MX/TXT records added${theirs.length ? `; replaced ${theirs.length} existing mail server record${theirs.length === 1 ? '' : 's'}, as asked` : ''})`);
+  }
 
   // 3b. destination address (customer clicks ONE verification email)
   const dests = await cf('GET', `/accounts/${ACCOUNT}/email/routing/addresses?per_page=50`);
