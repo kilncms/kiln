@@ -37,15 +37,15 @@ const BUNDLES = ['kiln.js', 'kiln-editor.js', 'kiln-features.js'];
 // Every repo that carries a copy of the bundles, where they live inside it,
 // and the public address of its kiln.js (how "is the canary live?" is checked).
 //
+//   kiln-demo-mr   → demo.kilncms.com (Pages project kiln-demo-site, git-connected
+//                    since 2026-10-22: a push deploys it). The public demo goes first.
 //   kiln-demo      → kiln-demo.pages.dev, git-connected: a push deploys it.
-//   demo.kilncms.com is NOT here. It is the Pages project kiln-demo-mr, which
-//   is uploaded by hand and not connected to git, so a push to its repo deploys
-//   nothing. Once that project is git-connected, add it as the first canary.
 //
 // Per consumer: { hold: true } leaves it alone; { pin: '<stamp>' } leaves it
 // on that build (and says so if it has drifted from it).
 export const DEFAULT_CONSUMERS = {
   canary: [
+    { dir: '~/repos/kiln-demo-mr', dest: 'assets', live: 'https://demo.kilncms.com/assets/kiln.js' },
     { dir: '~/repos/kiln-demo', dest: 'assets', live: 'https://kiln-demo.pages.dev/assets/kiln.js' },
   ],
   customers: [

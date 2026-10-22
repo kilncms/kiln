@@ -259,12 +259,17 @@ the command that takes it back. In the list at the top of the script a consumer
 can be `{ hold: true }` (skip it) or `{ pin: '<stamp>' }` (leave it on that
 build); a new site is one more line under `canary` or `customers`.
 
-**Which demo is which.** `~/repos/kiln-demo` deploys `kiln-demo.pages.dev` from
-git and is the canary. `demo.kilncms.com` is a different Pages project,
-`kiln-demo-mr`, which is uploaded by hand and not connected to git: a push to
-its repo deploys nothing, so it is not in the list and stays on its old editor
-until someone uploads a new copy. Connecting that project to git and adding it
-as the first canary is an owner step.
+**Which demo is which.** `demo.kilncms.com` is the public demo: repo
+`~/repos/kiln-demo-mr`, Pages project `kiln-demo-site`, connected to git since
+2026-10-22, so a push deploys it; it is the first canary. `~/repos/kiln-demo`
+deploys `kiln-demo.pages.dev` from git and is the second. The old hand-uploaded
+project `kiln-demo-mr` (`kiln-demo-mr.pages.dev`) no longer has the domain and
+can be deleted once nobody needs it for comparison.
+
+Cloudflare's Email Obfuscation is off on the kilncms.com zone (2026-10-22): it
+rewrites email addresses in served pages, so the page a visitor gets no longer
+matches the file, which breaks Live ✓ and shows editors `[email protected]`.
+Keep it off on every zone that serves a Kiln site.
 
 ---
 
