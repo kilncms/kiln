@@ -1971,7 +1971,8 @@ let cameBack = null;   // the block the last write of a list put on the page (ap
 function safeToRestore(html) {
   if (html === undefined || html === null) return true;
   DOMPurify.sanitize(String(html));
-  return DOMPurify.removed.length === 0;
+  // An HTML comment is taken out too, and cannot run: it does not count.
+  return DOMPurify.removed.every(r => r.element && r.element.nodeType === Node.COMMENT_NODE);
 }
 
 function applyKeyDom(key, html) {
