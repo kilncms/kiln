@@ -6239,7 +6239,7 @@ async function invitePanel() {
         <label class="kiln-role"><input type="radio" name="kiln-p-role" value="editor" checked>
           <span><strong>Editor</strong><br><small>Edits pages, images, posts. Signs in with their Google account.</small></span></label>
         <label class="kiln-role"><input type="radio" name="kiln-p-role" value="member">
-          <span><strong>Member</strong><br><small>Views the members-only area and documents. Cannot edit.</small></span></label>
+          <span><strong>Member</strong><br><small>Views the members-only area and documents. Cannot edit. ${escapeHtml(PEOPLE_WORDS.membersRead)}</small></span></label>
       </div>
       <label id="kiln-p-paths-wrap">${PEOPLE_WORDS.pagesLabel}
         <input type="text" id="kiln-p-paths" placeholder="${PEOPLE_WORDS.pagesPlaceholder}"></label>
@@ -6251,6 +6251,7 @@ async function invitePanel() {
       <p class="kiln-dim kiln-p-hint" id="kiln-p-keys-hint">${PEOPLE_WORDS.keysHint}
         <button type="button" class="kiln-btn-pick" id="kiln-p-keypick" aria-expanded="false">▾ Choose parts</button></p>
       <div id="kiln-p-keylist" class="kiln-pick-box" style="display:none"></div>
+      <p class="kiln-dim kiln-p-hint" id="kiln-p-keys-trust">${escapeHtml(PEOPLE_WORDS.keysTrust)}</p>
       <div id="kiln-p-feat-wrap">
         <label style="margin-bottom:2px">Tools this editor can use
           <button type="button" class="kiln-btn-pick" id="kiln-p-reviewer" title="A comment-only seat: they review and leave comments, with no other tools">Reviewer preset</button></label>
@@ -6301,7 +6302,7 @@ async function invitePanel() {
   };
 
   // Show the scope fields only when adding an editor.
-  const scopeEls = ['#kiln-p-paths-wrap', '#kiln-p-paths-hint', '#kiln-p-keys-wrap', '#kiln-p-keys-hint', '#kiln-p-feat-wrap']
+  const scopeEls = ['#kiln-p-paths-wrap', '#kiln-p-paths-hint', '#kiln-p-keys-wrap', '#kiln-p-keys-hint', '#kiln-p-keys-trust', '#kiln-p-feat-wrap']
     .map(s => m.querySelector(s));
   function syncRole() {
     const isEditor = m.querySelector('input[name="kiln-p-role"]:checked').value === 'editor';

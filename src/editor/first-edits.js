@@ -54,6 +54,9 @@ export const PEOPLE_WORDS = {
   keysLabel: 'Parts of those pages they can change (optional)',
   keysPlaceholder: 'Every part, or choose parts below',
   keysHint: 'Leave this empty for every part of the pages above.',
+  // Said where the choice is made: what the sign-in service holds an editor to, and what it does not.
+  keysTrust: 'Kiln’s sign-in service holds an editor to the pages you choose. A limit to parts of a page is kept only by the editing screen in their browser, so use it for people you trust.',
+  membersRead: 'Members-only pages are kept in your site’s GitHub repository, so every editor you invite can read them.',
   never: 'Never expires',
   toolsHint: 'Changing words and pictures is always allowed. People & access and the site’s Settings stay yours alone.',
   suggest: 'Their Publish sends you a suggestion to approve, under Suggestions. Nothing on the live site changes until you do.',

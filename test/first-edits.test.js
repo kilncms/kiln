@@ -88,10 +88,17 @@ test('People & access is said to an owner', () => {
   plain(all);
   assert.match(PEOPLE_WORDS.pagesHint, /whole site/);
   assert.match(PEOPLE_WORDS.pagesHint, /never theirs to change/);
+  // An owner is told, where the choice is made, what a limit to parts of a page holds and who can read members pages.
+  assert.match(PEOPLE_WORDS.keysTrust, /holds an editor to the pages you choose/);
+  assert.match(PEOPLE_WORDS.keysTrust, /people you trust/);
+  assert.match(PEOPLE_WORDS.membersRead, /every editor you invite can read them/);
   const panel = main.slice(main.indexOf('async function invitePanel('), main.indexOf('// ─── History (per-page restore points)'));
   assert.equal(/Comma-separated|CNAME|indefinite access|font-size:12px/.test(panel), false);
   // the AI tool is not offered where the site has no AI to use (a worker that says so; one that says nothing is left as it was)
   assert.match(panel, /if \(data\.aiConfigured === false\)/);
+  assert.match(panel, /id="kiln-p-keys-trust">\$\{escapeHtml\(PEOPLE_WORDS\.keysTrust\)\}/);
+  assert.match(panel, /'#kiln-p-keys-trust'/);
+  assert.match(panel, /<strong>Member<\/strong>.*PEOPLE_WORDS\.membersRead/);
 });
 
 test('a picture too big for the demo is refused with its size and the limit', () => {
