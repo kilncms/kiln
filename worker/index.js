@@ -15,10 +15,13 @@
  *   GET  /setup            one-time GitHub App registration page
  *   GET  /setup/callback   manifest conversion (GitHub redirects here)
  *   GET  /setup/status     {configured, slug, app_id}
- *   GET  /auth/login       ?origin=&return_to= → GitHub authorize
+ *   GET  /auth/login       ?origin=&return_to=[&repo=&keep=server] → GitHub authorize
  *   GET  /auth/callback    code+state → tokens → redirect w/ #fragment
- *   POST /auth/refresh     {sid} → fresh access token
- *   POST /auth/logout      {sid}
+ *                          (keep=server: #kiln-owner=<session>; without it, the old #kiln-token)
+ *   GET  /auth/session     X-Kiln-Session → {ok, role:'owner', login, repo, exp} or 401
+ *   POST /auth/adopt       {token, sid?, repo} → an owner session for an owner signed in the old way
+ *   POST /auth/refresh     {sid} → fresh access token (the old way, for older editor files)
+ *   POST /auth/logout      X-Kiln-Session (owner session) and/or {sid}
  *   GET/POST /admin/people People allowlist (push-verified): add/remove editors & members
  *   GET/POST /admin/api-tokens  scoped API tokens (push-verified); POST /admin/api-tokens/revoke
  *   GET  /google/login     ?origin=&return_to=&repo= → Google authorize (invited people)
@@ -51,7 +54,9 @@
  * KV (binding: KILN):
  *   app:creds   {app_id, slug, client_id, client_secret, pk8}
  *   state:<n>   OAuth state nonce            (TTL 10 min)
- *   sid:<id>    {refresh_token}              (TTL 180 days, rotated)
+ *   sid:<id>    {refresh_token}              (TTL 180 days, rotated; the old way)
+ *   osess:<id>  {v,token,token_exp,refresh_token,login,uid,repo,rid,origin,created}
+ *               an owner's GitHub sign-in, kept here (TTL 180 days from created); see "Owner sessions"
  *   people:<repo> [{email,name,role,days,paths?}]  editor/member allowlist
  *   rid:<id>      {id,name,was?,at,from?,moved?}  a repository by its GitHub id: the name its data is
  *                 filed under, and (from) the names a move is still bringing data from
@@ -78,7 +83,7 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.4.0';
 
-import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush } from './cloud.js';
+import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken } from './cloud.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
 import { keyInScope, hasSectionLimit, checkSectionWrite, strictUtf8FromB64, scheduledKeyRefusal, SECTION_REFUSALS } from './section-scope.js';
@@ -111,120 +116,144 @@ export default {
     await cronJob('moves', () => continueMoves(env));
   },
   async fetch(request, env) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-    try {
-      if (request.method === 'OPTIONS') return await cors(env, request, new Response(null, { status: 204 }));
-      if (path.startsWith('/cloud/') || path.startsWith('/admin/cloud/')) {
-        const r = await handleCloud(request, env, url, path);
-        if (r) return await cors(env, request, r);
-      }
-
-      // Capability handshake (SOURCE-MODE-SPEC §13): the editor reads `modes`
-      // to decide whether this worker can edit generator sources — a healthz
-      // without it means an old worker and source fields render read-only.
-      // Still a 200 that says ok, so status-probing monitors keep working.
-      if (path === '/healthz') {
-        // `renameMovesAll` tells `kiln doctor` that this worker brings everything a
-        // site stores along when its repository is renamed, not the people list alone.
-        // `sourceWas`: an edit to a content file that says what its field held is
-        // left out when the file no longer says that (worker/source.js changedSinceRead).
-        // `sourceMarkdown`: a formatted Markdown body (and MDX prose) may be written,
-        // keeping the markup and the code it holds (markdownProblems, astro sameCode).
-        // `sourceMedia`: a picture field is written only with a picture that is in
-        // the repository, and Markdown may not name a new one that is not (picturesToCheck).
-        // `sourceEntries`: entries are added, copied and removed (/source/create,
-        // /source/remove), read whole (/source/fields), listed by version
-        // (/source/history), and content-file edits can be scheduled.
-        const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ...deployedBuild(env) };
-        // ?deep=1 asks the things publishing depends on. A plain GET stays a
-        // constant 200 that touches nothing, as every editor and monitor expects.
-        if (url.searchParams.get('deep') === '1') {
-          const limited = await rateLimited(request, env);
-          if (limited) return limited;
-          const deep = await deepHealth(env);
-          return await cors(env, request, json({ ...basic, ok: deep.failed.length === 0, checks: deep.checks, failed: deep.failed }, deep.failed.length ? 503 : 200));
-        }
-        return await cors(env, request, json(basic));
-      }
-      // Where a site address stands, for the editor to say so on the page: a
-      // refusal for an address that may not be edited is one the browser will
-      // not let the editor read, so without this an ended trial looked like
-      // "the site could not be reached". It tells no more than a preflight
-      // does, apart from "this address was on Kiln Cloud and its trial or plan
-      // has ended", and anyone may ask it (no sign-in, readable from any page).
-      if (path === '/standing' && request.method === 'GET') {
-        const limited = await rateLimited(request, env);
-        if (limited) return limited;
-        const answer = await siteStanding(env, url.searchParams.get('origin') || request.headers.get('Origin') || '');
-        return new Response(JSON.stringify(answer), { headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' } });
-      }
-      if (path === '/setup') return setupPage(url, env);
-      if (path === '/setup/callback') return setupCallback(url, env);
-      if (path === '/setup/status') return setupStatus(env);
-      if (path === '/setup/install-check') {
-        const limited = await rateLimited(request, env);
-        if (limited) return limited;
-        const repo = url.searchParams.get('repo') || '';
-        if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'bad repo' }, 400);
-        const tok = await installationToken(env, repo);
-        // For `kiln doctor`: does GitHub still know this repository by this
-        // name, and is it the repository the worker has on record for it?
-        // Booleans only: the current name of a private repository is not
-        // handed to whoever asks about an old one.
-        return json({ repo, installed: !!tok, ...(tok ? await repoStanding(env, repo) : {}) });
-      }
-      if (path === '/auth/login') return authLogin(url, env);
-      if (path === '/auth/callback') return authCallback(url, env);
-      if (path === '/auth/refresh' && request.method === 'POST') return await cors(env, request, await authRefresh(request, env));
-      if (path === '/auth/logout' && request.method === 'POST') return await cors(env, request, await authLogout(request, env));
-      if (path === '/members/check' && request.method === 'POST') return await memberCheck(request, env);
-      if (path === '/admin/people' && request.method === 'GET') return await cors(env, request, await peopleList(request, env, url));
-      if (path === '/admin/people' && request.method === 'POST') return await cors(env, request, await peopleUpsert(request, env));
-      if (path === '/admin/people/remove' && request.method === 'POST') return await cors(env, request, await peopleRemove(request, env));
-      if (path === '/admin/api-tokens' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenList(request, env, url));
-      if (path === '/admin/api-tokens' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenCreate(request, env));
-      if (path === '/admin/api-tokens/revoke' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenRevoke(request, env));
-      if (path === '/api/v1/pages' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiPages(request, env, url));
-      if (path === '/api/v1/fields' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiFields(request, env, url));
-      if (path === '/api/v1/edits' && request.method === 'PATCH') return (await rateLimited(request, env)) || await cors(env, request, await apiEdits(request, env));
-      if (path === '/schedule' && request.method === 'POST') return await cors(env, request, await scheduleCreate(request, env));
-      if (path === '/schedules' && request.method === 'GET') return await cors(env, request, await scheduleList(request, env, url));
-      if (path === '/schedule/cancel' && request.method === 'POST') return await cors(env, request, await scheduleCancel(request, env));
-      if (path === '/presence' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await presencePing(request, env));
-      if (path === '/comments' && request.method === 'GET') return await cors(env, request, await commentList(request, env, url));
-      if (path === '/comments' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentPost(request, env));
-      if (path === '/comments/counts' && request.method === 'GET') return await cors(env, request, await commentCounts(request, env, url));
-      if (path === '/comments/resolve' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentResolve(request, env));
-      if (path === '/comments/delete' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentDelete(request, env));
-      if (path === '/suggestions' && request.method === 'GET') return await cors(env, request, await suggestionList(request, env, url));
-      if (path === '/suggestions' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionCreate(request, env));
-      if (path === '/suggestions/decide' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionDecide(request, env));
-      if (path === '/ai/assist' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await aiAssist(request, env));
-      if (path === '/source/commit' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceCommit(request, env));
-      if (path === '/source/read' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceReadField(request, env));
-      if (path === '/source/revert' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceRevert(request, env));
-      if (path === '/source/duplicate' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceDuplicate(request, env));
-      if (path === '/source/create' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceCreate(request, env));
-      if (path === '/source/remove' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceRemove(request, env));
-      if (path === '/source/fields' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceFields(request, env));
-      if (path === '/source/history' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceHistory(request, env));
-      if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
-      if (path === '/google/callback') return googleCallback(url, env);
-      if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
-      // The commit proxy runs on the shared App installation token — throttle it
-      // (per IP) so one editor can't exhaust the owner's GitHub quota and DoS
-      // everyone else's editing. No-op unless the RL binding is configured.
-      if (path.startsWith('/gh/')) return (await rateLimited(request, env)) || await cors(env, request, await ghProxy(request, env, path.slice(3) + url.search));
-
-      return new Response('kiln-auth: not found', { status: 404 });
-    } catch (err) {
-      console.error('[kiln-auth]', err.stack || err);
-      // The detail stays in the log: an error's text can name internals.
-      return await cors(env, request, json({ error: 'internal', message: 'Something went wrong on the Kiln service. Try again; if it keeps happening, write to info@kilncms.com.' }, 500));
-    }
+    const response = await routeRequest(request, env);
+    // An owner session that GitHub stopped accepting while this request was
+    // being answered has been ended (endOwnerSession): whatever the route made
+    // of that, the editor is told the sign-in has ended, so it can say so.
+    if (endedSignIns.has(request)) return await cors(env, request, signinEnded());
+    return response;
   },
 };
+
+async function routeRequest(request, env) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  try {
+    if (request.method === 'OPTIONS') return await cors(env, request, new Response(null, { status: 204 }));
+    if (path.startsWith('/cloud/') || path.startsWith('/admin/cloud/')) {
+      const r = await handleCloud(request, env, url, path);
+      if (r) return await cors(env, request, r);
+    }
+
+    // Capability handshake (SOURCE-MODE-SPEC §13): the editor reads `modes`
+    // to decide whether this worker can edit generator sources — a healthz
+    // without it means an old worker and source fields render read-only.
+    // Still a 200 that says ok, so status-probing monitors keep working.
+    if (path === '/healthz') {
+      // `renameMovesAll` tells `kiln doctor` that this worker brings everything a
+      // site stores along when its repository is renamed, not the people list alone.
+      // `sourceWas`: an edit to a content file that says what its field held is
+      // left out when the file no longer says that (worker/source.js changedSinceRead).
+      // `sourceMarkdown`: a formatted Markdown body (and MDX prose) may be written,
+      // keeping the markup and the code it holds (markdownProblems, astro sameCode).
+      // `sourceMedia`: a picture field is written only with a picture that is in
+      // the repository, and Markdown may not name a new one that is not (picturesToCheck).
+      // `sourceEntries`: entries are added, copied and removed (/source/create,
+      // /source/remove), read whole (/source/fields), listed by version
+      // (/source/history), and content-file edits can be scheduled.
+      // `ownerSessions`: an owner's GitHub sign-in can stay on this worker
+      // (/auth/login keep=server, /auth/session, /auth/adopt), and the owner's
+      // calls then go through /gh/* with a session, as an invited editor's do.
+      const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ownerSessions: true, ...deployedBuild(env) };
+      // ?deep=1 asks the things publishing depends on. A plain GET stays a
+      // constant 200 that touches nothing, as every editor and monitor expects.
+      if (url.searchParams.get('deep') === '1') {
+        const limited = await rateLimited(request, env);
+        if (limited) return limited;
+        const deep = await deepHealth(env);
+        return await cors(env, request, json({ ...basic, ok: deep.failed.length === 0, checks: deep.checks, failed: deep.failed }, deep.failed.length ? 503 : 200));
+      }
+      return await cors(env, request, json(basic));
+    }
+    // Where a site address stands, for the editor to say so on the page: a
+    // refusal for an address that may not be edited is one the browser will
+    // not let the editor read, so without this an ended trial looked like
+    // "the site could not be reached". It tells no more than a preflight
+    // does, apart from "this address was on Kiln Cloud and its trial or plan
+    // has ended", and anyone may ask it (no sign-in, readable from any page).
+    if (path === '/standing' && request.method === 'GET') {
+      const limited = await rateLimited(request, env);
+      if (limited) return limited;
+      const answer = await siteStanding(env, url.searchParams.get('origin') || request.headers.get('Origin') || '');
+      return new Response(JSON.stringify(answer), { headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' } });
+    }
+    if (path === '/setup') return setupPage(url, env);
+    if (path === '/setup/callback') return setupCallback(url, env);
+    if (path === '/setup/status') return setupStatus(env);
+    if (path === '/setup/install-check') {
+      const limited = await rateLimited(request, env);
+      if (limited) return limited;
+      const repo = url.searchParams.get('repo') || '';
+      if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'bad repo' }, 400);
+      const tok = await installationToken(env, repo);
+      // For `kiln doctor`: does GitHub still know this repository by this
+      // name, and is it the repository the worker has on record for it?
+      // Booleans only: the current name of a private repository is not
+      // handed to whoever asks about an old one.
+      return json({ repo, installed: !!tok, ...(tok ? await repoStanding(env, repo) : {}) });
+    }
+    if (path === '/auth/login') return authLogin(url, env);
+    if (path === '/auth/callback') return authCallback(url, env);
+    if (path === '/auth/refresh' && request.method === 'POST') return await cors(env, request, await authRefresh(request, env));
+    if (path === '/auth/logout' && request.method === 'POST') return await cors(env, request, await authLogout(request, env));
+    if (path === '/auth/session' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await authSession(request, env));
+    if (path === '/auth/adopt' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await authAdopt(request, env));
+    // An owner session (X-Kiln-Session naming an osess: record) is looked up
+    // once here, for every route below: its address is checked and its GitHub
+    // token renewed when it is about to run out. A session that has ended is
+    // answered here; an id that names no owner session goes on as before (it
+    // may be an invited editor's).
+    {
+      const owner = await ownerSessionFor(request, env);
+      if (owner && owner.refuse) return await cors(env, request, owner.refuse);
+      if (owner) owners.set(request, owner);
+    }
+    if (path === '/members/check' && request.method === 'POST') return await memberCheck(request, env);
+    if (path === '/admin/people' && request.method === 'GET') return await cors(env, request, await peopleList(request, env, url));
+    if (path === '/admin/people' && request.method === 'POST') return await cors(env, request, await peopleUpsert(request, env));
+    if (path === '/admin/people/remove' && request.method === 'POST') return await cors(env, request, await peopleRemove(request, env));
+    if (path === '/admin/api-tokens' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenList(request, env, url));
+    if (path === '/admin/api-tokens' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenCreate(request, env));
+    if (path === '/admin/api-tokens/revoke' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenRevoke(request, env));
+    if (path === '/api/v1/pages' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiPages(request, env, url));
+    if (path === '/api/v1/fields' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiFields(request, env, url));
+    if (path === '/api/v1/edits' && request.method === 'PATCH') return (await rateLimited(request, env)) || await cors(env, request, await apiEdits(request, env));
+    if (path === '/schedule' && request.method === 'POST') return await cors(env, request, await scheduleCreate(request, env));
+    if (path === '/schedules' && request.method === 'GET') return await cors(env, request, await scheduleList(request, env, url));
+    if (path === '/schedule/cancel' && request.method === 'POST') return await cors(env, request, await scheduleCancel(request, env));
+    if (path === '/presence' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await presencePing(request, env));
+    if (path === '/comments' && request.method === 'GET') return await cors(env, request, await commentList(request, env, url));
+    if (path === '/comments' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentPost(request, env));
+    if (path === '/comments/counts' && request.method === 'GET') return await cors(env, request, await commentCounts(request, env, url));
+    if (path === '/comments/resolve' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentResolve(request, env));
+    if (path === '/comments/delete' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentDelete(request, env));
+    if (path === '/suggestions' && request.method === 'GET') return await cors(env, request, await suggestionList(request, env, url));
+    if (path === '/suggestions' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionCreate(request, env));
+    if (path === '/suggestions/decide' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionDecide(request, env));
+    if (path === '/ai/assist' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await aiAssist(request, env));
+    if (path === '/source/commit' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceCommit(request, env));
+    if (path === '/source/read' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceReadField(request, env));
+    if (path === '/source/revert' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceRevert(request, env));
+    if (path === '/source/duplicate' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceDuplicate(request, env));
+    if (path === '/source/create' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceCreate(request, env));
+    if (path === '/source/remove' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceRemove(request, env));
+    if (path === '/source/fields' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceFields(request, env));
+    if (path === '/source/history' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceHistory(request, env));
+    if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
+    if (path === '/google/callback') return googleCallback(url, env);
+    if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
+    // The commit proxy runs on the shared App installation token — throttle it
+    // (per IP) so one editor can't exhaust the owner's GitHub quota and DoS
+    // everyone else's editing. No-op unless the RL binding is configured.
+    if (path.startsWith('/gh/')) return (await rateLimited(request, env)) || await cors(env, request, await ghProxy(request, env, path.slice(3) + url.search));
+
+    return new Response('kiln-auth: not found', { status: 404 });
+  } catch (err) {
+    console.error('[kiln-auth]', err.stack || err);
+    // The detail stays in the log: an error's text can name internals.
+    return await cors(env, request, json({ error: 'internal', message: 'Something went wrong on the Kiln service. Try again; if it keeps happening, write to info@kilncms.com.' }, 500));
+  }
+}
 
 /** Run one scheduled job, and say in one structured line how it went. Never throws. */
 async function cronJob(job, fn) {
@@ -454,8 +483,15 @@ async function authLogin(url, env) {
   if (!(await originAllowed(env, origin))) return originRefused(env, origin);
   if (!returnTo.startsWith('/')) return html('<h1>Bad return_to</h1>', 400);
 
+  // keep=server: the GitHub sign-in stays on this worker and the site is
+  // handed an owner session for one repository (see "Owner sessions"). Without
+  // it, the old way: the site is handed the GitHub token itself.
+  const keep = url.searchParams.get('keep') === 'server' ? 'server' : null;
+  const repo = url.searchParams.get('repo') || '';
+  if (keep && !REPO_RE.test(repo)) return badRepoPage();
+
   const nonce = crypto.randomUUID();
-  await env.KILN.put(`state:${nonce}`, JSON.stringify({ origin, returnTo }), { expirationTtl: 600 });
+  await env.KILN.put(`state:${nonce}`, JSON.stringify(keep ? { origin, returnTo, keep, repo } : { origin, returnTo }), { expirationTtl: 600 });
 
   const params = new URLSearchParams({
     client_id: creds.client_id,
@@ -486,6 +522,10 @@ async function authCallback(url, env) {
     return html(`<h1>GitHub OAuth error</h1><pre>${esc(tok.error_description || JSON.stringify(tok))}</pre>`, 400);
   }
 
+  if (state.keep === 'server') return ownerSignedIn(env, state, tok);
+
+  // The old way, kept for older editor files: the site is handed the GitHub
+  // token itself (kiln-token) and a refresh id (kiln-sid, /auth/refresh).
   // A Cloud site's address belongs to its repository alone, and anyone can
   // register an address for a trial. So a GitHub sign-in is handed only to an
   // address whose repository this person may change; otherwise a stranger's
@@ -552,9 +592,276 @@ async function authRefresh(request, env) {
 }
 
 async function authLogout(request, env) {
+  // An owner session is ended by its id alone: having the id is what signing
+  // in gave, and ending it can only take access away.
+  const id = request.headers.get('X-Kiln-Session') || '';
+  if (OWNER_SESSION_RE.test(id)) await env.KILN.delete(`osess:${id}`);
+  // The old way, kept for older editor files.
   const { sid } = await request.json().catch(() => ({}));
   if (sid) await env.KILN.delete(`sid:${sid}`);
   return json({ ok: true });
+}
+
+// ─── Owner sessions ──────────────────────────────────────────────────────────
+// An owner's GitHub sign-in stays here. The site holds only a session id (as
+// an invited editor does) and sends it as X-Kiln-Session; the worker keeps the
+// GitHub token and its refresh token, and uses them for that one repository:
+//
+//   osess:<64 hex>  { v: 1, token, token_exp, refresh_token, login, uid, repo,
+//                     rid, origin, created }   (TTL 180 days from `created`)
+//
+// A script on the owner's site can then use the session only from that site,
+// only on that repository, and only through this worker; it can never read a
+// GitHub token that works on every repository the person can change.
+
+// owner/name, and neither part only dots (`..` would climb out of /repos/).
+const REPO_RE = /^(?!\.\.?\/)[\w.-]+\/(?!\.\.?$)[\w.-]+$/;
+const OWNER_SESSION_RE = /^[a-f0-9]{64}$/;
+const OWNER_SESSION_DAYS = 180;
+const OWNER_RENEW_MS = 5 * 60 * 1000;   // renew a token this close to running out
+const owners = new WeakMap();            // request → { id, sess }, set once by routeRequest
+const endedSignIns = new WeakSet();      // requests whose owner session GitHub stopped accepting
+
+const SIGNIN_ENDED = 'Your sign-in to GitHub has ended. Sign in again to keep editing.';
+const OWNER_ORIGIN = 'This sign-in belongs to another site address, so it cannot be used here. Sign in again on this site.';
+const OWNER_SCOPE = 'This sign-in is for one repository only, and this request is for something else, so Kiln did not send it to GitHub.';
+const ORIGIN_OFF = 'Editing through Kiln is switched off for this site address, so nothing was sent to GitHub.';
+const GITHUB_UNREACHABLE ='Kiln could not reach GitHub just now. Wait a moment and try again.';
+
+function signinEnded() { return json({ error: SIGNIN_ENDED, code: 'signin_ended' }, 401); }
+function sameName(a, b) { return typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase(); }
+function ownerSessionEnds(sess) { return (Number(sess.created) || 0) + OWNER_SESSION_DAYS * 86400 * 1000; }
+function newOwnerSessionId() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function badRepoPage() {
+  return html(`<h1>The site did not say which repository it is</h1>
+    <p>Kiln needs the site's repository, written as <code>owner/name</code>, to sign you in to it.
+    Check <code>repo</code> in the site's <code>kiln-config.js</code>, then try again.</p>`, 400);
+}
+function notYoursPage(origin) {
+  return html(`<h1>This site is not yours to sign in to</h1>
+      <p>You signed in with GitHub, but your account cannot change the repository behind
+      <strong>${esc(origin)}</strong>, so Kiln did not sign you in there. If you
+      followed a link someone sent you, nothing was shared with that site.</p>`, 403);
+}
+
+/**
+ * What a GitHub token may do on one repository: { push, id } or null when
+ * GitHub does not say (a token it does not accept, a repository it cannot
+ * see). `fresh` only for a token issued in this very request (ghWithNewToken).
+ */
+async function repoAccess(token, repo, { fresh = false } = {}) {
+  try {
+    const r = fresh
+      ? await ghWithNewToken(`${GH}/repos/${repo}`, token)
+      : await fetch(`${GH}/repos/${repo}`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+    if (!r || !r.ok) return null;
+    const j = await r.json();
+    const p = j.permissions || {};
+    return { push: !!(p.push || p.admin || p.maintain), id: Number.isInteger(j.id) ? j.id : null };
+  } catch { return null; }
+}
+
+async function githubUser(token) {
+  try {
+    const r = await fetch(`${GH}/user`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+    if (!r.ok) return null;
+    const u = await r.json();
+    return u && typeof u.login === 'string' ? u : null;
+  } catch { return null; }
+}
+
+async function createOwnerSession(env, { token, tokenExp, refreshToken, login, uid, repo, rid, origin }) {
+  const id = newOwnerSessionId();
+  const created = Date.now();
+  const sess = {
+    v: 1, token, token_exp: Number.isFinite(tokenExp) ? tokenExp : null, refresh_token: refreshToken || null,
+    login, uid: Number.isInteger(uid) ? uid : null, repo, rid: Number.isInteger(rid) ? rid : null, origin, created,
+  };
+  await env.KILN.put(`osess:${id}`, JSON.stringify(sess), { expirationTtl: OWNER_SESSION_DAYS * 86400 });
+  return { id, exp: ownerSessionEnds(sess) };
+}
+
+/** Write a session back (a renewed token) without moving the day it ends. */
+async function rewriteOwnerSession(env, id, sess) {
+  const expiration = Math.floor(ownerSessionEnds(sess) / 1000);
+  const soonest = Math.floor(Date.now() / 1000) + 60;   // KV's shortest lifetime
+  await env.KILN.put(`osess:${id}`, JSON.stringify(sess), { expiration: Math.max(expiration, soonest) });
+}
+
+/** The owner session this request names has ended: remove it, and say so whatever the route answers. */
+async function endOwnerSession(env, request, owner) {
+  await env.KILN.delete(`osess:${owner.id}`);
+  endedSignIns.add(request);
+}
+
+/**
+ * Ask GitHub for a new token with a refresh token. { tok } on success,
+ * { ended: true } when GitHub says no, { unavailable: true } when GitHub
+ * could not be asked (then nothing is ended: the next request tries again).
+ */
+async function refreshAtGitHub(env, refreshToken) {
+  const creds = await env.KILN.get('app:creds', 'json');
+  if (!creds) return { unavailable: true };
+  let tok;
+  try {
+    const res = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': UA },
+      body: JSON.stringify({ client_id: creds.client_id, client_secret: creds.client_secret, grant_type: 'refresh_token', refresh_token: refreshToken }),
+    });
+    if (res.status >= 500) return { unavailable: true };
+    tok = await res.json();
+  } catch { return { unavailable: true }; }
+  if (!tok || tok.error || !tok.access_token) return { ended: true };
+  return { tok };
+}
+
+/**
+ * The session with a token that is good for at least five more minutes, or
+ * { refuse } when the sign-in has ended (or GitHub cannot be asked just now).
+ */
+async function freshOwnerSession(env, id, sess) {
+  if (!sess.token_exp || sess.token_exp - Date.now() > OWNER_RENEW_MS) return { sess };
+  const end = async () => { await env.KILN.delete(`osess:${id}`); return { refuse: signinEnded() }; };
+  if (!sess.refresh_token) return end();
+  const r = await refreshAtGitHub(env, sess.refresh_token);
+  if (r.unavailable) return { refuse: json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 503) };
+  if (r.ended) {
+    // A refresh token works once. Two requests at the same moment both try
+    // it; the one that lost finds the token the other one stored.
+    const now = await env.KILN.get(`osess:${id}`, 'json');
+    if (now && now.token !== sess.token && (!now.token_exp || now.token_exp - Date.now() > OWNER_RENEW_MS)) return { sess: now };
+    return end();
+  }
+  const next = {
+    ...sess,
+    token: r.tok.access_token,
+    token_exp: r.tok.expires_in ? Date.now() + r.tok.expires_in * 1000 : null,
+    refresh_token: r.tok.refresh_token || sess.refresh_token,
+  };
+  await rewriteOwnerSession(env, id, next);
+  return { sess: next };
+}
+
+/**
+ * The one answer to "is an owner asking, and with which GitHub token?" for a
+ * request that names a session in X-Kiln-Session:
+ *   null       the id names no owner session (it may be an invited editor's)
+ *   { refuse } the session has ended, or is used from another address
+ *   { id, sess } an owner session from its own address, its token good for now
+ * routeRequest asks it once per request; requirePush and the /gh/* proxy use
+ * what it found. The old way (a GitHub token in Authorization) is still taken
+ * where no owner session is named (askingToken).
+ */
+async function ownerSessionFor(request, env) {
+  const id = request.headers.get('X-Kiln-Session') || '';
+  if (!OWNER_SESSION_RE.test(id)) return null;
+  const sess = await env.KILN.get(`osess:${id}`, 'json');
+  if (!sess || sess.v !== 1 || typeof sess.token !== 'string') return null;
+  if (ownerSessionEnds(sess) < Date.now()) { await env.KILN.delete(`osess:${id}`); return { refuse: signinEnded() }; }
+  const origin = request.headers.get('Origin') || '';
+  if (!origin || origin !== sess.origin) return { refuse: json({ error: OWNER_ORIGIN, code: 'owner_origin' }, 403) };
+  if (!(await originAllowed(env, origin))) return { refuse: json({ error: ORIGIN_OFF, code: 'origin_refused' }, 403) };
+  const fresh = await freshOwnerSession(env, id, sess);
+  if (fresh.refuse) return fresh;
+  return { id, sess: fresh.sess };
+}
+
+/** Is `repo` the repository this owner session is for (by name, or by GitHub's id after a rename)? */
+async function ownerRepoMatches(env, sess, repo) {
+  if (!REPO_RE.test(String(repo || ''))) return false;
+  if (!(sameName(sess.repo, repo) || await sameOnRecord(env, sess.repo, repo))) return false;
+  return !(await answersAsAnother(env, repo, sess.rid));
+}
+
+/**
+ * The GitHub token a request proves ownership with, for `repo`:
+ *   { token, owner } from an owner session for that repository, or
+ *   { token, owner: null } from Authorization (the old way, kept for older editor files),
+ *   null when there is neither (or the session is for another repository).
+ */
+async function askingToken(request, env, repo) {
+  const owner = owners.get(request);
+  if (owner) return (await ownerRepoMatches(env, owner.sess, repo)) ? { token: owner.sess.token, owner } : null;
+  const auth = (request.headers.get('Authorization') || '').replace(/^(token|Bearer)\s+/i, '');
+  return auth ? { token: auth, owner: null } : null;
+}
+
+/**
+ * Finish a keep=server sign-in: the repository must be a real owner/name,
+ * the site's address must belong to it, and the person must be able to change
+ * it. Then the token stays here and the site gets an owner session.
+ */
+async function ownerSignedIn(env, state, tok) {
+  const repo = String(state.repo || '');
+  if (!REPO_RE.test(repo)) return badRepoPage();
+  if (!(await originServesRepo(env, state.origin, repo))) return notYoursPage(state.origin);
+  const access = await repoAccess(tok.access_token, repo, { fresh: true });
+  if (!access || !access.push) return notYoursPage(state.origin);
+  // As requirePush does: the name is put on record as this repository, and a
+  // name on record as a different one, with a site's things under it, is refused.
+  if (access.id !== null && !(await admitRepo(env, repo, { id: access.id, name: repo }))) {
+    return html(`<h1>This repository name has changed hands</h1><p>${esc(REPO_CHANGED)}</p>`, 403);
+  }
+  const user = await githubUser(tok.access_token);
+  if (!user) return html('<h1>GitHub did not say who you are</h1><p>Go back to your site and sign in again.</p>', 502);
+  const { id, exp } = await createOwnerSession(env, {
+    token: tok.access_token,
+    tokenExp: tok.expires_in ? Date.now() + tok.expires_in * 1000 : null,
+    refreshToken: tok.refresh_token,
+    login: user.login, uid: user.id, repo, rid: access.id, origin: state.origin,
+  });
+  const frag = new URLSearchParams({ 'kiln-owner': id, 'kiln-login': user.login, 'kiln-exp': String(exp) });
+  return Response.redirect(`${state.origin}${state.returnTo}#${frag}`, 302);
+}
+
+/** GET /auth/session: who this owner session is, or 401 when it is not one (any more). */
+async function authSession(request, env) {
+  const owner = await ownerSessionFor(request, env);
+  if (!owner) return json({ error: 'You are not signed in on this site.', code: 'signin_ended' }, 401);
+  if (owner.refuse) return owner.refuse;
+  return json({ ok: true, role: 'owner', login: owner.sess.login, repo: owner.sess.repo, exp: ownerSessionEnds(owner.sess) });
+}
+
+/**
+ * POST /auth/adopt { token, sid?, repo }: an owner signed in the old way,
+ * with the GitHub token in the browser, is moved to an owner session without
+ * signing in again. The token is checked once at GitHub (it is not new, so
+ * no waiting for it); the refresh token moves over from sid:<sid>.
+ */
+async function authAdopt(request, env) {
+  const origin = request.headers.get('Origin') || '';
+  if (!origin || !(await originAllowed(env, origin))) return json({ error: 'This site address may not use this sign-in service.', code: 'origin_refused' }, 403);
+  const body = await request.json().catch(() => null);
+  const token = body && typeof body.token === 'string' ? body.token.trim() : '';
+  const repo = body && typeof body.repo === 'string' ? body.repo : '';
+  const sid = body && typeof body.sid === 'string' ? body.sid : '';
+  if (!token || token.length > 512 || !REPO_RE.test(repo)) return json({ error: 'The request did not name a sign-in and a repository.', code: 'bad_request' }, 400);
+  if (!(await originServesRepo(env, origin, repo))) return json({ error: OWNER_ORIGIN, code: 'owner_origin' }, 403);
+  const user = await githubUser(token);
+  if (!user) return signinEnded();
+  const access = await repoAccess(token, repo);
+  if (!access || !access.push) return json({ error: 'Your GitHub account cannot change this site’s repository, so Kiln did not keep the sign-in.', code: 'forbidden' }, 403);
+  if (access.id !== null && !(await admitRepo(env, repo, { id: access.id, name: repo }))) return json({ error: REPO_CHANGED, code: 'repo_changed' }, 403);
+  let refreshToken = null;
+  if (sid && /^[\w-]{1,64}$/.test(sid)) {
+    const old = await env.KILN.get(`sid:${sid}`, 'json');
+    if (old && typeof old.refresh_token === 'string') refreshToken = old.refresh_token;
+  }
+  // GitHub does not say when an old token runs out. With a refresh token it is
+  // renewed on first use, which also proves the refresh token is good; without
+  // one it is used until GitHub stops accepting it.
+  const { id, exp } = await createOwnerSession(env, {
+    token, tokenExp: refreshToken ? Date.now() : null, refreshToken,
+    login: user.login, uid: user.id, repo, rid: access.id, origin,
+  });
+  if (refreshToken) await env.KILN.delete(`sid:${sid}`);
+  return json({ ok: true, session: id, login: user.login, exp });
 }
 
 // ─── Access control ──────────────────────────────────────────────────────────
@@ -569,11 +876,15 @@ async function authLogout(request, env) {
  * site that used to have it (KLR-08). See "Repository identity" below.
  */
 async function requirePush(request, repo, env) {
-  const auth = (request.headers.get('Authorization') || '').replace(/^(token|Bearer)\s+/i, '');
-  if (!auth || !repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return false;
+  if (!repo || !REPO_RE.test(repo)) return false;
+  // From an owner session for this repository, or the old way (Authorization).
+  const asking = await askingToken(request, env, repo);
+  if (!asking) return false;
+  const auth = asking.token;
   const res = await fetch(`${GH}/repos/${repo}`, {
     headers: { Authorization: `Bearer ${auth}`, Accept: 'application/vnd.github+json', 'User-Agent': UA },
   });
+  if (res.status === 401 && asking.owner) { await endOwnerSession(env, request, asking.owner); return false; }
   if (!res.ok) return false;
   const info = await res.json();
   if (!info.permissions?.push) return false;
@@ -900,8 +1211,12 @@ async function runDueSchedules(env) {
  *  GitHub API call per ping per admin adds up. Cache hits only apply here, never
  *  to the people/schedule admin routes. */
 async function requirePushCached(request, env, repo) {
-  const auth = (request.headers.get('Authorization') || '').replace(/^(token|Bearer)\s+/i, '');
-  if (!auth || !repo) return false;
+  if (!repo) return false;
+  // askingToken holds an owner session to its own repository before the
+  // cache is asked: two sessions can carry the same token (adopted twice).
+  const asking = await askingToken(request, env, repo);
+  if (!asking) return false;
+  const auth = asking.token;
   const digest = bufToB64(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${auth}:${repo}`)));
   const cacheKey = `pauth:${digest}`;
   if (await env.KILN.get(cacheKey)) return true;
@@ -2963,7 +3278,69 @@ function suggestWriteViolation(method, path, body) {
   return null;
 }
 
+// Path traversal guard (ALL methods, editors and owners): the allowlist and
+// the owner's repository check match on the raw path, but GitHub's fetch
+// collapses `..` — so `/repos/OWNER/A/contents/../../B/…` passes a
+// `startsWith` prefix yet lands on repo B. Any `..` segment, decoded, is
+// refused before it can slip past either.
+function proxyPathTraverses(ghPath) {
+  let decoded = ghPath;
+  try { decoded = decodeURIComponent(ghPath); } catch { /* keep raw */ }
+  return /(^|[/\\])\.\.([/\\]|$)/.test(decoded) || /%2e%2e/i.test(ghPath);
+}
+
+// What GitHub says about an answer that the editor may want besides its body.
+const OWNER_PASS_HEADERS = ['content-type', 'etag', 'last-modified', 'link', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'x-github-request-id'];
+
+/**
+ * The /gh/* proxy for an owner session: the owner's own token, on the one
+ * repository the session is for (and GET /user). No content guard, no page
+ * or section limits, no tool grants: an owner may do anything in their own
+ * repository, as they could with the token in the browser. GitHub's status
+ * and body come back as they are.
+ */
+async function ownerProxy(request, env, owner, ghPath) {
+  const { sess } = owner;
+  if (proxyPathTraverses(ghPath)) return json({ error: 'bad path' }, 400);
+  const clean = ghPath.split('?')[0];
+  if (await answersAsAnother(env, sess.repo, sess.rid)) return sessionRepoChanged();
+  let forward = null;
+  if (clean === '/user') {
+    if (request.method === 'GET') forward = ghPath;
+  } else {
+    // A site whose config has the name from before a rename asks by that
+    // name; when the records say it is this session's repository, the
+    // request goes out under the session's own name (as for editors).
+    const asked = /^\/repos\/([\w.-]+\/[\w.-]+)(?=[/?]|$)/.exec(ghPath);
+    if (asked && (sameName(asked[1], sess.repo) || await sameOnRecord(env, asked[1], sess.repo))) {
+      forward = `/repos/${sess.repo}${ghPath.slice(asked[0].length)}`;
+    }
+  }
+  if (!forward) return json({ error: OWNER_SCOPE, code: 'owner_scope' }, 403);
+
+  const headers = { Authorization: `Bearer ${sess.token}`, Accept: request.headers.get('Accept') || 'application/vnd.github+json', 'User-Agent': UA };
+  for (const h of ['If-None-Match', 'If-Modified-Since']) { const v = request.headers.get(h); if (v) headers[h] = v; }
+  let body;
+  if (!['GET', 'HEAD'].includes(request.method)) {
+    const read = await readBodyCapped(request, PROXY_BODY_MAX);
+    if (read.tooLarge) return json({ error: FILE_MESSAGES.size, code: 'file_size' }, 413);
+    body = read.text;
+    headers['Content-Type'] = 'application/json';
+  }
+  let res;
+  try { res = await fetch(`${GH}${forward}`, { method: request.method, headers, body }); }
+  catch { return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502); }
+  if (res.status === 401) { await endOwnerSession(env, request, owner); return signinEnded(); }
+  const out = new Headers();
+  for (const h of OWNER_PASS_HEADERS) { const v = res.headers.get(h); if (v) out.set(h, v); }
+  if (!out.has('content-type')) out.set('content-type', 'application/json');
+  return new Response(res.body, { status: res.status, headers: out });
+}
+
 async function ghProxy(request, env, ghPath) {
+  // An owner session found by routeRequest: the owner's branch, and only that.
+  const owner = owners.get(request);
+  if (owner) return ownerProxy(request, env, owner, ghPath);
   const sessId = request.headers.get('X-Kiln-Session') || '';
   if (!/^[a-f0-9]{64}$/.test(sessId)) return json({ error: 'missing session' }, 401);
   const sess = await env.KILN.get(`esess:${sessId}`, 'json');
@@ -2991,17 +3368,7 @@ async function ghProxy(request, env, ghPath) {
     }
   }
 
-  // Path traversal guard (ALL methods): the allowlist matches on the raw path,
-  // but GitHub's fetch collapses `..` — so `/repos/OWNER/A/contents/../../B/…`
-  // passes the `startsWith` prefix yet lands on repo B (same installation token).
-  // Reject any `..` segment, decoded, before it can slip past the allowlist.
-  {
-    let decoded = ghPath;
-    try { decoded = decodeURIComponent(ghPath); } catch { /* keep raw */ }
-    if (/(^|[/\\])\.\.([/\\]|$)/.test(decoded) || /%2e%2e/i.test(ghPath)) {
-      return json({ error: 'bad path' }, 400);
-    }
-  }
+  if (proxyPathTraverses(ghPath)) return json({ error: 'bad path' }, 400);
 
   if (!proxyAllowed(request.method, ghPath, sess.repo)) {
     return json({ error: 'path not allowed', path: ghPath }, 403);

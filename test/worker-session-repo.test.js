@@ -240,7 +240,7 @@ test('editor session, normal: the check is one more KV read; GitHub is asked onc
     // A publish of a page: the commit proxy's usual request.
     const put = await putPage(w.env);
     assert.equal(put.status, 201, JSON.stringify(put.json));
-    assert.deepEqual(w.reads(), [`esess:${SESSION}`, `rsee:${OLD}`, `itok:${OLD}`, `itok:${OLD}`], 'three reads before sessions carried an id; the remembered answer is the fourth');
+    assert.deepEqual(w.reads(), [`osess:${SESSION}`, `esess:${SESSION}`, `rsee:${OLD}`, `itok:${OLD}`, `itok:${OLD}`], 'four reads before sessions carried an id (the first asks whether the id is an owner session); the remembered answer is the fifth');
     assert.deepEqual(w.writes(), []);
     assert.deepEqual(carriedOut(calls), [`GET /repos/${OLD}/git/blobs/cur`, `PUT /repos/${OLD}/contents/index.html`]);
     assert.deepEqual(asks(calls), [], 'GitHub is not asked who the name is');
@@ -248,10 +248,10 @@ test('editor session, normal: the check is one more KV read; GitHub is asked onc
     // A read, and the worker's own routes: one read more each.
     w.ops.length = 0; calls.length = 0;
     assert.equal((await getPage(w.env)).status, 200);
-    assert.deepEqual(w.reads(), [`esess:${SESSION}`, `rsee:${OLD}`, `itok:${OLD}`]);
+    assert.deepEqual(w.reads(), [`osess:${SESSION}`, `esess:${SESSION}`, `rsee:${OLD}`, `itok:${OLD}`]);
     w.ops.length = 0;
     assert.equal((await ask(w.env, 'GET', `/comments/counts?repo=${OLD}`, { headers: AS })).status, 200);
-    assert.deepEqual(w.reads().slice(0, 2), [`esess:${SESSION}`, `rsee:${OLD}`]);
+    assert.deepEqual(w.reads().slice(0, 3), [`osess:${SESSION}`, `esess:${SESSION}`, `rsee:${OLD}`]);
     assert.equal((await ask(w.env, 'POST', '/presence', { headers: AS, body: { repo: OLD, path: '/', name: 'Ada' } })).status, 200);
     assert.deepEqual(asks(calls), []);
 
@@ -275,7 +275,7 @@ test('editor session from before ids were carried: it is held to the id on recor
   await quietly(() => withFetch(github(names), async (calls) => {
     // Same name, same repository: it works as it did, at the cost of one read more than a session with an id.
     assert.equal((await getPage(w.env)).status, 200);
-    assert.deepEqual(w.reads(), [`esess:${SESSION}`, `rname:${OLD}`, `rsee:${OLD}`, `itok:${OLD}`]);
+    assert.deepEqual(w.reads(), [`osess:${SESSION}`, `esess:${SESSION}`, `rname:${OLD}`, `rsee:${OLD}`, `itok:${OLD}`]);
     assert.equal((await putPage(w.env)).status, 201);
     assert.equal((await ask(w.env, 'GET', `/comments?repo=${OLD}&path=index.html`, { headers: AS })).json.threads.length, 1);
     assert.deepEqual(w.writes(), [], 'nothing is written');
@@ -295,7 +295,7 @@ test('editor session from before ids were carried: it is held to the id on recor
   const unmet = world({ ...TOKEN(OLD), [`esess:${SESSION}`]: editorSession(OLD) });
   await withFetch(github(same()), async (calls) => {
     assert.equal((await getPage(unmet.env)).status, 200);
-    assert.deepEqual(unmet.reads(), [`esess:${SESSION}`, `rname:${OLD}`, `itok:${OLD}`]);
+    assert.deepEqual(unmet.reads(), [`osess:${SESSION}`, `esess:${SESSION}`, `rname:${OLD}`, `itok:${OLD}`]);
     assert.deepEqual(asks(calls), []);
   });
 });
