@@ -67,7 +67,12 @@ test('wired: one listener, before the page\'s own, that leaves fields, forms and
   // never while typing, picking, or with a modifier held (that is how a link is followed in edit mode)
   assert.match(fn, /if \(state\.active \|\| sourceActive \|\| pickMode \|\| e\.metaKey \|\| e\.ctrlKey\) return;/);
   assert.match(fn, /\[data-cms\], \[data-kiln-source\]/);
-  // the link is only held back when the editor has somewhere to send the person instead
-  assert.ok(fn.indexOf('e.preventDefault();') > fn.indexOf('const twin = findTwin('), 'nothing is prevented before a twin is found');
-  assert.equal((fn.match(/e\.preventDefault\(\);/g) || []).length, 1);
+  // A link is held back in two cases only. A picture was pressed: the press was meant for the picture, the line
+  // says why it cannot be changed here, and the card's link (often to another site, in a new tab) must not take
+  // the person away from it. Or the editor has the same words to send the person to instead.
+  assert.match(fn, /if \(picture && at\.closest\('a\[href\]'\)\) \{ e\.preventDefault\(\); e\.stopPropagation\(\); \}/);
+  assert.match(fn, /if \(twin\.same === 'words' \|\| picture\) \{/);
+  assert.equal((fn.match(/e\.preventDefault\(\);/g) || []).length, 2);
+  // words pressed inside a block's link are still the page's own: nothing is prevented for them
+  assert.doesNotMatch(fn, /inBlock: true[^\n]*preventDefault/);
 });
