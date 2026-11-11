@@ -20,7 +20,7 @@ just sign in again the same way.
 ### "You're not on the list (yet)"
 
 If you see this after signing in, the site works fine — the owner just hasn't added
-the email you used. Ask them to add it under **People** in their Kiln admin bar, or
+the email you used. Ask them to add it under **People & access** in the Kiln menu on their site, or
 check whether they added a different address of yours, then try again.
 
 ## Editing

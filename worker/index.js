@@ -2281,8 +2281,8 @@ async function googleCallback(url, env) {
   if (!person) {
     return html(`<h1>You're not on the list (yet)</h1>
       <p>You signed in as <strong>${esc(email)}</strong>, but the owner of this site
-      hasn't added that address. Ask them to add you under <em>People</em> in their
-      Kiln admin bar, then try again.</p>
+      hasn't added that address. Ask them to add you under <em>People &amp; access</em>,
+      in the Kiln menu on their site, then try again.</p>
       <p><a class="btn" href="${esc(state.origin + state.returnTo)}">Back to the site</a></p>`, 403);
   }
 
@@ -4037,8 +4037,11 @@ function esc(s) {
 }
 
 function html(body, status = 200) {
+  // The tab is named after the page's own heading: these pages are read by
+  // editors and members signing in, not only by someone setting Kiln up.
+  const heading = String((String(body).match(/<h1[^>]*>([\s\S]*?)<\/h1>/) || [])[1] || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
   return new Response(`<!DOCTYPE html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Kiln setup</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${heading ? `${heading} · Kiln` : 'Kiln'}</title>
 <style>
   body{font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#2c2c2c;background:#faf9f7;
        max-width:560px;margin:8vh auto;padding:0 24px}
