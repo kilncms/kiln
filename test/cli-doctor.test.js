@@ -314,3 +314,23 @@ test('KLN-08 update: when git refuses, its own message is shown', async () => {
     assert.match(out, /gone\.git|repository|does not appear/i, 'git\'s reason is passed on');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('doctor without a terminal and without --site stops at once and names the option, even if input never ends', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'kiln-doctor-notty-'));
+  try {
+    const { code, out, ms } = await new Promise((resolve) => {
+      const t0 = Date.now();
+      // stdin is a pipe that is never closed: the old prompt waited on it for ever
+      const child = spawn(process.execPath, [CLI, 'doctor'], { cwd: dir, env: { ...process.env, NO_COLOR: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
+      const killer = setTimeout(() => child.kill('SIGKILL'), 20_000);
+      let out = '';
+      child.stdout.on('data', d => { out += d; });
+      child.stderr.on('data', d => { out += d; });
+      child.on('close', (code) => { clearTimeout(killer); resolve({ code, out, ms: Date.now() - t0 }); });
+    });
+    assert.equal(code, 1, out);
+    assert.ok(ms < 20_000, 'did not wait for an answer');
+    assert.match(out, /Run it again with --site <url> --repo <owner\/name> --worker <url>\./);
+    assert.doesNotMatch(out, /Site URL/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

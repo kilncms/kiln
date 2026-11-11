@@ -276,6 +276,13 @@ async function doctor(args) {
     ok(`read ${cfgPath} (repo=${repo || 'not set'}, worker=${worker || 'not set'}${mode === 'source' ? `, mode=source/${adapterId || '?'}` : ''})`);
     if (!worker) info('this site is not connected to a worker yet — run the setup wizard here first: npx github:kilncms/kiln#release');
   }
+  // Without a terminal nobody can answer, and a pipe left open would wait for
+  // ever: name the options instead of asking.
+  const unasked = [!site && '--site <url>', !repo && '--repo <owner/name>', !worker && '--worker <url>'].filter(Boolean);
+  if (unasked.length && !process.stdin.isTTY) {
+    fail(`doctor cannot ask questions here, because this is not a terminal. Run it again with ${unasked.join(' ')}.`);
+    process.exit(1);
+  }
   site ||= await ask('Site URL (https://…)');
   repo ||= await ask('GitHub repo (owner/name)');
   worker ||= await ask('Worker URL (https://…workers.dev)');
