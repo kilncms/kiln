@@ -33,8 +33,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = existsSync(path.join(HERE, 'dist', 'kiln.js')) ? HERE : path.resolve(HERE, '..');
 
 const UA = 'kiln-rescue/0.1 (+https://kilncms.com)';
-const MAX_ASSET_BYTES = 5 * 1024 * 1024;     // per file; --max-asset-mb changes it
-const MAX_TOTAL_BYTES = 25 * 1024 * 1024;    // per run; --max-total-mb changes it
+const MAX_ASSET_BYTES = 20 * 1024 * 1024;    // per file; --max-asset-mb changes it
+const MAX_TOTAL_BYTES = 250 * 1024 * 1024;   // per run; --max-total-mb changes it
+const PAGES_FILE_LIMIT_MB = 25;              // Cloudflare Pages refuses a bigger file
 // off-origin hosts that are really "the builder's disk" — localize these too
 const BUILDER_CDN_RE = /(^|\.)(squarespace-cdn\.com|squarespace\.com|wixstatic\.com|parastorage\.com|wp\.com|wordpress\.com|googleusercontent\.com|cloudfront\.net|fastly\.net|fastly\.com|lovable\.app|lovableproject\.com|lovable\.dev|vercel-storage\.com|supabase\.co)$/i;
 const TRACKER_RE = /googletagmanager\.com|google-analytics\.com|doubleclick\.net|googleadservices\.com|connect\.facebook\.net|facebook\.com\/tr|hotjar\.com|clarity\.ms|mc\.yandex|matomo|plausible\.io|segment\.com/i;
@@ -61,6 +62,16 @@ const textOf = (node) => (node.childNodes || []).map(c => c.value || '').join(''
 /** asset identity: URL minus fragment (a sprite's #icon is not a different file) */
 const assetKey = (u) => u.origin + u.pathname + u.search;
 
+/** One site, whatever the address says: http and https of the same host, with
+ *  or without a leading "www.", are the same site (old sites mix all four). */
+const hostKey = (u) => u.hostname.toLowerCase().replace(/^www\./, '') + (u.port ? ':' + u.port : '');
+export function sameSite(a, b) {
+  try { return hostKey(a instanceof URL ? a : new URL(a)) === hostKey(b instanceof URL ? b : new URL(b)); } catch { return false; }
+}
+/** asset identity, with a same-site address written the way `base` writes it,
+ *  so http://site/x.jpg and https://www.site/x.jpg are one file */
+const siteKey = (u, base) => sameSite(u, base) ? base.origin + u.pathname + u.search : assetKey(u);
+
 function walkTree(node, fn) {
   fn(node);
   for (const c of [...(node.childNodes || [])]) walkTree(c, fn);
@@ -75,7 +86,7 @@ function walkTree(node, fn) {
 export function pageIdentity(href, base) {
   let u; try { u = new URL(href, base); } catch { return null; }
   if (!/^https?:$/.test(u.protocol)) return null;
-  if (base && u.origin !== new URL(base).origin) return null;
+  if (base && !sameSite(u, new URL(base))) return null;
   const p = u.pathname.replace(/\/index\.html?$/i, '/');
   return p.length > 1 ? (p.replace(/\/+$/, '') || '/') : p;
 }
@@ -151,7 +162,7 @@ export function extractRefs(html, pageUrl) {
   const pages = new Set(), assets = new Set();
   const asset = (val) => {
     if (!val || /^(data:|blob:|#)/i.test(String(val).trim())) return;
-    try { const u = new URL(String(val).trim(), base); if (/^https?:$/.test(u.protocol)) assets.add(assetKey(u)); } catch { /* skip */ }
+    try { const u = new URL(String(val).trim(), base); if (/^https?:$/.test(u.protocol)) assets.add(siteKey(u, base)); } catch { /* skip */ }
   };
   const srcset = (val) => String(val).split(',').forEach(part => asset(part.trim().split(/\s+/)[0]));
   walkTree(doc, n => {
@@ -186,26 +197,28 @@ export function extractRefs(html, pageUrl) {
 // ─── pure: CSS url() rewriting ───────────────────────────────────────────────
 
 /**
- * Rewrite url() refs in CSS text. Same-origin absolutes → root-relative;
- * localized assets (assetMap: assetKey → assets/rescued/x) → local path —
- * sameDir:true emits just the basename (for CSS files living in that same
- * folder), else a root-relative /assets/rescued/x. Anything else is left and
- * reported in offOrigin.
+ * Rewrite url() refs in CSS text. Localized assets (assetMap: assetKey →
+ * assets/rescued/x) → local path: sameDir:true emits just the basename (for
+ * CSS files living in that same folder), else a root-relative
+ * /assets/rescued/x. A same-site file that was not copied → its full address
+ * on the old site, so it still shows (reported in leftBehind). Anything else
+ * is left and reported in offOrigin.
  */
 export function rewriteCssUrls(css, opts = {}) {
   const base = new URL(opts.base || 'http://localhost/');
   const assetMap = opts.assetMap || new Map();
-  const offOrigin = new Set();
+  const offOrigin = new Set(), leftBehind = new Set();
   const out = css.replace(/url\(\s*(['"]?)([^'")\s][^'")]*)\1\s*\)/gi, (m, q, ref) => {
     if (/^(data:|blob:|#)/i.test(ref)) return m;
     let u; try { u = new URL(ref, base); } catch { return m; }
     if (!/^https?:$/.test(u.protocol)) return m;
-    const local = assetMap.get(assetKey(u));
+    const local = assetMap.get(siteKey(u, base));
     if (local) return `url(${q}${opts.sameDir ? local.split('/').pop() : '/' + local}${u.hash || ''}${q})`;
-    if (u.origin !== base.origin) { offOrigin.add(u.href); return m; }
-    return `url(${q}${u.pathname}${u.search}${u.hash}${q})`;
+    if (!sameSite(u, base)) { offOrigin.add(u.href); return m; }
+    leftBehind.add(siteKey(u, base));
+    return `url(${q}${base.origin}${u.pathname}${u.search}${u.hash}${q})`;
   });
-  return { css: out, offOrigin: [...offOrigin] };
+  return { css: out, offOrigin: [...offOrigin], leftBehind: [...leftBehind] };
 }
 
 // ─── pure: page cleaning ─────────────────────────────────────────────────────
@@ -215,20 +228,22 @@ export function rewriteCssUrls(css, opts = {}) {
  * it parses as JSON), preconnect/dns-prefetch/preload-as-script link tags, meta
  * generator, tracker iframes and noscript pixels, <base>; rewrite same-origin
  * absolute URLs to root-relative, links to crawled pages to their pretty URL,
- * and localized asset refs to /assets/rescued/…
+ * and localized asset refs to /assets/rescued/…; a same-site file that was
+ * not copied (a picture past the size limit, a PDF, a video) gets its full
+ * address on the old site, so it keeps showing until that site is switched off.
  *
  * opts: { baseUrl, pageMap (identity → file), assetMap (assetKey → local path),
  *         keepScripts }.
- * Returns { html, scripts, cruft, offOrigin } — scripts/cruft = removal counts,
- * offOrigin = asset URLs referenced but not localized.
+ * Returns { html, scripts, cruft, offOrigin, leftBehind } — scripts/cruft =
+ * removal counts, offOrigin = other sites' asset URLs left as they were,
+ * leftBehind = same-site files now loaded from the old site.
  */
 export function cleanPage(html, opts = {}) {
   const pageMap = opts.pageMap || new Map();
   const assetMap = opts.assetMap || new Map();
   const doc = parse(html);
   const base = baseOf(doc, opts.baseUrl || 'http://localhost/');
-  const origin = base.origin;
-  const offOrigin = new Set();
+  const offOrigin = new Set(), leftBehind = new Set();
   let scripts = 0, cruft = 0;
   const removals = [];
 
@@ -240,15 +255,21 @@ export function cleanPage(html, opts = {}) {
     if (!v || /^(#|data:|blob:)/i.test(v)) return null;
     let u; try { u = new URL(v, base); } catch { return null; }
     if (!/^https?:$/.test(u.protocol)) return null;
-    const local = assetMap.get(assetKey(u));
+    const local = assetMap.get(siteKey(u, base));
     if (local) return '/' + local + (u.hash || '');
-    if (u.origin !== origin) {
+    if (!sameSite(u, base)) {
       if (kind === 'asset') offOrigin.add(u.href);
       return null;
     }
     if (kind === 'page') {
       const file = pageMap.get(pageIdentity(u.href, base));
       if (file) return fileToHref(file) + u.search + u.hash;
+    }
+    // a file of this site that was not copied: a root-relative path would find
+    // nothing in the copy, so point at it where it still is
+    if (kind === 'asset' || NON_PAGE_RE.test(u.pathname)) {
+      leftBehind.add(siteKey(u, base));
+      return base.origin + u.pathname + u.search + u.hash;
     }
     return u.pathname + u.search + u.hash;
   };
@@ -265,6 +286,7 @@ export function cleanPage(html, opts = {}) {
   const rwCssText = (text, sameDir = false) => {
     const r = rewriteCssUrls(text, { base: base.href, assetMap, sameDir });
     r.offOrigin.forEach(u => offOrigin.add(u));
+    r.leftBehind.forEach(u => leftBehind.add(u));
     return r.css;
   };
 
@@ -332,7 +354,7 @@ export function cleanPage(html, opts = {}) {
     const i = kids ? kids.indexOf(n) : -1;
     if (i >= 0) kids.splice(i, 1);
   }
-  return { html: serialize(doc), scripts, cruft, offOrigin: [...offOrigin] };
+  return { html: serialize(doc), scripts, cruft, offOrigin: [...offOrigin], leftBehind: [...leftBehind] };
 }
 
 // ─── pure: sitemap, Kiln wiring, the "what was lost" report ──────────────────
@@ -356,7 +378,7 @@ export function sitemapIndexChildren(xml, origin) {
   const out = [];
   for (const m of String(xml).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) {
     let u; try { u = new URL(m[1].replace(/&amp;/g, '&'), base); } catch { continue; }
-    if (u.origin === base && /^https?:$/.test(u.protocol) && !out.includes(u.href)) out.push(u.href);
+    if (sameSite(u, base) && /^https?:$/.test(u.protocol) && !out.includes(u.href)) out.push(u.href);
   }
   return out;
 }
@@ -493,7 +515,7 @@ export function staticLostLines(pages, origin) {
       if (isComment) { comments.push(href); return; }
       if (isSearch) { searches.push(href); return; }
       const rec = { label, fields, action: u ? u.pathname : action, href };
-      if (u && base && u.origin !== base.origin) outside.push({ ...rec, host: u.hostname });
+      if (u && base && !sameSite(u, base)) outside.push({ ...rec, host: u.hostname });
       else dead.push(rec);
     });
   }
@@ -514,6 +536,61 @@ export function staticLostLines(pages, origin) {
   if (comments.length) L.push(`- Comment threads on ${where(comments)}: what was said is kept as shown, and new comments cannot be left.`);
   if (logins.size) L.push(`- Links to the old sign-in (wp-login, wp-admin) on ${where([...logins])}: remove them. Editing happens through Kiln now.`);
   L.push('');
+  return L;
+}
+
+/** Every file the pages use that is not in the copy: what the download loop
+ *  skipped ({ url, reason, bytes? }), then same-site files it never fetches
+ *  (a PDF, a video), as [{ url, reason, bytes? }]. */
+export function notCopiedOf(skippedAssets, leftBehind = []) {
+  const out = new Map();
+  for (const s of skippedAssets) if (!out.has(s.url)) out.set(s.url, s);
+  for (const u of leftBehind) if (!out.has(u)) out.set(u, { url: u, reason: 'a kind of file the rescue does not copy' });
+  return [...out.values()];
+}
+
+const quoteArg = (v) => /^[\w@%+=:,./-]+$/.test(v) ? v : `'${String(v).replace(/'/g, `'\\''`)}'`;
+
+/**
+ * The report section for files the copy still loads from the old site, with
+ * the command that copies them (when bigger limits would). notCopied as from
+ * notCopiedOf; again: { url, args, totalBytes, maxAssetBytes, maxTotalBytes,
+ * capped }. [] when everything was copied.
+ */
+export function notCopiedLines(notCopied, again) {
+  if (!notCopied.length) return [];
+  const n = notCopied.length;
+  const L = ['## Files not copied', '',
+    `${n} file${n === 1 ? '' : 's'} used by these pages ${n === 1 ? 'was' : 'were'} not copied into this folder. The pages still show ${n === 1 ? 'it' : 'them'} by loading ${n === 1 ? 'it' : 'them'} from the old site, at ${n === 1 ? 'its' : 'their'} full address. When you switch the old site off, ${n === 1 ? 'this file' : 'these files'} will disappear from your pages. Copy ${n === 1 ? 'it' : 'them'} before you do.`, ''];
+  const capped = notCopied.filter(f => f.capped), tooBig = notCopied.filter(f => f.tooBig);
+  if (again.capped) L.push(`- ${capped.length} ${capped.length === 1 ? 'was' : 'were'} left out because the copy reached its limit of ${mb(again.maxTotalBytes)} for the whole run.`);
+  if (tooBig.length) L.push(`- ${tooBig.length} ${tooBig.length === 1 ? 'was' : 'were'} bigger than the limit of ${mb(again.maxAssetBytes)} for one file.`);
+  const other = n - capped.length - tooBig.length;
+  if (other) L.push(`- ${other} could not be downloaded, or ${other === 1 ? 'is' : 'are'} a kind of file the rescue does not copy (the reason is given for each one below).`);
+  L.push('', n > 15 ? 'The 15 largest:' : (n === 1 ? 'The file:' : 'The files, largest first:'), '');
+  const sorted = [...notCopied].sort((a, b) => (b.bytes || 0) - (a.bytes || 0));
+  for (const f of sorted.slice(0, 15)) {
+    let name = f.url; try { name = decodeURIComponent(new URL(f.url).pathname.split('/').pop()) || f.url; } catch { /* keep the address */ }
+    L.push(`- ${name}, ${f.bytes ? mb(f.bytes) : 'size not known'}: ${f.reason}. ${f.url}`);
+  }
+  if (n > 15) L.push(`- and ${n - 15} more`);
+  L.push('');
+  if (again.capped || tooBig.length) {
+    const MB = 1024 * 1024;
+    const known = notCopied.reduce((t, f) => t + (f.capped || f.tooBig ? f.bytes || 0 : 0), 0);
+    const roundUp = (x, step) => Math.ceil(x / step) * step;
+    const flags = [];
+    for (const k of ['out', 'max-pages', 'delay', 'browser']) if (typeof again.args[k] === 'string' || typeof again.args[k] === 'number') flags.push(`--${k}=${quoteArg(String(again.args[k]))}`);
+    for (const k of ['render', 'menu-shim', 'keep-scripts', 'no-tag', 'try']) if (again.args[k] === true) flags.push(`--${k}`);
+    let total = again.maxTotalBytes / MB;
+    if (again.capped) total = Math.max(total * 2, roundUp((again.totalBytes + known) * 1.25 / MB, 50));
+    flags.push(`--max-total-mb=${Math.ceil(total)}`);
+    const biggest = Math.max(0, ...tooBig.map(f => f.bytes || 0));
+    if (tooBig.length) flags.push(`--max-asset-mb=${Math.min(PAGES_FILE_LIMIT_MB, Math.max(Math.ceil(biggest / MB), Math.ceil(again.maxAssetBytes / MB) + 1))}`);
+    L.push('To copy them too, run the rescue again with bigger limits, from the same folder you ran it in:', '', '```',
+      `npx github:kilncms/kiln#release rescue ${quoteArg(again.url)} ${flags.join(' ')}`, '```', '');
+    if (biggest > PAGES_FILE_LIMIT_MB * MB) L.push(`Some files are bigger than ${PAGES_FILE_LIMIT_MB} MB, and Cloudflare Pages does not accept a file that big. Make them smaller first, or put them somewhere else (a video belongs on a video site) and link to them there.`, '');
+  }
   return L;
 }
 
@@ -539,7 +616,7 @@ export async function rescueCmd(startUrl, args = {}) {
   try {
     if (!startUrl) throw new Error('missing url');
     start = new URL(/^https?:\/\//i.test(startUrl) ? startUrl : `https://${startUrl}`);
-  } catch { fail('Usage: kiln rescue <url> [--out=dir] [--max-pages=N] [--delay=ms] [--keep-scripts] [--no-tag] [--dry] [--render [--browser=path] [--menu-shim]] [--try]'); process.exit(1); }
+  } catch { fail('Usage: kiln rescue <url> [--out=dir] [--max-pages=N] [--delay=ms] [--max-asset-mb=N] [--max-total-mb=N] [--keep-scripts] [--no-tag] [--dry] [--render [--browser=path] [--menu-shim]] [--try]'); process.exit(1); }
   let origin = start.origin;
   const out = args.out || `rescued-${start.hostname}`;
   const maxPages = Math.max(1, Number(args['max-pages']) || 50);
@@ -550,6 +627,7 @@ export async function rescueCmd(startUrl, args = {}) {
   const mbOf = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n * 1024 * 1024) : 0; };
   const maxAssetBytes = mbOf(args['max-asset-mb']) || MAX_ASSET_BYTES;
   const maxTotalBytes = mbOf(args['max-total-mb']) || MAX_TOTAL_BYTES;
+  if (maxAssetBytes > PAGES_FILE_LIMIT_MB * 1024 * 1024) warn(`--max-asset-mb is above ${PAGES_FILE_LIMIT_MB}. Cloudflare Pages refuses any file bigger than ${PAGES_FILE_LIMIT_MB} MB, so a file that big can be copied but not put online there.`);
 
   // ── --render: a real browser draws each page before it is saved ──
   let renderer = null;
@@ -611,7 +689,7 @@ export async function rescueCmd(startUrl, args = {}) {
       catch (e) { failedPages.push({ path: id, reason: String(e.message).split('\n')[0] }); continue; }
       if (r.reason) { failedPages.push({ path: id, reason: r.reason }); continue; }
       if (new URL(r.url).origin !== origin) {
-        if (!moved(r.url)) { failedPages.push({ path: id, reason: `redirected off-origin → ${new URL(r.url).origin}` }); continue; }
+        if (!moved(r.url) && !sameSite(r.url, origin)) { failedPages.push({ path: id, reason: `redirected off-origin → ${new URL(r.url).origin}` }); continue; }
       }
       if (r.status >= 400) { failedPages.push({ path: id, reason: `HTTP ${r.status}` }); continue; }
       if (r.html === undefined) { failedPages.push({ path: id, reason: `not HTML (${(r.contentType || '').split(';')[0]})` }); continue; }
@@ -621,7 +699,7 @@ export async function rescueCmd(startUrl, args = {}) {
       try { res = await get(origin + id); }
       catch (e) { failedPages.push({ path: id, reason: e.name === 'TimeoutError' ? 'timeout' : String(e.cause?.code || e.message) }); continue; }
       const landed = new URL(res.url);
-      if (landed.origin !== origin && !moved(res.url)) { failedPages.push({ path: id, reason: `redirected off-origin → ${landed.origin}` }); continue; }
+      if (landed.origin !== origin && !moved(res.url) && !sameSite(landed, origin)) { failedPages.push({ path: id, reason: `redirected off-origin → ${landed.origin}` }); continue; }
       if (!res.ok) { failedPages.push({ path: id, reason: `HTTP ${res.status}` }); continue; }
       const ct = (res.headers.get('content-type') || '').toLowerCase();
       if (ct && !ct.includes('text/html')) { failedPages.push({ path: id, reason: `not HTML (${ct.split(';')[0]})` }); continue; }
@@ -670,7 +748,7 @@ export async function rescueCmd(startUrl, args = {}) {
   for (const key of assetRefs) { const h = new URL(key).hostname; hostCount.set(h, (hostCount.get(h) || 0) + 1); }
   const localize = [...assetRefs].filter(key => {
     const u = new URL(key);
-    return u.origin === origin || BUILDER_CDN_RE.test(u.hostname) || hostCount.get(u.hostname) > 3;
+    return sameSite(u, origin) || BUILDER_CDN_RE.test(u.hostname) || hostCount.get(u.hostname) > 3;
   });
 
   // page identity → output file (aliases: both sides of a redirect are one page)
@@ -698,7 +776,7 @@ export async function rescueCmd(startUrl, args = {}) {
   while (dlQueue.length) {
     const { key, scan } = dlQueue.shift();
     if (downloads.has(key)) continue;
-    if (capped) { skippedAssets.push({ url: key, reason: `${mb(maxTotalBytes)} total cap reached` }); continue; }
+    if (capped) { skippedAssets.push({ url: key, reason: 'the limit for the whole run was reached', capped: true }); continue; }
     // the browser already fetched most of these while rendering: no second request
     const held = renderer?.cache.get(key);
     let buf, ct;
@@ -710,16 +788,17 @@ export async function rescueCmd(startUrl, args = {}) {
       catch (e) { skippedAssets.push({ url: key, reason: e.name === 'TimeoutError' ? 'timeout' : String(e.cause?.code || e.message) }); continue; }
       if (!res.ok) { skippedAssets.push({ url: key, reason: `HTTP ${res.status}` }); continue; }
       const len = Number(res.headers.get('content-length') || 0);
-      if (len > maxAssetBytes) { skippedAssets.push({ url: key, reason: `${mb(len)} > ${mb(maxAssetBytes)} cap` }); res.body?.cancel?.(); continue; }
+      if (len > maxAssetBytes) { skippedAssets.push({ url: key, reason: 'bigger than the limit for one file', bytes: len, tooBig: true }); res.body?.cancel?.(); continue; }
       try { buf = Buffer.from(await res.arrayBuffer()); }
       catch { skippedAssets.push({ url: key, reason: 'download failed' }); continue; }
       ct = (res.headers.get('content-type') || '').toLowerCase();
     }
-    if (buf.length > maxAssetBytes) { skippedAssets.push({ url: key, reason: `${mb(buf.length)} > ${mb(maxAssetBytes)} cap` }); continue; }
+    if (buf.length > maxAssetBytes) { skippedAssets.push({ url: key, reason: 'bigger than the limit for one file', bytes: buf.length, tooBig: true }); continue; }
     if (totalBytes + buf.length > maxTotalBytes) {
       capped = true;
-      warn(`hit the ${mb(maxTotalBytes)} total asset cap — remaining assets keep their original URLs (--max-total-mb raises it)`);
-      skippedAssets.push({ url: key, reason: `${mb(maxTotalBytes)} total cap reached` });
+      console.log('');
+      warn(`reached the limit of ${mb(maxTotalBytes)} for the whole run, so the files not copied yet stay on the old site. The pages load them from there by their full address, and they will disappear when the old site is switched off. RESCUE-REPORT.md lists them, with the command to copy them too.`);
+      skippedAssets.push({ url: key, reason: 'the limit for the whole run was reached', bytes: buf.length, capped: true });
       continue;
     }
     totalBytes += buf.length;
@@ -730,21 +809,34 @@ export async function rescueCmd(startUrl, args = {}) {
       for (const ref of cssUrls(buf.toString('utf8'))) {
         try {
           const u = new URL(ref, key);
-          if (/^https?:$/.test(u.protocol) && !downloads.has(assetKey(u))) dlQueue.push({ key: assetKey(u), scan: false });
+          if (/^https?:$/.test(u.protocol) && !downloads.has(siteKey(u, new URL(key)))) dlQueue.push({ key: siteKey(u, new URL(key)), scan: false });
         } catch { /* skip */ }
       }
     }
   }
   console.log('');
+  // the size of what the limit kept out, so the report can name the biggest
+  // (a HEAD request each, for the first 50: it downloads nothing)
+  for (const s of skippedAssets.filter(x => x.capped && !x.bytes).slice(0, 50)) {
+    await sleep(delay);
+    try {
+      const res = await fetch(s.url, { method: 'HEAD', headers: { 'user-agent': UA }, redirect: 'follow', signal: AbortSignal.timeout(15000) });
+      const len = Number(res.headers.get('content-length') || 0);
+      if (res.ok && len) s.bytes = len;
+    } catch { /* size stays unknown */ }
+  }
   const assetMap = new Map();
   for (const [key, d] of downloads) assetMap.set(key, `assets/rescued/${assetFileName(key, d.ct)}`);
 
   // ── write: assets (CSS rewritten), then cleaned pages ──
   mkdirSync(path.join(out, 'assets', 'rescued'), { recursive: true });
+  const leftBehind = new Set();     // same-site files the copy loads from the old site
   for (const [key, d] of downloads) {
     const dest = path.join(out, assetMap.get(key));
     if (d.ct.includes('text/css') || /\.css$/i.test(new URL(key).pathname)) {
-      writeFileSync(dest, rewriteCssUrls(d.buf.toString('utf8'), { base: key, assetMap, sameDir: true }).css);
+      const r = rewriteCssUrls(d.buf.toString('utf8'), { base: key, assetMap, sameDir: true });
+      r.leftBehind.forEach(u => leftBehind.add(u));
+      writeFileSync(dest, r.css);
     } else writeFileSync(dest, d.buf);
   }
   ok(`localized ${downloads.size} assets (${mb(totalBytes)}) into ${path.join(out, 'assets', 'rescued')}/`);
@@ -756,6 +848,7 @@ export async function rescueCmd(startUrl, args = {}) {
     const cleaned = cleanPage(p.html, { baseUrl: p.url, pageMap, assetMap, keepScripts });
     scripts += cleaned.scripts; cruft += cleaned.cruft;
     cleaned.offOrigin.forEach(u => offOrigin.add(u));
+    cleaned.leftBehind.forEach(u => leftBehind.add(u));
     const file = pageMap.get(id);
     mkdirSync(path.join(out, path.dirname(file)), { recursive: true });
     writeFileSync(path.join(out, file), cleaned.html);
@@ -812,7 +905,9 @@ export async function rescueCmd(startUrl, args = {}) {
   printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry: false, scripts, cruft,
     localized: [...downloads.keys()], localizedBytes: totalBytes, planned: localize.length,
     offOrigin: [...offOrigin], skippedAssets, tally, rendered: !!args.render, left, wantKiln, tryOut, firstTitle,
-    requests: renderer?.requests, sitemapNote, plainLost });
+    requests: renderer?.requests, sitemapNote, plainLost,
+    notCopied: notCopiedOf(skippedAssets, leftBehind),
+    again: { url: startUrl, args, totalBytes, maxAssetBytes, maxTotalBytes, capped } });
   process.exit(0);
 }
 
@@ -846,19 +941,16 @@ function printReport(r) {
     lines.push(`- Pages that failed:`);
     for (const f of r.failedPages) lines.push(`  - ${f.path} — ${f.reason}`);
   }
-  const left = r.offOrigin.filter(u => !r.localized.includes(u));
+  const notCopied = r.notCopied || [];
+  if (notCopied.length) lines.push(`- Files not copied, still loading from the old site: ${notCopied.length} (see "Files not copied" below)`);
+  const left = r.offOrigin.filter(u => !r.localized.includes(u) && !notCopied.some(f => f.url === u));
   if (left.length) {
     lines.push(`- Off-origin references left as-is: ${left.length}`);
     for (const u of left.slice(0, 30)) lines.push(`  - ${u}`);
     if (left.length > 30) lines.push(`  - …and ${left.length - 30} more`);
   }
-  const skipped = r.skippedAssets.filter(s => !left.includes(s.url));
-  if (skipped.length) {
-    lines.push(`- Assets skipped:`);
-    for (const s of skipped.slice(0, 20)) lines.push(`  - ${s.url} — ${s.reason}`);
-    if (skipped.length > 20) lines.push(`  - …and ${skipped.length - 20} more`);
-  }
   lines.push('');
+  if (!r.dry) lines.push(...notCopiedLines(notCopied, r.again));
   if (r.rendered) {
     lines.push(...lostLines([...r.pages].map(([id, p]) => ({ href: fileToHref(r.pageMap.get(id)), rendered: p.rendered }))));
   } else if (r.plainLost?.length) {

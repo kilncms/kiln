@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { pageIdentity, mapUrls, fileToHref, cleanPage, rewriteCssUrls, extractRefs, sitemapPages, sitemapIndexChildren, staticLostLines } from '../cli/rescue.mjs';
+import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { pageIdentity, mapUrls, fileToHref, cleanPage, rewriteCssUrls, extractRefs, sitemapPages, sitemapIndexChildren, staticLostLines, sameSite, notCopiedLines } from '../cli/rescue.mjs';
 
 const SITE = 'https://site.com';
 
@@ -96,7 +102,7 @@ test('rescue: cleanPage --keep-scripts keeps scripts, still drops cruft', () => 
   const { html, scripts } = cleanPage(PAGE, { ...OPTS, keepScripts: true });
   assert.equal(scripts, 0);
   assert.ok(html.includes('window.BUILDER'));
-  assert.ok(html.includes('src="/js/app.js"'), 'same-origin script src still made root-relative');
+  assert.ok(html.includes('src="https://site.com/js/app.js"'), 'a kept script is not copied, so it keeps its full address on the old site');
   assert.ok(html.includes('src="https://cdn.builder.com/runtime.js"'), 'off-origin script src untouched');
   assert.ok(!html.includes('rel="preconnect"'), 'cruft still stripped');
 });
@@ -141,7 +147,7 @@ test('rescue: cleanPage de-lazifies builder images (data-src promoted to src)', 
   assert.ok(html.includes('data-src="/assets/rescued/eeee5555-lazy.jpg"'), 'data-src localized');
   assert.ok(html.includes('data-image="/assets/rescued/eeee5555-lazy.jpg"'), 'data-image localized');
   assert.ok(/<img[^>]*data-load[^>]*src="\/assets\/rescued\/eeee5555-lazy\.jpg"/.test(html), 'src promoted from data-src');
-  assert.equal((html.match(/src="\/eager\.jpg"/g) || []).length, 2, 'existing src untouched, no double promotion');
+  assert.equal((html.match(/src="https:\/\/site\.com\/eager\.jpg"/g) || []).length, 2, 'not copied, so its full address; no double promotion');
 });
 
 test('rescue: svg sprite <use> refs collected and rewritten, fragment kept', () => {
@@ -162,7 +168,7 @@ test('rescue: cleanPage honors and removes <base href>', () => {
 
 // ─── CSS rewriting ───────────────────────────────────────────────────────────
 
-test('rescue: rewriteCssUrls — same-origin → root-relative, assetMap → local, off-origin left', () => {
+test('rescue: rewriteCssUrls — assetMap → local, same-site file not copied → full address, off-origin left', () => {
   const css = `@font-face{src:url("https://site.com/f/a.woff2")}
 .a{background:url(https://site.com/img/bg.png)}
 .b{background:url('/img/rel.png')}
@@ -171,8 +177,9 @@ test('rescue: rewriteCssUrls — same-origin → root-relative, assetMap → loc
   const assetMap = new Map([['https://site.com/f/a.woff2', 'assets/rescued/dddd4444-a.woff2']]);
   const rel = rewriteCssUrls(css, { base: 'https://site.com/site.css', assetMap });
   assert.ok(rel.css.includes('url("/assets/rescued/dddd4444-a.woff2")'));
-  assert.ok(rel.css.includes('url(/img/bg.png)'));
-  assert.ok(rel.css.includes("url('/img/rel.png')"));
+  assert.ok(rel.css.includes('url(https://site.com/img/bg.png)'), 'not copied: a root-relative path would find nothing in the copy');
+  assert.ok(rel.css.includes("url('https://site.com/img/rel.png')"));
+  assert.deepEqual(rel.leftBehind, ['https://site.com/img/bg.png', 'https://site.com/img/rel.png']);
   assert.ok(rel.css.includes('url(https://foreign.example/x.png)'));
   assert.ok(rel.css.includes('url(data:image/gif;base64,AAAA)'), 'data: untouched');
   assert.deepEqual(rel.offOrigin, ['https://foreign.example/x.png']);
@@ -276,4 +283,99 @@ test('rescue: staticLostLines — dead forms, outside forms, search, comments, o
   assert.ok(text.includes('Comment threads on /'));
   assert.ok(text.includes('wp-login'));
   assert.deepEqual(staticLostLines([{ href: '/', html: '<html><body><p>hi</p></body></html>' }], 'https://site.com'), []);
+});
+
+// ─── one site, whatever the address says ─────────────────────────────────────
+
+test('rescue: http and https, with or without www., are one site', () => {
+  assert.ok(sameSite('http://info.cern.ch/a', 'https://info.cern.ch/'));
+  assert.ok(sameSite('https://www.site.com/', 'http://site.com/'));
+  assert.ok(!sameSite('https://site.com.evil.example/', 'https://site.com/'));
+  assert.ok(!sameSite('https://blog.site.com/', 'https://site.com/'));
+  assert.equal(pageIdentity('http://site.com/hypertext/Who.html', SITE), '/hypertext/Who.html', 'http link on an https site is a page of it');
+  assert.equal(pageIdentity('https://www.site.com/about/', SITE), '/about');
+  const { pages, assets } = extractRefs('<a href="http://site.com/old">o</a><a href="https://www.site.com/w">w</a><img src="http://www.site.com/p.jpg">', 'https://site.com/');
+  assert.deepEqual(pages, ['/old', '/w']);
+  assert.deepEqual(assets, ['https://site.com/p.jpg'], 'one file, written the way the site writes itself');
+  const { html } = cleanPage('<a href="http://site.com/old">o</a><img src="http://www.site.com/p.jpg">', {
+    baseUrl: 'https://site.com/', pageMap: new Map([['/old', 'old/index.html']]),
+    assetMap: new Map([['https://site.com/p.jpg', 'assets/rescued/1234abcd-p.jpg']]) });
+  assert.ok(html.includes('href="/old/"'), 'the other scheme still finds the copied page');
+  assert.ok(html.includes('src="/assets/rescued/1234abcd-p.jpg"'), 'and the copied picture');
+  assert.deepEqual(sitemapPages('<urlset><loc>http://site.com/a</loc></urlset>', SITE), ['/a']);
+});
+
+// ─── files the copy did not take ─────────────────────────────────────────────
+
+test('rescue: a same-site file that was not copied keeps its full address everywhere', () => {
+  const raw = `<html><head><link rel="stylesheet" href="/big.css"><link rel="preload" href="/f.woff2" as="font"></head><body>
+    <img src="/big.jpg" srcset="/big.jpg 1x, /big-2x.jpg 2x"><a href="/brochure.pdf">PDF</a><a href="/about">About</a>
+    <video src="/clip.mp4" poster="/poster.jpg"></video><div style="background:url('/bg.png')"></div></body></html>`;
+  const { html, leftBehind } = cleanPage(raw, { baseUrl: 'https://site.com/', assetMap: new Map() });
+  for (const want of ['href="https://site.com/big.css"', 'href="https://site.com/f.woff2"', 'src="https://site.com/big.jpg"',
+    'srcset="https://site.com/big.jpg 1x, https://site.com/big-2x.jpg 2x"', 'href="https://site.com/brochure.pdf"',
+    'src="https://site.com/clip.mp4"', 'poster="https://site.com/poster.jpg"', "url('https://site.com/bg.png')"]) {
+    assert.ok(html.includes(want), want);
+  }
+  assert.ok(html.includes('href="/about"'), 'a page link stays a path on the new site');
+  assert.ok(leftBehind.includes('https://site.com/big.jpg') && leftBehind.includes('https://site.com/brochure.pdf'));
+});
+
+test('rescue: notCopiedLines names the biggest files, the command to copy them, and the warning', () => {
+  const MB = 1024 * 1024;
+  const L = notCopiedLines([
+    { url: 'https://site.com/wp-content/uploads/hero.jpg', reason: 'the limit for the whole run was reached', bytes: 3 * MB, capped: true },
+    { url: 'https://site.com/wp-content/uploads/film.mp4', reason: 'bigger than the limit for one file', bytes: 40 * MB, tooBig: true },
+    { url: 'https://site.com/menu.pdf', reason: 'a kind of file the rescue does not copy' },
+  ], { url: 'https://site.com', args: { out: 'my copy', 'max-pages': '80', render: true }, totalBytes: 250 * MB, maxAssetBytes: 20 * MB, maxTotalBytes: 250 * MB, capped: true }).join('\n');
+  assert.match(L, /## Files not copied/);
+  assert.match(L, /3 files used by these pages were not copied/);
+  assert.match(L, /will disappear from your pages/);
+  assert.match(L, /limit of 250\.0 MB for the whole run/);
+  assert.ok(L.indexOf('film.mp4, 40.0 MB') < L.indexOf('hero.jpg, 3.0 MB'), 'largest first');
+  assert.match(L, /npx github:kilncms\/kiln#release rescue https:\/\/site\.com --out='my copy' --max-pages=80 --render --max-total-mb=\d+ --max-asset-mb=25/);
+  assert.match(L, /Cloudflare Pages does not accept a file that big/);
+  assert.deepEqual(notCopiedLines([], {}), []);
+});
+
+test('rescue: hitting the size limit leaves no broken pictures and says so in RESCUE-REPORT.md', async (t) => {
+  const pic = (n) => Buffer.alloc(n, 1);
+  const files = {
+    '/': ['text/html', '<html><head><title>Shop</title><link rel="stylesheet" href="/s.css"></head><body><h1>Hi</h1><img src="/a.jpg"><img src="/b.jpg"></body></html>'],
+    '/s.css': ['text/css', 'body{background:url(/bg.png)}'],
+    '/a.jpg': ['image/jpeg', pic(2000)], '/b.jpg': ['image/jpeg', pic(3000)], '/bg.png': ['image/png', pic(900)],
+  };
+  const server = createServer((req, res) => {
+    const f = files[req.url];
+    if (!f) { res.writeHead(404); return res.end(); }
+    const body = Buffer.from(f[1]);
+    res.writeHead(200, { 'content-type': f[0], 'content-length': body.length });
+    res.end(req.method === 'HEAD' ? undefined : body);
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const site = `http://127.0.0.1:${server.address().port}`;
+  const out = path.join(mkdtempSync(path.join(tmpdir(), 'kiln-rescue-cap-')), 'copy');
+  t.after(() => rmSync(path.dirname(out), { recursive: true, force: true }));
+  const CLI = fileURLToPath(new URL('../cli/index.mjs', import.meta.url));
+  const { code, stdout } = await new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI, 'rescue', site, `--out=${out}`, '--delay=0', '--no-tag', '--max-total-mb=0.002'], { env: { ...process.env, NO_COLOR: '1' } });
+    let stdout = '';
+    child.stdout.on('data', d => { stdout += d; });
+    child.stderr.on('data', d => { stdout += d; });
+    child.on('close', code => resolve({ code, stdout }));
+  });
+  assert.equal(code, 0, stdout);
+  assert.match(stdout, /will disappear when the old site is switched off/);
+  assert.doesNotMatch(stdout, /keep their original URLs/);
+  const page = readFileSync(path.join(out, 'index.html'), 'utf8');
+  assert.ok(page.includes(`src="${site}/b.jpg"`), 'the picture left behind points at the old site, not at a missing /b.jpg');
+  assert.ok(!/src="\/(a|b)\.jpg"/.test(page), 'no root-relative path to a file that is not in the copy');
+  const css = readFileSync(path.join(out, 'assets', 'rescued', readFileSync(path.join(out, 'index.html'), 'utf8').match(/rescued\/([^"]+\.css)/)[1]), 'utf8');
+  assert.ok(css.includes(`url(${site}/bg.png)`), 'inside a copied stylesheet too');
+  const report = readFileSync(path.join(out, 'RESCUE-REPORT.md'), 'utf8');
+  assert.match(report, /## Files not copied/);
+  assert.match(report, /b\.jpg, 3 KB/, 'named with its size');
+  assert.match(report, /will disappear from your pages/);
+  assert.match(report, new RegExp(`rescue ${site.replace(/[.:/]/g, '\\$&')} --out=\\S+ --delay=0 --no-tag --max-total-mb=\\d+`));
 });

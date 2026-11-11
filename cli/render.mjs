@@ -488,7 +488,7 @@ export async function openRenderer(opts = {}) {
   await context.addInitScript(initScript);
 
   const cache = new Map(), pending = new Set();
-  const maxOne = opts.maxAssetBytes || 5 * 1024 * 1024, maxAll = opts.maxTotalBytes || 25 * 1024 * 1024;
+  const maxOne = opts.maxAssetBytes || 20 * 1024 * 1024, maxAll = opts.maxTotalBytes || 250 * 1024 * 1024;
   let held = 0, requests = 0;
   context.on('request', () => { requests++; });
   context.on('response', (res) => {

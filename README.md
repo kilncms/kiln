@@ -296,9 +296,12 @@ writes a report — a folder ready to push, host free, and edit with Kiln.
 
 Pages are found by following links and by reading the sitemap, including the
 sitemap *indexes* WordPress and Yoast publish (`sitemap.xml`,
-`sitemap_index.xml`, `wp-sitemap.xml`). A WordPress media library can outgrow
-the asset caps (5 MB a file, 25 MB a run): `--max-asset-mb` and
-`--max-total-mb` raise them. The report ends with **What freezing cost** — the
+`sitemap_index.xml`, `wp-sitemap.xml`). Files are copied up to 20 MB each and
+250 MB in all; `--max-asset-mb` and `--max-total-mb` raise those limits (keep
+one file under 25 MB, the most Cloudflare Pages accepts). A file that is not
+copied still shows, loaded from the old site at its full address, and the
+report lists it under **Files not copied** with the command that copies it:
+those files disappear when the old site is switched off. The report ends with **What freezing cost** — the
 contact and search forms that posted into the CMS and now send nowhere, the
 comment threads that are kept as shown, and any links to the old sign-in — so
 nothing stops silently.
