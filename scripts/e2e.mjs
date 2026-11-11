@@ -259,7 +259,14 @@ export async function putBack({ cfg, io, record, owner, sessions, refsMade = [],
     else if (now !== lastOurs) record(name, false, `${cfg.branch} is at ${now.slice(0, 7)}, which this run did not put there: someone else committed meanwhile, so nothing was reset. This run's commits are the ones whose message starts "E2E ${run}"`);
     else {
       await owner.request('PATCH', `/repos/${R}/git/refs/${encodeURIComponent('heads/' + cfg.branch)}`, { sha: start, force: true });
-      const back = (await owner.request('GET', headRef)).object.sha === start && await same();
+      // GitHub can answer a read with the old state for a moment after a
+      // write. Look again a few times before calling the reset a failure, or
+      // a release stops on a repository that is in fact back where it was.
+      let back = false;
+      for (let attempt = 0; attempt < 6 && !back; attempt++) {
+        if (attempt && io.sleep) await io.sleep(1500);
+        back = (await owner.request('GET', headRef)).object.sha === start && await same();
+      }
       record(name, back, back ? `${cfg.branch} back at ${start.slice(0, 7)}; ${refsMade.length} branch${refsMade.length === 1 ? '' : 'es'} and tags removed` : 'the reset did not take');
     }
   } catch (err) { record(name, false, err.message); }

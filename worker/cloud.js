@@ -147,13 +147,42 @@ export async function notifyOwner(env, subject, lines) {
   }
 }
 
-async function lsCheckout(env, site) {
+/** Which plan a Lemon Squeezy variant is, or null for one this worker does not sell. */
+export function planForVariant(env, variantId) {
+  if (variantId == null || variantId === '') return null;
+  const v = String(variantId);
+  if (env.LS_VARIANT_MANAGED && v === String(env.LS_VARIANT_MANAGED)) return 'managed';
+  if (env.LS_VARIANT_CLOUD && v === String(env.LS_VARIANT_CLOUD)) return 'cloud';
+  return null;
+}
+
+/**
+ * A checkout for one site. It offers only the plan the site was added with
+ * (a product's other variants are switched off for this checkout, so nobody
+ * pays the smaller price for the larger plan by picking it on the payment
+ * page), fills in the account's email when there is one, and sends the
+ * customer back to the dashboard once they have paid: without `redirect_url`
+ * they are left on Lemon Squeezy's own page with no way back to their site.
+ */
+async function lsCheckout(env, site, { email = null } = {}) {
   const variant = lsVariant(env, site.plan);
   if (!lsConfigured(env) || !variant) return null;
+  let back = env.CLOUD_DASHBOARD || 'https://app.kilncms.com', after = back;
+  try { const u = new URL(back); u.searchParams.set('subscribed', site.id); after = u.toString(); back = new URL(back).toString(); } catch { /* a dashboard address that is no URL: sent as it is */ }
+  const variantId = Number(variant);
+  const prefill = typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? { email } : {};
   const body = {
     data: {
       type: 'checkouts',
-      attributes: { checkout_data: { custom: { site_id: site.id } } },
+      attributes: {
+        checkout_data: { ...prefill, custom: { site_id: site.id } },
+        product_options: {
+          redirect_url: after,
+          receipt_button_text: 'Open your Kiln dashboard',
+          receipt_link_url: back,
+          ...(Number.isInteger(variantId) && variantId > 0 ? { enabled_variants: [variantId] } : {}),
+        },
+      },
       relationships: {
         store: { data: { type: 'stores', id: String(env.LS_STORE_ID) } },
         variant: { data: { type: 'variants', id: String(variant) } },
@@ -168,6 +197,12 @@ async function lsCheckout(env, site) {
   if (!r.ok) return null;
   const d = await r.json();
   return d?.data?.attributes?.url || null;
+}
+
+/** The email on a dashboard account, for the checkout to start with. Never fails a request. */
+async function accountEmail(env, accountId) {
+  try { return (await env.kiln_cloud.prepare('SELECT email FROM accounts WHERE id = ?').bind(accountId).first())?.email || null; }
+  catch { return null; }
 }
 
 async function lsPortal(env, subscriptionId) {
@@ -396,13 +431,21 @@ export async function handleCloud(request, env, url, path) {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const account = await env.kiln_cloud.prepare('SELECT id, github_login, email, ls_customer_id FROM accounts WHERE id = ?').bind(sess.account_id).first();
     const sites = await withAccessUntil(
-      () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until, created_at FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
-      () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, created_at FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
+      () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until, created_at, ls_subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
+      () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, created_at, ls_subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
     );
     // `editable` is the worker's own answer, so the dashboard never has to
-    // work out for itself what a status plus a date means.
+    // work out for itself what a status plus a date means. `trial_ends` is the
+    // moment the free days run out for a site nobody has subscribed for yet
+    // (the same rule expireStaleTrials applies); `subscribed` says a Lemon
+    // Squeezy subscription exists, without handing its id to the browser.
     const now = Date.now();
-    const rows = (sites.results || []).map(r => ({ ...r, editable: siteHasAccess(r, now) }));
+    const rows = (sites.results || []).map(({ ls_subscription_id: sub, ...r }) => ({
+      ...r,
+      editable: siteHasAccess(r, now),
+      subscribed: !!sub,
+      trial_ends: r.status === 'trialing' && !sub && Number(r.created_at) ? Number(r.created_at) + TRIAL_GRACE_DAYS * 86400 * 1000 : null,
+    }));
     return json({ account, sites: rows, billing: lsConfigured(env) });
   }
 
@@ -439,7 +482,7 @@ export async function handleCloud(request, env, url, path) {
     await env.kiln_cloud.prepare('INSERT INTO sites (id, account_id, repo, origin, plan, status, created_at) VALUES (?,?,?,?,?,?,?)')
       .bind(site.id, site.account_id, site.repo, site.origin, site.plan, site.status, site.created_at).run();
     await env.KILN.delete(`cloudgone:${String(site.repo).toLowerCase()}`);
-    const checkout = await lsCheckout(env, site);
+    const checkout = await lsCheckout(env, site, { email: await accountEmail(env, sess.account_id) });
     await notifyOwner(env, `New Kiln site: ${site.repo}`, [
       `Plan: ${site.plan} (trialing)`,
       `Origin: ${site.origin}`,
@@ -485,7 +528,7 @@ export async function handleCloud(request, env, url, path) {
         ? 'This subscription is cancelled but paid up for now: resume it under Manage billing instead of paying again.'
         : 'already subscribed — use Manage billing' }, 409);
     }
-    const checkout = await lsCheckout(env, site);
+    const checkout = await lsCheckout(env, site, { email: await accountEmail(env, sess.account_id) });
     return checkout ? json({ url: checkout }) : json({ error: 'billing not configured' }, 503);
   }
 
@@ -550,11 +593,26 @@ export async function handleCloud(request, env, url, path) {
     }
     await env.KILN.put(evtKey, '1', { expirationTtl: 7 * 24 * 3600 });
     const siteRow = siteId || subId
-      ? await env.kiln_cloud.prepare('SELECT repo, origin FROM sites WHERE id = ? OR ls_subscription_id = ?').bind(siteId || '', subId || '').first().catch(() => null)
+      ? await env.kiln_cloud.prepare('SELECT id, repo, origin, plan FROM sites WHERE id = ? OR ls_subscription_id = ?').bind(siteId || '', subId || '').first().catch(() => null)
       : null;
+    // The plan on record is the plan that is being paid for. A checkout offers
+    // one plan only, but a subscription can be moved to the other one later
+    // (in Lemon Squeezy, or by the operator), and the operator has to hear of
+    // it: Fully managed is work somebody does.
+    const paidPlan = planForVariant(env, attrs.variant_id);
+    let planNote = null;
+    if (siteRow && paidPlan && siteRow.plan !== paidPlan) {
+      try {
+        await env.kiln_cloud.prepare('UPDATE sites SET plan = ? WHERE id = ?').bind(paidPlan, siteRow.id).run();
+        planNote = `Plan: now ${paidPlan} (was ${siteRow.plan || 'not set'}), because that is the plan the subscription pays for.`;
+      } catch (e) {
+        planNote = `Plan: the subscription pays for ${paidPlan} but the site says ${siteRow.plan || 'nothing'}, and the record could not be changed (${String(e?.message || e).slice(0, 120)}).`;
+      }
+    }
     await notifyOwner(env, `Kiln billing: ${eventName} → ${status}`, [
       `Site: ${siteRow?.repo || siteId || subId || 'unknown'} (${siteRow?.origin || 'origin unknown'})`,
       `Status: ${status}${until ? `, access until ${new Date(until).toISOString()}` : ''}`,
+      ...(planNote ? [planNote] : []),
     ]);
     return json({ ok: true });
   }
