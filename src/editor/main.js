@@ -60,6 +60,7 @@ import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js'
 import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists } from './one-paragraph.js';
 import { askFirst, askWhich, ownDialogCopy } from './own-dialogs.js';
 import { coverBottom, isUnder, isSiteBar } from './under-bar.js';
+import { fabSpot, isHiddenBox } from './fab-place.js';
 import { whereTo } from './in-view.js';
 import { findTwin, notHereWords } from './not-here.js';
 import { missingEvent, missingPerson, scheduleTitle, pickBarWords, removedHold, PEOPLE_WORDS, tooBigForDemo, headingVars, ADDED_CSS } from './first-edits.js';
@@ -7863,23 +7864,28 @@ function renderAdminBar() {
   });
 
   // Restore position (default: bottom-right).
-  function clampFab() {
-    const r = fab.getBoundingClientRect();
-    if (r.left < 4 || r.top < 4 || r.right > window.innerWidth - 4 || r.bottom > window.innerHeight - 4) {
-      const x = Math.max(8, Math.min(r.left, window.innerWidth - 56));
-      const y = Math.max(8, Math.min(r.top, window.innerHeight - 56));
-      fab.style.left = x + 'px'; fab.style.top = y + 'px';
-      fab.style.right = 'auto'; fab.style.bottom = 'auto';
-      localStorage.setItem('kiln_fab_pos', JSON.stringify({ x, y }));
+  // (fab-place.js: a hidden button is never measured, and never over the header.)
+  const screenNow = () => ({ w: window.innerWidth, h: window.innerHeight });
+  function putFab(spot, save) {
+    if (!spot) {
+      fab.style.left = fab.style.top = fab.style.right = fab.style.bottom = '';
+      try { localStorage.removeItem('kiln_fab_pos'); } catch { /* ignore */ }
+      return;
     }
+    fab.style.left = spot.x + 'px'; fab.style.top = spot.y + 'px';
+    fab.style.right = 'auto'; fab.style.bottom = 'auto';
+    if (save) try { localStorage.setItem('kiln_fab_pos', JSON.stringify({ ...spot, ...screenNow() })); } catch { /* ignore */ }
   }
-  try {
-    const pos = JSON.parse(localStorage.getItem('kiln_fab_pos'));
-    if (pos) {
-      fab.style.left = pos.x + 'px'; fab.style.top = pos.y + 'px';
-      fab.style.right = 'auto'; fab.style.bottom = 'auto';
-    }
-  } catch { /* default position */ }
+  function clampFab() {
+    // In its own corner CSS keeps it on screen; on a phone CSS docks it, and the
+    // docked box must not overwrite the spot saved for a wider screen.
+    if (!fab.style.left || isMobileEditor()) return;
+    const r = fab.getBoundingClientRect();
+    if (isHiddenBox(r)) return;
+    const spot = fabSpot({ x: r.left, y: r.top }, screenNow());
+    if (!spot || spot.x !== Math.round(r.left) || spot.y !== Math.round(r.top)) putFab(spot, true);
+  }
+  try { putFab(fabSpot(JSON.parse(localStorage.getItem('kiln_fab_pos')), screenNow()), false); } catch { /* default position */ }
   requestAnimationFrame(() => { clampFab(); placeQuickRow(); });
   window.addEventListener('resize', () => { clampFab(); placeQuickRow(); });
 
@@ -7927,7 +7933,8 @@ function renderAdminBar() {
   });
   btn.addEventListener('pointerup', () => {
     if (drag && drag.moved) {
-      localStorage.setItem('kiln_fab_pos', JSON.stringify({ x: fab.offsetLeft, y: fab.offsetTop }));
+      // Dropped in the header band: it goes back to its bottom corner.
+      putFab(fabSpot({ x: fab.offsetLeft, y: fab.offsetTop }, screenNow()), true);
       placeQuickRow();
     } else if (!menuOpen()) {
       setMenu(true, true);
