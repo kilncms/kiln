@@ -484,6 +484,8 @@ and are never in a file. A self-hosted worker needs only the rows marked
 | `CLOUD_ADMIN_ID` | variable | numeric GitHub id of the operator; when set, it alone decides | `gh api user --jq .id` | staging, production |
 | `AI_MODEL` | variable | overrides the model AI assist uses | optional | where AI assist is on |
 | `NOTIFY_FROM` | variable | the From address on operator notes | optional; the default is `notify@kilncms.com` | with the `NOTIFY` binding |
+| `CUSTOMER_MAIL_FROM` | variable | the From address on the emails to a customer (site added, free trial ends in two days, free trial ended: `worker/mail.js`). Unset, no customer is written to | an address of a domain that is set up for sending in the same Cloudflare account (dashboard → Email Service → Email Sending → Onboard Domain) | production only, with the `NOTIFY` binding |
+| `CUSTOMER_MAIL_REPLY_TO` | variable | where a customer's reply goes | optional; the default is the From address | with `CUSTOMER_MAIL_FROM` |
 | `KILN_BUILD` | variable | the commit the worker was deployed from, shown by `/healthz` | `scripts/release.mjs` passes it at deploy; never set by hand | staging, production |
 | `GOOGLE_CLIENT_ID` | secret | Google sign-in for invited editors and members | Google Cloud console → Credentials → OAuth client (web). Redirect URI: `<worker>/google/callback` | production; optional for self-host and staging |
 | `GOOGLE_CLIENT_SECRET` | secret | the same client's secret | same place | with the id |

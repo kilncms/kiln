@@ -135,6 +135,12 @@ CLOUD_ADMIN = "erikkwilder"                      # GitHub login allowed to hit /
 CLOUD_ADMIN_ID = "3237366"     # that account's numeric GitHub id (`gh api user --jq .id`).
 #                               # Once set, the id decides and the login above is ignored,
 #                               # so a renamed or re-registered username cannot become the admin.
+# The address Kiln Cloud's few emails to a customer come from (worker/mail.js:
+# site added, free trial ends in two days, free trial ended), and where a reply
+# goes. kilncms.com is set up for sending in this Cloudflare account. Without
+# CUSTOMER_MAIL_FROM no customer is ever written to.
+CUSTOMER_MAIL_FROM = "hello@kilncms.com"
+CUSTOMER_MAIL_REPLY_TO = "info@kilncms.com"
 
 [[env.production.kv_namespaces]]
 binding = "KILN"
@@ -158,10 +164,13 @@ simple = { limit = 20, period = 60 }
 [env.production.version_metadata]
 binding = "CF_VERSION_METADATA"
 
-# One line to the operator on a new signup or billing change, through Email
-# Routing's send_email binding (kilncms.com has routing enabled). Where it
-# goes is the secret NOTIFY_TO — a verified Email Routing destination, never
-# a [vars] entry in this public file. Without the binding and the secret the
-# worker stays silent, so staging and self-hosts need nothing here.
+# One line to the operator on a new signup or billing change, through the
+# send_email binding. Where it goes is the secret NOTIFY_TO — a verified Email
+# Routing destination, never a [vars] entry in this public file. The same
+# binding carries the emails to customers (CUSTOMER_MAIL_FROM above), which
+# Cloudflare's sending service delivers to any address once the domain is set
+# up for sending (Cloudflare dashboard → Email Service → Email Sending).
+# Without the binding the worker stays silent, so staging and self-hosts need
+# nothing here.
 [[env.production.send_email]]
 name = "NOTIFY"

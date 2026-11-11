@@ -24,6 +24,7 @@ const items = [
   ['worker/cloud.js', 'worker/cloud.js'],
   ['worker/runbook.js', 'worker/runbook.js'],
   ['worker/sanitize-guard.js', 'worker/sanitize-guard.js'], // imported by worker/index.js — wizard deploy fails without it
+  ['worker/mail.js', 'worker/mail.js'],                     // imported by worker/cloud.js
   ['worker/section-scope.js', 'worker/section-scope.js'],   // ditto — section limits on page writes
   ['worker/source.js', 'worker/source.js'],                 // ditto — source-mode endpoints
   ['LICENSE', 'LICENSE'],

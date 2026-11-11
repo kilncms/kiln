@@ -19,6 +19,7 @@
  */
 
 import { RUNBOOK_HTML } from './runbook.js';
+import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -390,16 +391,46 @@ export async function cloudSiteForOrigin(env, origin, now = Date.now()) {
 // allowlist (a canceled site with no access_until has no access). Real LS trials carry an
 // ls_subscription_id and are untouched — their lifecycle is driven entirely by webhooks.
 const TRIAL_GRACE_DAYS = 7;
+const MAILS_PER_RUN = 25;   // a run writes to this many people at most; the rest wait five minutes
+
+/**
+ * Two days before a free trial runs out, its owner is told, once (mail.js).
+ * Only a trial nobody has subscribed for, and only where the account has an
+ * address. A failure here never stops the expiry that follows it.
+ */
+export async function remindEndingTrials(env, now = Date.now()) {
+  if (!env.kiln_cloud || !customerMailOn(env)) return 0;
+  const day = 86400 * 1000;
+  let sent = 0;
+  try {
+    const rows = await env.kiln_cloud.prepare(
+      `SELECT s.id, s.origin, s.plan, s.created_at, a.email FROM sites s JOIN accounts a ON a.id = s.account_id
+       WHERE s.status = 'trialing' AND s.ls_subscription_id IS NULL AND s.created_at <= ? AND s.created_at > ?
+       ORDER BY s.created_at LIMIT ${MAILS_PER_RUN}`
+    ).bind(now - (TRIAL_GRACE_DAYS - TRIAL_NOTICE_DAYS) * day, now - TRIAL_GRACE_DAYS * day).all();
+    for (const r of rows?.results || []) {
+      if (!mailAddress(r.email)) continue;
+      const res = await sendOnce(env, `trial-soon:${r.id}`, r.email, trialEndingMail({ origin: r.origin, plan: r.plan, endsAt: trialEndsAt(r.created_at, TRIAL_GRACE_DAYS), dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' }));
+      if (res.ok) sent++;
+    }
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'trial_reminders_failed', err: String(e?.message || e).slice(0, 200) }));
+  }
+  return sent;
+}
+
 export async function expireStaleTrials(env) {
   if (!env.kiln_cloud) return;
+  await remindEndingTrials(env);
   const cutoff = Date.now() - TRIAL_GRACE_DAYS * 86400 * 1000;
   // Read what is about to expire first, so the operator hears WHICH sites went
-  // quiet. The cron is the only writer of this transition, so the gap between
-  // the read and the write cannot double-report.
+  // quiet, and each owner can be told. The cron is the only writer of this
+  // transition, so the gap between the read and the write cannot double-report.
   let expiring = null;
   try {
     expiring = await env.kiln_cloud.prepare(
-      "SELECT repo, origin FROM sites WHERE status = 'trialing' AND ls_subscription_id IS NULL AND created_at < ?"
+      `SELECT s.id, s.repo, s.origin, s.plan, a.email FROM sites s LEFT JOIN accounts a ON a.id = s.account_id
+       WHERE s.status = 'trialing' AND s.ls_subscription_id IS NULL AND s.created_at < ?`
     ).bind(cutoff).all();
   } catch { /* a reduced D1 stand-in has no .all(): expiry still proceeds, just unannounced */ }
   await env.kiln_cloud.prepare(
@@ -408,6 +439,10 @@ export async function expireStaleTrials(env) {
   const rows = expiring?.results || [];
   if (rows.length) {
     await notifyOwner(env, `Kiln: ${rows.length} trial${rows.length === 1 ? '' : 's'} expired unpaid`, rows.map(r => `${r.repo} (${r.origin})`));
+    // The owner of each is told too, once: the trial used to end in silence.
+    for (const r of rows.slice(0, MAILS_PER_RUN)) {
+      if (r.id && mailAddress(r.email)) await sendOnce(env, `trial-ended:${r.id}`, r.email, trialEndedMail({ origin: r.origin, plan: r.plan, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' }));
+    }
   }
 }
 
@@ -500,13 +535,26 @@ export async function handleCloud(request, env, url, path) {
       subscribed: !!sub,
       trial_ends: r.status === 'trialing' && !sub && Number(r.created_at) ? Number(r.created_at) + TRIAL_GRACE_DAYS * 86400 * 1000 : null,
     }));
-    return json({ account, sites: rows, billing: lsConfigured(env) });
+    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env) });
+  }
+
+  // The address notices about the account's own sites go to (mail.js). The
+  // account starts with whatever GitHub shows for the person, which is often
+  // nothing; this is how they give one, change it, or take it away.
+  if (path === '/cloud/account' && request.method === 'POST') {
+    if (!sess) return json({ error: 'not signed in' }, 401);
+    const { email } = await request.json().catch(() => ({}));
+    const clean = email === '' || email === null ? null : mailAddress(email);
+    if (email !== '' && email !== null && !clean) return json({ error: 'That does not look like an email address. Please check it and try again.' }, 400);
+    await env.kiln_cloud.prepare('UPDATE accounts SET email = ? WHERE id = ?').bind(clean, sess.account_id).run();
+    return json({ ok: true, email: clean });
   }
 
   if (path === '/cloud/sites' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
-    const { repo, origin, plan } = await request.json().catch(() => ({}));
+    const { repo, origin, plan, email } = await request.json().catch(() => ({}));
     if (!repo || !origin) return json({ error: 'Enter both the repository and the live site address.' }, 400);
+    if (email !== undefined && email !== null && email !== '' && !mailAddress(email)) return json({ error: 'That does not look like an email address. Please check it and try again.' }, 400);
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'The repository should look like owner/name, for example acme/website.' }, 400);
     let o; try { o = new URL(origin).origin; } catch { return json({ error: 'The live site address should be a full web address, such as https://yoursite.com.' }, 400); }
     // Ownership: the signer must actually own/push this repo. Installation
@@ -536,7 +584,11 @@ export async function handleCloud(request, env, url, path) {
     await env.kiln_cloud.prepare('INSERT INTO sites (id, account_id, repo, origin, plan, status, created_at) VALUES (?,?,?,?,?,?,?)')
       .bind(site.id, site.account_id, site.repo, site.origin, site.plan, site.status, site.created_at).run();
     await env.KILN.delete(`cloudgone:${String(site.repo).toLowerCase()}`);
-    const checkout = await lsCheckout(env, site, { email: await accountEmail(env, sess.account_id) });
+    // An address given with the form becomes the account's address for notices.
+    if (mailAddress(email)) { try { await env.kiln_cloud.prepare('UPDATE accounts SET email = ? WHERE id = ?').bind(mailAddress(email), sess.account_id).run(); } catch { /* the site is added either way */ } }
+    const to = await accountEmail(env, sess.account_id);
+    const checkout = await lsCheckout(env, site, { email: to });
+    await sendOnce(env, `added:${site.id}`, to, siteAddedMail({ origin: site.origin, plan: site.plan, endsAt: trialEndsAt(site.created_at, TRIAL_GRACE_DAYS), dashboard: dash }));
     await notifyOwner(env, `New Kiln site: ${site.repo}`, [
       `Plan: ${site.plan} (trialing)`,
       `Origin: ${site.origin}`,
@@ -653,6 +705,10 @@ export async function handleCloud(request, env, url, path) {
     // one plan only, but a subscription can be moved to the other one later
     // (in Lemon Squeezy, or by the operator), and the operator has to hear of
     // it: Fully managed is work somebody does.
+    // The address the customer gave when paying, kept for notices when the account has none.
+    if (siteRow && mailAddress(attrs.user_email)) {
+      try { await env.kiln_cloud.prepare("UPDATE accounts SET email = ? WHERE id = (SELECT account_id FROM sites WHERE id = ?) AND (email IS NULL OR email = '')").bind(mailAddress(attrs.user_email), siteRow.id).run(); } catch { /* not worth failing a billing event for */ }
+    }
     const paidPlan = planForVariant(env, attrs.variant_id);
     let planNote = null;
     if (siteRow && paidPlan && siteRow.plan !== paidPlan) {

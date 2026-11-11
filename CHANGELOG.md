@@ -6,6 +6,26 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Kiln Cloud writes to the owner when a free trial is about to end.** Three
+  short emails, each sent once to the address on the dashboard account: when a
+  site is added (what to do next, and the day the trial ends), two days before
+  the trial ends, and when it has ended. A trial needs no card, so nobody else
+  could remind the owner, and it used to end in silence. The dashboard asks
+  for the address and it can be changed or taken away there. Nothing else is
+  ever sent. They go through Cloudflare's own sending service
+  (`CUSTOMER_MAIL_FROM`); a worker somebody runs themselves sends none.
+
+### Fixed
+
+- **Signing in with GitHub no longer fails on the first try.** GitHub can take
+  a second or two before a token it has just issued is accepted, and the
+  dashboard asked "who is this?" at once: three sign-ins in four ended on a
+  line of JSON. A site owner could be told their own site was not theirs for
+  the same reason. Both now ask again for a moment, and a dashboard sign-in
+  that still does not finish goes back to the dashboard, which says so.
+
 ### Security
 
 - **A limit to parts of a page is kept by Kiln’s sign-in service, not only by
