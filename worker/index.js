@@ -490,7 +490,7 @@ async function authCallback(url, env) {
   // address whose repository this person may change; otherwise a stranger's
   // trial address could collect a site owner's GitHub access.
   const bound = await repoForOrigin(env, state.origin);
-  if (bound !== null && !(await userCanPush(tok.access_token, bound))) {
+  if (bound !== null && !(await userCanPush(tok.access_token, bound, { fresh: true }))) {
     return html(`<h1>This site is not yours to sign in to</h1>
       <p>You signed in with GitHub, but your account cannot change the repository behind
       <strong>${esc(state.origin)}</strong>, so Kiln did not sign you in there. If you

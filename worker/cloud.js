@@ -33,9 +33,32 @@ const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replac
 
 async function creds(env) { return JSON.parse(await env.KILN.get('app:creds')); }
 
-async function ghUser(token) {
-  const r = await fetch(`${GH}/user`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
-  return r.ok ? r.json() : null;
+/**
+ * A read made with a token GitHub issued a moment ago. GitHub can take a
+ * second or two before a new token is accepted everywhere, and answers 401
+ * (or a 5xx) meanwhile. Asked once, a sign-in that had just succeeded was
+ * reported as failed, and an owner was told their own site was not theirs.
+ * So the read is made again a few times, a little later each time, and only
+ * for a token that is new: every other read keeps its single try.
+ */
+const NEW_TOKEN_WAITS = [0, 350, 800, 1400];   // milliseconds before each try
+export async function ghWithNewToken(url, token, { waits = NEW_TOKEN_WAITS, sleep = (ms) => new Promise(r => setTimeout(r, ms)) } = {}) {
+  let r = null;
+  for (const wait of waits) {
+    if (wait) await sleep(wait);
+    try {
+      r = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+    } catch { r = null; continue; }
+    if (r.status !== 401 && r.status < 500) break;
+  }
+  return r;
+}
+
+async function ghUser(token, { fresh = false } = {}) {
+  const r = fresh
+    ? await ghWithNewToken(`${GH}/user`, token)
+    : await fetch(`${GH}/user`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+  return r && r.ok ? r.json() : null;
 }
 
 async function appJwt(c) {
@@ -57,11 +80,14 @@ async function repoInstalled(env, repo) {
 }
 
 /** Does the signed-in user (via their stored OAuth token) have push on the repo? */
-export async function userCanPush(userToken, repo) {
+export async function userCanPush(userToken, repo, { fresh = false } = {}) {
   if (!userToken) return false;
   try {
-    const r = await fetch(`${GH}/repos/${repo}`, { headers: { Authorization: `Bearer ${userToken}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
-    if (!r.ok) return false;
+    // `fresh`: the token was issued in this very request (a sign-in callback), see ghWithNewToken.
+    const r = fresh
+      ? await ghWithNewToken(`${GH}/repos/${repo}`, userToken)
+      : await fetch(`${GH}/repos/${repo}`, { headers: { Authorization: `Bearer ${userToken}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+    if (!r || !r.ok) return false;
     const j = await r.json();
     return !!(j.permissions && (j.permissions.push || j.permissions.admin || j.permissions.maintain));
   } catch { return false; }
@@ -415,17 +441,26 @@ export async function handleCloud(request, env, url, path) {
   }
 
   if (path === '/cloud/callback') {
+    // A sign-in that does not finish goes back to the dashboard, which says so
+    // and offers the button again: the person used to be left on a line of
+    // JSON. Why it failed is logged for the operator.
+    const notFinished = (stage, detail = '') => {
+      console.warn(JSON.stringify({ evt: 'cloud_signin_not_finished', stage, detail: String(detail).slice(0, 160) }));
+      try { const back = new URL(dash); back.searchParams.set('signin', 'again'); return Response.redirect(back.toString(), 302); }
+      catch { return json({ error: 'github sign-in failed' }, 401); }
+    };
     const code = url.searchParams.get('code'), state = url.searchParams.get('state');
-    if (!code || !state || !(await env.KILN.get(`cstate:${state}`))) return json({ error: 'bad oauth state' }, 400);
+    if (!code || !state || !(await env.KILN.get(`cstate:${state}`))) return notFinished('state');
     await env.KILN.delete(`cstate:${state}`);
     const c = await creds(env);
     const tokRes = await fetch('https://github.com/login/oauth/access_token', {
       method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({ client_id: c.client_id, client_secret: c.client_secret, code }),
     });
-    const tok = await tokRes.json();
-    const user = tok.access_token ? await ghUser(tok.access_token) : null;
-    if (!user) return json({ error: 'github sign-in failed' }, 401);
+    const tok = await tokRes.json().catch(() => ({}));
+    if (!tok.access_token) return notFinished('token', tok.error || tokRes.status);
+    const user = await ghUser(tok.access_token, { fresh: true });
+    if (!user) return notFinished('user');
     const account = await upsertAccount(env, user.login, user.email);
     const sid = uuid();
     // Keep the user's OAuth token server-side (never sent to the browser) so
