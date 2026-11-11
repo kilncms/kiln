@@ -252,7 +252,17 @@ async function run(browser, size, firstVisit) {
     await page.keyboard.press('Escape');
     check(scope, 'Escape closes the menu and returns focus to the pencil', !(await menu.isVisible()) && await pencil.evaluate((el) => document.activeElement === el));
     await pencil.click();
-    await page.mouse.click(300, 300);
+    // A spot with nothing editable under it. (A fixed 300,300 lies on the
+    // demo's big heading, and a click there starts editing it, as it should:
+    // the heading's later edit then began with the caret where that click was.)
+    const blank = await page.evaluate(() => {
+      for (let y = 120; y < innerHeight - 120; y += 20) for (let x = 40; x < innerWidth - 300; x += 20) {
+        const el = document.elementFromPoint(x, y);
+        if (el && !el.closest('[data-cms], [data-cms-repeat], [data-cms-attr], .kiln-field, a, button, input, img, [id^="kiln-"]')) return { x, y };
+      }
+      return { x: 300, y: 300 };
+    });
+    await page.mouse.click(blank.x, blank.y);
     await page.waitForTimeout(150);
     check(scope, 'a click outside closes a pinned menu', !(await menu.isVisible()));
   } else {
@@ -377,9 +387,15 @@ async function run(browser, size, firstVisit) {
       if (await next.count()) check(scope, 'two neighbouring blocks\' controls do not overlap', apart(await box(bar), await box(next)));
       // A finger lands where the button is; it does not scroll the page first.
       const m = await box(more);
+      const was = await box(item);
       await page.touchscreen.tap(m.left + m.width / 2, m.top + m.height / 2);
       await page.waitForTimeout(250);
-      check(scope, 'the "more" button stays in its corner when the bar opens', Math.abs((await box(more)).left - m.left) < 1 && Math.abs((await box(more)).top - m.top) < 1);
+      // Its corner is the block's corner. The block itself may move: a site's
+      // own :hover lift (the demo's cards rise 4px) holds on a phone after a tap.
+      const m2 = await box(more), is = await box(item);
+      check(scope, 'the "more" button stays in its corner when the bar opens', Math.abs((m2.right - is.right) - (m.right - was.right)) < 1 && Math.abs((m2.top - is.top) - (m.top - was.top)) < 1,
+        `${Math.round(m2.right - is.right)},${Math.round(m2.top - is.top)} from the block's corner, was ${Math.round(m.right - was.right)},${Math.round(m.top - was.top)}`);
+      check(scope, 'the opened bar stays inside its block', (await box(bar)).bottom <= is.bottom + 1, `bar ends at ${Math.round((await box(bar)).bottom)}, block at ${Math.round(is.bottom)}`);
     } else {
       // The pointer goes onto the block where it is. (hover() first scrolls a
       // block taller than the screen to the top of it, which on a site with a

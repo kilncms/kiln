@@ -1388,6 +1388,9 @@ function attachItemControls(container, key, item) {
     const cs = getComputedStyle(item);
     const oneLine = /flex/.test(cs.display) && !cs.flexDirection.startsWith('column') && cs.flexWrap === 'nowrap';
     ctl.classList.toggle('kiln-ctl-flow', open && item.tagName !== 'TR' && !oneLine);
+    // In a block that stacks its children (a column), a 100% basis is 100% of
+    // the block's HEIGHT: the bar ran far below the block, over the next one.
+    ctl.classList.toggle('kiln-ctl-col', open && /flex/.test(cs.display) && cs.flexDirection.startsWith('column'));
     more.setAttribute('aria-expanded', String(open));
   };
   ctl.prepend(more);
@@ -1431,7 +1434,7 @@ function attachItemControls(container, key, item) {
 /** Fold every block's control bar back to its "more" button (phones). */
 function closeItemControls() {
   document.querySelectorAll('.kiln-item-ctl.kiln-ctl-open').forEach((c) => {
-    c.classList.remove('kiln-ctl-open', 'kiln-ctl-flow');
+    c.classList.remove('kiln-ctl-open', 'kiln-ctl-flow', 'kiln-ctl-col');
     c.querySelector('.kiln-ctl-more')?.setAttribute('aria-expanded', 'false');
   });
 }
@@ -9522,6 +9525,7 @@ body:has(#kiln-topbar){padding-top:56px!important}
 .kiln-item-ctl.kiln-ctl-open.kiln-ctl-flow{position:static;flex:0 0 100%;grid-column:1/-1;width:100%;max-width:none;
   box-sizing:border-box;padding:10px 0 2px;justify-content:flex-end}
 .kiln-item-ctl.kiln-ctl-open.kiln-ctl-flow .kiln-ctl-more{top:8px;right:8px}
+.kiln-item-ctl.kiln-ctl-open.kiln-ctl-flow.kiln-ctl-col{flex:0 0 auto}
 /* In a table row the bar lives in its own cell and must not change the cell's
    size (the whole table would reflow). It stays one button wide; open, its
    buttons spill out along the row to the left of the "more" button. */
