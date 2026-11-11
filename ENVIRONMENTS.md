@@ -262,7 +262,9 @@ build); a new site is one more line under `canary` or `customers`.
 **Which demo is which.** `demo.kilncms.com` is the public demo: repo
 `~/repos/kiln-demo-mr`, Pages project `kiln-demo-site`, connected to git since
 2026-10-22, so a push deploys it; it is the first canary. `~/repos/kiln-demo`
-deploys `kiln-demo.pages.dev` from git and is the second. The old hand-uploaded
+deploys `kiln-demo.pages.dev` from git and is the second. Kiln's own home page
+(`~/repos/kilncms.com`, `kilncms.com`) is the third: its "Edit this page" loads the
+real editor in its private demo mode, from the copies in its `assets/`. The old hand-uploaded
 project `kiln-demo-mr` (`kiln-demo-mr.pages.dev`) no longer has the domain and
 can be deleted once nobody needs it for comparison.
 

@@ -289,8 +289,9 @@ test('KLR-02 the command line: exit 1 with the sentence and what was pushed; unk
   assert.deepEqual(parseArgs(['--customers', '--dry-run']), { customers: true, dryRun: true, consumers: null, root: null });
 });
 
-test('KLR-02, KLR-12 the built-in list: the public demo (git-connected since 2026-10-22) is the first canary, kiln-demo the second, customers a separate list', () => {
-  assert.deepEqual(DEFAULT_CONSUMERS.canary.map(c => c.dir), ['~/repos/kiln-demo-mr', '~/repos/kiln-demo']);
+test('KLR-02, KLR-12 the built-in list: the public demo (git-connected since 2026-10-22) is the first canary, kiln-demo the second, Kiln\'s own home page the third, customers a separate list', () => {
+  assert.deepEqual(DEFAULT_CONSUMERS.canary.map(c => c.dir), ['~/repos/kiln-demo-mr', '~/repos/kiln-demo', '~/repos/kilncms.com']);
+  assert.equal(DEFAULT_CONSUMERS.canary[2].live, 'https://kilncms.com/assets/kiln.js');
   assert.equal(DEFAULT_CONSUMERS.canary[0].live, 'https://demo.kilncms.com/assets/kiln.js');
   assert.equal(DEFAULT_CONSUMERS.canary[1].live, 'https://kiln-demo.pages.dev/assets/kiln.js');
   assert.equal(DEFAULT_CONSUMERS.canary.some(c => DEFAULT_CONSUMERS.customers.some(k => k.dir === c.dir)), false);
