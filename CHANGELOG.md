@@ -73,6 +73,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Pages built from content files (Astro sites) work with a keyboard alone
+  too.** Their texts, formatted texts and pictures are in the Tab order with
+  the same ring and names as on an HTML site, Enter or Space opens one, Tab
+  goes on to its toolbar and then to the next part, and Esc leaves it with
+  the keyboard still on it. A part that can't be changed here is reached as
+  well and says why, in the words a click shows. Each entry's button and "Add
+  an entry" are named buttons. Nothing added for the keyboard is written to a
+  content file.
 - **The editor can be used with a keyboard alone**, and a screen reader can
   name what it reaches. Every editable part is in the Tab order, Enter opens
   it, Esc leaves it, the toolbars and their buttons have names, and every

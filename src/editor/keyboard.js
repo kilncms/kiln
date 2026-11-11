@@ -39,6 +39,17 @@ export function partLabel(name, picture, words) {
   return said ? `Edit ${name}: ${said}` : `Edit ${name}`;
 }
 
+/**
+ * What a screen reader says for a part that cannot be changed here: what it
+ * is and holds, then why, in the same words a click shows.
+ */
+export function lockedLabel(name, picture, words, why) {
+  const said = shortWords(words);
+  const what = picture ? `Picture: ${name}` : name;
+  const reason = String(why || '').trim();
+  return `${what}${said ? `: ${said}` : ''}.${reason ? ` ${reason}` : ''}`.replace(/([.!?…])\./, '$1');
+}
+
 /** Set `attr` on `el` unless the site already has it there; note that the editor added it. */
 function put(el, attr, value) {
   const mine = (el.getAttribute(FOCUS_MARK) || '').split(' ').filter(Boolean);

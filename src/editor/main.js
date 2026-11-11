@@ -56,7 +56,7 @@ import { writeInside, rememberInside } from './keep-inside.js';
 import { takeBase, readAttrs } from './baselines.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { plainName, readableName } from './names.js';
-import { reachable, typing, isReachable, unreach, stripFocus, partLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
+import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
 import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists } from './one-paragraph.js';
 import { askFirst, askWhich, ownDialogCopy } from './own-dialogs.js';
@@ -112,6 +112,11 @@ let sandboxWasEmpty = false;
 let statusHideTimer = null;
 // How many dialogs have been given a name to be read by (nameDialog); up here because a dialog can open while the editor starts.
 let dialogNames = 0;
+// A part from the content files: what its toolbar calls it, and why it cannot be changed (keyboard.js). Up here: a part can be locked while the editor starts.
+const sourcePartNames = new WeakMap();
+const sourceLockWhy = new WeakMap();
+// The picture a key opened: its toolbar takes the keyboard when it appears (it may wait for the file to be read).
+let keyOpened = null;
 // How many lines the status line has shown: a timer that was set for one line
 // leaves a later one alone.
 let statusShown = 0;
@@ -1200,6 +1205,7 @@ function beginUnder(e) {
   if (field && decorated.has(field) && field.hasAttribute('data-cms')) beginKey(field.getAttribute('data-cms'), field);
 }
 document.addEventListener('pointerdown', beginUnder, true);
+document.addEventListener('pointerdown', () => { keyOpened = null; }, true);
 
 // ─── The keyboard on the page's parts (keyboard.js) ──────────────────────────
 // Tab reaches every part; Enter (or Space) opens it as a click does; Tab from
@@ -1215,6 +1221,50 @@ function restLabel(el, key) {
 /** A part the person has stopped typing in: a button with a name again. */
 function atRest(el, key) {
   if (isReachable(el)) reachable(el, restLabel(el, key || el.getAttribute('data-cms')));
+}
+
+/** A part from the content files, at rest: named the way its toolbar names it, and, when it is read-only, why. */
+function sourceAtRest(el) {
+  if (!isReachable(el)) return;
+  const picture = el.tagName === 'IMG';
+  const words = picture ? el.getAttribute('alt') : (el.innerText ?? el.textContent);
+  const why = sourceLockWhy.get(el);
+  if (el.classList.contains('kiln-source-locked') && why) reachable(el, lockedLabel(sourcePartName(el), picture, words, why));
+  else reachable(el, partLabel(sourcePartName(el), picture, words));
+}
+
+/** What a part from the content files is called ("Title"), as its toolbar says it. */
+function sourcePartName(el) {
+  if (sourcePartNames.has(el)) return sourcePartNames.get(el);
+  let parsed = null;
+  try { const ref = el.getAttribute(SOURCE_ATTR); parsed = ref ? (state.sourceFields?.get(ref)?.parsed || parseSourceRef(ref)) : null; } catch { parsed = null; }
+  const name = (parsed && sourceLabel(parsed)) ? sourceLabel(parsed).split(' · ')[0] : '';
+  return name || (el.tagName === 'IMG' ? 'Picture' : 'This part');
+}
+
+/** A part from the content files is put in the tab order with a name (taken off again by stripFocus wherever a copy is made). */
+function reachSource(el, name) {
+  if (name) sourcePartNames.set(el, name);
+  reachable(el, 'x');
+  sourceAtRest(el);
+}
+
+/** True for an editable part of the page, of either kind, that the editor put in the tab order. */
+function isPart(t) {
+  return isReachable(t) && (t.hasAttribute('data-cms') || t.classList.contains('kiln-source-field'));
+}
+
+/** The part being typed in now, of either kind. */
+function openPart() {
+  return state.active || sourceActive?.el || null;
+}
+
+/** Back on a part from the content files once its box is put away, when the keyboard was there (as Esc does for an HTML part). */
+function backToSourcePart(el) {
+  if (!el?.isConnected || !isReachable(el)) return;
+  sourceAtRest(el);
+  const at = document.activeElement;
+  if (!at || at === document.body || el.contains(at) || !at.isConnected) el.focus({ preventScroll: true });
 }
 
 /** The toolbar's controls the keyboard can stop at, in order. */
@@ -1234,8 +1284,9 @@ function keyOnPart(e) {
   const t = e.target instanceof Element ? e.target : null;
   if (!t) return;
   const plainKey = !e.metaKey && !e.ctrlKey && !e.altKey;
-  if ((e.key === 'Enter' || e.key === ' ') && plainKey && isReachable(t) && t.hasAttribute('data-cms') && t !== state.active && !t.isContentEditable) {
+  if ((e.key === 'Enter' || e.key === ' ') && plainKey && isPart(t) && t !== openPart() && !t.isContentEditable) {
     e.preventDefault(); e.stopPropagation();
+    if (t.tagName === 'IMG') keyOpened = t;   // a picture from the content files opens once its file is read
     t.click();
     if (t.tagName === 'IMG') { const tb = document.getElementById('kiln-toolbar'); if (tb?._kilnFor === t) toolItems(tb)[0]?.focus(); }
     return;
@@ -1247,14 +1298,15 @@ function keyOnPart(e) {
     return;
   }
   const inTb = tb.contains(t);
-  const onBox = t === box || (state.active === box && box.contains(t));
+  const onBox = t === box || (openPart() === box && box.contains(t));
   if (!inTb && !onBox) return;
   if (e.key === 'Escape' && tb._kilnPicture) {
     e.preventDefault(); e.stopPropagation();
     const alt = tb.querySelector('[data-act="alt"]');
     if (alt) alt.value = box.getAttribute('alt') || '';   // what was typed there is not kept
+    const back = tb._kilnBack || box;
     tb._kilnLeave();
-    box.focus({ preventScroll: true });
+    back.focus({ preventScroll: true });
     return;
   }
   if (e.key === 'Tab' && plainKey) {
@@ -1288,21 +1340,22 @@ document.addEventListener('keydown', keyOnPart, true);
 
 /** Back from the toolbar into the open box, with the words that were selected still selected. */
 function backToBox(tb, box) {
-  box.focus({ preventScroll: true });
+  (sourceActive?.el === box && sourceActive.surface ? sourceActive.surface : box).focus({ preventScroll: true });
   const r = tb?._kilnRange;
-  if (r && state.active === box && box.contains(r.startContainer)) { const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }
+  if (r && openPart() === box && box.contains(r.startContainer)) { const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }
 }
 
 // A part reached by the keyboard says what it holds now.
 document.addEventListener('focusin', (e) => {
   const t = e.target;
-  if (t instanceof Element && t !== state.active && isReachable(t) && t.hasAttribute('data-cms')) atRest(t);
+  if (!(t instanceof Element) || t === openPart() || !isPart(t)) return;
+  if (t.hasAttribute('data-cms')) atRest(t); else sourceAtRest(t);
 });
 
 // The text toolbar's on/off buttons say whether they are on where the cursor is.
 document.addEventListener('selectionchange', () => {
   const tb = document.getElementById('kiln-toolbar');
-  if (!tb?._kilnFor || tb._kilnPicture || state.active !== tb._kilnFor) return;
+  if (!tb?._kilnFor || tb._kilnPicture || openPart() !== tb._kilnFor) return;
   for (const cmd of TOGGLES) {
     const b = tb.querySelector(`[data-cmd="${cmd}"]`);
     if (!b) continue;
@@ -3841,6 +3894,9 @@ function lockSourceField(el, why) {
   if (el.classList.contains('kiln-source-locked')) return;
   el.classList.add('kiln-source-field', 'kiln-source-locked');
   el.title = why;
+  sourceLockWhy.set(el, why);
+  // Reached by Tab like any part, it says what it is and why it can't be changed; Enter says it on the status line, as a click does.
+  reachSource(el);
   el.addEventListener('click', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.target.closest('a')) return;
     // A link inside a read-only text is still a link.
@@ -3854,6 +3910,7 @@ function lockSourceField(el, why) {
 function decorateSourceField(el, ref, parsed) {
   el.classList.add('kiln-field', 'kiln-source-field');
   el.title = sourceHint(parsed);
+  reachSource(el, sourceLabel(parsed).split(' · ')[0]);   // in the tab order, with a name (keyboard.js), as an HTML part is
   el.addEventListener('click', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.target.closest('a')) return;
     if (el.classList.contains('kiln-source-locked')) return;   // made read-only since (keepTheirs): its own click says why
@@ -3868,6 +3925,7 @@ function startSourceEditing(el, ref, parsed) {
   // click — decorateSourceField stopped propagation).
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
   // A link whose address is the field: its words are not, so only the address is typed.
+  if (isReachable(el)) typing(el, sourcePartName(el), isBody(parsed));   // a text box named for the part while it is typed in
   if (el.tagName === 'A' && parsed.type === 'url') {
     sourceActive = { el, surface: el, ref, parsed, addressOnly: true };
     el.classList.add('kiln-editing');
@@ -3897,6 +3955,7 @@ function startSourceEditing(el, ref, parsed) {
 
 /** The field is no longer being typed in: nothing of the editing is left on it. */
 function endSourceEditing(a) {
+  sourceAtRest(a.el);
   a.surface.removeAttribute('contenteditable');
   if (a.surface.getAttribute('style') === '') a.surface.removeAttribute('style');   // a browser leaves an empty one behind
   a.el.classList.remove('kiln-editing');
@@ -3915,6 +3974,7 @@ function commitSourceEdit(opts = {}) {
     a.el.classList.remove('kiln-editing');
     removeToolbar();
     if (address !== undefined) stageSourceAttr(hrefRef, address);
+    sourceAtRest(a.el);
     return;
   }
   endSourceEditing(a);
@@ -3961,10 +4021,11 @@ function cancelSourceEdit() {
   if (!a) return;
   if (a.rich) { cancelRichSource(); return; }
   sourceActive = null;
-  if (a.addressOnly) { a.el.classList.remove('kiln-editing'); removeToolbar(); return; }
+  if (a.addressOnly) { a.el.classList.remove('kiln-editing'); removeToolbar(); backToSourcePart(a.el); return; }
   endSourceEditing(a);
   a.surface.textContent = a.originalText;
   removeToolbar();
+  backToSourcePart(a.el);   // Esc leaves the box and the keyboard stays on the part
 }
 
 // ─── Formatted text from the content files ───────────────────────────────────
@@ -3978,6 +4039,7 @@ function decorateRichSource(el, ref, parsed) {
   if (f && f.richHtml === undefined) { f.richHtml = el.innerHTML; f.richWords = sheetWords(el); }
   el.classList.add('kiln-field', 'kiln-source-field', 'kiln-source-rich');
   el.title = sourceHint(parsed);
+  reachSource(el, sourceLabel(parsed).split(' · ')[0]);
   el.addEventListener('click', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.target.closest('a')) return;
     if (el.classList.contains('kiln-source-locked')) return;
@@ -4037,6 +4099,7 @@ async function startRichSource(el, ref, parsed) {
     setStatus('', 'idle');
   }
   sourceActive = { el, ref, parsed, rich: true, startHtml: el.innerHTML };
+  if (isReachable(el)) typing(el, sourcePartName(el), true);
   el.classList.add('kiln-editing');
   el.contentEditable = 'true';
   try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch { /* an older browser: a DIV is read as a paragraph */ }
@@ -4066,6 +4129,7 @@ function guardKept(e) {
 }
 
 function endRichSource(a) {
+  sourceAtRest(a.el);
   a.el.removeEventListener('beforeinput', guardKept);
   a.el.removeAttribute('contenteditable');
   a.el.classList.remove('kiln-editing');
@@ -4110,6 +4174,7 @@ function cancelRichSource() {
   endRichSource(a);
   a.el.innerHTML = a.startHtml;
   removeToolbar();
+  backToSourcePart(a.el);
 }
 
 // ─── Pictures and link addresses from the content files ──────────────────────
@@ -4178,6 +4243,7 @@ function schemaSays(parsed, value) {
 function decorateSourcePicture(img, ref, parsed) {
   img.classList.add('kiln-field', 'kiln-source-field');
   img.title = parsed ? sourceHint(parsed) : 'Edit: Picture description';
+  reachSource(img, parsed ? sourceLabel(parsed).split(' · ')[0] : 'Picture');
   if (ref) {
     const f = state.sourceFields.get(ref);
     f.picture = true;
@@ -4267,6 +4333,12 @@ function pictureToolbar(img, o) {
     ${o.alt !== null ? `<input class="kiln-href-input" data-act="alt" type="text" value="${escapeHtml(o.alt)}"
       placeholder="Describe this picture" title="What the picture shows, for people who can’t see it" aria-label="Picture description">` : ''}
     <button class="kiln-tb-save" data-act="done">Done</button>`;
+  // Named and walked like the HTML picture toolbar (keyOnPart): Esc puts it away and the keyboard goes back to the picture.
+  tb.setAttribute('role', 'toolbar');
+  tb.setAttribute('aria-label', `Picture tools: ${o.label}`);
+  tb._kilnFor = img;
+  tb._kilnPicture = true;
+  if (o.back) tb._kilnBack = o.back;
   document.body.appendChild(tb);
   positionToolbar(tb, img);
   makeToolbarDraggable(tb);
@@ -4279,7 +4351,9 @@ function pictureToolbar(img, o) {
     const alt = altInput ? altInput.value : null;
     tb.remove();
     o.done(alt);
+    if (isReachable(img)) sourceAtRest(img);
   };
+  tb._kilnLeave = finish;
   const replace = tb.querySelector('[data-act="replace"]');
   if (replace) replace.onclick = (e) => {
     e.stopPropagation();
@@ -4298,6 +4372,7 @@ function pictureToolbar(img, o) {
     finish();
   };
   setTimeout(() => document.addEventListener('click', away, true), 0);
+  if (keyOpened === img) { keyOpened = null; toolItems(tb)[0]?.focus(); }
 }
 
 /**
@@ -4363,6 +4438,7 @@ function openInlinePicture(el, pic, parsed) {
   const own = () => { pic.removeAttribute(KEEP_ATTR); if (!pic.hasAttribute('data-kiln-md-src')) pic.setAttribute('data-kiln-md-src', info.url); };
   pictureToolbar(pic, {
     label: 'Picture in the text',
+    back: el,
     target,
     alt: pic.getAttribute('alt') || '',
     replace: async (file) => {
@@ -4479,6 +4555,7 @@ function initSourceEntries() {
       add.type = 'button';
       add.className = 'kiln-entry-add';
       add.textContent = '＋ Add an entry';
+      add.setAttribute('aria-label', `Add an entry to ${readableName(c.name)}`);
       add.onclick = (e) => { e.preventDefault(); e.stopPropagation(); newEntryPanel({ collection: c.name }); };
       const list = last.parentElement && /^(UL|OL|TBODY|TABLE|DL)$/.test(last.parentElement.tagName) ? last.parentElement : last;
       list.after(add);
@@ -5000,6 +5077,11 @@ function renderSourceToolbar(el, ref, parsed) {
     <span class="kiln-tb-gap"></span>
     <button class="kiln-tb-save" title="Keep this edit (staged for Publish)">Done</button>
     <button class="kiln-tb-cancel" title="Throw away this edit (Esc)">Revert</button>`;
+  // Named and walked like the HTML text toolbar: Tab from the box comes here, and from its last button on to the next part (keyOnPart).
+  tb.setAttribute('role', 'toolbar');
+  tb.setAttribute('aria-label', `Text tools: ${sourceLabel(parsed).split(' · ')[0]}`);
+  tb._kilnFor = el;
+  tb._kilnLeave = () => commitSourceEdit();
   document.body.appendChild(tb);
   positionToolbar(tb, el);
   makeToolbarDraggable(tb);
@@ -8626,12 +8708,10 @@ function renderToolbar(el, key, opts = {}) {
     <button class="kiln-tb-save" title="Keep this edit (you can still Esc-revert until you click away)">Done</button>
     <button class="kiln-tb-cancel" title="Throw away this edit (Esc)">Revert</button>`;
   nameTextTools(tb, md ? opts.label : readableName(key));
-  if (!md) {
-    tb._kilnFor = el;
-    tb._kilnLeave = () => commitEdit(el, key);
-    // A button pressed from the keyboard works on the words selected before Tab came here
-    tb.addEventListener('click', (e) => { if (e.detail === 0 && e.target.closest?.('.kiln-tb-fmt')) backToBox(tb, el); }, true);
-  }
+  tb._kilnFor = el;
+  tb._kilnLeave = md ? () => opts.onSave() : () => commitEdit(el, key);
+  // A button pressed from the keyboard works on the words selected before Tab came here
+  tb.addEventListener('click', (e) => { if (e.detail === 0 && e.target.closest?.('.kiln-tb-fmt')) backToBox(tb, el); }, true);
   document.body.appendChild(tb);
   positionToolbar(tb, el);
   makeToolbarDraggable(tb);
@@ -9386,6 +9466,7 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
    locked one (old worker / malformed ref / image type) reads as untouchable. */
 .kiln-source-locked{cursor:not-allowed;outline:2px dashed transparent;outline-offset:4px;border-radius:4px;transition:outline-color .15s}
 .kiln-source-locked:hover{outline-color:rgba(156,163,175,.85)}
+.kiln-source-locked:focus-visible{outline-color:rgba(156,163,175,.95)}
 /* A formatted text being edited: the parts kept as the file has them (a table, code, a component) take no typing, and look it. */
 .kiln-source-rich.kiln-editing [data-kiln-keep^="b"]{cursor:not-allowed;outline:1px dashed rgba(156,163,175,.9);outline-offset:3px;border-radius:4px;user-select:none}
 /* §12 build-failed banner: per-file one-click revert. */

@@ -3607,6 +3607,56 @@ async function runGenerated(browser, size) {
     await shot('generated-failed-build');
   });
 
+  // ── no mouse: Tab, Enter and Esc on the parts a content file holds ─────────
+  const focused = (page) => page.evaluate(() => {
+    const a = document.activeElement;
+    if (!a || a === document.body) return { tag: 'body' };
+    return { tag: a.tagName.toLowerCase(), src: a.getAttribute('data-kiln-source'), role: a.getAttribute('role'), label: a.getAttribute('aria-label'),
+      editing: a.isContentEditable, inToolbar: !!a.closest('#kiln-toolbar'), toolbar: document.querySelector('#kiln-toolbar')?.getAttribute('aria-label') || null,
+      ring: a.matches(':focus-visible') ? getComputedStyle(a).outlineStyle : 'none' };
+  });
+  const tabTo = async (page, want, max = 60) => {
+    for (let i = 0; i < max; i++) { await page.keyboard.press('Tab'); const f = await focused(page); if (want(f)) return f; }
+    return null;
+  };
+  const TITLE = `${ONE}#/frontmatter/title`;
+  const VENUE = `${ONE}#/frontmatter/venue`;
+  await visit({}, async ({ page, worker, shot }) => {
+    await page.evaluate(() => document.activeElement?.blur());
+    const at = await tabTo(page, f => f.src === TITLE);
+    check(scope, 'keyboard: Tab reaches a title from a content file, as a button named for it, with a ring', !!at && at.role === 'button' && at.label === 'Edit Title: Interfaith Worship Service' && at.ring !== 'none', JSON.stringify(at));
+    await shot('generated-keyboard-rest');
+    await page.keyboard.press('Enter'); await page.waitForTimeout(250);
+    const open = await focused(page);
+    check(scope, 'keyboard: Enter opens it for typing, a text box named for the part, with its toolbar named too', open.editing && open.role === 'textbox' && open.label === 'Title' && open.toolbar === 'Text tools: Title', JSON.stringify(open));
+    await page.keyboard.press('End'); await page.keyboard.type(' at noon');
+    await page.keyboard.press('Tab'); await page.waitForTimeout(80);
+    const tool = await focused(page);
+    check(scope, 'keyboard: Tab from the box goes to its toolbar', tool.inToolbar, JSON.stringify(tool));
+    let next = tool;
+    for (let i = 0; i < 6 && next.inToolbar; i++) { await page.keyboard.press('Tab'); await page.waitForTimeout(80); next = await focused(page); }
+    check(scope, 'keyboard: Tab from the toolbar\'s last button goes on to the next part, and the edit is kept', !!next.src && next.src !== TITLE && !next.inToolbar
+      && await title(page).evaluate(el => el.classList.contains('kiln-modified') && el.getAttribute('role') === 'button' && !el.isContentEditable), JSON.stringify(next));
+    const venue = await tabTo(page, f => f.src === VENUE, 10) || await focused(page);
+    await page.keyboard.press('Space'); await page.waitForTimeout(200);
+    await page.keyboard.press('End'); await page.keyboard.type(' Hall');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(150);
+    const back = await focused(page);
+    check(scope, 'keyboard: Esc throws the typing away and the keyboard stays on the part', back.src === VENUE && back.role === 'button' && !back.editing && back.label === 'Edit Venue: Big Bethel AME'
+      && (await page.locator(`[data-kiln-source="${VENUE}"]`).textContent()) === 'Big Bethel AME' && !(await page.locator('#kiln-toolbar').count()), JSON.stringify({ venue, back }));
+    await publish(page);
+    const sent = JSON.stringify(worker.commits);
+    check(scope, 'keyboard: what is published is the typed words, nothing the editor added for the keyboard', worker.commits.length === 1 && /Interfaith Worship Service at noon/.test(sent) && !/tabindex|aria-|data-kiln-focus|role/.test(sent), sent.slice(0, 200));
+  });
+  await visit({ mode: 'suggest' }, async ({ page, shot }) => {
+    await page.evaluate(() => document.activeElement?.blur());
+    const at = await tabTo(page, f => f.src === TITLE);
+    check(scope, 'keyboard: a read-only part is reached too, and says why it can\'t be changed', !!at && at.role === 'button' && /^Title: Interfaith Worship Service\. A suggestion can’t be made to this text yet/.test(at.label || '') && at.ring !== 'none', JSON.stringify(at));
+    await page.keyboard.press('Enter'); await page.waitForTimeout(250);
+    check(scope, 'keyboard: Enter on it puts the same words on the status line as a click, and takes no typing', /A suggestion can’t be made to this text yet/.test(await statusLine(page)) && !(await focused(page)).editing, await statusLine(page));
+    await shot('generated-keyboard-locked');
+  });
+
   // ── Search & jump ──────────────────────────────────────────────────────────
   await visit({}, async ({ page, shot }) => {
     await press(page.locator('#kiln-fab')); await page.waitForTimeout(300);
@@ -3729,6 +3779,27 @@ async function runFormatted(browser, size) {
     await page.waitForTimeout(700);
     const text = page.locator(`[data-kiln-source="${FILE}#/body"]`);
     check(scope, 'the formatted text is offered for editing, not read-only', await text.evaluate(el => el.classList.contains('kiln-source-rich') && !el.classList.contains('kiln-source-locked')));
+
+    // No mouse: Tab reaches the text, Enter opens it with the same toolbar, Tab goes to it, Esc comes back and keeps nothing.
+    await page.evaluate(() => document.activeElement?.blur());
+    const kf = () => page.evaluate(() => { const a = document.activeElement; return { src: a?.getAttribute('data-kiln-source'), role: a?.getAttribute('role'), label: a?.getAttribute('aria-label'),
+      editing: !!a?.isContentEditable, inToolbar: !!a?.closest('#kiln-toolbar'), toolbar: document.querySelector('#kiln-toolbar')?.getAttribute('aria-label') || null }; });
+    let kat = null;
+    for (let i = 0; i < 60 && kat?.src !== `${FILE}#/body`; i++) { await page.keyboard.press('Tab'); kat = await kf(); }
+    check(scope, 'keyboard: Tab reaches the formatted text, as a button named for it', kat?.role === 'button' && /^Edit Text: /.test(kat.label || ''), JSON.stringify(kat));
+    const before = await text.innerText();
+    await page.keyboard.press('Enter');
+    await page.locator('#kiln-toolbar').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(300);
+    const kopen = await kf();
+    check(scope, 'keyboard: Enter opens it for typing, a text box with its text tools named', kopen.editing && kopen.role === 'textbox' && kopen.label === 'Text' && kopen.toolbar === 'Text tools: Text', JSON.stringify(kopen));
+    await page.keyboard.type('zz');
+    await page.keyboard.press('Tab'); await page.waitForTimeout(80);
+    check(scope, 'keyboard: Tab from the text goes to its toolbar', (await kf()).inToolbar);
+    await page.keyboard.press('Shift+Tab'); await page.waitForTimeout(80);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(200);
+    const kback = await kf();
+    check(scope, 'keyboard: Esc puts typing back as it was and the keyboard stays on the text', kback.src === `${FILE}#/body` && kback.role === 'button' && !kback.editing && (await text.innerText()) === before && !(await page.locator('#kiln-toolbar').count()), JSON.stringify(kback));
 
     // The toolbar is the one a plain HTML site has, without what Markdown cannot hold.
     await press(text.locator('p').first());
@@ -3902,6 +3973,27 @@ async function runMedia(browser, size) {
     await page.waitForTimeout(700);
     const cover = page.locator(`img[data-kiln-source^="${FILE}#/frontmatter/cover"]`);
     check(scope, 'the picture Astro checks is offered for replacing, not read-only', await cover.evaluate(el => el.classList.contains('kiln-field') && !el.classList.contains('kiln-source-locked')));
+
+    // No mouse: Tab reaches the picture, Enter opens its toolbar with the keyboard on it, Esc puts it away and comes back.
+    await page.evaluate(() => document.activeElement?.blur());
+    const kfocused = () => page.evaluate(() => {
+      const a = document.activeElement;
+      return { tag: a?.tagName.toLowerCase(), src: a?.getAttribute('data-kiln-source'), role: a?.getAttribute('role'), label: a?.getAttribute('aria-label'), act: a?.getAttribute('data-act'),
+        inToolbar: !!a?.closest('#kiln-toolbar'), toolbar: document.querySelector('#kiln-toolbar')?.getAttribute('aria-label') || null, ring: a?.matches(':focus-visible') ? getComputedStyle(a).outlineStyle : 'none' };
+    });
+    let kat = null;
+    for (let i = 0; i < 60 && !(kat?.src || '').startsWith(`${FILE}#/frontmatter/cover`); i++) { await page.keyboard.press('Tab'); kat = await kfocused(); }
+    check(scope, 'keyboard: Tab reaches the picture, named as one with its description, with a ring', kat?.role === 'button' && kat.label === 'Change picture: Cover. The green with stalls' && kat.ring !== 'none', JSON.stringify(kat));
+    await page.keyboard.press('Enter');
+    await page.locator('#kiln-toolbar [data-act="replace"]').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(150);
+    const kopen = await kfocused();
+    check(scope, 'keyboard: Enter opens its toolbar, named, with the keyboard on its first button', kopen.inToolbar && kopen.act === 'replace' && kopen.toolbar === 'Picture tools: Cover', JSON.stringify(kopen));
+    await page.keyboard.press('Tab'); await page.keyboard.type('typed and dropped');
+    await page.keyboard.press('Escape'); await page.waitForTimeout(150);
+    const kback = await kfocused();
+    check(scope, 'keyboard: Esc puts the toolbar away, keeps nothing typed, and the keyboard is back on the picture', !kback.inToolbar && !(await page.locator('#kiln-toolbar').count()) && (kback.src || '').startsWith(`${FILE}#/frontmatter/cover`)
+      && await cover.evaluate(el => !el.classList.contains('kiln-modified') && el.getAttribute('alt') === 'The green with stalls'), JSON.stringify(kback));
 
     // Replace it, and describe it.
     await press(cover);
@@ -4103,6 +4195,22 @@ async function runEntries(browser, size) {
     check(scope, 'and the list has a way to add one', await page.locator('.kiln-entry-add').count() === 1);
     const ctl = await box(page.locator('ul.posts > li > .kiln-entry-ctl').first());
     check(scope, 'the Entry button is on screen and big enough to press', ctl.left >= 0 && ctl.right <= size.width && ctl.height >= (phone ? 36 : 20), `${Math.round(ctl.left)}–${Math.round(ctl.right)} × ${Math.round(ctl.height)}`);
+
+    // No mouse: Tab reaches each entry's controls by name; Enter opens the entry's box, whose actions are buttons; Esc comes back.
+    await page.evaluate(() => document.activeElement?.blur());
+    const kf = () => page.evaluate(() => { const a = document.activeElement; return { cls: a?.className || '', label: a?.getAttribute('aria-label') || a?.textContent.trim(), tag: a?.tagName.toLowerCase() }; });
+    let kat = null;
+    for (let i = 0; i < 60 && !/kiln-entry-ctl/.test(kat?.cls || ''); i++) { await page.keyboard.press('Tab'); kat = await kf(); }
+    check(scope, 'keyboard: Tab reaches an entry\'s button, named for the entry', kat?.tag === 'button' && kat.label === 'Entry: Spring fair', JSON.stringify(kat));
+    await page.keyboard.press('Enter');
+    await page.locator('#kiln-modal .kiln-entry-acts button').first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    const acts = await page.evaluate(() => [...document.querySelectorAll('#kiln-modal .kiln-entry-acts button')].map(b => ({ name: (b.getAttribute('aria-label') || b.textContent).trim(), tab: b.tabIndex })));
+    check(scope, 'keyboard: Enter opens its box, where move, copy, draft and remove are buttons with names', ['Make it a draft', 'Move down', 'Copy', 'Remove'].every(t => acts.some(a => a.name.includes(t) && a.tab >= 0)), JSON.stringify(acts));
+    await page.keyboard.press('Escape'); await page.waitForTimeout(250);
+    const kback = await kf();
+    check(scope, 'keyboard: Esc closes it and the keyboard is back on the entry\'s button', !(await page.locator('#kiln-modal').count()) && kback.label === 'Entry: Spring fair', JSON.stringify(kback));
+    for (let i = 0; i < 60 && !/kiln-entry-add/.test(kat?.cls || ''); i++) { await page.keyboard.press('Tab'); kat = await kf(); }
+    check(scope, 'keyboard: and "Add an entry" is reached by name too', /kiln-entry-add/.test(kat?.cls || '') && /^Add an entry to /.test(kat.label), JSON.stringify(kat));
 
     // Move the first entry down.
     await press(items.nth(0).locator('.kiln-entry-ctl'));
