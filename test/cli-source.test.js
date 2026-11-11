@@ -122,7 +122,12 @@ test('wizard §7.2: generator tree asks the mode question; choosing source write
     assert.match(out, /integrations: \[kiln\(\)\]/);
     assert.match(out, /auto-deploy/);
     assert.match(out, /Node 18\+/);
-    assert.match(out, /source mode is new/);
+    // On Kiln Cloud the worker is Kiln's and current: the note about bringing a worker up to date is for someone who runs their own.
+    assert.doesNotMatch(out, /source mode is new/);
+    assert.doesNotMatch(out, /redeploy your worker/);
+    // The closing steps say the free days start when the site is added: nobody has to pay first.
+    assert.match(out, /Add your site \(the repo and its live address\)/);
+    assert.match(out, /7 free days start when you add it, with no card/);
     // Astro publishes public/ as it is, and nothing else from the top of the repository.
     const cfg = readFileSync(path.join(dir, 'public', 'assets', 'kiln-config.js'), 'utf8');
     assert.match(cfg, /mode:\s*'source',/);

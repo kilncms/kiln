@@ -173,7 +173,7 @@ function warnBuiltOutput(builtHtml, generatorName, editable = true) {
  *  generator-built AND Kiln has an adapter for that generator, asks the mode
  *  question in the customer's language. Returns { mode: 'html' } or
  *  { mode: 'source', adapter, generator, hints }. */
-async function detectSiteMode() {
+async function detectSiteMode({ cloud = false } = {}) {
   let detectGenerators;
   try {
     ({ detectGenerators } = await import(pathToFileURL(path.join(PKG_ROOT, 'src', 'adapters', 'detect.js')).href));
@@ -236,9 +236,12 @@ async function detectSiteMode() {
       set it in the host's build settings or an .nvmrc). A version mismatch
       fails the build only after your first edit.
 `);
-  warn('source mode is new: the editor bundle AND your worker must both be current —');
-  console.log('     run `npx github:kilncms/kiln#release update` on the site and redeploy your worker');
-  console.log('     from this kiln version, or source fields will be locked read-only.');
+  // On Kiln Cloud the worker is ours and current: only someone who runs their own has one to bring up to date.
+  if (!cloud) {
+    warn('source mode is new: the editor bundle AND your worker must both be current —');
+    console.log('     run `npx github:kilncms/kiln#release update` on the site and redeploy your worker');
+    console.log('     from this kiln version, or source fields will be locked read-only.');
+  }
   return { mode: 'source', adapter: adapter.id, generator: gen.displayName, hints, publicDir: generatorPublicDir(hints, files) };
 }
 
@@ -839,8 +842,10 @@ async function cloudPrep(repo, siteMode = null) {
   console.log(`
   1. Install the Kiln GitHub App on THIS repo (choose "Only select repositories"):
      ${APP}
-  2. Subscribe and add your site (repo + live URL) at:
+  2. Add your site (the repo and its live address) at:
      ${DASH}
+     Your 7 free days start when you add it, with no card. Subscribe there
+     any time in those 7 days to keep editing.
 
   Commit & push the changes this made, connect your repo to a host that
   auto-deploys on push (Cloudflare Pages recommended), then edit at
@@ -924,7 +929,7 @@ async function wizard() {
 
   // How will Kiln run? Cloud/Managed = we run the plumbing; self-host = you do.
   hr('How will you run Kiln?');
-  console.log(`   1. Kiln Cloud / Managed — we run the worker + GitHub App (paid; simplest)
+  console.log(`   1. Kiln Cloud / Managed — we run the worker + GitHub App (paid, 7 days free; simplest)
    2. Self-hosted — you run your own worker + GitHub App (free, open source)\n`);
   let mode = (await ask('Choose 1 or 2', '1')).trim();
   if (!['1', '2'].includes(mode)) mode = '1';   // unrecognized input → the shown default (Cloud)
@@ -962,7 +967,7 @@ async function wizard() {
   }
 
   // How is this site built? (SOURCE-MODE-SPEC §7 — detection + mode dialogue)
-  const siteMode = await detectSiteMode();
+  const siteMode = await detectSiteMode({ cloud: isCloud });
 
   // Cloud/Managed: everything past here (worker, app, Pages) is ours to run.
   if (isCloud) return cloudPrep(repo, siteMode);
