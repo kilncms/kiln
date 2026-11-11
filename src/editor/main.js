@@ -56,6 +56,7 @@ import { writeInside, rememberInside } from './keep-inside.js';
 import { takeBase, readAttrs } from './baselines.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { plainName, readableName } from './names.js';
+import { reachable, typing, isReachable, unreach, stripFocus, partLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
 import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists } from './one-paragraph.js';
 import { askFirst, askWhich, ownDialogCopy } from './own-dialogs.js';
@@ -107,6 +108,8 @@ let sandboxWasEmpty = false;
 // went off four seconds later on whatever line was showing by then. That is
 // how "Removed. Undo" could vanish after a second or two.
 let statusHideTimer = null;
+// How many dialogs have been given a name to be read by (nameDialog); up here because a dialog can open while the editor starts.
+let dialogNames = 0;
 // How many lines the status line has shown: a timer that was set for one line
 // leaves a later one alone.
 let statusShown = 0;
@@ -1117,6 +1120,7 @@ function decorateField(el, key) {
   if (el.hasAttribute(SOURCE_ATTR)) return;   // §4.3: data-kiln-source wins, on every decorate path
   el.classList.add('kiln-field');
   el.title = fieldHint(key);
+  reachable(el, restLabel(el, key));   // in the tab order, with a name (keyboard.js); taken off again before anything is published
   // A first baseline, so that there always is one (keys inside repeats stage
   // via their container, so they have none of their own). It is what the file
   // would hold, and it is taken again when the person begins (beginKey): the
@@ -1178,6 +1182,117 @@ function beginUnder(e) {
   if (field && decorated.has(field) && field.hasAttribute('data-cms')) beginKey(field.getAttribute('data-cms'), field);
 }
 document.addEventListener('pointerdown', beginUnder, true);
+
+// ─── The keyboard on the page's parts (keyboard.js) ──────────────────────────
+// Tab reaches every part; Enter (or Space) opens it as a click does; Tab from
+// an open box goes to its toolbar, then on to the next part; Esc leaves the
+// box and the keyboard stays on it.
+
+/** What a part is called when it is reached, from what it says now. */
+function restLabel(el, key) {
+  const picture = el.tagName === 'IMG';
+  return partLabel(readableName(key), picture, picture ? el.getAttribute('alt') : (el.innerText ?? el.textContent));
+}
+
+/** A part the person has stopped typing in: a button with a name again. */
+function atRest(el, key) {
+  if (isReachable(el)) reachable(el, restLabel(el, key || el.getAttribute('data-cms')));
+}
+
+/** The toolbar's controls the keyboard can stop at, in order. */
+function toolItems(tb) {
+  return [...tb.querySelectorAll('button, select, input')].filter(b => !b.disabled && b.getClientRects().length);
+}
+
+/** The first place Tab would reach after `box` and everything inside it (the toolbar aside). */
+function tabAfter(box) {
+  return [...document.querySelectorAll('a[href], button, input, select, textarea, [tabindex]')]
+    .find(n => n.tabIndex >= 0 && n !== box && !box.contains(n) && !n.disabled && !n.closest('#kiln-toolbar')
+      && (box.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING) && n.getClientRects().length) || null;
+}
+
+function keyOnPart(e) {
+  if (e.defaultPrevented || e.isComposing || document.getElementById('kiln-modal')) return;
+  const t = e.target instanceof Element ? e.target : null;
+  if (!t) return;
+  const plainKey = !e.metaKey && !e.ctrlKey && !e.altKey;
+  if ((e.key === 'Enter' || e.key === ' ') && plainKey && isReachable(t) && t.hasAttribute('data-cms') && t !== state.active && !t.isContentEditable) {
+    e.preventDefault(); e.stopPropagation();
+    t.click();
+    if (t.tagName === 'IMG') { const tb = document.getElementById('kiln-toolbar'); if (tb?._kilnFor === t) toolItems(tb)[0]?.focus(); }
+    return;
+  }
+  const tb = document.getElementById('kiln-toolbar');
+  const box = tb?._kilnFor;
+  if (!box || !box.isConnected) {
+    if (e.key === 'Tab' && plainKey && state.active && t === state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+    return;
+  }
+  const inTb = tb.contains(t);
+  const onBox = t === box || (state.active === box && box.contains(t));
+  if (!inTb && !onBox) return;
+  if (e.key === 'Escape' && tb._kilnPicture) {
+    e.preventDefault(); e.stopPropagation();
+    const alt = tb.querySelector('[data-act="alt"]');
+    if (alt) alt.value = box.getAttribute('alt') || '';   // what was typed there is not kept
+    tb._kilnLeave();
+    box.focus({ preventScroll: true });
+    return;
+  }
+  if (e.key === 'Tab' && plainKey) {
+    const items = toolItems(tb);
+    if (onBox) {
+      if (!e.shiftKey && items.length) {
+        e.preventDefault();
+        const sel = window.getSelection();
+        tb._kilnRange = sel.rangeCount && box.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
+        items[0].focus();
+      } else if (e.shiftKey) tb._kilnLeave();   // the browser goes on to what is before the box
+      return;
+    }
+    const at = items.indexOf(t);
+    if (e.shiftKey && at === 0) { e.preventDefault(); backToBox(tb, box); }
+    else if (!e.shiftKey && at === items.length - 1) {
+      e.preventDefault();
+      const next = tabAfter(box);
+      tb._kilnLeave();
+      (next || box).focus();
+    }
+    return;
+  }
+  if (inTb && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) && !t.matches('input, select, textarea')) {
+    const items = toolItems(tb);
+    const n = arrowStep(e.key, items.indexOf(t), items.length);
+    if (n !== null) { e.preventDefault(); items[n].focus(); }
+  }
+}
+document.addEventListener('keydown', keyOnPart, true);
+
+/** Back from the toolbar into the open box, with the words that were selected still selected. */
+function backToBox(tb, box) {
+  box.focus({ preventScroll: true });
+  const r = tb?._kilnRange;
+  if (r && state.active === box && box.contains(r.startContainer)) { const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }
+}
+
+// A part reached by the keyboard says what it holds now.
+document.addEventListener('focusin', (e) => {
+  const t = e.target;
+  if (t instanceof Element && t !== state.active && isReachable(t) && t.hasAttribute('data-cms')) atRest(t);
+});
+
+// The text toolbar's on/off buttons say whether they are on where the cursor is.
+document.addEventListener('selectionchange', () => {
+  const tb = document.getElementById('kiln-toolbar');
+  if (!tb?._kilnFor || tb._kilnPicture || state.active !== tb._kilnFor) return;
+  for (const cmd of TOGGLES) {
+    const b = tb.querySelector(`[data-cmd="${cmd}"]`);
+    if (!b) continue;
+    let on = false;
+    try { on = document.queryCommandState(cmd); } catch { /* not known here */ }
+    b.setAttribute('aria-pressed', String(!!on));
+  }
+});
 
 /**
  * What hovering an editable part says: its name as a person reads it. The
@@ -1850,6 +1965,7 @@ async function healSandboxStore() {
 function cleanBlocks(clone) {
   clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, #kiln-toolbar, .kiln-repeat-add').forEach(n => n.remove());
   clone.querySelectorAll('[contenteditable]').forEach(n => n.removeAttribute('contenteditable'));
+  stripFocus(clone);   // the tabindex, role and name the editor gave each part for the keyboard
   clone.querySelectorAll('.kiln-field, .kiln-editing, .kiln-modified, .kiln-repeat-item, .kiln-row-editing, .kiln-flash, .kiln-dragging').forEach(n => {
     n.classList.remove('kiln-field', 'kiln-editing', 'kiln-modified', 'kiln-repeat-item', 'kiln-row-editing', 'kiln-flash', 'kiln-dragging');
     if (n.getAttribute('class') === '') n.removeAttribute('class');
@@ -1919,6 +2035,7 @@ function startEditing(el, key) {
   el.closest('.kiln-repeat-item')?.classList.add('kiln-row-editing');
   el.classList.add('kiln-editing');
   el.contentEditable = 'true';
+  if (isReachable(el)) typing(el, readableName(key), !el.hasAttribute('data-cms-plain'));
   el.focus();
   const range = document.createRange();
   range.selectNodeContents(el);
@@ -1950,6 +2067,8 @@ function cancelEditing() {
   activeOriginalHtml = null;
   removeToolbar();
   savePendingToStorage();   // what was being typed is no longer kept either
+  // Esc leaves the box and the keyboard stays on it (keyboard.js)
+  if (isReachable(el) && el.isConnected) { atRest(el, key); el.focus({ preventScroll: true }); }
 }
 
 function stagePending(key, patch, opts = {}) {
@@ -2207,6 +2326,7 @@ function commitEdit(el, key) {
     }
     state.active = null;
     removeToolbar();
+    atRest(el, key);
     return;
   }
 
@@ -2225,6 +2345,7 @@ function commitEdit(el, key) {
   }
   state.active = null;
   removeToolbar();
+  atRest(el, key);
 }
 
 /**
@@ -2253,6 +2374,7 @@ function baseHtml(el) {
   const clone = el.cloneNode(true);
   insideAsFile(clone, el);
   clone.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, .kiln-repeat-add, #kiln-toolbar').forEach(n => n.remove());
+  stripFocus(clone);
   return clone.innerHTML;
 }
 
@@ -2273,6 +2395,11 @@ function imageToolbar(img, key) {
       placeholder="Describe this picture" title="What the picture shows, for people who can’t see it" aria-label="Picture description">
     ${hasFeature('ai') ? '<button class="kiln-tb-fmt" id="kiln-ai" data-act="ai-alt" title="Have AI describe this picture">✨ Describe</button>' : ''}
     <button class="kiln-tb-save" data-act="done">Done</button>`;
+  tb.setAttribute('role', 'toolbar');
+  tb.setAttribute('aria-label', `Picture tools: ${readableName(key)}`);
+  tb._kilnFor = img;
+  tb._kilnPicture = true;
+  tb._kilnLeave = () => { finish(); removeHandles(); document.removeEventListener('click', away); };
   document.body.appendChild(tb);
   positionToolbar(tb, img);
   makeToolbarDraggable(tb);
@@ -7758,6 +7885,7 @@ function unmakeDialog(el) {
       .forEach(a => el.removeAttribute(a));
     el.classList.remove('kiln-field', 'kiln-repeat');
     el.removeAttribute('title');
+    unreach(el);
   };
   m.querySelector('#kiln-um-go').onclick = () => {
     // Demo sandbox: no repo — just strip it from the live DOM for the session.
@@ -8343,6 +8471,19 @@ function makeToolbarDraggable(tb) {
   tb.addEventListener('pointercancel', end);
 }
 
+/** The text toolbar, named for a screen reader: the toolbar, each button, the on/off ones (keyboard.js). */
+function nameTextTools(tb, name) {
+  tb.setAttribute('role', 'toolbar');
+  tb.setAttribute('aria-label', `Text tools: ${name}`);
+  tb.querySelectorAll('[data-cmd]').forEach(b => {
+    const said = TOOL_NAMES[b.dataset.cmd];
+    if (said) b.setAttribute('aria-label', said);
+    if (TOGGLES.includes(b.dataset.cmd)) b.setAttribute('aria-pressed', 'false');
+  });
+  tb.querySelector('.kiln-style-select')?.setAttribute('aria-label', 'Text style');
+  tb.querySelector('.kiln-href-input:not([data-act])')?.setAttribute('aria-label', 'Where this link goes');
+}
+
 const TB_GRIP = '<span class="kiln-tb-grip" title="Drag to move this toolbar" aria-hidden="true">⠿</span>';
 
 function renderToolbar(el, key, opts = {}) {
@@ -8394,6 +8535,13 @@ function renderToolbar(el, key, opts = {}) {
     ${md ? '' : `<button class="kiln-tb-fmt" data-cmd="hist" title="This section's history — undo to a previous version">${HIST_ICON}</button>`}
     <button class="kiln-tb-save" title="Keep this edit (you can still Esc-revert until you click away)">Done</button>
     <button class="kiln-tb-cancel" title="Throw away this edit (Esc)">Revert</button>`;
+  nameTextTools(tb, md ? opts.label : readableName(key));
+  if (!md) {
+    tb._kilnFor = el;
+    tb._kilnLeave = () => commitEdit(el, key);
+    // A button pressed from the keyboard works on the words selected before Tab came here
+    tb.addEventListener('click', (e) => { if (e.detail === 0 && e.target.closest?.('.kiln-tb-fmt')) backToBox(tb, el); }, true);
+  }
   document.body.appendChild(tb);
   positionToolbar(tb, el);
   makeToolbarDraggable(tb);
@@ -8573,6 +8721,8 @@ function modal(bodyHtml, opts = {}) {
     modalUnder?.remove();
     modalUnder = null;
   }
+  // Where the keyboard was: it goes back there when the dialog is put away.
+  const cameFrom = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
   const wrap = document.createElement('div');
   wrap.id = 'kiln-modal';
   if (opts.over) wrap.dataset.over = '1';
@@ -8581,12 +8731,20 @@ function modal(bodyHtml, opts = {}) {
     + `<div class="kiln-modal-body">${bodyHtml}</div></div>`;
   const close = () => {
     const shown = wrap.isConnected;
+    const hadFocus = wrap.contains(document.activeElement);
     wrap.remove();
     document.removeEventListener('keydown', onKey, true);
     if (!shown) return;
     if (opts.over && modalUnder && !document.getElementById('kiln-modal')) {
       if (modalUnder.isConnected) { modalUnder.id = 'kiln-modal'; modalUnder.style.display = ''; }
       modalUnder = null;
+    }
+    // The keyboard goes back to where it was (a choice inside may send it on, in onClose)
+    if (hadFocus || document.activeElement === document.body) {
+      // A menu item the dialog was opened from has gone with its menu: the Kiln button the menu belongs to
+      const back = cameFrom?.isConnected && cameFrom.getClientRects().length ? cameFrom
+        : document.querySelector('#kiln-modal .kiln-modal-card') || (cameFrom?.closest('#kiln-fab-wrap') ? document.getElementById('kiln-fab') : null);
+      back?.focus({ preventScroll: true });
     }
     opts.onClose?.();
   };
@@ -8604,13 +8762,30 @@ function modal(bodyHtml, opts = {}) {
       .filter(el => !el.disabled && el.offsetParent !== null);
     if (!f.length) return;
     const first = f[0], last = f[f.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    if (!f.includes(document.activeElement)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }   // from the card itself, or from outside
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   };
   document.addEventListener('keydown', onKey, true);
+  nameDialog(wrap.querySelector('.kiln-modal-card'));
   document.body.appendChild(wrap);
-  (wrap.querySelector('input') || wrap.querySelector('.kiln-modal-card')).focus();
+  // the first field that can be seen (one in a part still hidden would leave the keyboard behind the dialog)
+  ([...wrap.querySelectorAll('input')].find(i => i.getClientRects().length) || wrap.querySelector('.kiln-modal-card')).focus();
   return wrap;
+}
+
+/** A dialog is called what its own heading says; one with no heading, by its first line or field. */
+function nameDialog(card) {
+  if (!card || card.hasAttribute('aria-labelledby') || card.hasAttribute('aria-label')) return;
+  const head = card.querySelector('.kiln-modal-body h1, .kiln-modal-body h2, .kiln-modal-body h3, .kiln-modal-body h4');
+  if (head) {
+    if (!head.id) head.id = `kiln-dialog-name-${++dialogNames}`;
+    card.setAttribute('aria-labelledby', head.id);
+    return;
+  }
+  const field = card.querySelector('.kiln-modal-body input, .kiln-modal-body textarea');
+  const said = field?.getAttribute('aria-label') || field?.getAttribute('placeholder') || card.querySelector('.kiln-modal-body')?.textContent.replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (said) card.setAttribute('aria-label', said);
 }
 
 function refreshPublishButton() {
@@ -9097,6 +9272,8 @@ function injectStyles() {
   .kiln-reveal .kiln-field:not(.kiln-editing):not(.kiln-modified){animation:none;transition:none;outline-color:rgba(99,102,241,.75)}
 }
 .kiln-field.kiln-editing{outline:2px solid var(--kiln-accent);cursor:text;padding:2px 4px;min-width:40px}
+.kiln-field:focus-visible{outline:2px solid var(--kiln-accent);outline-offset:4px}
+#kiln-toolbar button:focus-visible,#kiln-toolbar select:focus-visible,#kiln-toolbar input:focus-visible{outline:2px solid #a5b4fc;outline-offset:1px}
 .kiln-field.kiln-modified{outline:2px solid var(--kiln-warn)}
 img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 /* Source-mode fields (data-kiln-source) ride the kiln-field affordances; a

@@ -84,6 +84,15 @@
  * nothing; in a rich area a list is made, not nested in its paragraph, with
  * the cursor where it was; a link typed as "example.com" goes to https://,
  * an email address to mailto:, and "about.html" stays as typed.
+ * The keyboard ("keyboard"): with no mouse, Tab reaches every editable part,
+ * each with a focus ring and a name; Enter opens a part as a click does; Tab
+ * goes from the box to its toolbar (every button named, Bold saying whether it
+ * is on, arrows moving along it), then on to the next part with the edit kept;
+ * Esc leaves the box and the keyboard stays on it. Space opens a picture's
+ * toolbar and Esc closes it. What would be published holds no tabindex, role
+ * or label the editor put there. The publish sheet and People & access are
+ * dialogs named by their headings that hold the keyboard and give it back;
+ * the Kiln button opens its menu from Enter and Esc closes it.
  * Exits non-zero if any check fails. `--shots <dir>` also saves a screenshot
  * of each step as <step>-<width>.png. `--only <pass>` runs the passes whose
  * name has that word in it ("safety net", "signed in", "ended elsewhere"…).
@@ -1617,6 +1626,172 @@ async function runListsAndLinks(browser, size) {
   await shut();
   check(scope, 'no errors on the page', errors.length === 0, errors[0] || '');
   await context.close();
+}
+
+async function runKeyboard(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} keyboard`;
+  const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone, reducedMotion: 'no-preference' });
+  await context.addInitScript(() => { try { localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ } });
+  await context.route('**/*', (route) => {
+    const u = route.request().url();
+    return u.startsWith(ORIGIN) || u.startsWith('data:') || u.startsWith('blob:') ? route.continue() : route.abort();
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+  const key = async (k) => { await page.keyboard.press(k); await page.waitForTimeout(60); };
+  /** What has the keyboard: its tag, the editor's marks on it, its role and name. */
+  const focused = () => page.evaluate(() => {
+    const a = document.activeElement;
+    if (!a || a === document.body) return { tag: 'body' };
+    return { tag: a.tagName.toLowerCase(), id: a.id, key: a.getAttribute('data-cms'), field: a.classList.contains('kiln-field'), role: a.getAttribute('role'),
+      label: a.getAttribute('aria-label'), editing: a.isContentEditable, inToolbar: !!a.closest('#kiln-toolbar'), inDialog: !!a.closest('#kiln-modal'),
+      ring: a.matches(':focus-visible') ? getComputedStyle(a).outlineStyle : 'none' };
+  });
+  /** Tab until `want(focused)` holds, at most `max` presses. */
+  const tabTo = async (want, max = 400) => {
+    for (let i = 0; i < max; i++) { await page.keyboard.press('Tab'); const f = await focused(); if (want(f)) return f; }
+    return null;
+  };
+  const stored = () => page.evaluate(() => Object.keys(localStorage).map(k => localStorage.getItem(k)).join('\n'));
+  const EDITOR_MARKS = /tabindex|role=|aria-label|aria-multiline|data-kiln-focus/;
+  try {
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(800);
+
+    // ── every editable part reachable and named ──────────────────────────────
+    const parts = await page.evaluate(() => {
+      const all = [...document.querySelectorAll('.kiln-field[data-cms]')].filter(el => !el.classList.contains('kiln-source-field'));
+      const bad = all.filter(el => el.tabIndex !== 0 || !el.getAttribute('aria-label') || el.getAttribute('role') !== 'button');
+      return { n: all.length, bad: bad.length, first: bad.slice(0, 3).map(el => el.getAttribute('data-cms')).join(', ') };
+    });
+    check(scope, 'every editable part is in the tab order, a button with a name', parts.n > 20 && parts.bad === 0, `${parts.n} parts, ${parts.bad} not: ${parts.first}`);
+    const head = await tabTo(f => f.field && f.tag === 'h1');
+    check(scope, 'Tab reaches the page\'s heading, with a focus ring', !!head && head.ring !== 'none' && head.ring !== '', JSON.stringify(head));
+    const said = head ? await page.locator(':focus').ariaSnapshot().catch(() => '') : '';
+    check(scope, 'the heading is read as a button that says what it is and what it holds', /button "Edit .+: .+"/.test(said), said.split('\n')[0]);
+    await shot('keyboard-heading');
+
+    // ── Enter opens it; Tab to the toolbar and along it; Esc leaves ─────────
+    const before = await page.locator(':focus').innerText();
+    await key('Enter');
+    let f = await focused();
+    check(scope, 'Enter opens the heading for typing, the keyboard in it, read as a text box', f.field && f.editing && f.role === 'textbox' && (await page.locator('#kiln-toolbar[role="toolbar"]').count()) === 1, JSON.stringify(f));
+    await page.keyboard.type(' typed');
+    await key('Tab');
+    f = await focused();
+    check(scope, 'Tab from the open box goes to its toolbar', f.inToolbar, JSON.stringify(f));
+    const names = await page.$$eval('#kiln-toolbar button, #kiln-toolbar select', bs => bs.filter(b => b.getClientRects().length).map(b => b.getAttribute('aria-label') || b.textContent.trim()));
+    const tbLabel = await page.locator('#kiln-toolbar').getAttribute('aria-label');
+    check(scope, 'the toolbar and every button in it have names in words', /^Text tools: /.test(tbLabel || '') && names.includes('Bold') && names.includes('Italic') && names.includes('Add a link') && names.every(n => n && n.length > 2), `${tbLabel} | ${names.join(', ')}`);
+    check(scope, 'Bold says whether it is on', (await page.locator('#kiln-toolbar [data-cmd="bold"]').getAttribute('aria-pressed')) !== null);
+    await key('Tab');
+    const at0 = (await focused()).label;
+    await key('ArrowRight');
+    const at1 = await focused();
+    check(scope, 'an arrow key moves along the toolbar', at1.inToolbar && (at1.label || at1.tag) !== at0, `${at0} → ${at1.label || at1.tag}`);
+    await key('Home');
+    await key('Shift+Tab');
+    f = await focused();
+    check(scope, 'Shift+Tab from the toolbar\'s first control goes back into the box', f.field && f.editing, JSON.stringify(f));
+    await key('Escape');
+    f = await focused();
+    const after = await page.locator('h1.kiln-field').first().innerText();
+    check(scope, 'Esc leaves the box, throws the typing away, and the keyboard stays on the heading', f.field && !f.editing && f.role === 'button' && after === before && !(await page.locator('#kiln-toolbar').count()), `${JSON.stringify(f)} "${after}"`);
+
+    // ── an edit kept by Tabbing on: box → toolbar → next part ──────────────
+    await key('Enter');
+    await key('End');
+    await page.keyboard.type(' now');
+    await key('Tab');
+    const stops = await page.$$eval('#kiln-toolbar button, #kiln-toolbar select, #kiln-toolbar input', bs => bs.filter(b => !b.disabled && b.getClientRects().length).length);
+    for (let i = 1; i < stops; i++) await key('Tab');
+    await key('Tab');
+    f = await focused();
+    const kept = await page.locator('h1.kiln-field').first().evaluate(el => ({ words: el.innerText, modified: el.classList.contains('kiln-modified'), editing: el.isContentEditable }));
+    check(scope, 'Tab past the toolbar keeps the edit and goes on to the next part', /now$/.test(kept.words) && kept.modified && !kept.editing && !f.inToolbar && f.tag !== 'body' && !(await page.locator('#kiln-toolbar').count()), `${JSON.stringify(kept)} → ${JSON.stringify(f)}`);
+
+    // ── a part inside a list block ──────────────────────────────────────────
+    await page.evaluate(() => document.querySelector('[data-cms-repeat] .kiln-field[data-cms]:not(img)')?.focus());
+    f = await focused();
+    check(scope, 'a part inside a list block is reachable and named', f.field && !!f.label, JSON.stringify(f));
+    await key('Enter');
+    await key('End');
+    await page.keyboard.type(' listed');
+    await key('Shift+Tab');   // leaves the box the other way: the edit is kept
+    await page.waitForTimeout(200);
+    const text = await stored();
+    check(scope, 'what would be published holds no tabindex, role or label the editor put there', /now/.test(text) && /listed/.test(text) && !EDITOR_MARKS.test(text), (text.match(EDITOR_MARKS) || [''])[0]);
+
+    // ── a picture: Space opens its toolbar, Esc closes it ───────────────────
+    const pic = await tabTo(x => x.field && x.tag === 'img');
+    check(scope, 'Tab reaches an editable picture, named as one', !!pic && /^Change picture: /.test(pic.label || ''), JSON.stringify(pic));
+    if (pic) {
+      await key(' ');
+      f = await focused();
+      const ptb = await page.locator('#kiln-toolbar').getAttribute('aria-label').catch(() => null);
+      check(scope, 'Space opens the picture\'s toolbar, named, with the keyboard in it', f.inToolbar && /^Picture tools: /.test(ptb || ''), `${ptb} ${JSON.stringify(f)}`);
+      await key('Escape');
+      f = await focused();
+      check(scope, 'Esc closes the picture\'s toolbar and the keyboard is on the picture again', f.tag === 'img' && f.field && !(await page.locator('#kiln-toolbar').count()), JSON.stringify(f));
+    }
+
+    // ── the Kiln button and its menu ────────────────────────────────────────
+    const fab = await tabTo(x => x.id === 'kiln-fab', 600);
+    check(scope, 'Tab reaches the Kiln button', !!fab, JSON.stringify(fab));
+    await key('Enter');
+    f = await focused();
+    check(scope, 'Enter opens the menu with the keyboard on its first item', !(await page.locator('#kiln-fab-menu').isHidden()) && /kiln-fab-item/.test(await page.evaluate(() => document.activeElement.className)), JSON.stringify(f));
+    await key('ArrowDown');
+    const moved = await focused();
+    check(scope, 'an arrow key moves to the next item', moved.id !== f.id, `${f.id} → ${moved.id}`);
+    await key('Escape');
+    f = await focused();
+    check(scope, 'Esc closes the menu and the keyboard is back on the Kiln button', f.id === 'kiln-fab' && await page.locator('#kiln-fab-menu').isHidden(), JSON.stringify(f));
+    check(scope, 'the status line is announced', (await page.locator('#kiln-status').getAttribute('role')) === 'status');
+
+    // ── dialogs: named, holding the keyboard, giving it back ───────────────
+    const dialog = async (what) => {
+      const info = await page.locator('#kiln-modal .kiln-modal-card').evaluate((c) => {
+        const by = c.getAttribute('aria-labelledby');
+        return { role: c.getAttribute('role'), modal: c.getAttribute('aria-modal'), name: by ? document.getElementById(by)?.textContent.trim() : c.getAttribute('aria-label') };
+      }).catch(() => null);
+      check(scope, `${what} is a dialog named by its heading, with the keyboard in it`, !!info && info.role === 'dialog' && info.modal === 'true' && !!info.name && (await focused()).inDialog, JSON.stringify(info));
+      let out = 0;
+      for (let i = 0; i < 25; i++) { await page.keyboard.press('Tab'); if (!(await focused()).inDialog) out++; }
+      for (let i = 0; i < 5; i++) { await page.keyboard.press('Shift+Tab'); if (!(await focused()).inDialog) out++; }
+      check(scope, `Tab and Shift+Tab stay inside ${what}`, out === 0, `${out} presses left it`);
+      return info;
+    };
+    const pub = await tabTo(x => x.id === 'kiln-publish-quick', 600);
+    if (pub) {
+      await key('Enter');
+      await page.waitForTimeout(300);
+      const info = await dialog('the publish sheet');
+      await shot('keyboard-publish-sheet');
+      await key('Escape');
+      f = await focused();
+      check(scope, 'Esc closes the publish sheet and gives the keyboard back to Publish', !(await page.locator('#kiln-modal').count()) && f.id === 'kiln-publish-quick', `${info?.name} → ${JSON.stringify(f)}`);
+    } else check(scope, 'Tab reaches Publish', false);
+    await page.evaluate(() => document.getElementById('kiln-fab').focus());
+    await key('Enter');
+    const invite = page.locator('#kiln-invite');
+    if (await invite.count()) {
+      await invite.focus();
+      await key('Enter');
+      await page.waitForTimeout(400);
+      await dialog('People & access');
+      await key('Escape');
+      f = await focused();
+      check(scope, 'Esc closes People & access and the keyboard is on the Kiln button', !(await page.locator('#kiln-modal').count()) && f.id === 'kiln-fab', JSON.stringify(f));
+    }
+  } finally {
+    check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+    await context.close();
+  }
 }
 
 async function runGetKiln(browser, size) {
@@ -3931,6 +4106,8 @@ try {
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} get Kiln    `, () => runGetKiln(browser, size));
   // lists and block styles only where they fit, the cursor kept after a list, a link typed without https://
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} lists and links`, () => runListsAndLinks(browser, size));
+  // no mouse: Tab, Enter, Esc and the arrow keys reach and edit every part, the toolbar, the dialogs and the menu
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} keyboard`, () => runKeyboard(browser, size));
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
   // an invited editor granted "Make things editable" on top of the defaults
   await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
