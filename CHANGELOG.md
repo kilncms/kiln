@@ -34,6 +34,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A site owner’s GitHub sign-in stays on Kiln’s sign-in service.** Until now
+  the owner’s browser was handed a GitHub key when they signed in, and any
+  script on their site (a widget, or code someone slipped in) could read it and
+  use it on every repository that person can change. Now the service keeps the
+  key and the browser holds only a sign-in that works through the service, from
+  that one site, on that one repository. The service renews the key itself, and
+  a sign-in GitHub no longer accepts ends with the usual “sign in again”. Owners
+  who are signed in the old way are moved over on their next page load, without
+  signing in again. Sites still on older editor files keep working the old way
+  until they update them.
 - **A limit to parts of a page is kept by Kiln’s sign-in service, not only by
   the editing screen.** An editor limited to some parts of a page could change
   any part of it by sending a save straight to the service. Now every save is

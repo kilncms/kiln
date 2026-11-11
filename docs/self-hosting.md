@@ -162,6 +162,20 @@ A worker deployed from a clone of the Kiln repo, without the wizard, is upgraded
 in that clone: pull, then `npx wrangler deploy --config wrangler.self.toml` from
 `worker/` again. KV data survives redeploys untouched.
 
+### Owners' GitHub sign-ins move to the worker
+
+From this version the worker keeps a site owner's GitHub sign-in itself, and
+the owner's browser holds only a session that works through the worker, from
+that site, on that site's repository. Update the worker first, then the editor
+files (the two commands above). Nobody has to sign in again: the first time an
+owner who is signed in the old way opens their site with the new editor files,
+the editor hands the old sign-in to the worker, gets a session back, and
+forgets the GitHub key. The editor reads `"ownerSessions": true` from the
+worker's `/healthz` to know the worker can do this.
+A site whose editor files are older keeps signing in the old way until they
+are updated, so the two can be updated a day apart. There is nothing to
+configure.
+
 ### A site a generator builds (source mode)
 
 Source mode edits the content files an Astro site is built from. Each part of
