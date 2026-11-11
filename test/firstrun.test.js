@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { publishLabel, editCommitMessage, goingLiveLabel, guideStep, guideCardCopy, diffSnippet, placeTip, sideForHeading, initGuide, guideSync, guidePublished, guideUndone } from '../src/editor/firstrun.js';
+import { publishLabel, editCommitMessage, goingLiveLabel, guideStep, guideCardCopy, diffSnippet, placeTip, sideForHeading, initGuide, guideSync, guidePublished, guideUndone, tipWords, guideSaid } from '../src/editor/firstrun.js';
 
 test('publishLabel: says how many edits will go out', () => {
   assert.equal(publishLabel(0), 'Publish');                 // an upload with no field edit still publishes
@@ -203,4 +203,19 @@ test('the demo guide never starts outside sandbox mode', () => {
   assert.doesNotThrow(() => guideSync());
   assert.doesNotThrow(() => guidePublished({ before: 'a', after: 'b', message: 'm' }));
   assert.doesNotThrow(() => guideUndone());
+});
+
+test('the first tip says what to do the way the person is working', () => {
+  assert.equal(tipWords(1, {}), 'Click this and type.');
+  assert.equal(tipWords(1, { touch: true }), 'Tap this and type.');
+  assert.equal(tipWords(1, { keys: true }), 'Press Enter on this and type.');
+  assert.equal(tipWords(1, { keys: true, touch: true }), 'Press Enter on this and type.');
+  assert.equal(tipWords(2, { keys: true }), 'Now publish it.');
+  assert.equal(tipWords(2, { inSheet: true }), 'This is what changes. Publish it.');
+});
+
+test('what a screen reader hears names the part the tip points at', () => {
+  assert.equal(guideSaid(1, { keys: true }, 'Week of  Remembrance'), 'Press Enter on “Week of Remembrance” and type.');
+  assert.equal(guideSaid(1, {}, ''), 'Click this and type.');
+  assert.equal(guideSaid(2, {}, 'Week'), 'Now publish it.');
 });

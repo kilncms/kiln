@@ -110,6 +110,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   well and says why, in the words a click shows. Each entry's button and "Add
   an entry" are named buttons. Nothing added for the keyboard is written to a
   content file.
+- **The first-visit guide is read out and works from the keyboard.** A screen
+  reader hears each tip and the last card as they appear, without the
+  keyboard being moved from where the person is typing; the page behind
+  stays in reach. "Skip the guide" is a named button in the Tab order, and
+  Esc on the guide skips it. Someone who has pressed Tab is told "Press Enter
+  on this and type." instead of "Click this and type."; a click or tap brings
+  the pointer wording back.
 - **The editor can be used with a keyboard alone**, and a screen reader can
   name what it reaches. Every editable part is in the Tab order, Enter opens
   it, Esc leaves it, the toolbars and their buttons have names, and every

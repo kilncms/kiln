@@ -10,6 +10,7 @@
  * came from the page goes through textContent, never innerHTML.
  */
 import { undoMessage } from './undo-publish.js';
+import { shortWords } from './keyboard.js';
 
 /** Label for a Publish control: "Publish", "Publish 1 edit", "Publish 3 edits". */
 export function publishLabel(n, { suggest = false } = {}) {
@@ -169,6 +170,26 @@ export function placeBeside(words, tip, view, { gap = 14, margin = 8 } = {}) {
   return { left, top };
 }
 
+/**
+ * What the guide's tip says. Step 1 says what to do with the heading in the
+ * way the person is working: a click, a tap, or (`keys`: they have pressed
+ * Tab since the page loaded) the key to press.
+ */
+export function tipWords(step, { touch = false, keys = false, inSheet = false } = {}) {
+  if (step === 1) return keys ? 'Press Enter on this and type.' : touch ? 'Tap this and type.' : 'Click this and type.';
+  return inSheet ? 'This is what changes. Publish it.' : 'Now publish it.';
+}
+
+/**
+ * What a screen reader is told when a tip appears or its step changes: the
+ * tip's words, with "this" said as the words of the part it points at.
+ */
+export function guideSaid(step, opts = {}, partWords = '') {
+  const words = tipWords(step, opts);
+  const name = shortWords(partWords, 40);
+  return step === 1 && name ? words.replace(' this ', ` “${name}” `) : words;
+}
+
 // ─── The demo guide (sandbox only) ───────────────────────────────────────────
 
 const GUIDE_KEY = 'kiln_guide';
@@ -184,6 +205,17 @@ let undone = 0;         // …and then took that publish back with Undo: how man
 let tip = null;         // the step 1 / step 2 bubble
 let tipStep = 0;
 let cardTimer = null;   // the last card puts itself away after a while
+let said = null;        // where the guide's words are read out (a live region, hidden from sight)
+
+// Someone who has pressed Tab since the page loaded is working with the keyboard,
+// and is told what to press; a pointer pressed on the page makes the tip say click or tap again.
+let keys = false;
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+  document.addEventListener('keydown', (e) => { if (e.key === 'Tab' && !keys) { keys = true; rewordTip(); } }, true);
+  document.addEventListener('pointerdown', (e) => {
+    if (keys && e.isTrusted && (e.pointerType === 'mouse' || e.pointerType === 'touch' || e.pointerType === 'pen')) { keys = false; rewordTip(); }
+  }, true);
+}
 
 /** How long the last card stays when nobody touches it. Long enough to read twice. */
 export const CARD_STAYS = 20000;
@@ -212,8 +244,17 @@ export function initGuide(d) {
   // (settleTip), and whenever one of the page's own transitions ends.
   document.addEventListener('transitionend', settleTip, true);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && document.getElementById('kiln-guide-card')) finish();
+    // Esc puts the card away, and skips the guide while the keyboard is on its tip.
+    if (e.key === 'Escape' && (document.getElementById('kiln-guide-card') || (e.target instanceof Element && e.target.closest('#kiln-guide')))) finish();
   });
+  // Not a dialog: the page behind stays in reach. What the guide says is read out
+  // as it appears, without taking the keyboard from where the person is.
+  said = document.createElement('div');
+  said.id = 'kiln-guide-said';
+  said.setAttribute('role', 'status');
+  said.setAttribute('aria-live', 'polite');
+  said.setAttribute('data-kiln', '1');
+  document.body.appendChild(said);
   guideSync();
 }
 
@@ -273,6 +314,27 @@ function closeCardLater(card, wait = CARD_STAYS) {
   }, wait);
 }
 
+/** Read `text` out through the guide's live region (set again so the same words are read again). */
+function say(text) {
+  if (!said) return;
+  said.textContent = '';
+  setTimeout(() => { if (said) said.textContent = text; }, 60);
+}
+
+/** The person changed how they work (keyboard or pointer): the first tip says it their way. */
+function rewordTip() {
+  if (!tip || tipStep !== 1) return;
+  const opts = tipOpts();
+  tip.querySelector('.kiln-guide-words').textContent = tipWords(1, opts);
+  say(guideSaid(1, opts, tip._target?.innerText || tip._target?.textContent || ''));
+  placeGuideTip();
+}
+
+function tipOpts(inSheet = false) {
+  // A phone has no click.
+  return { touch: window.matchMedia('(hover: none)').matches, keys, inSheet };
+}
+
 function removeTip() {
   tip?._seen?.disconnect();
   tip?.remove();
@@ -293,12 +355,12 @@ function showTip(step, target) {
     removeTip();
     tip = document.createElement('div');
     tip.id = 'kiln-guide';
-    tip.setAttribute('role', 'status');
+    tip.setAttribute('role', 'group');
+    tip.setAttribute('aria-label', 'Guide');
     const text = document.createElement('span');
-    // A phone has no click.
-    const touch = window.matchMedia('(hover: none)').matches;
-    text.textContent = step === 1 ? (touch ? 'Tap this and type.' : 'Click this and type.')
-      : inSheet ? 'This is what changes. Publish it.' : 'Now publish it.';
+    text.className = 'kiln-guide-words';
+    text.textContent = tipWords(step, tipOpts(inSheet));
+    say(guideSaid(step, tipOpts(inSheet), step === 1 ? (target.innerText || target.textContent || '') : ''));
     const skip = document.createElement('button');
     skip.type = 'button';
     skip.className = 'kiln-guide-skip';
@@ -434,15 +496,20 @@ function showCard() {
     card = el('div');
     card.addEventListener('pointermove', () => { card._kilnMoved = Date.now(); });
     card.id = 'kiln-guide-card';
+    // A dialog that is not modal: the page behind it can still be reached.
     card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'false');
     card.setAttribute('aria-labelledby', 'kiln-guide-title');
+    card.setAttribute('aria-describedby', 'kiln-guide-sub');
   }
   card.dataset.kind = kind;
   const invited = deps.audience === 'editor';
   const copy = guideCardCopy({ invited, undone: undone > 0, edits: undone, message: published.message, source: !!published.source });
   const title = el('h3', null, copy.title);
   title.id = 'kiln-guide-title';
-  const parts = [title, el('p', 'kiln-guide-sub', copy.sub)];
+  const sub = el('p', 'kiln-guide-sub', copy.sub);
+  sub.id = 'kiln-guide-sub';
+  const parts = [title, sub];
   if (copy.diff) {
     const diff = el('div', 'kiln-guide-diff');
     const snip = diffSnippet(published.before, published.after);
@@ -468,7 +535,10 @@ function showCard() {
   parts.push(acts);
   card.replaceChildren(...parts);
   if (fresh) document.body.appendChild(card);
-  stay.focus({ preventScroll: true });
+  say(`${copy.title}. ${copy.sub}`);
+  // The keyboard comes to the card, unless the person is typing somewhere: that is left where it is.
+  const at = document.activeElement;
+  if (!at || at === document.body || !(at.isContentEditable || at.matches?.('input, textarea, select'))) stay.focus({ preventScroll: true });
   closeCardLater(card);
 }
 
@@ -508,6 +578,7 @@ function guideCss(mobileMq) {
 #kiln-guide-card a.kiln-btn-publish{display:inline-flex;align-items:center;color:#fff;text-decoration:none}
 #kiln-guide-card a.kiln-btn-ghost{display:inline-flex;align-items:center;text-decoration:none}
 #kiln-guide-card .kiln-btn-publish,#kiln-guide-card .kiln-btn-ghost{font-size:13px;padding:8px 16px}
+#kiln-guide-said{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 @media (prefers-reduced-motion: reduce){#kiln-guide,#kiln-guide-card{animation:none}}
 @media ${mobileMq}{
 #kiln-guide{font-size:14.5px;padding:7px 7px 7px 16px}

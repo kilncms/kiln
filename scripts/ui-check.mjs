@@ -207,6 +207,20 @@ async function run(browser, size, firstVisit) {
       });
       check(scope, 'guide step 1 lies on none of the page\'s own buttons or links', on.length === 0, on.join(', '));
     }
+    // Read out as it appears, without taking the keyboard; its Skip is a named button in the Tab order.
+    const live = await page.evaluate(() => { const r = document.getElementById('kiln-guide-said'); const g = document.getElementById('kiln-guide');
+      const skip = g?.querySelector('.kiln-guide-skip');
+      return { role: r?.getAttribute('role'), live: r?.getAttribute('aria-live'), said: r?.textContent || '', inGuide: !!document.activeElement?.closest('#kiln-guide'),
+        modal: g?.getAttribute('aria-modal'), skip: skip ? { name: skip.getAttribute('aria-label'), tab: skip.tabIndex, tag: skip.tagName } : null }; });
+    check(scope, 'guide step 1 is read out politely as it appears, naming the heading, and the keyboard stays where it was', live.role === 'status' && live.live === 'polite' && /^(Click|Tap) “.+” and type\.$/.test(live.said) && !live.inGuide && live.modal !== 'true', JSON.stringify(live));
+    check(scope, 'its Skip is a button reached by Tab, named "Skip the guide"', live.skip?.tag === 'BUTTON' && live.skip.name === 'Skip the guide' && live.skip.tab >= 0, JSON.stringify(live.skip));
+    // Someone who presses Tab is told what to press instead.
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(200);
+    const keyed = await page.evaluate(() => ({ words: document.querySelector('#kiln-guide .kiln-guide-words')?.textContent, said: document.getElementById('kiln-guide-said')?.textContent }));
+    check(scope, 'after a press of Tab, guide step 1 says to press Enter, and says so aloud', keyed.words === 'Press Enter on this and type.' && /^Press Enter on “.+” and type\.$/.test(keyed.said || ''), JSON.stringify(keyed));
+    await shot('guide-1-keys');
+    await page.evaluate(() => document.activeElement?.blur());
     await shot('guide-1');
   } else {
     check(scope, 'no guide for a returning visitor', (await guide.count()) === 0);
@@ -291,6 +305,10 @@ async function run(browser, size, firstVisit) {
   const read = async (locator) => (await locator.innerText()).replace(/\s+/g, ' ').trim();
   const before = await read(heading);
   await press(heading);
+  if (firstVisit) {
+    const words = await page.evaluate(() => document.querySelector('#kiln-guide .kiln-guide-words')?.textContent || '');
+    check(scope, 'a click or tap after that makes guide step 1 say click or tap again', /^(Click|Tap) this and type\.$/.test(words), words);
+  }
   const toolbar = page.locator('#kiln-toolbar');
   await toolbar.waitFor({ state: 'visible', timeout: 5000 });
   await page.waitForTimeout(350);
