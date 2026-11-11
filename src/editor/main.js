@@ -60,6 +60,7 @@ import { reachable, typing, isReachable, unreach, stripFocus, partLabel, TOOL_NA
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
 import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists } from './one-paragraph.js';
 import { askFirst, askWhich, ownDialogCopy } from './own-dialogs.js';
+import { askStanding, planEndedNotice } from './plan-ended.js';
 import { askDescription, LATER_WORDS } from './describe-picture.js';
 import { coverBottom, isUnder, isSiteBar } from './under-bar.js';
 import { fabSpot, isHiddenBox } from './fab-place.js';
@@ -253,6 +254,9 @@ async function init() {
     return;
   }
   injectStyles();
+  // Asked once, alongside everything else and never waited for unless the
+  // editor cannot start: where this address stands with the worker (plan-ended.js).
+  const standing = askStanding({ worker: cfg.worker, origin: location.origin });
 
   if (mode === 'admin') {
     const stored = JSON.parse(localStorage.getItem(ADMIN_KEY));
@@ -299,6 +303,10 @@ async function init() {
     const over = onLoadFailure(err, { mode, draft: draftWaits() });
     if (over) {
       console.warn(over.drop ? '[kiln] the sign-in has ended' : '[kiln] the page could not be read', err);
+      // A site whose free trial or plan has ended is refused by the worker in a
+      // way the browser hides, which reads as "could not be reached". When the
+      // worker says that is what happened, the page says so, with the way out.
+      if (!over.drop && await saidPlanEnded(standing)) return;
       notStarted(over);
       return;
     }
@@ -387,6 +395,15 @@ function signInAgain() {
  * plus one sentence at the bottom of the screen (clear of a site's own
  * navigation) that can be put away.
  */
+/** A site whose free trial or plan has ended: the page says so and nothing of the editor starts. True when it did. */
+async function saidPlanEnded(standing) {
+  const notice = planEndedNotice(await standing);
+  if (!notice) return false;
+  document.querySelectorAll('style[data-kiln]').forEach(st => st.remove());   // as notStarted does
+  showNotice(notice, notice.link ? () => window.open(notice.link, '_blank', 'noopener') : null);
+  return true;
+}
+
 function notStarted(over) {
   if (over.drop) localStorage.removeItem(mode === 'admin' ? ADMIN_KEY : EDITOR_KEY);
   document.querySelectorAll('style[data-kiln]').forEach(st => st.remove());   // every sheet the editor put in the page

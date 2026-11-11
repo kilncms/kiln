@@ -38,19 +38,22 @@ function safeLink(href) {
 }
 
 /**
- * What to tell the person, or null when there is nothing to tell.
- *   { words, link, linkWords }  `link` is null when the worker named no dashboard
+ * What to tell the person, or null when there is nothing to tell. The shape is
+ * the one the editor's notice card takes (text, detail, button), plus `link`:
+ * where the button goes, or null when the worker named no dashboard (then
+ * there is no button either).
  */
-export function endedNotice(answer) {
+export function planEndedNotice(answer) {
   if (!answer || answer.editable !== false) return null;
   if (answer.reason !== 'trial_ended' && answer.reason !== 'plan_ended') return null;
   const trial = answer.reason === 'trial_ended';
   const link = safeLink(answer.dashboard);
   return {
-    words: trial
-      ? 'This site’s free trial has ended, so changes cannot be published until the site’s owner subscribes. The site and everything already published are untouched.'
-      : 'This site’s Kiln plan has ended, so changes cannot be published until the site’s owner subscribes again. The site and everything already published are untouched.',
+    text: trial
+      ? 'This site’s free trial has ended, so nothing can be changed here until the site’s owner subscribes. The site and everything already published are untouched.'
+      : 'This site’s Kiln plan has ended, so nothing can be changed here until the site’s owner subscribes again. The site and everything already published are untouched.',
+    detail: link ? 'For the owner: open the Kiln dashboard and press Subscribe on this site’s row. Editing comes back as soon as the payment is confirmed.' : '',
+    button: link ? 'Open the Kiln dashboard' : '',
     link,
-    linkWords: link ? 'For the owner: open the Kiln dashboard' : null,
   };
 }
