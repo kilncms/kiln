@@ -244,7 +244,11 @@ For each person you also set:
   theirs to change, whatever is chosen here.
 - **Section scope** (editors) — within a page, limit them to specific sections. The
   picker shows each section with the first words of its content, so you know exactly
-  what you're granting. Leave it blank for the whole page.
+  what you're granting. Leave it blank for the whole page. Kiln's sign-in service
+  holds them to it, not only the editing screen: a save that changes anything
+  outside their sections is refused. An editor limited to sections cannot add or
+  copy pages, or change page settings (title, description), the site menu or the
+  theme, whatever tools you grant them.
 - **Feature grants** (editors) — which menu tools they get: drafts, history, new
   posts, scheduling, the site menu, find & replace, AI assist, theme tokens,
   adding sections from the [block library](#block-library), and **Make things

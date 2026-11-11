@@ -81,6 +81,7 @@ const WORKER_VERSION = '0.4.0';
 import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush } from './cloud.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
+import { keyInScope, hasSectionLimit, checkSectionWrite, strictUtf8FromB64, scheduledKeyRefusal, SECTION_REFUSALS } from './section-scope.js';
 import { adapterIds, getAdapter } from '../src/adapters/index.js';
 import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, changedSinceRead, markdownProblems, picturesToCheck, duplicateCandidates, entryRequest, ENTRY_EXISTS, SOURCE_FILE_GONE } from './source.js';
 import { uploadProblem, editorFileKind, isUploadKind, base64Bytes, base64Head, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../src/file-policy.js';
@@ -672,6 +673,12 @@ async function scheduleCreate(request, env) {
     // file served as XML (.xhtml, .svg, …) would read the same bytes differently.
     if (!isHtmlPath(path)) return json({ error: 'editors can only schedule edits to HTML pages' }, 403);
     if (content && !edits) return json({ error: 'editors must schedule field edits, not a full page' }, 403);
+    // Section scope: every scheduled edit names one of the editor's parts.
+    // When it fires, the whole page is held to those parts again (runDueSchedules).
+    if (hasSectionLimit(actor.keys) && Array.isArray(edits)) {
+      const out = edits.find(e => !e || typeof e.key !== 'string' || !keyInScope(e.key, actor.keys));
+      if (out) return sectionRefused(scheduledKeyRefusal(String(out?.key ?? '')), path);
+    }
     if (Array.isArray(edits)) {
       for (const e of edits) {
         if (e && e.html !== undefined) {
@@ -803,9 +810,11 @@ async function runDueSchedules(env) {
       // purges live sessions but leaves schedules); enforce the CURRENT scope so a
       // revoked path can't still publish. `admin === false` is stored explicitly;
       // legacy records without the field are left alone (can't retro-check).
+      let sectionKeys = null;   // the author's CURRENT section limit, if any
       if (v.admin === false) {
         const people = await getPeople(env, v.repo);
         const p = people.find(x => x.email === v.byEmail && x.role === 'editor');
+        if (p && hasSectionLimit(p.keys)) sectionKeys = p.keys;
         const kindOk = v.kind === 'source' ? !!getAdapter(v.adapter)?.canEdit(v.path) : isHtmlPath(v.path);
         // Made suggest-only or comment-only, or no longer allowed to schedule,
         // since this was set: it does not go out.
@@ -846,6 +855,12 @@ async function runDueSchedules(env) {
           const source = utf8FromB64(curJson.content);
           const { html } = applyEdits(source, v.edits);
           content = b64FromUtf8(html);
+        }
+        // Section scope, held again now: the page as it would go out changes
+        // only the parts the author may edit today. Otherwise it never goes out.
+        if (sectionKeys && !KILN_BRANCH_RE.test(String(v.branch))) {
+          const r = sectionWriteRefusal({ keys: sectionKeys }, v.path, { isNew: !curJson, oldB64: curJson?.content, newB64: content });
+          if (r) { console.log(`[kiln-cron] ${k.name} not published: ${r.error}`); await env.KILN.delete(k.name); continue; }
         }
         const res = await fetch(`${GH}/repos/${target}/contents/${encodeURIComponent(v.path)}`, {
           method: 'PUT', headers: h,
@@ -2036,6 +2051,11 @@ async function sourceRevert(request, env) {
       if (!actor.admin) {
         const bad = checkDocumentWrite(cur ? utf8FromB64(cur.content) : null, utf8FromB64(old.content));
         if (bad) return json({ error: 'That version would add scripts to the page, so only the site owner can restore it.', detail: bad }, 403);
+        // Section scope: putting an HTML page back changes only the editor's parts of it.
+        if (hasSectionLimit(actor.keys) && isHtmlPath(p.file) && !KILN_BRANCH_RE.test(branch)) {
+          const r = sectionWriteRefusal(actor, p.file, { isNew: !cur, oldB64: cur?.content, newB64: old.content });
+          if (r) return sectionRefused(r, p.file);
+        }
       }
       const put = await fetch(`${GH}/repos/${repo}/contents/${encodeURIComponent(p.file)}`, {
         method: 'PUT', headers: h,
@@ -2068,6 +2088,8 @@ async function sourceDuplicate(request, env) {
   if (refuse) return json({ error: refuse.error }, refuse.status);
   const p = refuseSourcePath(file, actor, { isSensitivePath, pathInScope }, { anyEditable: true });
   if (p.error) return json({ error: p.error }, p.status);
+  // A copy is a new page or entry: outside every part of a page.
+  if (!actor.admin && hasSectionLimit(actor.keys)) return sectionRefused(SECTION_REFUSALS.duplicate, p.file);
 
   const itok = await installationToken(env, repo);
   if (!itok) return json({ error: 'app not installed on repo', repo }, 503);
@@ -2193,8 +2215,9 @@ async function peopleUpsert(request, env) {
   };
   if (role === 'editor') {
     person.paths = normalizePaths(paths);
-    // Section scope: data-cms key prefixes this editor may edit (advisory — the
-    // editor UI greys out everything else; file writes are still gated by paths).
+    // Section scope: data-cms key prefixes this editor may edit. The editor UI
+    // greys out everything else, and the worker holds every page write to
+    // them too (section-scope.js: the /gh proxy, git-data commits, schedules).
     const k = normalizePaths(keys).filter(x => x !== '');
     if (k.length) person.keys = k.slice(0, 50);
     // Per-editor feature grants (which menu tools they can use). Sanitized to the
@@ -2593,10 +2616,33 @@ function tokenRefused(request) {
   return why ? json({ error: why.error, code: why.code }, 403) : json({ error: 'unauthorized' }, 401);
 }
 
-/** Section-key scope — same semantics as the editor's keyInScope: exact or prefix. */
-function keyInScope(key, keys) {
-  if (!Array.isArray(keys) || !keys.length) return true;
-  return keys.some(p => key === p || String(key).startsWith(p));
+// Section-key scope (keyInScope: exact or prefix, the editor's own rule) lives
+// in section-scope.js, with the check that holds a section-limited editor's
+// saves to their parts of a page (sectionWriteRefusal below).
+
+/**
+ * Would this write take a section-limited editor outside their parts? null
+ * when it may go ahead: no section limit, an upload, or an HTML page whose
+ * file changes only inside their parts (checkSectionWrite). A new page, a
+ * stylesheet or any other file is outside every part. `oldB64`/`newB64` are
+ * the page's current file on the branch and the one being saved. Callers
+ * leave out kiln scratch branches (drafts, suggestion previews): nothing on
+ * one goes live without passing this check again on the way.
+ */
+function sectionWriteRefusal(who, path, { isNew, oldB64, newB64 }) {
+  if (!hasSectionLimit(who.keys)) return null;
+  if (isHtmlPath(path)) {
+    if (isNew) return SECTION_REFUSALS.newPage;
+    const before = strictUtf8FromB64(oldB64), after = strictUtf8FromB64(newB64);
+    if (before === null || after === null) return SECTION_REFUSALS.unreadable;
+    return checkSectionWrite(before, after, who.keys);
+  }
+  const kind = editorFileKind(path);
+  if (isUploadKind(kind)) return null;
+  return kind === 'css' ? SECTION_REFUSALS.theme : SECTION_REFUSALS.otherFile;
+}
+function sectionRefused(r, path) {
+  return json({ error: r.error, code: r.code, ...(r.part ? { part: r.part } : {}), ...(path ? { path } : {}) }, 403);
 }
 
 /** Filter a recursive git tree listing down to the HTML pages a token may see. */
@@ -3017,6 +3063,7 @@ async function ghProxy(request, env, ghPath) {
     // PUTting raw markup here. For HTML pages, refuse any write that INTRODUCES
     // executable markup (script/handlers/dangerous URLs/framing) not already in
     // the committed version. Fails CLOSED — a guard error blocks the write.
+    let oldB64 = null;
     if (isHtmlPath(filePath)) {
       let newHtml;
       const curSha = parsedBody.sha;
@@ -3028,12 +3075,22 @@ async function ghProxy(request, env, ghPath) {
           const itok0 = await installationToken(env, sess.repo);
           const blob = await fetch(`${GH}/repos/${sess.repo}/git/blobs/${curSha}`,
             { headers: { Authorization: `Bearer ${itok0}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
-          if (blob.ok) oldHtml = utf8FromB64((await blob.json()).content);
+          if (blob.ok) { oldB64 = (await blob.json()).content; oldHtml = utf8FromB64(oldB64); }
           else return json({ error: 'could not verify page content safely' }, 502);
         } catch { return json({ error: 'could not verify page content safely' }, 502); }
       }
       const bad = checkDocumentWrite(oldHtml, newHtml);
       if (bad) return json({ error: 'blocked: editors cannot add scripts or executable markup to a page', detail: bad }, 403);
+    }
+    // Section scope: an editor limited to some parts of a page changes only
+    // those parts, compared with the page's file as it is (GitHub takes the
+    // write only if `sha` is still the file's current version). Drafts and
+    // suggestion previews on kiln scratch branches are left to the check on
+    // the way to the live branch.
+    const toBranch = typeof parsedBody.branch === 'string' ? parsedBody.branch : '';
+    if (hasSectionLimit(sess.keys) && !KILN_BRANCH_RE.test(toBranch)) {
+      const r = sectionWriteRefusal(sess, filePath, { isNew: !parsedBody.sha, oldB64, newB64: parsedBody.content });
+      if (r) return sectionRefused(r, filePath);
     }
   }
   // A blob is created before anything says where it will live, so the only
@@ -3295,17 +3352,39 @@ async function commitDiffInScope(env, itok, sess, bodyText, { branch } = {}) {
     // Content guard on the git-data write path (new post / multi-file commit):
     // for every changed HTML blob, diff its markup against the parent version and
     // refuse any newly-introduced executable content. Fails CLOSED on any error.
-    const blobText = async (sha) => {
-      const r = await fetch(`${GH}/repos/${sess.repo}/git/blobs/${sha}`, { headers: { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
-      if (!r.ok) throw new Error(`blob ${sha} ${r.status}`);
-      return utf8FromB64((await r.json()).content);
+    const blobsRead = new Map();
+    const blobB64 = async (sha) => {
+      if (!blobsRead.has(sha)) {
+        const r = await fetch(`${GH}/repos/${sess.repo}/git/blobs/${sha}`, { headers: { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+        if (!r.ok) throw new Error(`blob ${sha} ${r.status}`);
+        blobsRead.set(sha, (await r.json()).content);
+      }
+      return blobsRead.get(sha);
     };
+    const blobText = async (sha) => utf8FromB64(await blobB64(sha));
     for (const p of changed) {
       if (!isHtmlPath(p) || !after.has(p)) continue; // removals need no content check
       const newHtml = await blobText(after.get(p));
       const oldHtml = before.has(p) ? await blobText(before.get(p)) : null;
       const bad = checkDocumentWrite(oldHtml, newHtml);
       if (bad) return json({ error: 'blocked: editors cannot add scripts or executable markup to a page', path: p, detail: bad }, 403);
+    }
+    // Section scope: each page this commit changes, compared with its parent
+    // version, changes only the editor's parts; uploads pass; a new page, a
+    // stylesheet or any other file does not. Held when the commit is made
+    // (branch not known yet) and again when a branch is moved to it; a kiln
+    // scratch branch (drafts, previews) is left to the check on the way live.
+    if (hasSectionLimit(sess.keys) && !(typeof branch === 'string' && KILN_BRANCH_RE.test(branch))) {
+      for (const p of changed) {
+        if (!after.has(p)) continue;
+        const html = isHtmlPath(p);
+        const r = sectionWriteRefusal(sess, p, {
+          isNew: !before.has(p),
+          oldB64: html && before.has(p) ? await blobB64(before.get(p)) : null,
+          newB64: html ? await blobB64(after.get(p)) : null,
+        });
+        if (r) return sectionRefused(r, p);
+      }
     }
     return null;
   } catch (err) {

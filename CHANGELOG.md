@@ -8,6 +8,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A limit to parts of a page is kept by Kiln’s sign-in service, not only by
+  the editing screen.** An editor limited to some parts of a page could change
+  any part of it by sending a save straight to the service. Now every save is
+  compared with the page as it is: a change outside the editor’s parts is
+  refused, and the refusal names the part. This holds for a single save,
+  pictures saved with a page, scheduled changes (when made and again when they
+  go out) and putting a page back to an older version. Such an editor cannot add
+  pages, copy them, or change page settings, the menu or the theme. Editors
+  without a limit to parts work as before.
 - The content filter library (DOMPurify) is 3.4.17. Versions up to 3.4.16
   carry published advisories, one about cleaning a part of the page in place,
   which is how the editor uses it. The weekly advisory check on GitHub had

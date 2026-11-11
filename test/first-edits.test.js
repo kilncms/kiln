@@ -89,8 +89,10 @@ test('People & access is said to an owner', () => {
   assert.match(PEOPLE_WORDS.pagesHint, /whole site/);
   assert.match(PEOPLE_WORDS.pagesHint, /never theirs to change/);
   // An owner is told, where the choice is made, what a limit to parts of a page holds and who can read members pages.
-  assert.match(PEOPLE_WORDS.keysTrust, /holds an editor to the pages you choose/);
-  assert.match(PEOPLE_WORDS.keysTrust, /people you trust/);
+  assert.match(PEOPLE_WORDS.keysTrust, /holds an editor to the pages and the parts you choose/);
+  assert.match(PEOPLE_WORDS.keysTrust, /cannot add pages or change page settings, the menu or the theme/);
+  // The server keeps the limit now (worker/section-scope.js): no caveat that only the browser does.
+  assert.doesNotMatch(PEOPLE_WORDS.keysTrust, /only by the editing screen|people you trust/);
   assert.match(PEOPLE_WORDS.membersRead, /every editor you invite can read them/);
   const panel = main.slice(main.indexOf('async function invitePanel('), main.indexOf('// ─── History (per-page restore points)'));
   assert.equal(/Comma-separated|CNAME|indefinite access|font-size:12px/.test(panel), false);
