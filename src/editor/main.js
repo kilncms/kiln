@@ -46,7 +46,7 @@ import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
-import { draftRecord, readDraft, draftHolds, TYPED, openBoxEdit } from './saved-edits.js';
+import { draftRecord, readDraft, draftHolds, TYPED, openBoxEdit, openListEdit } from './saved-edits.js';
 import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
@@ -2005,8 +2005,8 @@ function tidyBlocks(box) {
   DOMPurify.sanitize(box, { ...CONTAINER_SANITIZE, IN_PLACE: true });
 }
 
-function stageContainer(container, key) {
-  const clone = containerCleanHtml(container);
+/** A cleaned copy of a list, sanitized as it is staged; null when sanitizing flattened its blocks. */
+function stagedListHtml(clone) {
   // Sanitize the cloned NODE in place rather than round-tripping through a
   // string: DOMPurify's string mode re-parses the fragment in <body> context,
   // where the HTML parser itself drops table tags (<tr>, <td>…) before the
@@ -2014,12 +2014,16 @@ function stageContainer(container, key) {
   // <tbody data-cms-repeat> schedule. IN_PLACE keeps the real tree.
   const hadChildren = clone.children.length;
   DOMPurify.sanitize(clone, { ...CONTAINER_SANITIZE, IN_PLACE: true });
-  const html = clone.innerHTML;
+  return hadChildren && !clone.children.length ? null : clone.innerHTML;
+}
+
+function stageContainer(container, key) {
+  const html = stagedListHtml(containerCleanHtml(container));
 
   // Guard: if sanitizing still dropped the block's element structure (an
   // allowlist gap — e.g. a tag we didn't anticipate), REFUSE to stage rather
   // than publish flattened text that would permanently destroy the block.
-  if (hadChildren && !clone.children.length) {
+  if (html === null) {
     console.error('[kiln] refusing to stage: sanitizing flattened block structure', { key, html });
     setStatus('This block uses markup Kiln couldn’t safely keep — edit NOT staged. Please report this.', 'error');
     return;
@@ -9014,13 +9018,29 @@ function savePendingToStorage() {
 }
 
 // Words typed in a box that is still open are kept like a finished edit: a
-// reload or a closed tab offers them back. (Not yet for a box inside a list:
-// a list is kept as a whole, when the box is left.)
+// reload or a closed tab offers them back. A box inside a list is kept as the
+// whole list, with the box's words as they are now.
 function withOpenBox(pending) {
   const el = state.active, key = el && el.getAttribute('data-cms');
-  if (!key || el.closest('[data-cms-repeat]') || el.hasAttribute(SOURCE_ATTR)) return pending;
+  if (!key || el.hasAttribute(SOURCE_ATTR)) return pending;
+  const list = el.closest('[data-cms-repeat]');
+  if (list) {
+    const plain = el.hasAttribute('data-cms-plain');
+    const now = fieldValue(el.innerHTML, plain);
+    const before = typeof activeOriginalHtml === 'string' ? fieldValue(activeOriginalHtml, plain) : undefined;
+    return openListEdit(pending, list.getAttribute('data-cms-repeat'), { now, before, listHtml: now === before ? null : openListHtml(list, el, now) });
+  }
   return openBoxEdit(pending, key, fieldValue(el.innerHTML, el.hasAttribute('data-cms-plain')),
     state.undoBase.has(key) ? fieldValue(state.undoBase.get(key), el.hasAttribute('data-cms-plain')) : undefined);
+}
+/** The list as it would be staged, with the open box `el` holding `value` (the box's words as its field keeps them). */
+function openListHtml(list, el, value) {
+  const at = [...list.querySelectorAll('[data-cms]')].indexOf(el);
+  const clone = containerCleanHtml(list);
+  const twin = at < 0 ? null : clone.querySelectorAll('[data-cms]')[at];
+  if (!twin || twin.getAttribute('data-cms') !== el.getAttribute('data-cms')) return null;
+  twin.innerHTML = value;
+  return stagedListHtml(clone);
 }
 let typingSaveTimer = 0;
 document.addEventListener('input', (e) => {

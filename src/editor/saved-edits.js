@@ -36,6 +36,17 @@ export function openBoxEdit(pending, key, html, base) {
   return out;
 }
 
+/**
+ * The same for a box inside a list, which is kept as the whole list: `now` and
+ * `before` are the box's own words now and when it was opened, `listHtml` the
+ * list as it would be staged with those words in it (null when it could not
+ * be made safely). A box not changed adds nothing.
+ */
+export function openListEdit(pending, listKey, { now, before, listHtml }) {
+  if (!listKey || typeof now !== 'string' || now === before || typeof listHtml !== 'string') return pending;
+  return openBoxEdit(pending, listKey, listHtml);
+}
+
 /** Where typed words can be put back, and what the sentences call them there. */
 export const TYPED = {
   comment: 'your comment',
