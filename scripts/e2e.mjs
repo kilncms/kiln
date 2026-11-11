@@ -474,7 +474,22 @@ export async function run(cfg, rawIo) {
       await editors.settle(plain);
     });
     const head = async () => (await owner.request('GET', `/repos/${R}/git/ref/${encodeURIComponent('heads/' + cfg.branch)}`)).object.sha;
-    const noted = async () => { lastOurs = await head(); wrote = true; };
+    // GitHub can answer a read with the old state for a moment after a write.
+    // After a write that succeeded, the branch is read again until it has
+    // moved, and a file until it says what was just written, so a slow answer
+    // is not taken for "the edit did not land" or, at clean-up, for somebody
+    // else's commit.
+    const noted = async () => {
+      const before = lastOurs || start;
+      let now = await head();
+      for (let i = 0; i < 6 && now === before; i++) { if (io.sleep) await io.sleep(1500); now = await head(); }
+      lastOurs = now; wrote = true;
+    };
+    const pageWhen = async (gh, ok) => {
+      let f = await getFile(gh, R, 'index.html', cfg.branch);
+      for (let i = 0; i < 6 && !ok(f.text); i++) { if (io.sleep) await io.sleep(1500); f = await getFile(gh, R, 'index.html', cfg.branch); }
+      return f;
+    };
     const P = `/repos/${R}`;
 
     // ── An editor with the default tools ──
@@ -489,7 +504,7 @@ export async function run(cfg, rawIo) {
       if (next.applied.length !== 1) throw new Error(`the field "${field}" could not be edited`);
       await putFile(plain.gh, R, 'index.html', { text: next.html, sha: cur.sha, branch: cfg.branch, message: `E2E ${run}: edit ${field} (via Kiln)` });
       await noted();
-      if (!(await getFile(owner, R, 'index.html', cfg.branch)).text.includes(marker)) throw new Error('the repository does not hold the edit');
+      if (!(await pageWhen(owner, t => t.includes(marker))).text.includes(marker)) throw new Error('the repository does not hold the edit');
       return lastOurs.slice(0, 7);
     });
     if (cfg.site) {
@@ -502,10 +517,10 @@ export async function run(cfg, rawIo) {
       });
     }
     await step('editor puts the page back, byte for byte', async () => {
-      const cur = await getFile(plain.gh, R, 'index.html', cfg.branch);
+      const cur = await pageWhen(plain.gh, t => t.includes(marker));
       await putFile(plain.gh, R, 'index.html', { text: original, sha: cur.sha, branch: cfg.branch, message: `E2E ${run}: restore ${field} (via Kiln)` });
       await noted();
-      if ((await getFile(owner, R, 'index.html', cfg.branch)).text !== original) throw new Error('the page is not what it was');
+      if ((await pageWhen(owner, t => t === original)).text !== original) throw new Error('the page is not what it was');
     });
     await step('editor publishes two pictures in one commit (the staged-upload path: blobs, tree, commit, branch move)', async () => {
       const c = await commitFiles(plain.gh, R, cfg.branch, [
