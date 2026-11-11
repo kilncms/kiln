@@ -67,7 +67,8 @@ import { whereTo } from './in-view.js';
 import { findTwin, notHereWords } from './not-here.js';
 import { missingEvent, missingPerson, scheduleTitle, pickBarWords, removedHold, PEOPLE_WORDS, tooBigForDemo, headingVars, ADDED_CSS } from './first-edits.js';
 import { demoSays, demoShort, DEMO_DRAFT_SAVED, DEMO_HISTORY_EMPTY, DEMO_HISTORY_NOTE,
-  historyEntry, withEntry, undoChanges, goBackChanges, partVersions, hasPublished } from './tryout.js';
+  historyEntry, withEntry, undoChanges, goBackChanges, partVersions, hasPublished, HISTORY_MAX, DEMO_HISTORY_CAP } from './tryout.js';
+import { commitPager, addPartRows, OLDER_LABEL, OLDER_LOADING, OLDER_FAILED, FIRST_OF_PAGE, FIRST_OF_PART } from './older-versions.js';
 
 const cfg = window.KILN || {};
 const mode = window.__KILN_MODE || 'admin';
@@ -6719,6 +6720,8 @@ function demoHistory(m) {
     if (rBtn) rBtn.onclick = () => back(goBackChanges(entries, at), `the page as it was ${escapeHtml(when)}`);
     list.appendChild(row);
   });
+  // The demo keeps only the newest publishes of each page, and says so.
+  if (entries.length >= HISTORY_MAX) list.insertAdjacentHTML('afterend', `<p class="kiln-dim">${escapeHtml(DEMO_HISTORY_CAP)}</p>`);
 }
 
 /** `resume`: { sha, name } puts a name that was being typed back on that version's row (after signing in again). */
@@ -6872,15 +6875,19 @@ async function historyPanel(resume = null) {
     '<h4>Named versions</h4><div id="kiln-nv" class="kiln-inv-list"><p class="kiln-dim">Loading…</p></div><h4>Recent publishes</h4>');
   loadNamedVersions();
 
+  // Every publish is listed: the newest 20 first, then 20 more each time
+  // "Show older versions" is pressed, down to the first version.
+  const pager = commitPager(state.gh, cfg.repo, state.page.path);
   let commits = [];
   try {
-    commits = await state.gh.request('GET',
-      `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=20`);
+    commits = await pager.next();
   } catch (err) { list.textContent = ''; status.textContent = stopped(err) || notDone('The history could not be read.', err); return; }
 
   list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No saved versions yet — they appear after your first publish.</p>';
 
-  commits.forEach((c, i) => {
+  let shown = 0;
+  const addRow = (c) => {
+    const i = shown++;
     const div = document.createElement('div');
     div.className = 'kiln-inv-row kiln-hist-row';
     const when = new Date(c.commit.author.date).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -6900,7 +6907,52 @@ async function historyPanel(resume = null) {
       nameVersionInline(div, c);
       div.querySelector('.kiln-nv-input').value = resume.name.slice(0, 40);
     }
-  });
+  };
+  commits.forEach(addRow);
+  if (!commits.length) return;
+  const older = olderVersionsControl(async () => { (await pager.next()).forEach(addRow); return !pager.done; }, FIRST_OF_PAGE);
+  list.after(older.el);
+  if (pager.done) older.end();
+}
+
+/**
+ * "Show older versions" at the end of a History list. `load()` adds the next
+ * page's rows and says whether more may follow; at the end a quiet line says
+ * the list has reached the first version. While a page loads the button says
+ * so and cannot be pressed again; a failed page says so and can be tried again.
+ */
+function olderVersionsControl(load, firstLine) {
+  const el = document.createElement('div');
+  el.className = 'kiln-hist-more';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'kiln-btn-ghost';
+  btn.textContent = OLDER_LABEL;
+  const note = document.createElement('p');
+  note.className = 'kiln-dim';
+  note.setAttribute('role', 'status');
+  el.append(btn, note);
+  const end = () => {
+    const line = document.createElement('p');
+    line.className = 'kiln-dim kiln-hist-first';
+    line.textContent = firstLine;
+    el.replaceChildren(line);
+  };
+  btn.onclick = async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = OLDER_LOADING;
+    note.textContent = '';
+    try {
+      if (!(await load())) { end(); return; }
+    } catch (err) {
+      const why = stopped(err);
+      note.textContent = why ? `${OLDER_FAILED} ${why}` : notDone(OLDER_FAILED, err);
+    }
+    btn.disabled = false;
+    btn.textContent = OLDER_LABEL;
+  };
+  return { el, end };
 }
 
 /**
@@ -6985,17 +7037,22 @@ async function fieldHistoryPanel(key, isRepeat = false) {
     draw();
     return;
   }
+  // The page's publishes 20 at a time, as in the page's History; each page
+  // read adds the versions where this section changed.
+  const pager = commitPager(state.gh, cfg.repo, state.page.path);
+  const loadPage = async () => {
+    const commits = await pager.next();
+    const items = [];
+    for (const c of commits) items.push({ c, v: readValues(await histFile(c.sha))[key] });
+    addPartRows(rows, items);
+  };
   try {
-    const commits = await state.gh.request('GET',
-      `/repos/${cfg.repo}/commits?path=${encodeURIComponent(state.page.path)}&per_page=15`);
-    let lastVal = null;
-    for (const c of commits.slice(0, 12)) {
-      const text = await histFile(c.sha);
-      const v = readValues(text)[key];
-      if (v === undefined) continue;
-      if (v !== lastVal) { rows.push({ c, v }); lastVal = v; }
-    }
+    await loadPage();
     draw();
+    if (!rows.length) return;
+    const older = olderVersionsControl(async () => { await loadPage(); draw(); return !pager.done; }, FIRST_OF_PART);
+    box.after(older.el);
+    if (pager.done) older.end();
   } catch (err) { box.innerHTML = `<p class="kiln-dim">${escapeHtml(stopped(err) || notDone('The history could not be read.', err))}</p>`; }
 }
 
@@ -9337,6 +9394,8 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 #kiln-previewbar small{display:block;color:#9ca3af;font-size:11.5px}
 #kiln-previewbar .kiln-btn-publish{white-space:nowrap}
 .kiln-hist-row{flex-wrap:wrap}
+.kiln-hist-more{display:flex;flex-direction:column;align-items:flex-start;margin-top:8px}
+.kiln-hist-more .kiln-dim{margin-top:6px}
 .kiln-hist-acts{display:flex;gap:6px;flex:none}
 .kiln-hist-acts .kiln-btn-ghost,.kiln-cmt-thread .kiln-btn-ghost{font-size:11.5px;padding:5px 10px;white-space:nowrap}
 /* Ghost buttons are styled for the dark menu — inside white modals (history

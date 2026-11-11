@@ -66,6 +66,7 @@ export const DEMO_HISTORY_EMPTY = 'Nothing is published yet in your demo. Publis
 export const DEMO_HISTORY_NOTE = 'This is the history of your private demo, kept in this browser. On a real site every publish is kept in the site’s own history, with the name of the person who made it.';
 
 export const HISTORY_MAX = 20;   // publishes kept per page
+export const DEMO_HISTORY_CAP = `Your demo keeps the newest ${HISTORY_MAX} publishes of each page, so older ones are not listed. A real site keeps every publish, and History can show all of them.`;
 
 /**
  * One publish, as the demo's history keeps it: when, the note it was given,

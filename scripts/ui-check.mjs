@@ -3038,6 +3038,14 @@ async function runSignInEverywhere(browser, size) {
  * the page itself, in no frames; and signing out with an edit waiting asks in
  * the editor's own dialog, never the browser's box.
  */
+/** The fake's commit list, newest first, one page of it, the way GitHub pages it (per_page, page). */
+function commitsPage(versions, u) {
+  const per = Number(u.searchParams.get('per_page')) || 30;
+  const pg = Number(u.searchParams.get('page')) || 1;
+  return [...versions].reverse().map((v, i, all) => ({ sha: v.sha, parents: all[i + 1] ? [{ sha: all[i + 1].sha }] : [],
+    commit: { message: v.message, author: { name: v.by, date: new Date(Date.now() - i * 60000).toISOString() } } })).slice((pg - 1) * per, pg * per);
+}
+
 async function runRealSites(browser, size) {
   const phone = size.width < 600;
   const scope = `${size.width}x${size.height} real sites  `;
@@ -3204,8 +3212,7 @@ async function runRealSites(browser, size) {
         return json({ commit: { sha }, content: {} });
       }
       if (p === `/gh/repos/${REPO}/commits`) {
-        return json([...versions].reverse().map((v, i, all) => ({ sha: v.sha, parents: all[i + 1] ? [{ sha: all[i + 1].sha }] : [],
-          commit: { message: v.message, author: { name: v.by, date: new Date(Date.now() - i * 60000).toISOString() } } })));
+        return json(commitsPage(versions, u));
       }
       if (p.startsWith(`/gh/repos/${REPO}/git/matching-refs/`)) return json([]);
       if (p === `/gh/repos/${REPO}/contents`) return json([{ path: 'index.html', type: 'file' }, { path: 'assets', type: 'dir' }]);
@@ -3303,6 +3310,102 @@ async function runRealSites(browser, size) {
       await page.waitForTimeout(1200);
       check(scope, '"Discard and sign out" signs out', !(await page.evaluate(() => localStorage.getItem('kiln_editor'))));
     }
+    check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+    check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
+    await context.close();
+  }
+
+  // ── History on a page published 45 times: older versions, down to the first ─
+  {
+    const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+    await context.addInitScript(([repo]) => {
+      try { localStorage.setItem('kiln_editor', JSON.stringify({ session: 'b'.repeat(64), name: 'Sam', repo, role: 'editor' })); localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ }
+    }, [REPO]);
+    // Publish n (1 = the first) gives the first heading the words "Version n".
+    const H1 = /(<h1[^>]*data-cms="[^"]+"[^>]*>)([^<]*)(<\/h1>)/;
+    const versions = Array.from({ length: 45 }, (_, i) => ({ sha: `v${i + 1}`.padEnd(40, 'f'), text: source.replace(H1, `$1Version ${i + 1}$3`), message: `Publish number ${i + 1} (via Kiln)`, by: 'Sam (via Kiln)' }));
+    const asked = [];
+    let failPage = 0;   // a page of commits that fails once
+    const blocked = [];
+    await context.route('**/*', async (route) => {
+      const req = route.request();
+      const u = new URL(req.url());
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': ORIGIN }, body: JSON.stringify(body) });
+      if (u.origin === ORIGIN && u.pathname.endsWith('kiln-config.js')) {
+        return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
+      }
+      if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
+      if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+      const p = decodeURIComponent(u.pathname);
+      const head = versions[versions.length - 1];
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
+      if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: null, mode: null } });
+      if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'] });
+      if (p === `/gh/repos/${REPO}/contents/${file}` && req.method() === 'GET') {
+        const ref = u.searchParams.get('ref');
+        const v = versions.find(x => x.sha === ref) || (ref === 'main' ? head : null);
+        return v ? json({ sha: `blob-${v.sha}`, content: b64(v.text) }) : json({ message: 'Not Found' }, 404);
+      }
+      if (p === `/gh/repos/${REPO}/commits`) {
+        asked.push(u.search);
+        if (u.searchParams.get('page') !== '1') await new Promise(r => setTimeout(r, 400));   // older pages take a moment
+        if (failPage && u.searchParams.get('page') === String(failPage)) { failPage = 0; return json({ message: 'Server Error' }, 502); }
+        return json(commitsPage(versions, u));
+      }
+      if (p.startsWith(`/gh/repos/${REPO}/git/matching-refs/`)) return json([]);
+      if (p === `/gh/repos/${REPO}/contents`) return json([{ path: 'index.html', type: 'file' }, { path: 'assets', type: 'dir' }]);
+      if (p === `/gh/repos/${REPO}/git/ref/heads/main`) return json({ object: { sha: head.sha } });
+      if (p.includes('/deployments')) return json([]);
+      if (p.endsWith('/status')) return json({ total_count: 0 });
+      return json({ message: 'Not Found' }, 404);
+    });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(700);
+    await press(page.locator('#kiln-fab'));
+    await page.waitForTimeout(300);
+    await press(page.locator('#kiln-history'));
+    const rows = page.locator('#kiln-hist .kiln-hist-row');
+    await rows.first().waitFor({ state: 'visible', timeout: 5000 });
+    const more = page.locator('#kiln-modal .kiln-hist-more button');
+    check(scope, 'History of 45 publishes lists the newest 20 first', (await rows.count()) === 20, `${await rows.count()} rows`);
+    check(scope, 'with "Show older versions" at the end', (await more.count()) === 1 && (await more.textContent()).trim() === 'Show older versions');
+    // A page of older versions that fails says so and can be tried again.
+    failPage = 2;
+    await more.scrollIntoViewIfNeeded();
+    await press(more);
+    await page.waitForTimeout(600);
+    const note = page.locator('#kiln-modal .kiln-hist-more .kiln-dim');
+    check(scope, 'a failed load says so in plain words', /^The older versions could not be read\. .*try again/i.test((await note.textContent().catch(() => '')) || ''), ((await note.textContent().catch(() => '')) || '').slice(0, 80));
+    check(scope, 'and can be tried again', (await rows.count()) === 20 && (await more.isEnabled()));
+    // Pressed twice quickly: one page is asked for, once.
+    const before = asked.length;
+    await more.click({ noWaitAfter: true });
+    const said = (await more.textContent()).trim();
+    await more.click({ force: true, noWaitAfter: true, timeout: 500 }).catch(() => {});
+    await page.waitForTimeout(800);
+    check(scope, 'while loading the control says so', said === 'Loading older versions…', said);
+    check(scope, 'and pressing twice loads one page', asked.length - before === 1 && (await rows.count()) === 40, `${asked.length - before} asks, ${await rows.count()} rows`);
+    await press(more);
+    await page.waitForTimeout(800);
+    check(scope, 'the last page lists the first publish', (await rows.count()) === 45 && /Publish number 1\b/.test(await rows.last().innerText()), `${await rows.count()} rows`);
+    const first = page.locator('#kiln-modal .kiln-hist-first');
+    check(scope, 'and the control gives way to a quiet line', (await more.count()) === 0 && (await first.textContent().catch(() => '')) === 'This is the first version of this page.');
+    check(scope, 'each page was asked for by number, 20 at a time', [...new Set(asked)].join(' ') === [1, 2, 3].map(n => `?path=${encodeURIComponent(file)}&per_page=20&page=${n}`).join(' '), asked.join(' '));
+    await rows.last().scrollIntoViewIfNeeded();
+    await shot('real-history-older');
+    // An old version comes back exactly as a new one does.
+    const back = rows.nth(40).locator('button', { hasText: 'Go back to this' });
+    await press(back);
+    await page.waitForTimeout(1500);
+    const bar = page.locator('#kiln-previewbar');
+    const h1 = await page.evaluate(() => document.querySelector('h1[data-cms]')?.textContent || '');
+    check(scope, '"Go back to this" on an old version shows it on the page', await bar.isVisible().catch(() => false) && h1 === 'Version 5', h1);
+    await shot('real-history-older-back');
     check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
     check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
     await context.close();
