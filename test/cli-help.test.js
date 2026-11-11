@@ -137,10 +137,11 @@ test('KLR-21 --version prints one line', () => {
 
 test('KLR-21 when input ends at a prompt the exit code is 1, not a quiet 0', () => {
   const s = site();
-  // doctor with nothing to go on asks for the site address; there is no one to answer.
+  // doctor with nothing to go on would ask for the site address; with no
+  // terminal there is no one to answer, so it names the options instead.
   const d = kiln(s.dir, ['doctor']);
   assert.equal(d.code, 1, d.all);
-  assert.match(d.err, /Input ended while Kiln was waiting for an answer/);
+  assert.match(d.err, /not a terminal\. Run it again with --site <url>/);
   // The wizard asks which route.
   const w = kiln(s.dir, []);
   assert.equal(w.code, 1, w.all);

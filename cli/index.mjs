@@ -280,7 +280,7 @@ async function doctor(args) {
   // ever: name the options instead of asking.
   const unasked = [!site && '--site <url>', !repo && '--repo <owner/name>', !worker && '--worker <url>'].filter(Boolean);
   if (unasked.length && !process.stdin.isTTY) {
-    fail(`doctor cannot ask questions here, because this is not a terminal. Run it again with ${unasked.join(' ')}.`);
+    console.error(`\n  ❌ doctor cannot ask questions here, because this is not a terminal. Run it again with ${unasked.join(' ')}.`);
     process.exit(1);
   }
   site ||= await ask('Site URL (https://…)');
