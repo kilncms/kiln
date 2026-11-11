@@ -110,6 +110,9 @@
       gal.addEventListener('click', (e) => {
         const img = e.target.closest('img');
         if (!img || !gal.contains(img)) return;
+        // The editor came up after this page did (or its session could not be
+        // stored): a press on a photo is the editor's, to replace or describe it.
+        if (document.getElementById('kiln-fab')) return;
         e.preventDefault();
         openLightbox(imgs(), imgs().indexOf(img));
       });

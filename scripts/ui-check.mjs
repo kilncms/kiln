@@ -1459,6 +1459,7 @@ async function runFirstEdits(browser, size) {
   const picture = page.locator('img.kiln-field[data-cms-attr="src"]').first();
   if (await picture.count()) {
     const upload = async (file) => {
+      const altWas = (await picture.getAttribute('alt')) || '';
       await press(picture);
       await page.waitForTimeout(400);
       await press(page.locator('#kiln-toolbar [data-act="replace"]'));
@@ -1469,6 +1470,17 @@ async function runFirstEdits(browser, size) {
       for (let i = 0; i < 60; i++) { await page.waitForTimeout(300); if (!/Adding image/.test(await page.evaluate(() => document.getElementById('kiln-status')?.innerText || ''))) break; }
       await page.waitForTimeout(500);
       const said = await page.evaluate(() => document.getElementById('kiln-status')?.innerText.replace(/\s+/g, ' ') || '');
+      // a picture that went in is described next, starting from the old picture's words
+      const ask = page.locator('#kiln-describe');
+      if (await ask.count()) {
+        const asked = await page.evaluate(() => document.querySelector('.kiln-describe').innerText.replace(/\s+/g, ' '));
+        check(scope, 'a replaced picture is described next, in plain words, starting from the old description',
+          /Describe this picture for people who cannot see it\./.test(asked) && !/alt text/i.test(asked) && (await ask.inputValue()) === altWas.trim(), `${asked} / “${await ask.inputValue()}”`);
+        await ask.fill('A new picture, described');
+        await press(page.locator('#kiln-describe-go'));
+        await page.waitForTimeout(300);
+        check(scope, 'and the new description is on the picture', (await picture.getAttribute('alt')) === 'A new picture, described', await picture.getAttribute('alt'));
+      }
       if (await page.locator('#kiln-toolbar [data-act="done"]').count()) { await press(page.locator('#kiln-toolbar [data-act="done"]')); await page.waitForTimeout(300); }
       return said;
     };
@@ -2067,6 +2079,7 @@ async function runSignedIn(browser, size, opts = {}) {
     await page.waitForTimeout(1800);
     const staged = (await picture.getAttribute('data-kiln-src')) || '';
     check(scope, 'an uploaded picture waits for Publish', /^\/assets\/uploads\/img-/.test(staged), staged);
+    if (await page.locator('#kiln-describe').count()) { await press(page.locator('#kiln-describe-go')); await page.waitForTimeout(300); }
     if (await page.locator('#kiln-toolbar [data-act="done"]').count()) await press(page.locator('#kiln-toolbar [data-act="done"]'));
     await page.waitForTimeout(600);
     await page.reload({ waitUntil: 'load' });

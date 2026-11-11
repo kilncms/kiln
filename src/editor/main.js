@@ -59,6 +59,7 @@ import { plainName, readableName } from './names.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
 import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists } from './one-paragraph.js';
 import { askFirst, askWhich, ownDialogCopy } from './own-dialogs.js';
+import { askDescription, LATER_WORDS } from './describe-picture.js';
 import { coverBottom, isUnder, isSiteBar } from './under-bar.js';
 import { fabSpot, isHiddenBox } from './fab-place.js';
 import { whereTo } from './in-view.js';
@@ -2237,7 +2238,7 @@ function baseHtml(el) {
 
 // ─── Images ──────────────────────────────────────────────────────────────────
 
-/** Mini toolbar for images: replace, alt text, done. */
+/** Mini toolbar for images: replace, description, done. */
 function imageToolbar(img, key) {
   beginKey(key, img);   // what Undo goes back to: the picture showing now, which a lazy loader may have put there since the editor started
   removeToolbar();
@@ -2249,8 +2250,8 @@ function imageToolbar(img, key) {
     <button class="kiln-tb-fmt kiln-tb-attach" data-act="replace">Replace image…</button>
     <span class="kiln-tb-hint">drag the ● corner to resize</span>
     <input class="kiln-href-input" data-act="alt" type="text" value="${escapeHtml(img.getAttribute('alt') || '')}"
-      placeholder="Describe this image (alt text)" title="Alt text — read by screen readers and search engines">
-    ${hasFeature('ai') ? '<button class="kiln-tb-fmt" id="kiln-ai" data-act="ai-alt" title="Describe this image with AI">✨ Alt text</button>' : ''}
+      placeholder="Describe this picture" title="What the picture shows, for people who can’t see it" aria-label="Picture description">
+    ${hasFeature('ai') ? '<button class="kiln-tb-fmt" id="kiln-ai" data-act="ai-alt" title="Have AI describe this picture">✨ Describe</button>' : ''}
     <button class="kiln-tb-save" data-act="done">Done</button>`;
   document.body.appendChild(tb);
   positionToolbar(tb, img);
@@ -2456,12 +2457,14 @@ function pageImages() {
 
 /** "Replace image…": upload a new picture, or choose one that is already on the site. */
 function replaceImage(img, key) {
+  const oldAlt = img.getAttribute('alt') || '';
   openImagePicker({
     modal,
-    upload: () => pickImage(img, key),
+    upload: () => pickImage(img, key, () => describeReplaced(img, key, oldAlt)),
     choose: (image) => {
       if (!chooseSiteImage(img, key, image.url, { stagePending, stageContainer, safeUrl })) return;
       setStatus(cfg.sandbox ? `“${image.name}” is in place. Publish to save it to your demo` : `“${image.name}” is in place. Publish to put it live`, 'saved');
+      describeReplaced(img, key, oldAlt);
     },
     request: cfg.sandbox ? null : (method, path) => state.gh.request(method, path),
     stopped,
@@ -2471,7 +2474,7 @@ function replaceImage(img, key) {
   });
 }
 
-function pickImage(img, key) {
+function pickImage(img, key, after) {
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'image/*';
@@ -2480,7 +2483,7 @@ function pickImage(img, key) {
     if (!file) return;
     try {
       setStatus('Adding image…', 'saving');
-      await addImageWithMaster(img, key, file);
+      if (await addImageWithMaster(img, key, file) && after) after();
     } catch (err) {
       console.error('[kiln] image upload', err);
       setStatus('Image upload failed', 'error');
@@ -2576,7 +2579,7 @@ async function addImageWithMaster(img, key, file) {
     else stagePending(key, { attrs: { src: img.src } });
     showResizeNow(img, key);
     setStatus('Image added — drag its ● corner to resize, then Publish', 'saved');
-    return;
+    return true;
   }
 
   const stamp = Date.now().toString(36);
@@ -2599,6 +2602,38 @@ async function addImageWithMaster(img, key, file) {
   else stageImageEl(img, key);
   showResizeNow(img, key);
   setStatus('Image added — drag its ● corner to resize, then Publish', 'saved');
+  return true;
+}
+
+/**
+ * A picture was just put in place of another: its description is asked for
+ * (describe-picture.js), with the old one's words to keep, change or clear.
+ * The answer is staged with the picture; put away unanswered, nothing changes
+ * and the line says the old words are still on it.
+ */
+async function describeReplaced(img, key, oldAlt) {
+  const typed = await askDescription(modal, oldAlt);
+  if (!img.isConnected) return;
+  // The picture's own toolbar, when it is still open, shows what the picture says now.
+  const box = document.querySelector('#kiln-toolbar [data-act="alt"]');
+  if (typed === null) {
+    if ((img.getAttribute('alt') || '').trim()) setStatus(LATER_WORDS, 'idle', { hold: 9000 });
+    return;
+  }
+  if (box) box.value = typed;
+  if (typed === (img.getAttribute('alt') || '')) return;
+  img.setAttribute('alt', typed);
+  img.classList.add('kiln-modified');
+  const repeat = img.closest('[data-cms-repeat]');
+  if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
+  else stagePending(key, { attrs: { alt: typed } });
+  const where = cfg.sandbox ? 'save it to your demo' : 'put it live';
+  setStatus(typed ? `The picture and its description are in place. Publish to ${where}.` : `The picture is in place, with no description. Publish to ${where}.`, 'saved');
+}
+
+/** An attribute's value as written in HTML, as a person reads it. */
+function attrText(v) {
+  return String(v).replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
 
 /** Right after an image is added/replaced: put the resize handle on it NOW
@@ -2947,9 +2982,15 @@ function publishItems({ light = false } = {}) {
           const was = imageSources(wasBlocks[c.from]), now = imageSources(nowBlocks[c.to]);
           const live = liveBlocks[c.to] ? [...liveBlocks[c.to].querySelectorAll('img')] : [];
           if (was.length === now.length) now.forEach((img, i) => {
-            if (was[i].src === img.src) return;
-            parts.push({ type: 'image', name: c.name, before: was[i].src, after: live[i]?.currentSrc || live[i]?.src || img.src });
-            said = true;
+            if (was[i].src !== img.src) {
+              parts.push({ type: 'image', name: c.name, before: was[i].src, after: live[i]?.currentSrc || live[i]?.src || img.src });
+              said = true;
+            }
+            // its description, said beside the picture it describes
+            if ((was[i].alt ?? '') !== (img.alt ?? '')) {
+              parts.push({ type: 'text', name: 'Picture description', before: attrText(was[i].alt ?? ''), after: attrText(img.alt ?? '') });
+              said = true;
+            }
           });
           // neither words nor a picture: a link's address, a tag, a size
           if (!said) parts.push({ type: 'note', text: `Changed: ${c.name}` });
@@ -7556,7 +7597,7 @@ function makeDialog(el) {
   const inRepeat = !!el.closest('[data-cms-repeat]');
   const key = suggestKey(el);
   const kinds = isImg
-    ? [{ v: 'img', t: 'Swappable image', d: 'Click to replace, resize, and set alt text.' }]
+    ? [{ v: 'img', t: 'Swappable image', d: 'Click to replace it, resize it, and describe it.' }]
     : [
       { v: 'text', t: 'Editable text', d: 'Click-to-edit with formatting, links, images.' },
       { v: 'plain', t: 'Plain text only', d: 'No formatting allowed — safest for headings and labels.' },

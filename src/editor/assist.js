@@ -250,23 +250,23 @@ export async function assistAltText(img, key, altInput, anchor = altInput) {
   let abs = null;
   try { abs = new URL(img.currentSrc || img.getAttribute('src') || '', location.href); } catch { /* no usable src */ }
   if (!abs || (abs.protocol !== 'https:' && abs.protocol !== 'http:')) {
-    setStatus('This image isn’t published yet — publish it first, then generate alt text', 'idle');
+    setStatus('This picture isn’t published yet. Publish it first, then ask for a description.', 'idle');
     return;
   }
   setStatus('Looking at the image…', 'saving');
   let alt;
   try {
     ({ alt } = await aiRequest({ kind: 'alt', imageUrl: abs.href }));
-    setStatus('Alt text drafted — confirm it', 'idle');
+    setStatus('A description is written. Check it before it is used.', 'idle');
   } catch (err) {
     if (err.notConfigured) explainNotConfigured();
     else failed(err, 'The description was not written.');
     return;
   }
   const m = modal(`
-    <h3>✨ Alt text</h3>
-    <p class="kiln-dim">Read by screen readers and search engines. Edit it if the AI missed the point.</p>
-    <label>Alt text <input type="text" id="kiln-ai-alt" maxlength="300" value="${escapeHtml(alt)}"></label>
+    <h3>✨ Describe this picture</h3>
+    <p class="kiln-dim">Describe this picture for people who cannot see it: a screen reader reads these words aloud in its place. Change them if the AI missed the point.</p>
+    <label>What the picture shows <input type="text" id="kiln-ai-alt" maxlength="300" value="${escapeHtml(alt)}"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
       <button class="kiln-btn-publish" id="kiln-ai-alt-apply">Apply</button>
@@ -282,7 +282,7 @@ export async function assistAltText(img, key, altInput, anchor = altInput) {
     else stagePending(key, { attrs: { alt: value } });
     if (altInput?.isConnected) altInput.value = value;
     m.remove();
-    setStatus('Alt text staged — Publish to make it live', 'saved');
+    setStatus('The description is ready. Publish to put it live.', 'saved');
   };
 }
 
