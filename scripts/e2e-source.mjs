@@ -108,6 +108,19 @@ export async function run(cfg, rawIo, env = process.env) {
       await editors.settle(scoped);
     });
     const head = async () => (await owner.request('GET', `/repos/${R}/git/ref/${encodeURIComponent('heads/' + cfg.branch)}`)).object.sha;
+    // GitHub can answer a read with the old state for a moment after a write.
+    // After a write that succeeded, the branch is read again until it has
+    // moved (or is at the commit the worker named), so a slow answer is not
+    // taken for "the edit did not land" or, at clean-up, for somebody else's commit.
+    const headAfterWrite = async (expected = null) => {
+      const before = lastOurs || start;
+      let now = await head();
+      for (let i = 0; i < 6 && (expected ? now !== expected : now === before); i++) {
+        if (io.sleep) await io.sleep(1500);
+        now = await head();
+      }
+      return now;
+    };
     const commitBody = (file, edits, extra = {}) => ({ repo: R, branch: cfg.branch, adapter: 'astro', file, edits, ...extra });
     const P = `/repos/${R}`;
 
@@ -127,7 +140,7 @@ export async function run(cfg, rawIo, env = process.env) {
       if (res.status !== 200 || !body.ok || !body.commit?.sha) throw new Error(`answered ${res.status} ${JSON.stringify(body).slice(0, 200)}`);
       if ((body.applied || []).length !== 2 || (body.skipped || []).length) throw new Error(`applied ${JSON.stringify(body.applied)}, skipped ${JSON.stringify(body.skipped)}`);
       published = body.commit.sha;
-      lastOurs = await head(); wrote = true;
+      lastOurs = await headAfterWrite(); wrote = true;
       return published.slice(0, 7);
     });
     await step('on GitHub: one commit, by the editor, touching only that file', async () => {
@@ -175,7 +188,7 @@ export async function run(cfg, rawIo, env = process.env) {
       const res = await whole.post('/source/commit', commitBody(FILE, [{ pointer: '/frontmatter/title', value: theirs, was: title }],
         { message: `E2E ${runId}: someone else changes the title (via Kiln)` }));
       const body = await res.json().catch(() => ({}));
-      if (res.status === 200) lastOurs = await head();
+      if (res.status === 200) lastOurs = await headAfterWrite();
       if (res.status !== 200 || !body.ok || (body.applied || []).length !== 1) throw new Error(`answered ${res.status} ${JSON.stringify(body).slice(0, 200)}`);
       afterTheirs = (await getFile(owner, R, FILE, cfg.branch)).text;
       return body.commit.sha.slice(0, 7);
@@ -186,7 +199,7 @@ export async function run(cfg, rawIo, env = process.env) {
         { pointer: '/frontmatter/venue', value: venueTwo, was: venue },
       ], { message: `E2E ${runId}: edit title and venue again (via Kiln)` }));
       const body = await res.json().catch(() => ({}));
-      if (res.status === 200) lastOurs = await head();   // whatever it wrote is ours to put back
+      if (res.status === 200) lastOurs = await headAfterWrite();   // whatever it wrote is ours to put back
       const older = health.sourceWas === true ? '' : ' (this worker does not report sourceWas in /healthz: it is from before this check, and writes over the field without asking)';
       if (res.status !== 200 || !body.ok) throw new Error(`answered ${res.status} ${JSON.stringify(body).slice(0, 200)}${older}`);
       const skipped = body.skipped || [];
@@ -206,7 +219,7 @@ export async function run(cfg, rawIo, env = process.env) {
       const res = await scoped.post('/source/commit', commitBody(FILE, [{ pointer: '/frontmatter/title', value: mine, was: theirs }],
         { message: `E2E ${runId}: the title, knowingly (via Kiln)` }));
       const body = await res.json().catch(() => ({}));
-      if (res.status === 200) lastOurs = await head();
+      if (res.status === 200) lastOurs = await headAfterWrite();
       if (res.status !== 200 || !body.ok || (body.applied || []).length !== 1 || (body.skipped || []).length) throw new Error(`answered ${res.status} ${JSON.stringify(body).slice(0, 200)}`);
       const line = (await getFile(owner, R, FILE, cfg.branch)).text.split('\n')[fm(original, 'title')];
       if (!line.includes(mine)) throw new Error(`the title line is now: ${line}`);
@@ -243,7 +256,7 @@ export async function run(cfg, rawIo, env = process.env) {
       const body = await res.json().catch(() => ({}));
       if (res.status !== 200 || !body.ok || !body.commit?.sha) throw new Error(`answered ${res.status} ${JSON.stringify(body).slice(0, 200)}`);
       undone = body.commit.sha;
-      lastOurs = await head();
+      lastOurs = await headAfterWrite(undone);
       return undone.slice(0, 7);
     });
     await step('on GitHub: the content file is byte for byte what it was, in one more commit by the editor', async () => {
