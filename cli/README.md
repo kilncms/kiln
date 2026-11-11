@@ -1,4 +1,4 @@
-# create-kiln
+# Kiln setup tool
 
 The setup tool for [Kiln](https://kilncms.com), a click-to-edit CMS for static
 sites: your pages are plain HTML in your own GitHub repository, people you

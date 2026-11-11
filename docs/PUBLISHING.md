@@ -45,28 +45,31 @@ npm pack --dry-run             # 5 files: LICENSE, README.md, index.mjs, lib.mjs
 npm publish
 cd ..
 
-# 3. create-kiln — packs the built editor, the worker source and the templates with it
+# 3. @kilncms/create — packs the built editor, the worker source and the templates with it.
+#    cli/package.json still says "create-kiln" (name and bin): change both to
+#    @kilncms/create first (and test/packages.test.js with them), or this publish fails
 cd cli
 npm pack --dry-run             # 29 files; prepack copies dist/, worker/, src/, templates/ and LICENSE in, postpack removes them
 npm publish
 cd ..
 
-npm view @kilncms/astro version; npm view kiln-mcp version; npm view create-kiln version
+npm view @kilncms/astro version; npm view kiln-mcp version; npm view @kilncms/create version
 ```
 
 To publish a new version later: raise `version` in that package's
 `package.json`, commit, release, then the same commands.
 
-## After the first publish of `create-kiln`
+## After the first publish of `@kilncms/create`
 
 These were left as they are on purpose, because they would be wrong until the
 package exists:
 
 - The guides and the CLI's own messages say `npx github:kilncms/kiln#release`. Once
-  `create-kiln` is on npm, `npx create-kiln` is the shorter command for the
-  same thing; change the guides, then the messages in `cli/index.mjs`.
-- `cli/README.md` is the package's page on npm and already says
-  `npx create-kiln`.
+  `@kilncms/create` is on npm, `npm init @kilncms` (or `npx @kilncms/create`) is
+  the shorter command for the same thing; change the guides, then the messages
+  in `cli/index.mjs`. Never `npx create-kiln`: that runs the unrelated KilnJS.
+- `cli/README.md` is the package's page on npm: change its commands at the
+  same time.
 - The self-hosted route of the wizard copies `parse5` and `yaml` from
   `node_modules` next to the tool when it cannot reach npm. An installed
   package has its dependencies one level up instead, so that fallback does

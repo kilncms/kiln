@@ -76,6 +76,12 @@ test('KLR-20 the root package cannot be published by mistake, and nothing tells 
     const text = readFileSync(path.join(ROOT, f), 'utf8').replace(/may ever say `npx kiln …`/, '');
     assert.doesNotMatch(text, /npx kiln(\s|$|`)/m, `${f} says "npx kiln"`);
   }
+  // create-kiln on npm is an unrelated project (KilnJS): only ever named as the one not to run
+  for (const f of ['cli/README.md', 'cli/index.mjs', 'cli/new.mjs', 'cli/rescue.mjs', 'README.md', 'docs/for-site-owners.md', 'docs/self-hosting.md', 'docs/PUBLISHING.md', 'ENVIRONMENTS.md']) {
+    const text = readFileSync(path.join(ROOT, f), 'utf8').replace(/(Not|Never) `npx create-kiln`/g, '');
+    assert.doesNotMatch(text, /(npx|npm init|npm view|npm i(nstall)?) create-kiln/, `${f} tells someone to run create-kiln`);
+  }
+  assert.match(readFileSync(path.join(ROOT, 'cli', 'README.md'), 'utf8'), /^# Kiln setup tool\n/);
   assert.equal(existsSync(path.join(ROOT, 'docs', 'PUBLISHING.md')), true);
   assert.match(readFileSync(path.join(ROOT, 'docs', 'PUBLISHING.md'), 'utf8'), /npm publish/);
 });
