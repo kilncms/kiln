@@ -30,9 +30,9 @@ function pack(dir) {
 }
 const gitMode = (file) => spawnSync('git', ['-C', ROOT, 'ls-files', '-s', file], { encoding: 'utf8' }).stdout.slice(0, 6);
 
-test('KLR-20 create-kiln packs with everything the wizard copies, a readme, the licence, and an executable bin', () => {
+test('KLR-20 @kilncms/create packs with everything the wizard copies, a readme, the licence, and an executable bin', () => {
   const p = pack('cli');
-  assert.equal(p.name, 'create-kiln');
+  assert.equal(p.name, '@kilncms/create');   // never create-kiln: that name on npm is an unrelated project
   for (const f of ['LICENSE', 'README.md', 'package.json', 'index.mjs', 'new.mjs', 'rescue.mjs', 'dist/kiln.js', 'dist/kiln-editor.js', 'dist/kiln-features.js', 'dist/VERSION',
     'worker/index.js', 'worker/cloud.js', 'worker/source.js', 'worker/sanitize-guard.js', 'src/engine.js', 'src/file-policy.js', 'src/autotag.js',
     'templates/_headers', 'templates/members-login.html', 'templates/functions/_kiln.js', 'templates/functions/members/_middleware.js', 'templates/functions/api/member-redeem-google.js']) {
@@ -40,7 +40,9 @@ test('KLR-20 create-kiln packs with everything the wizard copies, a readme, the 
   }
   assert.equal(p.files.some(f => /\.env|\.tgz$|node_modules|wrangler\.toml|\.test\./.test(f)), false);
   assert.equal(gitMode('cli/index.mjs'), '100755', 'the bin is executable in git');
-  assert.deepEqual(manifest('cli').bin, { 'create-kiln': 'index.mjs' });
+  // `npm init @kilncms` runs the bin named `create` of the package @kilncms/create
+  assert.deepEqual(manifest('cli').bin, { create: 'index.mjs' });
+  assert.deepEqual(manifest('cli').publishConfig, { access: 'public' });
   assert.match(readFileSync(path.join(ROOT, 'cli', 'index.mjs'), 'utf8'), /^#!\/usr\/bin\/env node\n/);
   // Packing leaves the folder as it was: nothing vendored stays to shadow the repository's own files.
   assert.deepEqual(p.left, ['README.md', 'index.mjs', 'new.mjs', 'package-lock.json', 'package.json', 'prepack.mjs', 'render.mjs', 'rescue.mjs']);
@@ -84,4 +86,18 @@ test('KLR-20 the root package cannot be published by mistake, and nothing tells 
   assert.match(readFileSync(path.join(ROOT, 'cli', 'README.md'), 'utf8'), /^# Kiln setup tool\n/);
   assert.equal(existsSync(path.join(ROOT, 'docs', 'PUBLISHING.md')), true);
   assert.match(readFileSync(path.join(ROOT, 'docs', 'PUBLISHING.md'), 'utf8'), /npm publish/);
+});
+
+test('@kilncms/create: every file the tool loads from its own folder is in the package', () => {
+  // `rescue --render` loads ./render.mjs when it is asked for; the file was not listed, so from npm that one command
+  // would have stopped with "Cannot find module" while every other worked (found 2026-11-11, before the first publish).
+  const files = new Set(manifest('cli').files);
+  for (const f of ['index.mjs', 'rescue.mjs', 'render.mjs', 'new.mjs']) {
+    if (!files.has(f)) continue;
+    const text = readFileSync(path.join(ROOT, 'cli', f), 'utf8');
+    for (const m of text.matchAll(/(?:from\s+|import\()\s*['"]\.\/([A-Za-z0-9_-]+\.mjs)['"]/g)) {
+      assert.ok(files.has(m[1]), `cli/${f} loads ./${m[1]}, which cli/package.json does not pack`);
+    }
+  }
+  assert.ok(files.has('render.mjs'));
 });

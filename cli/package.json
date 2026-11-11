@@ -1,11 +1,11 @@
 {
-  "name": "create-kiln",
+  "name": "@kilncms/create",
   "version": "0.1.0",
-  "description": "Setup wizard for Kiln — click-to-edit CMS for static sites. GitHub as the backend, free hosting as the host.",
+  "description": "Setup wizard for Kiln \u2014 click-to-edit CMS for static sites. GitHub as the backend, free hosting as the host.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "bin": {
-    "create-kiln": "index.mjs"
+    "create": "index.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -13,6 +13,7 @@
   "files": [
     "index.mjs",
     "rescue.mjs",
+    "render.mjs",
     "new.mjs",
     "prepack.mjs",
     "README.md",
@@ -46,5 +47,8 @@
     "cloudflare",
     "click-to-edit",
     "kiln"
-  ]
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

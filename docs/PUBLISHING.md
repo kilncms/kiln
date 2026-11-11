@@ -46,8 +46,6 @@ npm publish
 cd ..
 
 # 3. @kilncms/create — packs the built editor, the worker source and the templates with it.
-#    cli/package.json still says "create-kiln" (name and bin): change both to
-#    @kilncms/create first (and test/packages.test.js with them), or this publish fails
 cd cli
 npm pack --dry-run             # 29 files; prepack copies dist/, worker/, src/, templates/ and LICENSE in, postpack removes them
 npm publish

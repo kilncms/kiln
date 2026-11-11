@@ -2,7 +2,7 @@
 /**
  * prepack — vendor the repo-root assets the wizard copies into user sites
  * (dist bundles, worker source, engine, templates) into cli/ so the published
- * create-kiln tarball is self-contained. Runs automatically on `npm pack` /
+ * @kilncms/create tarball is self-contained. Runs automatically on `npm pack` /
  * `npm publish` from cli/. The vendored copies are gitignored; the repo root
  * stays the source of truth.
  */

@@ -32,7 +32,7 @@ if (NODE_MAJOR < 20) {
 }
 
 // In the git checkout the assets (dist/, worker/, templates/, src/) live one
-// level up; in the published create-kiln package they are vendored next to
+// level up; in the published @kilncms/create package they are vendored next to
 // this file by prepack.mjs. Prefer the vendored copies when present.
 const CLI_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = existsSync(path.join(CLI_DIR, 'dist', 'kiln.js')) ? CLI_DIR : path.resolve(CLI_DIR, '..');
