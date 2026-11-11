@@ -6,7 +6,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SANITIZE, CONTAINER_SANITIZE, KILN_URI_REGEXP } from '../src/editor/sanitize.js';
+import { readFileSync } from 'node:fs';
+import { SANITIZE, CONTAINER_SANITIZE, KILN_URI_REGEXP, RESTORE_CHECK } from '../src/editor/sanitize.js';
 
 test('container allowlist keeps every table-structure tag', () => {
   for (const tag of ['table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'caption', 'colgroup', 'col']) {
@@ -64,5 +65,33 @@ test('URI regexp: script-bearing schemes stay banned', () => {
   for (const url of ['javascript:alert(1)', 'vbscript:x', 'data:text/html;base64,PHNjcmlwdD4=',
     'data:image/svg+xml;base64,PHN2Zz4=', 'data:application/pdf;base64,JVBERg==']) {
     assert.ok(!KILN_URI_REGEXP.test(url), `should ban: ${url}`);
+  }
+});
+
+// Undo, Redo, "Drop", History and a draft all put a part back through one
+// check. It refused any list holding a link that opens in a new tab, because
+// DOMPurify's default profile takes `target` out: on the public demo a removed
+// product never came back, and Undo said "Undone". (Found 2026-11-11 by
+// scripts/ui-check.mjs "safety net" run against the demo it was written for.)
+test('the check before a part is put back lets a link that opens in a new tab through, and nothing that runs', () => {
+  assert.ok(RESTORE_CHECK.ADD_ATTR.includes('target'));
+  // every attribute let through is a plain name, and none of them is a handler, an address that is loaded, or markup
+  for (const a of RESTORE_CHECK.ADD_ATTR) {
+    assert.match(a, /^[a-z]+$/, a);
+    assert.equal(/^on/.test(a), false, a);
+    assert.equal(['href', 'src', 'srcdoc', 'action', 'formaction', 'data', 'style', 'xlink:href', 'ping', 'background', 'poster', 'manifest'].includes(a), false, a);
+  }
+  // nothing else of the default profile is changed: no tags added, nothing forced through
+  assert.deepEqual(Object.keys(RESTORE_CHECK), ['ADD_ATTR']);
+});
+
+test('wired: the check uses those settings, and Undo and Redo never say done when a part was not put back', () => {
+  const main = readFileSync(new URL('../src/editor/main.js', import.meta.url), 'utf8');
+  assert.match(main, /DOMPurify\.sanitize\(String\(html\), RESTORE_CHECK\);/);
+  assert.match(main, /if \(!safeToRestore\(html\)\) \{ notPutBack\+\+; return null; \}/);
+  for (const fn of ['function undoEdit() {', 'function redoEdit() {']) {
+    const body = main.slice(main.indexOf(fn), main.indexOf('\n}\n', main.indexOf(fn)));
+    assert.match(body, /notPutBack = 0;/, fn);
+    assert.match(body, /if \(notPutBack\) setStatus\(NOT_PUT_BACK, 'error'\);/, fn);
   }
 });

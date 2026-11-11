@@ -126,7 +126,7 @@ let leavingToSignIn = false;
 let signInOver = null;
 const BACK_KEY = 'kiln_signin_back';   // sessionStorage: this tab left through "Sign in again"
 
-import { SANITIZE, CONTAINER_SANITIZE, BLOCK_SANITIZE } from './sanitize.js';
+import { SANITIZE, CONTAINER_SANITIZE, BLOCK_SANITIZE, RESTORE_CHECK } from './sanitize.js';
 
 // Any anchor opening a new tab gets rel="noopener" so the opened page can't
 // reach back through window.opener (reverse tabnabbing).
@@ -2134,18 +2134,24 @@ let cameBack = null;   // the block the last write of a list put on the page (ap
  * as markup. Nothing in it may run in this browser: when DOMPurify's default
  * profile (which keeps a site's own structure, icons and data attributes)
  * would take anything out of it (a script, an event handler, a javascript:
- * link, a frame), the part is not brought back at all.
+ * link, a frame), the part is not brought back at all. A few attributes the
+ * default takes out although they cannot run anything, `target` on a link
+ * first among them, are let through for this check (RESTORE_CHECK): without
+ * that, a list with one link that opens in a new tab never came back.
  */
 function safeToRestore(html) {
   if (html === undefined || html === null) return true;
-  DOMPurify.sanitize(String(html));
+  DOMPurify.sanitize(String(html), RESTORE_CHECK);
   // An HTML comment is taken out too, and cannot run: it does not count.
   return DOMPurify.removed.every(r => r.element && r.element.nodeType === Node.COMMENT_NODE);
 }
 
+let notPutBack = 0;   // parts the last Undo or Redo was asked to show and did not (applyKeyDom), so it can say so
+const NOT_PUT_BACK = 'That could not be put back on the page, because the part holds code that Kiln does not put back by itself. Reload the page to see it as it is saved.';
+
 function applyKeyDom(key, html) {
   if (html === undefined) return null;
-  if (!safeToRestore(html)) return null;
+  if (!safeToRestore(html)) { notPutBack++; return null; }
   const esc = CSS.escape(key);
   const rep = document.querySelector(`[data-cms-repeat="${esc}"]`);
   cameBack = null;
@@ -2248,23 +2254,28 @@ function undoEdit() {
   const entry = editHistory.undo.pop();
   if (!entry) { setStatus('Nothing to undo', 'idle'); return; }
   let el = null, block = null;
+  notPutBack = 0;
   for (const s of [...entry.steps].reverse()) { el = applyUndoStep(s, 'before') || el; block = cameBack || block; }
   editHistory.redo.push(entry);
   refreshPublishButton(); updateUndoUi();
   // A block that came back is shown where it is; the page does not go to the middle of its list.
   if (block || el) showChanged(block || el);
-  setStatus('Undone', 'saved');
+  // Never "Undone" when the page still shows the change: the part held something the editor does not put back by itself.
+  if (notPutBack) setStatus(NOT_PUT_BACK, 'error');
+  else setStatus('Undone', 'saved');
 }
 
 function redoEdit() {
   const entry = editHistory.redo.pop();
   if (!entry) { setStatus('Nothing to redo', 'idle'); return; }
   let el = null, block = null;
+  notPutBack = 0;
   for (const s of entry.steps) { el = applyUndoStep(s, 'after') || el; block = cameBack || block; }
   editHistory.undo.push(entry);
   refreshPublishButton(); updateUndoUi();
   if (block || el) showChanged(block || el);
-  setStatus('Redone', 'saved');
+  if (notPutBack) setStatus(NOT_PUT_BACK, 'error');
+  else setStatus('Redone', 'saved');
 }
 
 function updateUndoUi() {

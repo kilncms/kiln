@@ -49,6 +49,20 @@ export const CONTAINER_SANITIZE = {
   ALLOWED_URI_REGEXP: KILN_URI_REGEXP,
 };
 
+// The check made before a part is put back on the page (Undo, Redo, "Drop",
+// History, a draft) asks DOMPurify's default profile whether it would take
+// anything out. The default also takes out a few attributes that cannot run
+// anything, and one of them is on nearly every site: `target`, on a link that
+// opens in a new tab. A list holding one such link could then never be
+// brought back, and Undo said "Undone" with nothing undone. These are let
+// through for that check. None of them names code or a place code is loaded
+// from: scripts, event handlers, javascript: addresses and frames are judged
+// exactly as before.
+export const RESTORE_CHECK = {
+  ADD_ATTR: ['target', 'decoding', 'fetchpriority', 'referrerpolicy', 'crossorigin', 'translate',
+    'itemprop', 'itemscope', 'itemtype', 'itemid', 'itemref', 'property', 'typeof', 'vocab'],
+};
+
 // A `_blocks/*.html` snippet about to be inserted as a whole new section: the
 // container allowlist PLUS the structural Kiln attributes a block is built
 // from (a repeat container, a gallery/events marker). CONTAINER_SANITIZE
