@@ -330,6 +330,24 @@ export async function repoPlanEnded(env, repo, now = Date.now()) {
   }
 }
 
+/**
+ * Where a site address stands on Kiln Cloud, for the sign-in page to say in
+ * plain words why it will not sign anyone in: nobody has added the address
+ * (`known: false`), or it was added and may not be edited any more (its free
+ * trial ran out, or its plan ended). Null when this worker keeps no Cloud
+ * sites at all, or the database cannot be read.
+ */
+export async function cloudOriginStanding(env, origin) {
+  if (!env.kiln_cloud || !origin) return null;
+  try {
+    const row = await env.kiln_cloud.prepare('SELECT status, ls_subscription_id FROM sites WHERE origin = ? LIMIT 1').bind(origin).first();
+    if (!row) return { known: false };
+    return { known: true, status: row.status, trialEnded: row.status === 'canceled' && !row.ls_subscription_id };
+  } catch {
+    return null;
+  }
+}
+
 /** The site row for an origin that may be edited right now, or null. */
 export async function cloudSiteForOrigin(env, origin, now = Date.now()) {
   if (!env.kiln_cloud || !origin) return null;

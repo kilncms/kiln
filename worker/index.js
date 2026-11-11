@@ -78,7 +78,7 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.4.0';
 
-import { handleCloud, expireStaleTrials, cloudSiteForOrigin, repoPlanEnded, userCanPush } from './cloud.js';
+import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush } from './cloud.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
 import { adapterIds, getAdapter } from '../src/adapters/index.js';
@@ -285,6 +285,38 @@ async function originAllowed(env, origin) {
   return false;
 }
 
+/**
+ * The page a person gets when they try to sign in on an address this worker
+ * does not serve. On Kiln Cloud that is nearly always one of two things, and
+ * each has its own next step: the site's free trial or plan has ended (the
+ * owner subscribes in the dashboard), or the site was never added there (it
+ * is added, with exactly this address). Only someone who runs the worker
+ * themselves is told about ALLOWED_ORIGINS.
+ */
+async function originRefused(env, origin) {
+  const dash = env.CLOUD_DASHBOARD || '';
+  const standing = dash ? await cloudOriginStanding(env, origin) : null;
+  const where = origin ? `<strong>${esc(origin)}</strong>` : 'this address';
+  const toDash = `<p><a class="btn" href="${esc(dash)}">Open the Kiln dashboard</a></p>`;
+  if (standing && standing.known) {
+    return html(`<h1>${standing.trialEnded ? 'This site’s free trial has ended' : 'This site’s Kiln plan has ended'}</h1>
+      <p>Editing is switched off for ${where} until its owner subscribes${standing.trialEnded ? '' : ' again'}.
+         The site itself, and everything already published, are untouched.</p>
+      <p>If the site is yours, open the Kiln dashboard and press <em>Subscribe</em> on its row.
+         Editing comes back as soon as the payment is confirmed.</p>${toDash}`, 403);
+  }
+  if (standing) {
+    return html(`<h1>This site is not on Kiln Cloud yet</h1>
+      <p>Nobody has added ${where} in the Kiln dashboard, so there is nothing to sign in to here.</p>
+      <p>If you are setting the site up, add it in the dashboard with exactly this address.
+         An address with <code>www.</code> and the same one without it are two different addresses.</p>${toDash}`, 403);
+  }
+  return html(`<h1>This address is not on the list</h1>
+    <p>${where} is not one of the sites this sign-in service works for.</p>
+    <p>If you run the service yourself, add the address to <code>ALLOWED_ORIGINS</code> in its
+       wrangler configuration and deploy it again.</p>`, 403);
+}
+
 async function cors(env, request, response) {
   const origin = request.headers.get('Origin');
   const ok = await originAllowed(env, origin);
@@ -396,9 +428,7 @@ async function authLogin(url, env) {
 
   const origin = url.searchParams.get('origin') || '';
   const returnTo = url.searchParams.get('return_to') || '/';
-  if (!(await originAllowed(env, origin))) {
-    return html(`<h1>Origin not allowed</h1><p><code>${esc(origin)}</code> is not in this worker's ALLOWED_ORIGINS.</p>`, 403);
-  }
+  if (!(await originAllowed(env, origin))) return originRefused(env, origin);
   if (!returnTo.startsWith('/')) return html('<h1>Bad return_to</h1>', 400);
 
   const nonce = crypto.randomUUID();
@@ -2226,7 +2256,7 @@ async function googleLogin(url, env) {
   const origin = url.searchParams.get('origin') || '';
   const returnTo = url.searchParams.get('return_to') || '/';
   const repo = url.searchParams.get('repo') || '';
-  if (!(await originAllowed(env, origin))) return html('<h1>Origin not allowed</h1>', 403);
+  if (!(await originAllowed(env, origin))) return originRefused(env, origin);
   if (!returnTo.startsWith('/') || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return html('<h1>Bad request</h1>', 400);
   if (!(await originServesRepo(env, origin, repo))) return html('<h1>This sign-in link is for a different site</h1><p>The address in the link does not belong to the site it asks to sign you in to, so nothing happened. Sign in from the site itself.</p>', 403);
 
