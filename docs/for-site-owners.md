@@ -128,7 +128,7 @@ formatted text with the toolbar; pictures and their descriptions; link
 addresses; new entries, copies, drafts, order, schedules; History and Page
 settings. What stays read-only says why when it is clicked: a table in a text,
 a component in MDX, a picture taken from another website. The full list is in
-the README's source mode section.
+[source-mode.md](source-mode.md).
 
 **Eleventy, Hugo and Jekyll.** Not built yet: Kiln can't edit their content
 files. The wizard and `kiln doctor` recognise them and say so, and Kiln edits
@@ -302,7 +302,7 @@ page, built by your host, before you approve.
 
 One prerequisite: Google sign-in needs a one-time OAuth client setup on your worker
 (two secrets, about five minutes). See
-[Google sign-in setup](../README.md#google-sign-in) in the README. Kiln Cloud and
+[Google sign-in setup](google-sign-in.md). Kiln Cloud and
 managed sites have this done already.
 
 Send invitees the matching one-pager so you don't have to explain anything:
@@ -448,8 +448,7 @@ sign-in, checked at the edge before the file is served. No database, no per-seat
 pricing; members are just entries in your People list.
 
 Setup is copying one directory of Cloudflare Pages Functions into your site and
-setting two secrets; the [README section](../README.md#members-area--gated-documents)
-has the exact steps. After that, add members by email in People & access and point
+setting two secrets; [members-area.md](members-area.md) has the exact steps. After that, add members by email in People & access and point
 them at [for-members.md](for-members.md).
 
 Gated pages and files are sent with `Cache-Control: private, no-store`, so neither a

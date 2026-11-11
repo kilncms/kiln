@@ -93,7 +93,7 @@ this GitHub App public") if you'll ever invite editors or serve other people's r
 Needed if you'll invite editors or members (both sign in with Google). Skip it if
 you're the only person who'll ever touch the site.
 
-Follow [Google sign-in setup in the README](../README.md#google-sign-in). Short
+Follow [Google sign-in setup](google-sign-in.md). Short
 version: create a Google OAuth 2.0 Client ID (Web application), add the redirect URI
 `https://YOUR-WORKER-URL/google/callback`, then:
 
@@ -108,9 +108,10 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET --config wrangler.self.toml
 ## Members area (optional)
 
 Gates everything under `/members/` — pages and files — at the edge, on Cloudflare
-Pages. Copy the entire `templates/functions/` directory (3 files) into your site's
-`functions/` and `templates/members-login.html` to the site root, then set the two
-Pages secrets:
+Pages. Copy the entire `templates/functions/` directory (4 files) into your site's
+`functions/`, and `templates/_routes.json` and `templates/members-login.html` to the
+site root, then set the two Pages secrets ([members-area.md](members-area.md) has the
+details):
 
 ```bash
 openssl rand -hex 32 | npx wrangler pages secret put KILN_MEMBER_SECRET --project-name <project>
