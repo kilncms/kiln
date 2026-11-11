@@ -189,7 +189,7 @@ test('typed: the dialog goes over the open panel instead of replacing it, and th
   const dialog = main.slice(main.indexOf('function stoppedDialog('), main.indexOf('/** One sentence, at most one button'));
   assert.match(dialog, /\{ over: true, onClose: stays \}/);
   // the copy is written with what was typed, read back with it, and offered back with it
-  assert.match(main, /draftRecord\(state\.pending, state\.pendingSource, Date\.now\(\), state\.typed\)/);
+  assert.match(main, /draftRecord\(withOpenBox\(state\.pending\), state\.pendingSource, Date\.now\(\), state\.typed\)/);
   assert.ok(main.includes('state.pending, state.pendingSource, state.typed)'), 'draftHolds is asked about what was typed too');
   assert.match(main, /saved\.typed \? resumeTyped\(saved\.typed\)/);
   // each place that has words in a box hands them over when it is stopped

@@ -63,7 +63,7 @@ test('phone: a block\'s buttons open in a row of their own, under the block\'s w
   // not in a block that lays its children out on one line (a full-width row would crush them), and not in a table row
   assert.match(more, /const oneLine = \/flex\/\.test\(cs\.display\) && !cs\.flexDirection\.startsWith\('column'\) && cs\.flexWrap === 'nowrap';/);
   assert.match(more, /ctl\.classList\.toggle\('kiln-ctl-flow', open && item\.tagName !== 'TR' && !oneLine\);/);
-  assert.match(main, /c\.classList\.remove\('kiln-ctl-open', 'kiln-ctl-flow'\);/);
+  assert.match(main, /c\.classList\.remove\('kiln-ctl-open', 'kiln-ctl-flow', 'kiln-ctl-col'\);/);
 });
 
 test('phone and laptop: choosing the top bar does not slide the top of the page under it', () => {
