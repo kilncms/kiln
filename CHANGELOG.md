@@ -8,6 +8,76 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- The content filter library (DOMPurify) is 3.4.17. Versions up to 3.4.16
+  carry published advisories, one about cleaning a part of the page in place,
+  which is how the editor uses it. The weekly advisory check on GitHub had
+  been failing on it since 2026-10-26. The build tools are current too.
+
+### Fixed
+
+- **Paying leaves nobody stranded.** After the payment page a customer is sent
+  back to the dashboard, which says thank you and waits for the confirmation.
+  Before, they were left on Lemon Squeezy's own page.
+- **A checkout offers one plan**: the one the site was added with. The plan on
+  record follows the plan that is paid for, and the operator is told when the
+  two differed.
+- **A site whose free trial or plan has ended says so.** The sign-in page used
+  to read "Origin not allowed … ALLOWED_ORIGINS", and the editor "Editing could
+  not start just now". Both now say the trial or plan has ended, that the site
+  is untouched, and that the owner subscribes in the dashboard. An address
+  nobody has added says to add it, with exactly that address. Only someone
+  who runs the worker themselves is told about `ALLOWED_ORIGINS`.
+- **Lists and headings only go where they fit.** In a single paragraph or a
+  heading, the list buttons and the Style menu say why they cannot be used
+  there, where they used to save markup that broke the page. In a rich area a
+  new list no longer lands inside the paragraph it came from.
+- A new list keeps the cursor where it was.
+- A link typed as `example.com` goes to `https://example.com`, and an email
+  address becomes a `mailto:` link. A file name such as `about.html` is left
+  as typed.
+- **A replaced picture asks for its own description**, starting from the old
+  one's words. Before, the old description stayed on the new picture.
+- **A photo in a gallery made with Kiln can be replaced and described.** It
+  had no marker of its own, so a press on it did nothing useful.
+- **A press on a picture that cannot be changed here stays on the page** and
+  says why. The link around it, often a whole card that opens another site in
+  a new tab, is held back. Ctrl or ⌘ and a click still follows it.
+- Words typed in a box that is still open survive a reload or a closed tab,
+  and are offered back.
+- The Kiln button can no longer end up over the site's header. It was measured
+  while hidden, which saved a position in the top-left corner.
+- On a phone, a block's open control bar stays inside its block. In a card
+  laid out top to bottom it grew to the card's full height and caught taps
+  meant for the next card.
+- `rescue`: a file that was not copied keeps working from its old address, the
+  report lists what was left behind and warns that it disappears when the old
+  site is switched off, and `http`, `https` and `www.` forms of one host are
+  one site. The limits are 20 MB a file and 250 MB a run.
+- `doctor` with no terminal and no `--site` stops at once and says which
+  option to pass, where it used to wait forever.
+- `tag` names only the pages it changed in its advice on undoing.
+- The end-to-end test looks again before calling its clean-up a failure:
+  GitHub can answer a read with the old state for a moment after a write.
+
+### Changed
+
+- **The editor can be used with a keyboard alone**, and a screen reader can
+  name what it reaches. Every editable part is in the Tab order, Enter opens
+  it, Esc leaves it, the toolbars and their buttons have names, and every
+  dialog is named by its heading and holds the keyboard while it is open.
+  None of what the editor adds for this is published.
+- The dashboard says where each site stands in a sentence: the days left in
+  the free trial, when editing ends after a cancellation or a failed payment,
+  and what turns it back on. Its refusals are full sentences.
+- No screen says "alt text": a picture has a description.
+- The setup tool's closing steps say to add the site, when the 7 free days
+  start, and that no card is needed.
+- `new` writes a README into the new site: what the example is, how to look
+  at it, how to put it online, and what to change first.
+- `--help` lists every `rescue` option.
+
+### Security
+
 - **A sign-in is handed only to an address that belongs to the site it is
   for.** Any Kiln Cloud trial puts its address on the trusted list, and the
   owner's GitHub sign-in and an invited editor's Google sign-in were sent to
