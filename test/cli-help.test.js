@@ -199,3 +199,13 @@ test('rescue: --help names every rescue option the rescue usage line names', () 
   for (const f of inUsage) assert.ok(flags(rescueHelp).has(f), `--help names --${f}`);
   assert.match(rescueHelp, /\(20;/); assert.match(rescueHelp, /\(250\)/);
 });
+
+test('tag: the undo advice names the pages it changed, never `git checkout -- .`', () => {
+  const s = site({ 'index.html': PAGE, 'about.html': PAGE, 'notes.txt': 'mine' });
+  const r = kiln(s.dir, ['tag']);
+  assert.equal(r.code, 0, r.all);
+  assert.doesNotMatch(r.all, /git checkout -- \.(\s|$)/);
+  assert.match(r.all, /git checkout -- (about\.html index\.html|index\.html about\.html)\n/);
+  assert.match(r.all, /script tags/);
+  assert.match(r.all, /run the\s+setup wizard again afterwards/);
+});

@@ -806,7 +806,8 @@ async function offerAutotag() {
       const { html, counts } = autotag(raw);
       if (html !== raw) { writeFileSync(f, html); taggedFiles.push(f); tagged += counts.fields + counts.images + counts.repeats + counts.menu; }
     }
-    ok(`auto-tagged ${tagged} things — review with: git diff   (undo: git checkout -- .)`);
+    ok(`auto-tagged ${tagged} things — review with: git diff`);
+    if (taggedFiles.length) console.log(undoAdvice(taggedFiles));
     info('subfolders too? run: npx github:kilncms/kiln#release tag');
   }
   return taggedFiles;
@@ -1203,27 +1204,40 @@ crons = ["*/5 * * * *"]
 
 // ─── tag: heuristic first-pass auto-tagger ───────────────────────────────────
 
+/** How to undo the tagging, naming only the pages it changed. Putting a page
+ *  back also drops any other change to it not yet committed, such as the two
+ *  script tags the setup wizard adds, so say that and how to get them back. */
+function undoAdvice(files, listedAbove = false) {
+  const short = listedAbove && files.length > 6;
+  return `  To undo it, put back the ${files.length === 1 ? 'page' : `${files.length} pages`} it changed:
+    git checkout -- ${short ? 'followed by each page marked ✓ above' : files.join(' ')}
+  That also throws away anything else in ${files.length === 1 ? 'that page' : 'those pages'} you have not committed yet,
+  such as Kiln's two script tags if the setup wizard just added them. If so, run the
+  setup wizard again afterwards (npx github:kilncms/kiln#release): it offers to put them back.`;
+}
+
 async function tagCmd(args) {
   const { autotag } = await import(pathToFileURL(path.join(PKG_ROOT, 'src', 'autotag.js')).href);
   hr(args.dry ? 'Auto-tag (dry run)' : 'Auto-tag');
   const files = sitePages();
   if (!files.length) { warn('no .html pages found here'); process.exit(1); }
   const tot = { fields: 0, images: 0, repeats: 0, menu: 0 };
+  const changedFiles = [];
   for (const f of files) {
     const raw = readFileSync(f, 'utf8');
     const { html, counts } = autotag(raw);
     const changed = html !== raw;
-    if (changed && !args.dry) writeFileSync(f, html);
+    if (changed && !args.dry) { writeFileSync(f, html); changedFiles.push(f); }
     const bits = Object.entries(counts).filter(([, v]) => v).map(([k, v]) => `${v} ${k}`).join(', ');
     console.log(`  ${changed ? (args.dry ? '~' : '✓') : '·'} ${f}${bits ? '  (' + bits + ')' : '  (nothing new to tag)'}`);
     for (const k of Object.keys(tot)) tot[k] += counts[k];
   }
   hr('Summary');
   console.log(`  ${tot.fields} text fields · ${tot.images} images · ${tot.repeats} block lists · ${tot.menu} menus${args.dry ? '   (dry run — nothing written)' : ''}`);
-  if (!args.dry) console.log(`
+  if (!args.dry && changedFiles.length) console.log(`
   This is a FIRST PASS — review it before committing:
     git diff              see exactly what was tagged
-    git checkout -- .     throw it all away
+${undoAdvice(changedFiles, true)}
   Refine any time in the browser: sign in at /kiln → ✨ Make text/images editable
   (tables are never made repeatable on purpose — tag those by hand or in the browser).`);
   process.exit(0);
