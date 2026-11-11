@@ -21,6 +21,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **People & access says where the Google sign-in steps are.** On a sign-in
+  service somebody runs themselves, with Google sign-in not yet set up, the
+  dialog named two settings and pointed at "the README". It now says in plain
+  words to add Google sign-in to the sign-in service and names the guide,
+  `docs/google-sign-in.md`.
 - **An editable part keeps the shape the site gave it.** The editor put square
   4px corners on every editable part, which squared a site's round buttons and
   pills, and added padding while a part was typed in, which made a button
