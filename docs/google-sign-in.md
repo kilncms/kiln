@@ -18,8 +18,8 @@ bot, and the worker enforces a strict allowlist: that one repo, only the paths g
 never CNAME/_redirects/.github, and no deletes.
 
 There's a one-page guide you can send to people you invite:
-[docs/for-editors.md](docs/for-editors.md) for editors,
-[docs/for-members.md](docs/for-members.md) for members.
+[docs/for-editors.md](for-editors.md) for editors,
+[docs/for-members.md](for-members.md) for members.
 
 ## Setup
 
