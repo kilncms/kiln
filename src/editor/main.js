@@ -6621,9 +6621,10 @@ async function invitePanel() {
     try {
       const data = await ask(`/admin/people?repo=${encodeURIComponent(cfg.repo)}`);
       if (!data.googleConfigured) {
-        status.innerHTML = 'To invite editors and members, add Google sign-in to your auth worker: set '
-          + '<code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> (see the README). '
-          + 'People then sign in with their own Google account — no passwords, no links.';
+        status.innerHTML = 'To invite editors and members, add Google sign-in to your sign-in service: set '
+          + '<code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> on it. The steps are in '
+          + '<code>docs/google-sign-in.md</code>. People then sign in with their own Google account, '
+          + 'with no passwords and no links to send.';
         form.style.display = 'none';
         return;
       }
