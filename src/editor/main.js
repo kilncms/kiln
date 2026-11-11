@@ -948,6 +948,11 @@ function decorateFields() {
   // Review-mode seats comment; they never see edit affordances.
   if (mode === 'editor' && state.scope?.mode === 'review') return;
 
+  // A photo in a Kiln gallery with no marker of its own (added before the
+  // editor marked them, or by hand) could not be replaced or described: it is
+  // marked as the picture it is, and published with its list like any other part.
+  document.querySelectorAll('[data-kiln-gallery] figure > img:not([data-cms])').forEach(markGalleryPhoto);
+
   document.querySelectorAll('[data-cms]').forEach((el) => {
     // §4.3 precedence: an element carrying BOTH data-cms and data-kiln-source
     // is a source field — never guess silently (initSourceFields warns once).
@@ -1100,6 +1105,12 @@ function inlineImgPopover(img) {
     }
   };
   setTimeout(() => document.addEventListener('click', away, true), 0);
+}
+
+/** A gallery's photo is an editable picture: it can be replaced and described like any other. */
+function markGalleryPhoto(img) {
+  img.setAttribute('data-cms', 'gallery_photo');
+  img.setAttribute('data-cms-attr', 'src');
 }
 
 function decorateField(el, key) {
@@ -1593,10 +1604,12 @@ function addGalleryPhotos(container, key, add) {
         }
         const cap = document.createElement('figcaption');
         cap.setAttribute('data-cms', 'gallery_caption');
+        markGalleryPhoto(img);
         fig.appendChild(img);
         fig.appendChild(cap);
         if (add.parentElement === container) container.insertBefore(fig, add);
         else container.appendChild(fig);
+        decorateField(img, 'gallery_photo');
         decorateField(cap, 'gallery_caption');
         attachItemControls(container, key, fig);
       }
