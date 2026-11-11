@@ -27,6 +27,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is untouched, and that the owner subscribes in the dashboard. An address
   nobody has added says to add it, with exactly that address. Only someone
   who runs the worker themselves is told about `ALLOWED_ORIGINS`.
+- **Undo, Redo and "Drop" bring back a list that holds a link opening in a
+  new tab.** The check made before a part is put back on the page (added
+  2026-10-22) asked whether DOMPurify's default profile would take anything
+  out of it, and the default takes out `target`. So on any list with such a
+  link, the public demo's products among them, a removed block never came
+  back and Undo said "Undone". The harmless attributes are let through for
+  that check, scripts and handlers are judged as before, and Undo and Redo
+  now say so if a part could not be put back.
 - **Lists and headings only go where they fit.** In a single paragraph or a
   heading, the list buttons and the Style menu say why they cannot be used
   there, where they used to save markup that broke the page. In a rich area a

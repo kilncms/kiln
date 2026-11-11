@@ -1540,7 +1540,7 @@ async function runListsAndLinks(browser, size) {
     if (u === front) {
       // the demo has no rich area of its own: one is added to the page, before the first heading of the second section
       const res = await route.fetch();
-      const body = (await res.text()).replace(/(<h2 data-cms="[^"]+">)/, '<div data-cms="lists_rich"><p>Rich area words</p></div>\n$1');
+      const body = (await res.text()).replace(/(<h2\b[^>]*\bdata-cms="[^"]+"[^>]*>)/, '<div data-cms="lists_rich"><p>Rich area words</p></div>\n$1');
       return route.fulfill({ response: res, body });
     }
     if (u.startsWith(ORIGIN) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
@@ -1559,7 +1559,10 @@ async function runListsAndLinks(browser, size) {
   const btn = (cmd) => page.locator(`#kiln-toolbar [data-cmd="${cmd}"]`);
   const open = async (field) => {
     await field.scrollIntoViewIfNeeded();
-    await press(field);
+    // A page that moves things as it scrolls needs a moment, and the part is pressed where it is then
+    // (no force: that presses where it was).
+    await page.waitForTimeout(900);
+    await (phone ? field.tap() : field.click());
     await page.waitForTimeout(350);
     // the cursor at the end of the words, as after typing
     await field.evaluate((el) => {
@@ -1573,7 +1576,13 @@ async function runListsAndLinks(browser, size) {
   const shut = async () => { await page.keyboard.press('Escape'); await page.waitForTimeout(300); };
   const blocks = (field) => field.evaluate((el) => el.querySelectorAll('ul, ol, li, h1, h2, h3, h4, h5, h6, blockquote, p').length);
 
-  for (const [name, field] of [['a paragraph', page.locator('p[data-cms]').filter({ hasText: /\w{4}/ }).first()], ['a heading', page.locator('h2[data-cms]').first()]]) {
+  // The first paragraph and the first heading that take up room at this width and take formatting: a site may
+  // leave a paragraph out on a phone (display: none), keep one as plain text, or still be fading one in.
+  const firstShown = (sel) => page.evaluate((q) => [...document.querySelectorAll(q)].findIndex((el) => {
+    const b = el.getBoundingClientRect();
+    return b.width > 0 && b.height > 0 && !el.hasAttribute('data-cms-plain') && !el.closest('[data-cms-repeat]') && /\w{4}/.test(el.textContent);
+  }), sel);
+  for (const [name, field] of [['a paragraph', page.locator('p[data-cms]').nth(Math.max(0, await firstShown('p[data-cms]')))], ['a heading', page.locator('h2[data-cms]').nth(Math.max(0, await firstShown('h2[data-cms]')))]]) {
     const was = await field.innerHTML();
     await open(field);
     check(scope, `in ${name} the list buttons are dimmed and their hint says why`, (await btn('insertUnorderedList').getAttribute('aria-disabled')) === 'true'
@@ -1656,7 +1665,6 @@ async function runKeyboard(browser, size) {
     return null;
   };
   const stored = () => page.evaluate(() => Object.keys(localStorage).map(k => localStorage.getItem(k)).join('\n'));
-  const EDITOR_MARKS = /tabindex|role=|aria-label|aria-multiline|data-kiln-focus/;
   try {
     await page.goto(URL_ARG, { waitUntil: 'load' });
     await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
@@ -1724,7 +1732,14 @@ async function runKeyboard(browser, size) {
     await key('Shift+Tab');   // leaves the box the other way: the edit is kept
     await page.waitForTimeout(200);
     const text = await stored();
-    check(scope, 'what would be published holds no tabindex, role or label the editor put there', /now/.test(text) && /listed/.test(text) && !EDITOR_MARKS.test(text), (text.match(EDITOR_MARKS) || [''])[0]);
+    // A site has labels and roles of its own (a product card's aria-label), and those belong in what is saved:
+    // only an attribute that is not in the page's own file was put there by the editor.
+    const added = await page.evaluate(async (saved) => {
+      const own = await (await fetch(location.pathname.endsWith('/') ? `${location.pathname}index.html` : location.pathname)).text();
+      const marks = [...saved.replace(/\\"/g, '"').matchAll(/\b(tabindex|role|aria-label|aria-multiline|data-kiln-focus)="[^"]*"/g)].map(m => m[0]);
+      return [...new Set(marks.filter(a => !own.includes(a)))];
+    }, text);
+    check(scope, 'what would be published holds no tabindex, role or label the editor put there', /now/.test(text) && /listed/.test(text) && !/data-kiln-focus/.test(text) && added.length === 0, added.slice(0, 3).join(' '));
 
     // ── a picture: Space opens its toolbar, Esc closes it ───────────────────
     const pic = await tabTo(x => x.field && x.tag === 'img');
@@ -2225,6 +2240,10 @@ async function runSignedIn(browser, size, opts = {}) {
     await press(picker.locator('.kiln-pick-tile', { hasText: wantName }).first());
     await page.waitForTimeout(400);
     check(scope, 'choosing a picture puts it on the page and closes the chooser', (await picture.getAttribute('src')) === want && (await picker.count()) === 0, await picture.getAttribute('src'));
+    // A picture chosen from the site is described next, as an uploaded one is (describe-picture.js).
+    await page.locator('#kiln-describe').waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+    check(scope, 'and its description is asked for, with the old one\'s words to start from', (await page.locator('#kiln-describe').count()) === 1);
+    if (await page.locator('#kiln-describe').count()) { await press(page.locator('#kiln-describe-go')); await page.waitForTimeout(300); }
     if (await page.locator('#kiln-toolbar [data-act="done"]').count()) await press(page.locator('#kiln-toolbar [data-act="done"]'));
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
     await page.waitForTimeout(300);
@@ -3322,7 +3341,8 @@ async function runRealSites(browser, size) {
       try { localStorage.setItem('kiln_editor', JSON.stringify({ session: 'b'.repeat(64), name: 'Sam', repo, role: 'editor' })); localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ }
     }, [REPO]);
     // Publish n (1 = the first) gives the first heading the words "Version n".
-    const H1 = /(<h1[^>]*data-cms="[^"]+"[^>]*>)([^<]*)(<\/h1>)/;
+    // (A heading may hold markup of its own, two lines in spans, say: all of it gives way to the words.)
+    const H1 = /(<h1[^>]*data-cms="[^"]+"[^>]*>)([\s\S]*?)(<\/h1>)/;
     const versions = Array.from({ length: 45 }, (_, i) => ({ sha: `v${i + 1}`.padEnd(40, 'f'), text: source.replace(H1, `$1Version ${i + 1}$3`), message: `Publish number ${i + 1} (via Kiln)`, by: 'Sam (via Kiln)' }));
     const asked = [];
     let failPage = 0;   // a page of commits that fails once
@@ -3871,6 +3891,9 @@ async function runMedia(browser, size) {
     const chooser = page.waitForEvent('filechooser', { timeout: 5000 });
     await press(page.locator('#kiln-toolbar [data-act="replace"]'));
     await (await chooser).setFiles({ name, mimeType: 'image/png', buffer: Buffer.from(png) });
+    // A replaced picture is described next (describe-picture.js): the question is answered as a person in a hurry would.
+    await page.locator('#kiln-describe').waitFor({ state: 'visible', timeout: 4000 }).catch(() => {});
+    if (await page.locator('#kiln-describe').count()) { await press(page.locator('#kiln-describe-go')); await page.waitForTimeout(300); }
     await page.waitForFunction(() => /Picture added/.test(document.getElementById('kiln-status')?.textContent || ''), null, { timeout: 5000 }).catch(() => {});
   };
   try {
@@ -4191,7 +4214,12 @@ async function runEntries(browser, size) {
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
   if (ONLY && !label.includes(ONLY)) return;
-  try { await fn(); } catch (err) { check(label, 'ran to the end', false, String(err.message || err).split('\n')[0].slice(0, 220)); }
+  // What stopped it, and on what: Playwright names the element it was waiting for on a later line.
+  try { await fn(); } catch (err) {
+    const said = String(err.message || err).split('\n');
+    const waiting = said.find(l => /waiting for (locator|getBy|selector)/.test(l));
+    check(label, 'ran to the end', false, `${said[0].slice(0, 220)}${waiting ? `; ${waiting.trim().slice(0, 200)}` : ''}`);
+  }
 };
 try {
   for (const size of SIZES) {

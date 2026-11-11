@@ -391,8 +391,11 @@ function pressable(r, gap = 12) {
   const centre = r.left + r.width / 2;
   const left = Math.min(Math.max(centre - w / 2, 8), Math.max(8, document.documentElement.clientWidth - w - 8));
   const own = (el) => !el.closest('[id^="kiln-"], .kiln-item-ctl, .kiln-repeat-add, .kiln-block-gap') && !el.contains(tip._target) && !tip._target.contains(el);
+  // (An editable part is a button to a keyboard too, by the editor's own doing (keyboard.js). That is not
+  // the page's own button: its words are counted below, line by line, as they always were.)
+  const editorsOwn = (el) => el.getAttribute('role') === 'button' && (el.getAttribute('data-kiln-focus') || '').split(' ').includes('role');
   const things = [...document.querySelectorAll('a[href], button, [role="button"], input, select, textarea, summary')]
-    .filter(own).map(el => el.getBoundingClientRect()).filter(b => b.width && b.height);
+    .filter(own).filter(el => !editorsOwn(el)).map(el => el.getBoundingClientRect()).filter(b => b.width && b.height);
   const hits = (b, top) => b.bottom > top && b.top < top + h && b.right > left && b.left < left + w;
   // Words: a paragraph's box runs the width of its column, so it is the lines
   // of text inside it that count, and only of what is near the heading.
