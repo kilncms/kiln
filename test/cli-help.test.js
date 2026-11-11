@@ -187,3 +187,15 @@ test('KLR-21 kiln new: a new site starts on this tool\'s editor, not the one its
   assert.match(text, /Kiln Cloud \(the default, paid\)/);
   assert.doesNotMatch(text, /it deploys your worker, registers the GitHub App/);
 });
+
+test('rescue: --help names every rescue option the rescue usage line names', () => {
+  const s = site();
+  const help = kiln(s.dir, ['--help']).out;
+  const usage = kiln(s.dir, ['rescue']).all;
+  const flags = (t) => new Set([...t.matchAll(/--([a-z][a-z-]+)/g)].map(m => m[1]));
+  const inUsage = flags(usage.slice(usage.indexOf('Usage: kiln rescue')));
+  for (const f of ['render', 'menu-shim', 'browser', 'try', 'max-asset-mb', 'max-total-mb']) assert.ok(inUsage.has(f), `usage line names --${f}`);
+  const rescueHelp = help.slice(help.indexOf('rescue <url>'), help.indexOf('--help, -h'));
+  for (const f of inUsage) assert.ok(flags(rescueHelp).has(f), `--help names --${f}`);
+  assert.match(rescueHelp, /\(20;/); assert.match(rescueHelp, /\(250\)/);
+});

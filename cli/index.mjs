@@ -874,7 +874,10 @@ function helpText() {
                      --from <owner/repo>  --name <title>  --dry
   rescue <url>     Copy a site out of a website builder into plain HTML.
                      --out <dir>  --max-pages <n>  --delay <ms>  --dry  --no-tag  --keep-scripts
-                     --max-asset-mb <n>  --max-total-mb <n>  (raise the 5 MB / 25 MB asset caps)
+                     --max-asset-mb <n>  largest file to copy, in MB (20; Cloudflare Pages takes 25 at most)
+                     --max-total-mb <n>  most to copy in all, in MB (250)
+                     --render [--browser <path>] [--menu-shim]  for a site drawn by JavaScript
+                     --try     also set the copy up to try editing on this computer
 
   --help, -h       This text. With a command too: nothing is run, nothing is changed.
   --version        The version of this tool.
