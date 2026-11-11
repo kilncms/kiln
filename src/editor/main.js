@@ -46,7 +46,7 @@ import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
-import { draftRecord, readDraft, draftHolds, TYPED } from './saved-edits.js';
+import { draftRecord, readDraft, draftHolds, TYPED, openBoxEdit } from './saved-edits.js';
 import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
@@ -1928,6 +1928,7 @@ function cancelEditing() {
   state.active = null;
   activeOriginalHtml = null;
   removeToolbar();
+  savePendingToStorage();   // what was being typed is no longer kept either
 }
 
 function stagePending(key, patch, opts = {}) {
@@ -8692,7 +8693,7 @@ function savePendingToStorage() {
   syncKeptFiles();
   try {
     // Edits to the page's own fields, and to the content files of a generated page.
-    const record = draftRecord(state.pending, state.pendingSource, Date.now(), state.typed);
+    const record = draftRecord(withOpenBox(state.pending), state.pendingSource, Date.now(), state.typed);
     if (!record) { localStorage.removeItem(pendingStorageKey()); return; }
     localStorage.setItem(pendingStorageKey(), JSON.stringify(record));
   } catch {
@@ -8700,6 +8701,25 @@ function savePendingToStorage() {
     try { localStorage.removeItem(pendingStorageKey()); } catch { /* storage blocked */ }
   }
 }
+
+// Words typed in a box that is still open are kept like a finished edit: a
+// reload or a closed tab offers them back. (Not yet for a box inside a list:
+// a list is kept as a whole, when the box is left.)
+function withOpenBox(pending) {
+  const el = state.active, key = el && el.getAttribute('data-cms');
+  if (!key || el.closest('[data-cms-repeat]') || el.hasAttribute(SOURCE_ATTR)) return pending;
+  return openBoxEdit(pending, key, fieldValue(el.innerHTML, el.hasAttribute('data-cms-plain')),
+    state.undoBase.has(key) ? fieldValue(state.undoBase.get(key), el.hasAttribute('data-cms-plain')) : undefined);
+}
+let typingSaveTimer = 0;
+document.addEventListener('input', (e) => {
+  if (!state.active || !state.active.contains(e.target)) return;
+  clearTimeout(typingSaveTimer);
+  typingSaveTimer = setTimeout(savePendingToStorage, 600);
+}, true);
+const saveTypingNow = () => { if (state.active) { clearTimeout(typingSaveTimer); savePendingToStorage(); } };
+window.addEventListener('pagehide', saveTypingNow);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveTypingNow(); });
 
 function clearSavedPending() {
   try { localStorage.removeItem(pendingStorageKey()); } catch { /* ignore */ }

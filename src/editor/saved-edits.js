@@ -22,6 +22,20 @@
 
 const WEEK = 7 * 24 * 3600 * 1000;   // how long a saved copy is offered back
 
+/**
+ * The staged edits with what is being typed in a box still open laid over
+ * them, as if the box had been left: html is the box's value now, base what
+ * it was when the person began (undefined: not known). Words that change
+ * nothing add nothing. The map given is never changed.
+ */
+export function openBoxEdit(pending, key, html, base) {
+  if (typeof html !== 'string' || (base !== undefined && html === base)) return pending;
+  if (pending.get(key)?.html === html) return pending;
+  const out = new Map(pending);
+  out.set(key, { ...(pending.get(key) || {}), html });
+  return out;
+}
+
 /** Where typed words can be put back, and what the sentences call them there. */
 export const TYPED = {
   comment: 'your comment',
