@@ -112,6 +112,16 @@ export async function run(cfg, rawIo, env = process.env) {
     // After a write that succeeded, the branch is read again until it has
     // moved (or is at the commit the worker named), so a slow answer is not
     // taken for "the edit did not land" or, at clean-up, for somebody else's commit.
+    // The same for the file itself: read again until it holds the words that
+    // were just written, then hand back whatever it says.
+    const fileHolding = async (words) => {
+      let text = (await getFile(owner, R, FILE, cfg.branch)).text;
+      for (let i = 0; i < 6 && !text.includes(words); i++) {
+        if (io.sleep) await io.sleep(1500);
+        text = (await getFile(owner, R, FILE, cfg.branch)).text;
+      }
+      return text;
+    };
     const headAfterWrite = async (expected = null) => {
       const before = lastOurs || start;
       let now = await head();
@@ -190,7 +200,7 @@ export async function run(cfg, rawIo, env = process.env) {
       const body = await res.json().catch(() => ({}));
       if (res.status === 200) lastOurs = await headAfterWrite();
       if (res.status !== 200 || !body.ok || (body.applied || []).length !== 1) throw new Error(`answered ${res.status} ${JSON.stringify(body).slice(0, 200)}`);
-      afterTheirs = (await getFile(owner, R, FILE, cfg.branch)).text;
+      afterTheirs = await fileHolding(theirs);
       return body.commit.sha.slice(0, 7);
     });
     await step('the first editor publishes the old title and the venue: the title is left out with what the file says now, the venue is saved', async () => {
@@ -208,7 +218,7 @@ export async function run(cfg, rawIo, env = process.env) {
       return `left out: ${skipped[0].reason}`;
     });
     await step('on GitHub: their title is still there, and only the venue line changed', async () => {
-      const now = (await getFile(owner, R, FILE, cfg.branch)).text;
+      const now = await fileHolding(venueTwo);
       const before = afterTheirs.split('\n'); const after = now.split('\n');
       const changed = before.map((l, i) => (l === after[i] ? -1 : i)).filter(i => i >= 0);
       if (before.length !== after.length || JSON.stringify(changed) !== JSON.stringify([fm(original, 'venue')])) throw new Error(`lines ${changed.map(i => i + 1).join(', ')} changed; expected only line ${fm(original, 'venue') + 1}`);
