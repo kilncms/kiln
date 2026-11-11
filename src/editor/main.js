@@ -9512,7 +9512,12 @@ function injectStyles() {
   padding:6px 12px;border-radius:9px;cursor:pointer;font-size:12.5px;font-family:var(--kiln-font);
   white-space:nowrap;transition:all .15s}
 .kiln-btn-ghost:hover{color:#fff;background:rgba(255,255,255,.12)}
-.kiln-field{cursor:pointer;outline:2px dashed var(--kiln-rest,transparent);outline-offset:4px;border-radius:4px;transition:outline-color .15s}
+/* An editable part keeps the shape the site gave it: the outline follows the
+   part's own corners, and nothing here sets a corner, a padding or a width.
+   (It used to get border-radius:4px, which squared every round button and
+   pill on a site, and padding while typing, which made a button shrink and a
+   heading jump as an edit began.) */
+.kiln-field{cursor:pointer;outline:2px dashed var(--kiln-rest,transparent);outline-offset:4px;transition:outline-color .15s}
 .kiln-field:hover{outline-color:rgba(99,102,241,.75)}
 /* When editing starts every field shows its outline for a moment, then settles
    back (revealFields). A touch screen has no hover to find them with, so there
@@ -9523,7 +9528,7 @@ function injectStyles() {
 @media(prefers-reduced-motion:reduce){
   .kiln-reveal .kiln-field:not(.kiln-editing):not(.kiln-modified){animation:none;transition:none;outline-color:rgba(99,102,241,.75)}
 }
-.kiln-field.kiln-editing{outline:2px solid var(--kiln-accent);cursor:text;padding:2px 4px;min-width:40px}
+.kiln-field.kiln-editing{outline:2px solid var(--kiln-accent);cursor:text}
 .kiln-field:focus-visible{outline:2px solid var(--kiln-accent);outline-offset:4px}
 #kiln-toolbar button:focus-visible,#kiln-toolbar select:focus-visible,#kiln-toolbar input:focus-visible{outline:2px solid #a5b4fc;outline-offset:1px}
 .kiln-field.kiln-modified{outline:2px solid var(--kiln-warn)}
@@ -10036,6 +10041,9 @@ body:has(#kiln-topbar){padding-top:56px!important}
 .kiln-item-ctl button{width:40px;height:40px;border-radius:10px;font-size:16px;display:none}
 .kiln-item-ctl.kiln-ctl-open button{display:inline-block}
 .kiln-item-ctl .kiln-ctl-more{display:inline-block;position:absolute;top:0;right:0;font-size:20px;line-height:1}
+/* At rest the button lets what is under it show through: on a narrow card it
+   sits on the card's own words (a price, the end of a heading). */
+.kiln-item-ctl:not(.kiln-ctl-open) .kiln-ctl-more{opacity:.6}
 .kiln-item-ctl.kiln-ctl-open{padding-top:48px}
 .kiln-item-ctl.kiln-ctl-open .kiln-ctl-more{background:var(--kiln-accent)}
 /* Opened, the buttons used to lie over the block's own second line and the

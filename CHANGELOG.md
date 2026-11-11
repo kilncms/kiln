@@ -19,6 +19,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **An editable part keeps the shape the site gave it.** The editor put square
+  4px corners on every editable part, which squared a site's round buttons and
+  pills, and added padding while a part was typed in, which made a button
+  shrink and a heading jump. It now draws its outline and changes nothing
+  else. On a phone, a block's small controls button lets the words under it
+  show through until it is pressed.
 - **Signing in with GitHub no longer fails on the first try.** GitHub can take
   a second or two before a token it has just issued is accepted, and the
   dashboard asked "who is this?" at once: three sign-ins in four ended on a
