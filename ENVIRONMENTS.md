@@ -496,7 +496,8 @@ and are never in a file. A self-hosted worker needs only the rows marked
 | `NOTIFY_TO` | secret | where operator notes go (new signup, billing change, trials expiring unpaid) | a VERIFIED Email Routing destination address on the account | production only, beside the `NOTIFY` send_email binding in wrangler.toml |
 
 Without the `LS_*` secrets the worker still runs: sites register as trialing
-and checkout answers "billing not configured".
+and checkout answers that the payment page could not be opened
+(code `billing_not_configured`).
 
 **The Lemon Squeezy webhook.** URL: `<worker>/cloud/webhook/ls`, signing secret:
 the value of `LS_WEBHOOK_SECRET`. Events: `subscription_created`,

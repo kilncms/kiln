@@ -14,7 +14,8 @@
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
  * Billing degrades gracefully: with no LS_* secrets, sites register as `trialing` and
- * checkout/portal report "billing not configured" until you add your Lemon Squeezy keys.
+ * checkout answers that the payment page could not be opened (code `billing_not_configured`)
+ * until you add your Lemon Squeezy keys.
  */
 
 import { RUNBOOK_HTML } from './runbook.js';
@@ -452,9 +453,9 @@ export async function handleCloud(request, env, url, path) {
   if (path === '/cloud/sites' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const { repo, origin, plan } = await request.json().catch(() => ({}));
-    if (!repo || !origin) return json({ error: 'repo and origin required' }, 400);
-    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'repo must be owner/name' }, 400);
-    let o; try { o = new URL(origin).origin; } catch { return json({ error: 'origin must be a URL' }, 400); }
+    if (!repo || !origin) return json({ error: 'Enter both the repository and the live site address.' }, 400);
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'The repository should look like owner/name, for example acme/website.' }, 400);
+    let o; try { o = new URL(origin).origin; } catch { return json({ error: 'The live site address should be a full web address, such as https://yoursite.com.' }, 400); }
     // Ownership: the signer must actually own/push this repo. Installation
     // existence is NOT authorization. A repo under the signer's own account
     // (owner === their login) is theirs by definition; otherwise (an org repo)
@@ -463,13 +464,13 @@ export async function handleCloud(request, env, url, path) {
     const owner = repo.split('/')[0].toLowerCase();
     const ownsIt = owner === String(sess.login || '').toLowerCase() || await userCanPush(sess.gh, repo);
     if (!ownsIt) {
-      return json({ error: 'you need push access to this repo to register it' }, 403);
+      return json({ error: 'The GitHub account you signed in with cannot change that repository. Check the spelling, or sign in with the account that owns it.' }, 403);
     }
     if (!(await repoInstalled(env, repo))) {
-      return json({ error: 'install the Kiln app on this repo first', install_url: 'https://github.com/apps/kiln-cms/installations/new' }, 409);
+      return json({ error: 'The Kiln app is not installed on that repository yet.', install_url: 'https://github.com/apps/kiln-cms/installations/new' }, 409);
     }
     const dupe = await env.kiln_cloud.prepare('SELECT id FROM sites WHERE origin = ?').bind(o).first();
-    if (dupe) return json({ error: 'that site is already registered' }, 409);
+    if (dupe) return json({ error: 'That site address is already on Kiln Cloud. If it is yours and you cannot see it here, write to info@kilncms.com.' }, 409);
     // Anti-abuse: the 7-day self-serve trial clock is anchored to the FIRST time
     // this origin was ever registered, so removing + re-adding a site can't farm
     // a fresh trial indefinitely. (First registration records the timestamp.)
@@ -510,7 +511,7 @@ export async function handleCloud(request, env, url, path) {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const site = await env.kiln_cloud.prepare('SELECT ls_subscription_id FROM sites WHERE id = ? AND account_id = ?').bind(url.searchParams.get('site'), sess.account_id).first();
     const portal = site ? await lsPortal(env, site.ls_subscription_id) : null;
-    return portal ? json({ url: portal }) : json({ error: 'no billing portal yet' }, 404);
+    return portal ? json({ url: portal }) : json({ error: 'There is no subscription for this site yet, so there is no billing page to open.' }, 404);
   }
 
   // Fresh checkout link for a site that has no live subscription yet (trial,
@@ -526,10 +527,10 @@ export async function handleCloud(request, env, url, path) {
     if (site.ls_subscription_id && !(site.status === 'canceled' && !siteHasAccess(site))) {
       return json({ error: site.status === 'canceled'
         ? 'This subscription is cancelled but paid up for now: resume it under Manage billing instead of paying again.'
-        : 'already subscribed — use Manage billing' }, 409);
+        : 'This site already has a subscription. Use Manage billing to change it.' }, 409);
     }
     const checkout = await lsCheckout(env, site, { email: await accountEmail(env, sess.account_id) });
-    return checkout ? json({ url: checkout }) : json({ error: 'billing not configured' }, 503);
+    return checkout ? json({ url: checkout }) : json({ error: 'The payment page could not be opened just now. Nothing was charged. Try again in a minute, and write to info@kilncms.com if it keeps happening.', code: 'billing_not_configured' }, 503);
   }
 
   // Lemon Squeezy webhook — the ONLY thing that flips a site to active.
