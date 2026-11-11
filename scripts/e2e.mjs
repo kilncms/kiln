@@ -593,6 +593,13 @@ export async function run(cfg, rawIo) {
     await refused('refused: a new branch at a commit the repository does not have', () => plain.raw('POST', `${P}/git/refs`, { ref: `refs/heads/kiln/e2e-${run}-x`, sha: 'f'.repeat(40) }), 403, 'ref_not_ancestor');
     await refused('refused: a stylesheet, without the Theme tool', () => plain.raw('PUT', `${P}/contents/assets/kiln-e2e-${run}.css`, { message: 'x', branch: cfg.branch, content: b64('h1{color:red}') }), 403, 'grant_required');
     await refused('refused: a new page, without the New page tool', () => plain.raw('PUT', `${P}/contents/kiln-e2e-${run}.html`, { message: 'x', branch: cfg.branch, content: b64('<!doctype html><title>x</title><p>x</p>') }), 403, 'grant_required');
+    await refused('refused: an editor limited to some parts of a page changing words outside them', async () => {
+      // As People & access makes one who may edit only the named parts. No part of the test page has this name, so every change is outside it.
+      const limited = await editors.make('parts', { keys: ['kiln_e2e_no_such_part_'] });
+      await editors.settle(limited);
+      const cur = await getFile(limited.gh, R, 'index.html', cfg.branch);
+      return limited.raw('PUT', `${P}/contents/index.html`, { message: 'x', branch: cfg.branch, sha: cur.sha, content: b64(cur.text.replace(/<\/body>/i, '<p>kiln e2e</p></body>')) });
+    }, 403, 'section_scope');
     await step('none of the refused requests changed the branch', async () => {
       if (await head() !== lastOurs) throw new Error('the branch moved');
     });

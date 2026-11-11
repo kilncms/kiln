@@ -95,7 +95,7 @@ test('KLR-22 a full run: every publish goes through the worker as an editor, eve
   const r = await s.go();
   assert.deepEqual(names(r, false), [], s.out());
   assert.equal(r.ok, true);
-  assert.equal(r.checks.length, 39, s.out());
+  assert.equal(r.checks.length, 40, s.out());
   const passed = names(r, true);
   for (const name of [
     'editor publishes a text edit', 'editor puts the page back, byte for byte',
@@ -104,6 +104,7 @@ test('KLR-22 a full run: every publish goes through the worker as an editor, eve
     'refused: an SVG upload', 'refused: a script added to a page', 'refused: a workflow file',
     'refused: deleting a file (a tree entry with no content)', 'refused: moving the branch back to an earlier commit', 'refused: a forced branch update',
     'refused: a new branch at a commit the repository does not have', 'refused: a stylesheet, without the Theme tool', 'refused: a new page, without the New page tool',
+    'refused: an editor limited to some parts of a page changing words outside them',
     'none of the refused requests changed the branch', 'granted editor publishes a new page and a picture in one commit', 'granted editor writes a stylesheet',
     'refused: a suggest-only editor publishing straight to the site', 'suggest-only editor writes its preview to its own scratch branch',
     'cleanup: the repository is as it was found',
@@ -117,7 +118,7 @@ test('KLR-22 a full run: every publish goes through the worker as an editor, eve
   // The maintainer's token was used to read, and to put things back: nothing else.
   const ownerWrites = s.gh.calls.filter(c => c.method !== 'GET' && c.auth === 'Bearer owner-token').map(c => `${c.method} ${c.path.replace(/\d{10}-e2e-\w+|e2e-\w+/, 'X')}`);
   assert.deepEqual(ownerWrites, ['DELETE /git/refs/heads/kiln-drafts', 'DELETE /git/refs/tags/kiln/X', 'DELETE /git/refs/heads/kiln/suggest-X', 'PATCH /git/refs/heads/main']);
-  assert.match(s.out(), /39\/39 checks passed/);
+  assert.match(s.out(), /40\/40 checks passed/);
   assert.match(s.out(), /Not covered here, check by hand on staging:/);
 });
 
@@ -129,8 +130,8 @@ test('KLR-22 it leaves the repository as it found it: same head, same page, no b
   assert.deepEqual([...s.gh.refs.keys()].sort(), s.startRefs, 'only main, as before');
   assert.deepEqual(s.gh.paths(), ['.kiln-e2e', 'assets/site.css', 'index.html'], 'no upload, page or stylesheet left behind');
   assert.equal([...s.kv.map.keys()].some(k => k.startsWith('esess:')), false);
-  assert.deepEqual(s.kvCalls.map(c => c[0]), ['put', 'put', 'put', 'delete', 'delete', 'delete']);
-  assert.deepEqual(s.kvCalls.filter(c => c[0] === 'put').map(c => c[2]), [900, 900, 900], 'sessions expire by themselves in 15 minutes even if cleanup never ran');
+  assert.deepEqual(s.kvCalls.map(c => c[0]), ['put', 'put', 'put', 'put', 'delete', 'delete', 'delete', 'delete']);   // three editors and the one limited to some parts
+  assert.deepEqual(s.kvCalls.filter(c => c[0] === 'put').map(c => c[2]), [900, 900, 900, 900], 'sessions expire by themselves in 15 minutes even if cleanup never ran');
 });
 
 test('KLR-22 a repository that is not marked as a test repository is never written to', async () => {
@@ -333,7 +334,7 @@ test('owner session: with an address to sign in from, the owner reads, publishes
   const s = withOrigin();
   const r = await s.go();
   assert.deepEqual(names(r, false), [], s.out());
-  assert.equal(r.checks.length, 39 + OWNER_STEPS.length, s.out());
+  assert.equal(r.checks.length, 40 + OWNER_STEPS.length, s.out());
   for (const name of OWNER_STEPS) assert.ok(names(r, true).includes(name), `missing: ${name}`);
   // The owner's edit and its restore went through the worker's proxy with the session's (the maintainer's) token.
   const ownerPuts = s.gh.calls.filter(c => c.method === 'PUT' && c.auth === 'Bearer owner-token').map(c => c.path);
