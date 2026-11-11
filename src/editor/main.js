@@ -1207,7 +1207,10 @@ function twinFields() {
  * be changed, the line says so and offers to go there; a link is held back
  * only then, and only when the very words are the same (Ctrl or ⌘ and a click
  * still follows it). An unmarked part of an editable block is said to be
- * that. Everything else is the page's own, as it was.
+ * that. A press on a picture was meant for the picture: when the line
+ * explains why it cannot be changed here, the link around it (often a whole
+ * card, often to another site in a new tab) is held back too, so the person
+ * reads the line where they are. Everything else is the page's own, as it was.
  */
 function tapNotHere(e) {
   if (state.active || sourceActive || pickMode || e.metaKey || e.ctrlKey) return;
@@ -1221,14 +1224,18 @@ function tapNotHere(e) {
   const words = !picture && own ? at.innerText : '';
   if (!picture && !words) return;
   // An unmarked part of a block whose other parts are editable: said to be that. The page's own behaviour stays.
-  if (at.closest('.kiln-repeat-item')) { setStatus(notHereWords({ inBlock: true, picture }), 'idle', { hold: 9000 }); return; }
+  if (at.closest('.kiln-repeat-item')) {
+    if (picture && at.closest('a[href]')) { e.preventDefault(); e.stopPropagation(); }
+    setStatus(notHereWords({ inBlock: true, picture }), 'idle', { hold: 9000 });
+    return;
+  }
   const link = at.closest('a[href]');
   const nav = !!at.closest('nav, header, footer, [role="navigation"], [role="menu"], [role="menubar"]');
   const twin = findTwin({ words, href: link ? link.href : null, nav }, twinFields());
   if (twin) {
     const where = twin.same === 'place' ? (twin.field.el.closest('.kiln-repeat-item') || twin.field.el) : twin.field.el;
-    if (twin.same === 'words') {
-      // The same words, where they can be changed: the person is sent there, not to wherever the link goes.
+    if (twin.same === 'words' || picture) {
+      // The same words, where they can be changed (or a picture, pressed to change it): the person is sent there, not to wherever the link goes.
       e.preventDefault();
       e.stopPropagation();
     }
