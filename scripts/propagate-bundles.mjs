@@ -47,6 +47,8 @@ export const DEFAULT_CONSUMERS = {
   canary: [
     { dir: '~/repos/kiln-demo-mr', dest: 'assets', live: 'https://demo.kilncms.com/assets/kiln.js' },
     { dir: '~/repos/kiln-demo', dest: 'assets', live: 'https://kiln-demo.pages.dev/assets/kiln.js' },
+    // Kiln's own home page: "Edit this page" there loads the real editor, in its private demo mode.
+    { dir: '~/repos/kilncms.com', dest: 'assets', live: 'https://kilncms.com/assets/kiln.js' },
   ],
   customers: [
     { dir: '~/repos/npu-i', dest: 'assets/js' },
