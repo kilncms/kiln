@@ -75,6 +75,11 @@
  * publish, or the editor asking by itself. Each must show the same dialog,
  * keep what was typed on screen, and bring back what the saved copy holds.
  * A sign-in that ran out by the browser's own clock must be said once.
+ * Then the site owner ("owner"), with the worker playing owner sessions: the
+ * browser keeps a session and no GitHub token, nothing is asked of
+ * api.github.com, Publish and People & access go through the worker, Sign
+ * out ends the session there, an ended session says so, and an owner signed
+ * in the old way is moved over (or, with an older worker, carries on as before).
  * And formatted text from a content file ("formatted"): the toolbar a plain
  * HTML site has, a bold word and a new list item written back as the file's
  * own Markdown with only those lines changed, a table that takes no typing
@@ -4337,6 +4342,233 @@ async function runEntries(browser, size) {
   }
 }
 
+/**
+ * The site owner with an owner session ("owner"): the GitHub token stays on
+ * the worker, played here by this script as the owner-sessions contract says.
+ * The owner arrives with #kiln-owner=…; the browser keeps a session and no
+ * token; nothing is asked of api.github.com, every GitHub call goes to the
+ * worker's /gh/ with X-Kiln-Session; an edit is published, People & access
+ * opens, Sign out ends the session on the worker. A session the worker has
+ * ended says so, while editing and on page load, and "Sign in again" asks
+ * the worker to keep the token. An owner signed in the old way is moved
+ * over with one /auth/adopt when the worker keeps owner sessions, and keeps
+ * working the old way, straight to GitHub, with a worker that does not.
+ */
+async function runOwner(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} owner       `;
+  const WORKER = 'https://worker.invalid';
+  const GITHUB = 'https://api.github.com';
+  const REPO = 'acme/site';
+  const S1 = '1'.repeat(64), S2 = '2'.repeat(64), S3 = '3'.repeat(64), S4 = '4'.repeat(64);
+  const DAY = 24 * 3600 * 1000;
+  const source = await (await fetch(URL_ARG)).text();
+  const file = new URL(URL_ARG).pathname.replace(/^\/+/, '').replace(/(^|\/)$/, '$1index.html');
+  const words = async (locator) => ((await locator.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+
+  /** One browser, with the worker this script plays. `seed`: kiln_admin as stored before the first page. */
+  async function open({ seed = null, ownerSessions = true } = {}) {
+    const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+    await context.addInitScript(([seed]) => {
+      try {
+        if (sessionStorage.getItem('ui_check_seeded')) return;
+        sessionStorage.setItem('ui_check_seeded', '1');
+        localStorage.setItem('kiln_guide', '1');
+        if (seed) localStorage.setItem('kiln_admin', JSON.stringify(seed));
+      } catch { /* ignore */ }
+    }, [seed]);
+    const w = { known: new Set([S1]), puts: [], github: [], gh: [], bearer: [], adopt: [], logout: [], people: [], logins: [], blocked: [], release: [], current: source, sha: 'sha0' };
+    await context.route('**/*', async (route) => {
+      const req = route.request();
+      const u = new URL(req.url());
+      const h = req.headers();
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': ORIGIN }, body: JSON.stringify(body) });
+      if (u.origin === ORIGIN && u.pathname.endsWith('kiln-config.js')) {
+        return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
+      }
+      if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
+      if (req.method() === 'OPTIONS' && (u.origin === WORKER || u.origin === GITHUB)) {
+        return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session, Accept', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS' } });
+      }
+      let p = decodeURIComponent(u.pathname);
+      if (u.origin === GITHUB) {
+        // Every request the page makes to GitHub itself is counted. Only the old way answers it.
+        w.github.push(`${req.method()} ${p}`);
+        if (ownerSessions || h.authorization !== 'Bearer ghu_old') return json({ message: 'Bad credentials' }, 401);
+        p = `/gh${p}`;
+      } else if (u.origin === 'https://raw.githubusercontent.com' && /^\/kilncms\/kiln\/release\//.test(p)) {
+        // The owner's check for a newer Kiln release: a public file, read with no sign-in.
+        w.release.push(h.authorization || h['x-kiln-session'] || '');
+        return route.abort();
+      } else if (u.origin !== WORKER) { w.blocked.push(req.url()); return route.abort(); }
+      else if (h.authorization) w.bearer.push(`${req.method()} ${p}`);   // a GitHub token sent to the worker
+      const session = h['x-kiln-session'] || '';
+      const signedIn = u.origin === GITHUB || w.known.has(session);
+      if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'], ...(ownerSessions && { ownerSessions: true }) });
+      if (p === '/auth/login') {
+        w.logins.push(Object.fromEntries(u.searchParams));
+        w.known.add(S4);
+        return route.fulfill({ status: 302, headers: { Location: `${ORIGIN}${u.searchParams.get('return_to') || '/'}#${new URLSearchParams({ 'kiln-owner': S4, 'kiln-login': 'erik', 'kiln-exp': String(Date.now() + 180 * DAY) })}` } });
+      }
+      if (p === '/auth/adopt') {
+        w.adopt.push(JSON.parse(req.postData() || '{}'));
+        if (!ownerSessions) return json({ error: 'Not Found' }, 404);
+        w.known.add(S2);
+        return json({ ok: true, session: S2, login: 'erik', exp: Date.now() + 180 * DAY });
+      }
+      if (p === '/auth/logout') { w.logout.push(session); w.known.delete(session); return json({ ok: true }); }
+      if (p === '/auth/session' && w.sessionAnswer) return json(w.sessionAnswer.body, w.sessionAnswer.status);
+      if (p === '/auth/session') return signedIn ? json({ ok: true, role: 'owner', login: 'erik', repo: REPO, exp: Date.now() + 180 * DAY }) : json({ code: 'signin_ended' }, 401);
+      if (!signedIn && !(u.origin === WORKER && h.authorization === 'Bearer ghu_old')) return json({ code: 'signin_ended' }, 401);
+      if (p === '/presence') return json({ ok: true, others: [], online: [], scope: null });
+      if (p === '/admin/people') { w.people.push(session); return json({ ok: true, googleConfigured: true, people: [] }); }
+      if (!p.startsWith('/gh/')) return json({ ok: true, items: [], comments: [], suggestions: [], schedules: [] });
+      if (u.origin === WORKER) w.gh.push({ path: p, session });
+      if (p === '/gh/user') return json({ login: 'erik' });
+      if (p === `/gh/repos/${REPO}/contents/${file}`) {
+        if (req.method() === 'GET') return json({ sha: w.sha, content: Buffer.from(w.current).toString('base64') });
+        const body = JSON.parse(req.postData());
+        w.puts.push(body);
+        w.current = Buffer.from(body.content, 'base64').toString();
+        w.sha = `sha${w.puts.length}`;
+        return json({ commit: { sha: `commit${w.puts.length}` }, content: {} });
+      }
+      if (p === `/gh/repos/${REPO}/git/ref/heads/main`) return json({ object: { sha: 'head' } });
+      if (p.includes('/deployments')) return json([]);
+      if (p.endsWith('/status')) return json({ total_count: 0 });
+      return json({ message: 'Not Found' }, 404);
+    });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    page.on('dialog', (d) => d.accept());
+    return { context, page, w, errors };
+  }
+  const press = (page, locator) => (phone ? locator.tap() : locator.click());
+  const stored = (page) => page.evaluate(() => JSON.parse(localStorage.getItem('kiln_admin') || 'null'));
+  const tokenAnywhere = (page) => page.evaluate(() => {
+    const all = [location.href, ...Object.keys(localStorage).map(k => localStorage.getItem(k)), ...Object.keys(sessionStorage).map(k => sessionStorage.getItem(k))].join('\n');
+    return /ghu_|kiln-token|"token"/.test(all);
+  });
+  const started = async (page) => { await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 }); await page.waitForTimeout(700); };
+  const menu = async (page, id) => {
+    const bar = page.locator(`#${id}`).filter({ visible: true }).first();
+    if (!(await bar.count())) { await press(page, page.locator('#kiln-fab')); await page.waitForTimeout(300); }
+    await press(page, page.locator(`#${id}`).filter({ visible: true }).first());
+  };
+  const editAndPublish = async (page, typed) => {
+    const heading = page.locator('h1.kiln-field, h2.kiln-field, h3.kiln-field').first();
+    await heading.scrollIntoViewIfNeeded();
+    await press(page, heading);
+    await page.keyboard.type(typed);
+    await press(page, page.locator('#kiln-toolbar .kiln-tb-save'));
+    await page.waitForTimeout(300);
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    await press(page, page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first());
+    await page.waitForTimeout(500);
+    if (await page.locator('#kiln-pubsheet-go').count()) await press(page, page.locator('#kiln-pubsheet-go'));
+    await page.waitForTimeout(1800);
+    return heading;
+  };
+
+  // ── a new sign-in: the worker comes back with a session ────────────────────
+  {
+    const { context, page, w, errors } = await open();
+    await page.goto(`${URL_ARG}#${new URLSearchParams({ 'kiln-owner': S1, 'kiln-login': 'erik', 'kiln-exp': String(Date.now() + 180 * DAY) })}`, { waitUntil: 'load' });
+    await started(page);
+    const kept = await stored(page);
+    check(scope, 'the editor starts for the owner signed in with a session', (await page.locator('#kiln-fab').count()) === 1);
+    check(scope, 'the browser keeps the session, the name and the repository, and no GitHub token', JSON.stringify(Object.keys(kept || {}).sort()) === '["exp","login","repo","session"]' && kept.session === S1 && kept.repo === REPO && kept.login === 'erik', JSON.stringify(kept));
+    check(scope, 'no token in the address, in localStorage or in sessionStorage, and the address is cleaned', !(await tokenAnywhere(page)) && !/kiln-/.test(page.url()), page.url());
+    await editAndPublish(page, ' Owner words');
+    check(scope, 'an edit is published through the worker', w.puts.length === 1 && Buffer.from(w.puts[0].content, 'base64').toString().includes('Owner words'), `${w.puts.length} writes`);
+    await menu(page, 'kiln-invite');
+    await page.waitForTimeout(900);
+    const list = await words(page.locator('#kiln-people-list'));
+    check(scope, 'People & access opens with the session', w.people.length >= 1 && w.people.every(s => s === S1) && /Nobody yet/.test(list), `${w.people.join(',').slice(0, 20)} ${list}`);
+    if (await page.locator('#kiln-modal').count()) await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    check(scope, 'every GitHub call went to the worker with the session', w.gh.length > 0 && w.gh.every(g => g.session === S1), `${w.gh.length} calls`);
+    check(scope, 'nothing was asked of api.github.com, and no GitHub token was sent to the worker', w.github.length === 0 && w.bearer.length === 0, [...w.github, ...w.bearer].slice(0, 3).join(', '));
+    await menu(page, 'kiln-signout');
+    await page.waitForTimeout(1200);
+    check(scope, 'Sign out ends the session on the worker and forgets it here', JSON.stringify(w.logout) === JSON.stringify([S1]) && (await stored(page)) === null && !w.known.has(S1), JSON.stringify(w.logout));
+
+    // signed in again by address; the worker ends the session while an edit is unpublished
+    w.known.add(S3);
+    await page.goto('about:blank');
+    await page.goto(`${URL_ARG}#${new URLSearchParams({ 'kiln-owner': S3, 'kiln-login': 'erik', 'kiln-exp': String(Date.now() + 180 * DAY) })}`, { waitUntil: 'load' });
+    await started(page);
+    w.known.delete(S3);
+    const heading = await editAndPublish(page, ' Kept words');
+    const dialog = await words(page.locator('#kiln-modal .kiln-modal-card'));
+    const line = await words(page.locator('#kiln-status'));
+    check(scope, 'a session the worker ended: Publish says the sign-in has ended, and the edit stays', (/Your sign-in has ended/.test(line) || /sign-in has ended|Sign in again/.test(dialog)) && (await words(heading)).includes('Kept words') && w.puts.length === 1, `${line} | ${dialog.slice(0, 120)}`);
+    if (await page.locator('#kiln-modal').count()) await page.keyboard.press('Escape');
+    check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+    check(scope, 'nothing outside the local server and the worker was needed, but the public release check, which is sent no sign-in', w.blocked.length === 0 && w.github.length === 0 && w.release.every(x => x === ''), w.blocked.slice(0, 3).join(', '));
+    await context.close();
+  }
+
+  // ── page load with a session the worker no longer has ──────────────────────
+  {
+    const { context, page, w } = await open({ seed: { session: '9'.repeat(64), login: 'erik', repo: REPO, exp: Date.now() + DAY } });
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    const notice = page.locator('#kiln-notice');
+    await notice.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+    check(scope, 'page load: an ended session says so, as for an editor, and is dropped', (await words(notice.locator('p').first())) === 'Your sign-in to edit this site has ended, so please sign in again with GitHub.' && (await stored(page)) === null && (await page.locator('#kiln-fab').count()) === 0, await words(notice));
+    if (await notice.count()) {
+      await press(page, notice.getByRole('button', { name: 'Sign in again' }));
+      await page.waitForTimeout(400);
+      await started(page).catch(() => {});
+      const asked = w.logins[0] || {};
+      check(scope, '"Sign in again" asks the worker to keep the token, for this repository, and comes back signed in', asked.keep === 'server' && asked.repo === REPO && (await stored(page))?.session === S4 && (await page.locator('#kiln-fab').count()) === 1, JSON.stringify(asked));
+    }
+    await context.close();
+  }
+
+  // ── page load while GitHub is out of the worker's reach, or this address is refused: the session is kept ──
+  for (const [status, code] of [[503, 'github_unreachable'], [403, 'owner_origin']]) {
+    const { context, page, w } = await open({ seed: { session: S1, login: 'erik', repo: REPO, exp: Date.now() + DAY } });
+    w.sessionAnswer = { status, body: { code, error: 'Not now.' } };
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    const notice = page.locator('#kiln-notice');
+    await notice.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+    const said = await words(notice);
+    check(scope, `page load answered ${status} ${code}: the session is kept and nothing says the sign-in has ended`, (await stored(page))?.session === S1 && !/has ended/.test(said) && said.length > 0, said.slice(0, 120));
+    await context.close();
+  }
+
+  // ── signed in the old way, and the worker keeps owner sessions ─────────────
+  {
+    const { context, page, w, errors } = await open({ seed: { token: 'ghu_old', sid: 's1', exp: Date.now() + 8 * 3600 * 1000 } });
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    await started(page);
+    const kept = await stored(page);
+    check(scope, 'the old sign-in is moved over with one /auth/adopt, which is sent the token, the renewal id and the repository', w.adopt.length === 1 && w.adopt[0].token === 'ghu_old' && w.adopt[0].sid === 's1' && w.adopt[0].repo === REPO, JSON.stringify(w.adopt));
+    check(scope, 'afterwards the browser keeps the session and no token', kept?.session === S2 && !('token' in (kept || {})) && !('sid' in (kept || {})) && !(await tokenAnywhere(page)), JSON.stringify(kept));
+    check(scope, 'after moving over, nothing is asked of api.github.com', w.github.length === 0 && w.gh.length > 0 && w.gh.every(g => g.session === S2), w.github.slice(0, 3).join(', '));
+    await page.reload({ waitUntil: 'load' });
+    await started(page);
+    check(scope, 'the next page asks nothing more of /auth/adopt', w.adopt.length === 1);
+    check(scope, 'no script errors (moved over)', errors.length === 0, errors.join(' | ').slice(0, 200));
+    await context.close();
+  }
+
+  // ── signed in the old way, and the worker keeps no owner sessions ──────────
+  {
+    const { context, page, w, errors } = await open({ seed: { token: 'ghu_old', sid: 's1', exp: Date.now() + 8 * 3600 * 1000 }, ownerSessions: false });
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    await started(page);
+    const kept = await stored(page);
+    check(scope, 'with an older worker nothing is moved, and the editor works the old way, straight to GitHub', w.adopt.length === 0 && kept?.token === 'ghu_old' && w.github.some(g => g === 'GET /user') && w.gh.length === 0, JSON.stringify({ adopt: w.adopt.length, github: w.github.length }));
+    await editAndPublish(page, ' Old way');
+    check(scope, 'an edit is published the old way', w.puts.length === 1, `${w.puts.length} writes`);
+    check(scope, 'no script errors (the old way)', errors.length === 0, errors.join(' | ').slice(0, 200));
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
   if (ONLY && !label.includes(ONLY)) return;
@@ -4382,6 +4614,8 @@ try {
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} sign-in ended`, () => runSignInEnded(browser, size));
   // …and they find out anywhere else in the editor
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} ended elsewhere`, () => runSignInEverywhere(browser, size));
+  // the site owner with an owner session: no GitHub token in the browser, everything through the worker, and the old way moved over
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} owner       `, () => runOwner(browser, size));
 } finally { await browser.close(); }
 
 console.log(lines.join('\n'));

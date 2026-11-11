@@ -44,6 +44,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   who are signed in the old way are moved over on their next page load, without
   signing in again. Sites still on older editor files keep working the old way
   until they update them.
+- **The site owner’s browser no longer holds a GitHub sign-in.** After signing
+  in with GitHub, the browser keeps only a session for this one site
+  (`kiln_admin = { session, login, repo, exp }`), and every change, History,
+  People & access and every other tool asks through Kiln’s sign-in service,
+  as an invited editor’s browser always has. A script on the site can no
+  longer read a key that works on the owner’s other repositories. An owner
+  signed in the old way is moved over on the next page, without signing in
+  again, and Sign out now ends the session on the service too. With a sign-in
+  service that has not been updated, the editor carries on the old way.
 - **A limit to parts of a page is kept by Kiln’s sign-in service, not only by
   the editing screen.** An editor limited to some parts of a page could change
   any part of it by sending a save straight to the service. Now every save is

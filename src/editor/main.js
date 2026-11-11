@@ -287,9 +287,14 @@ async function init() {
       // Only a real auth rejection should sign the owner out. A network or worker
       // blip (no HTTP status) must NOT nuke a valid session — that would log them
       // out every time their wifi hiccups. Surface it and let a reload recover.
-      const over = onLoadFailure(err, { mode, draft: draftWaits(), asking: 'who' });
+      // With an owner session the worker answers: a 401 is an ended sign-in,
+      // a 403 (this address refused, a plan that ended) or a 503 (GitHub out
+      // of reach) keeps the session, as for an invited editor's page load.
+      // The old way asks GitHub, whose refusal of the token ends the sign-in.
+      const over = onLoadFailure(err, { mode, draft: draftWaits(), asking: stored?.session ? 'page' : 'who' });
       if (over) {
         console.warn(over.drop ? '[kiln] the sign-in has ended' : '[kiln] could not verify session (offline?)', err);
+        if (!over.drop && stored?.session && await saidPlanEnded(standing)) return;
         notStarted(over);
         return;
       }
@@ -772,6 +777,9 @@ async function adoptOwner(stored) {
       body: JSON.stringify({ token: stored.token, ...(stored.sid && { sid: stored.sid }), repo: cfg.repo }),
     });
     const data = await res.json().catch(() => ({}));
+    // Every refusal leaves the old sign-in as it is. A 401 too: the token may
+    // only have run out, which the old way's renewal mends (and the next page
+    // moves it over); when it cannot be renewed, the sign-in-ended notice follows from that.
     if (!res.ok || !data?.ok || !/^[a-f0-9]{64}$/.test(String(data.session || ''))) return stored;
     const next = { session: data.session, login: String(data.login || ''), repo: cfg.repo, exp: Number.isFinite(data.exp) ? data.exp : null };
     localStorage.setItem(ADMIN_KEY, JSON.stringify(next));
