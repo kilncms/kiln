@@ -393,8 +393,9 @@ have the details.
 ## Security model
 
 - **The owner** signs in with GitHub through a GitHub App installed only on the
-  repositories they choose. The long-lived part of that sign-in (its refresh token) stays
-  in the sign-in service's storage; the browser holds a session id.
+  repositories they choose. The GitHub token stays in the sign-in service's storage and
+  is never handed to the browser, which holds a session id. Every call the owner's editor
+  makes goes through the service, bound to that one repository and site.
 - **Invited editors** sign in with Google and never hold GitHub credentials. Every change
   they make goes through the sign-in service, which commits only to that one repository
   and only what that person was given:

@@ -31,10 +31,19 @@ If you are reviewing or reporting, these are the areas that matter most:
 
 - **GitHub App OAuth** — sign-in flow, `state` nonces, and the server-side
   session/refresh-token store in Workers KV.
+- **The owner's session** — a site owner's GitHub token is kept in Workers KV
+  and never handed to the browser, which holds a session id. Every call the
+  owner's editor makes goes through the worker's proxy, bound to one
+  repository and one site address, and the token is renewed on the server.
+  (A site still on editor files from before this change keeps the old
+  behaviour, a token in the browser, until its editor files are updated.) Any
+  way to make an owner session reach another repository, or to read the token
+  it holds, is high severity.
 - **Google sign-in for editors and members** — invited people are added to a
   per-repo email allowlist (the "People" list) and authenticate with Google;
   editor sessions are opaque tokens stored in Workers KV, scoped to the repo
-  and to the path/section grants for that person. Editors never hold GitHub
+  and to the path/section grants for that person, and the worker checks both
+  on every save (`worker/section-scope.js` for sections). Editors never hold GitHub
   credentials, and the GitHub App installation token never reaches the browser.
 - **Commit proxy** — the `kiln-auth` worker holds a GitHub App installation
   token and proxies editor commits behind a strict method+path allowlist
@@ -50,7 +59,7 @@ If you are reviewing or reporting, these are the areas that matter most:
   fonts, audio, video), each under 15 MB and checked by its leading bytes
   (`src/file-policy.js`). SVG, XML, XSL and XHTML are refused outright: a
   browser runs script from them in the site's origin, where the owner's
-  GitHub token is stored. HTML written by an editor may add no script, event
+  session is kept. HTML written by an editor may add no script, event
   handler or framing that the committed page did not already have
   (`worker/sanitize-guard.js`). Any way for an editor session or an API token
   to land executable content on the site is high severity.
