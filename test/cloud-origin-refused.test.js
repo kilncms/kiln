@@ -81,3 +81,29 @@ test('cloudOriginStanding: null without a database, and when the database cannot
   assert.equal(await cloudOriginStanding({ kiln_cloud: { prepare() { throw new Error('down'); } } }, 'https://club.example'), null);
   assert.equal(await cloudOriginStanding({ kiln_cloud: {} }, ''), null);
 });
+
+async function standing(env, origin) {
+  const res = await worker.fetch(new Request(`https://worker.example/standing?origin=${encodeURIComponent(origin)}`), env);
+  return { status: res.status, acao: res.headers.get('Access-Control-Allow-Origin'), json: await res.json() };
+}
+
+test('/standing: tells the editor whether an address may be edited, and when it may not, whether a trial or a plan ended', { skip: d1Skip }, async () => {
+  const env = cloud();
+  addSite(env, { id: 'a', origin: 'https://live.example', status: 'trialing' });
+  addSite(env, { id: 'b', origin: 'https://trial-over.example', status: 'canceled', ls_subscription_id: null });
+  addSite(env, { id: 'c', origin: 'https://plan-over.example', status: 'canceled', ls_subscription_id: '77' });
+  const live = await standing(env, 'https://live.example');
+  assert.equal(live.status, 200);
+  assert.equal(live.acao, '*', 'readable from a page whose address may not be edited');
+  assert.deepEqual(live.json, { editable: true });
+  assert.deepEqual((await standing(env, 'https://trial-over.example')).json, { editable: false, reason: 'trial_ended', dashboard: DASH });
+  assert.deepEqual((await standing(env, 'https://plan-over.example/some/page')).json, { editable: false, reason: 'plan_ended', dashboard: DASH });
+  assert.deepEqual((await standing(env, 'https://nobody.example')).json, { editable: false, reason: 'unknown' });
+  assert.deepEqual((await standing(env, 'not an address')).json, { editable: false, reason: 'unknown' });
+});
+
+test('/standing on a worker someone runs themselves: the allowed list is the whole answer', async () => {
+  const env = { KILN: fakeKV(), ALLOWED_ORIGINS: 'https://mine.example' };
+  assert.deepEqual((await standing(env, 'https://mine.example')).json, { editable: true });
+  assert.deepEqual((await standing(env, 'https://other.example')).json, { editable: false, reason: 'unknown' });
+});

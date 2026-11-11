@@ -146,6 +146,18 @@ export default {
         }
         return await cors(env, request, json(basic));
       }
+      // Where a site address stands, for the editor to say so on the page: a
+      // refusal for an address that may not be edited is one the browser will
+      // not let the editor read, so without this an ended trial looked like
+      // "the site could not be reached". It tells no more than a preflight
+      // does, apart from "this address was on Kiln Cloud and its trial or plan
+      // has ended", and anyone may ask it (no sign-in, readable from any page).
+      if (path === '/standing' && request.method === 'GET') {
+        const limited = await rateLimited(request, env);
+        if (limited) return limited;
+        const answer = await siteStanding(env, url.searchParams.get('origin') || request.headers.get('Origin') || '');
+        return new Response(JSON.stringify(answer), { headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' } });
+      }
       if (path === '/setup') return setupPage(url, env);
       if (path === '/setup/callback') return setupCallback(url, env);
       if (path === '/setup/status') return setupStatus(env);
@@ -283,6 +295,16 @@ async function originAllowed(env, origin) {
     } catch (e) { /* fail-safe: if D1 is unreachable, fall back to the static list */ }
   }
   return false;
+}
+
+/** May this address be edited through this worker, and if not, why (when the worker can tell). */
+async function siteStanding(env, origin) {
+  let o = '';
+  try { o = new URL(origin).origin; } catch { return { editable: false, reason: 'unknown' }; }
+  if (await originAllowed(env, o)) return { editable: true };
+  const standing = env.CLOUD_DASHBOARD ? await cloudOriginStanding(env, o) : null;
+  if (standing && standing.known) return { editable: false, reason: standing.trialEnded ? 'trial_ended' : 'plan_ended', dashboard: env.CLOUD_DASHBOARD };
+  return { editable: false, reason: 'unknown' };
 }
 
 /**
