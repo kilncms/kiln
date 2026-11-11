@@ -79,6 +79,11 @@
  * HTML site has, a bold word and a new list item written back as the file's
  * own Markdown with only those lines changed, a table that takes no typing
  * and says why, and Esc.
+ * Lists and links ("lists and links"): in a one-paragraph part (a <p> or a
+ * heading) the list buttons and the Style menu's formats say why and change
+ * nothing; in a rich area a list is made, not nested in its paragraph, with
+ * the cursor where it was; a link typed as "example.com" goes to https://,
+ * an email address to mailto:, and "about.html" stays as typed.
  * Exits non-zero if any check fails. `--shots <dir>` also saves a screenshot
  * of each step as <step>-<width>.png. `--only <pass>` runs the passes whose
  * name has that word in it ("safety net", "signed in", "ended elsewhere"…).
@@ -1484,6 +1489,105 @@ async function runFirstEdits(browser, size) {
   }
   check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
   check(scope, 'nothing was asked in a browser box', boxes.length === 0, boxes.join(' | ').slice(0, 120));
+  await context.close();
+}
+
+async function runListsAndLinks(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} lists and links`;
+  const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone, reducedMotion: 'no-preference' });
+  await context.addInitScript(() => { try { localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ } });
+  const front = new URL(URL_ARG).href;
+  await context.route('**/*', async (route) => {
+    const u = route.request().url();
+    if (u === front) {
+      // the demo has no rich area of its own: one is added to the page, before the first heading of the second section
+      const res = await route.fetch();
+      const body = (await res.text()).replace(/(<h2 data-cms="[^"]+">)/, '<div data-cms="lists_rich"><p>Rich area words</p></div>\n$1');
+      return route.fulfill({ response: res, body });
+    }
+    if (u.startsWith(ORIGIN) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
+    return route.abort();
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  // force: a button that says why is dimmed (aria-disabled) but can still be pressed
+  const press = (locator) => (phone ? locator.tap({ force: true }) : locator.click({ force: true }));
+  await page.goto(URL_ARG, { waitUntil: 'load' });
+  await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+  await page.waitForTimeout(600);
+  const status = () => page.locator('#kiln-status').textContent().catch(() => '');
+  const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+  const btn = (cmd) => page.locator(`#kiln-toolbar [data-cmd="${cmd}"]`);
+  const open = async (field) => {
+    await field.scrollIntoViewIfNeeded();
+    await press(field);
+    await page.waitForTimeout(350);
+    // the cursor at the end of the words, as after typing
+    await field.evaluate((el) => {
+      const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let n, last = null;
+      while ((n = w.nextNode())) last = n;
+      const r = document.createRange(); r.setStart(last, last.length); r.collapse(true);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    });
+  };
+  const shut = async () => { await page.keyboard.press('Escape'); await page.waitForTimeout(300); };
+  const blocks = (field) => field.evaluate((el) => el.querySelectorAll('ul, ol, li, h1, h2, h3, h4, h5, h6, blockquote, p').length);
+
+  for (const [name, field] of [['a paragraph', page.locator('p[data-cms]').filter({ hasText: /\w{4}/ }).first()], ['a heading', page.locator('h2[data-cms]').first()]]) {
+    const was = await field.innerHTML();
+    await open(field);
+    check(scope, `in ${name} the list buttons are dimmed and their hint says why`, (await btn('insertUnorderedList').getAttribute('aria-disabled')) === 'true'
+      && /can’t go in this part/.test((await btn('insertOrderedList').getAttribute('title')) || ''));
+    await press(btn('insertUnorderedList'));
+    await page.waitForTimeout(250);
+    let said = await status();
+    check(scope, `in ${name} Bullet list says why and makes no list`, /^A list can’t go in this part of the page\./.test(said) && (await blocks(field)) === 0, said.slice(0, 80));
+    await press(btn('insertOrderedList'));
+    await page.waitForTimeout(250);
+    check(scope, `in ${name} Numbered list makes no list either`, (await blocks(field)) === 0);
+    await page.locator('#kiln-toolbar .kiln-style-select').selectOption('fmt:h3');
+    await page.waitForTimeout(250);
+    said = await status();
+    check(scope, `in ${name} the Style menu's Subheading says why and changes nothing`, /can’t be made a heading/.test(said) && (await blocks(field)) === 0 && (await field.innerHTML()).includes(was.trim().slice(0, 12)), said.slice(0, 80));
+    await shot(`lists-${name.split(" ")[1]}`);
+    await shut();
+  }
+
+  const rich = page.locator('[data-cms="lists_rich"]');
+  for (const [cmd, tag] of [['insertUnorderedList', 'ul'], ['insertOrderedList', 'ol']]) {
+    await open(rich);
+    check(scope, `in a rich area the ${tag === 'ul' ? 'Bullet' : 'Numbered'} list button is not dimmed`, (await btn(cmd).getAttribute('aria-disabled')) === null);
+    await press(btn(cmd));
+    await page.waitForTimeout(250);
+    await page.keyboard.type(' and more');
+    const html = (await rich.innerHTML()).replace(/&nbsp;/g, ' ');
+    check(scope, `in a rich area it makes a list, not inside a paragraph, and the words typed next go at the end of the item`, html === `<${tag}><li>Rich area words and more</li></${tag}>`, html.slice(0, 90));
+    await shut();
+  }
+
+  const body = page.locator('p[data-cms]').filter({ hasText: /\w{4}/ }).nth(1);
+  await open(body);
+  for (const [typed, want] of [['muskratandrorke.com', 'https://muskratandrorke.com'], ['www.example.com/page', 'https://www.example.com/page'], ['pat@example.com', 'mailto:pat@example.com'], ['about.html', 'about.html'], ['/about', '/about']]) {
+    await body.evaluate((el) => {
+      el.querySelectorAll('a').forEach(a => a.replaceWith(...a.childNodes));
+      el.normalize();
+      const n = document.createTreeWalker(el, NodeFilter.SHOW_TEXT).nextNode();
+      const r = document.createRange(); r.setStart(n, 0); r.setEnd(n, 4);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    });
+    await press(btn('link'));
+    await page.waitForTimeout(300);
+    await page.locator('#kiln-link-url').fill(typed);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(300);
+    const got = await body.evaluate((el) => el.querySelector('a')?.getAttribute('href') ?? '');
+    check(scope, `a link typed as "${typed}" goes to ${want}`, got === want, got);
+  }
+  await shut();
+  check(scope, 'no errors on the page', errors.length === 0, errors[0] || '');
   await context.close();
 }
 
@@ -3796,6 +3900,8 @@ try {
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} first edits `, () => runFirstEdits(browser, size));
   // the demo's own way to get Kiln stays in sight once the card that offered it has gone
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} get Kiln    `, () => runGetKiln(browser, size));
+  // lists and block styles only where they fit, the cursor kept after a list, a link typed without https://
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} lists and links`, () => runListsAndLinks(browser, size));
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
   // an invited editor granted "Make things editable" on top of the defaults
   await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));

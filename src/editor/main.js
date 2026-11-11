@@ -56,7 +56,8 @@ import { writeInside, rememberInside } from './keep-inside.js';
 import { takeBase, readAttrs } from './baselines.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { plainName, readableName } from './names.js';
-import { linkDialogCopy, LINK_NEEDS_WORDS } from './link-dialog.js';
+import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
+import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists } from './one-paragraph.js';
 import { askFirst, askWhich, ownDialogCopy } from './own-dialogs.js';
 import { coverBottom, isUnder, isSiteBar } from './under-bar.js';
 import { whereTo } from './in-view.js';
@@ -2152,7 +2153,7 @@ function commitEdit(el, key) {
   // but is NOT an href — otherwise editing a link while an image toolbar is
   // open would write the alt text into the link's href.
   const hrefInput = el.tagName === 'A' ? document.querySelector('#kiln-toolbar .kiln-href-input:not([data-act="alt"])') : null;
-  const hrefValue = hrefInput ? safeUrl(hrefInput.value) : null;
+  const hrefValue = hrefInput ? safeUrl(fullAddress(hrefInput.value)) : null;
   const hrefChanged = hrefInput && hrefValue !== el.getAttribute('href');
 
   const repeat = el.closest('[data-cms-repeat]');
@@ -8281,6 +8282,9 @@ function renderToolbar(el, key, opts = {}) {
   const md = !!opts.markdown;
   const isLink = !md && el.tagName === 'A';
   const plain = !md && el.hasAttribute('data-cms-plain');
+  // A single paragraph, heading or line cannot hold a list or a block style (one-paragraph.js): those say why instead
+  const oneBlock = !md && !holdsBlocks(el.tagName);
+  const noList = oneBlock ? ' aria-disabled="true"' : '';
   const styles = !md && Array.isArray(cfg.styles) ? cfg.styles : [];
   const LINK_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>';
   const IMG_ICON = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>';
@@ -8305,8 +8309,8 @@ function renderToolbar(el, key, opts = {}) {
       <button class="kiln-tb-fmt" data-cmd="bold" title="Bold"><b>B</b></button>
       <button class="kiln-tb-fmt" data-cmd="italic" title="Italic"><i>I</i></button>
       ${md ? '' : '<button class="kiln-tb-fmt" data-cmd="underline" title="Underline"><u>U</u></button>'}
-      <button class="kiln-tb-fmt" data-cmd="insertUnorderedList" title="Bullet list">≔</button>
-      <button class="kiln-tb-fmt" data-cmd="insertOrderedList" title="Numbered list">1.</button>
+      <button class="kiln-tb-fmt" data-cmd="insertUnorderedList" title="${oneBlock ? NO_LIST_TITLE : 'Bullet list'}"${noList}>≔</button>
+      <button class="kiln-tb-fmt" data-cmd="insertOrderedList" title="${oneBlock ? NO_LIST_TITLE : 'Numbered list'}"${noList}>1.</button>
       <button class="kiln-tb-fmt" data-cmd="link" title="Turn selection into a link">${LINK_ICON}</button>
       ${md ? '' : `<button class="kiln-tb-fmt" data-cmd="img" title="Insert an image at the cursor">${IMG_ICON}</button>
       <button class="kiln-tb-fmt" data-cmd="doc" title="Upload a document (PDF, doc…) and insert it at the cursor">📄</button>`}
@@ -8350,6 +8354,20 @@ function renderToolbar(el, key, opts = {}) {
         const rep = el.closest('[data-cms-repeat]');
         fieldHistoryPanel(rep ? rep.getAttribute('data-cms-repeat') : key, !!rep);
         return;
+      } else if (BLOCK_CMDS.includes(cmd)) {
+        if (oneBlock) { setStatus(NO_LIST_HERE, 'idle'); el.focus(); return; }
+        // The browser puts the cursor at the start of the line, and the list inside the paragraph it came from: both are put right
+        const sel = window.getSelection();
+        const at = sel.rangeCount && el.contains(sel.anchorNode)
+          ? [wordsBefore(el, sel.anchorNode, sel.anchorOffset), wordsBefore(el, sel.focusNode, sel.focusOffset)] : null;
+        document.execCommand(cmd, false, null);
+        liftLists(el);
+        el.focus();
+        if (at) {
+          const a = pointAfter(el, at[0]), f = pointAfter(el, at[1]);
+          window.getSelection().setBaseAndExtent(a.node, a.offset, f.node, f.offset);
+        }
+        return;
       } else {
         document.execCommand(cmd, false, null);
       }
@@ -8367,6 +8385,7 @@ function renderToolbar(el, key, opts = {}) {
       const sel = window.getSelection();
       const inField = sel.rangeCount && el.contains(sel.anchorNode);
       if (value.startsWith('fmt:')) {
+        if (oneBlock) { setStatus(NO_FORMAT_HERE, 'idle'); el.focus(); return; }
         // Block format: works on the block the cursor is in (no selection needed).
         if (!inField) { el.focus(); }
         document.execCommand('formatBlock', false, value.slice(4));
@@ -8437,7 +8456,7 @@ function linkDialog(el) {
   input.select();
   const finish = (fn) => { then = fn; m._kilnClose(); };
   const go = () => {
-    const url = input.value;   // as typed: the field's sanitizer decides what stays, when the edit is kept
+    const url = fullAddress(input.value);   // as typed, a plain domain or email made whole: the field's sanitizer decides what stays, when the edit is kept
     if (!url) { input.focus(); return; }
     finish(() => { if (link) link.setAttribute('href', url); else document.execCommand('createLink', false, url); });
   };
@@ -9081,6 +9100,8 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   border-radius:7px;cursor:pointer;font-size:12px;display:inline-flex;align-items:center;justify-content:center;
   padding:0 6px;font-family:var(--kiln-font);transition:background .12s}
 .kiln-tb-fmt:hover{background:rgba(99,102,241,.55)}
+.kiln-tb-fmt[aria-disabled="true"]{opacity:.5}
+.kiln-tb-fmt[aria-disabled="true"]:hover{background:rgba(255,255,255,.08)}
 .kiln-tb-clear,.kiln-tb-attach{font-size:11.5px}
 .kiln-href-input{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:#fff;
   border-radius:7px;padding:5px 8px;font-size:12px;width:190px;font-family:var(--kiln-font)}

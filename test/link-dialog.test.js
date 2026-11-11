@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { linkDialogCopy, LINK_NEEDS_WORDS } from '../src/editor/link-dialog.js';
+import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from '../src/editor/link-dialog.js';
 import { KILN_URI_REGEXP } from '../src/editor/sanitize.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -57,9 +57,37 @@ test('link dialog: the edit stays open, and the cursor and the selection come ba
   assert.match(dialog, /if \(!link && \(!range \|\| range\.collapsed\)\) \{\s*\n\s*setStatus\(LINK_NEEDS_WORDS, 'idle'\);/);
 });
 
+test('fullAddress: a plain web domain gets https://, a bare email becomes mailto:, and everything else is left exactly alone', () => {
+  for (const [typed, want] of [
+    ['muskratandrorke.com', 'https://muskratandrorke.com'],
+    ['example.com', 'https://example.com'],
+    ['www.example.com/page', 'https://www.example.com/page'],
+    ['shop.example.co.uk/menu?x=1#top', 'https://shop.example.co.uk/menu?x=1#top'],
+    ['example.com:8080/x', 'https://example.com:8080/x'],
+    ['  example.org  ', 'https://example.org'],
+    ['www.example.html', 'https://www.example.html'],   // "www." is a web address whatever its ending
+    ['erik@example.com', 'mailto:erik@example.com'],
+    ['Pat.Lee+news@mail.example.org', 'mailto:Pat.Lee+news@mail.example.org'],
+  ]) assert.equal(fullAddress(typed), want, typed);
+  for (const same of [
+    'https://example.com', 'http://example.com/x', 'HTTPS://EXAMPLE.COM', 'mailto:pat@example.com', 'tel:+15551234',
+    '/page', '/about.html', '#part', '?q=1', './here', '../up.html',
+    'about.html', 'menu.pdf', 'docs/guide.pdf', 'page.html', 'photo.JPG', 'files/price-list.docx', 'index.php',
+    'about', 'contact-us', 'localhost:3000', 'javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,x',
+    'two words.com', '', 'a@b', '@example.com',
+  ]) assert.equal(fullAddress(same), same, same);
+  // never a scheme the sanitizer would let through that it did not before
+  for (const typed of ['javascript:alert(1)', 'vbscript:x', 'data:text/html,<script>1</script>', 'example.com', 'pat@example.com']) {
+    const out = fullAddress(typed);
+    assert.equal(KILN_URI_REGEXP.test(out), KILN_URI_REGEXP.test(typed) || /^(https:|mailto:)/.test(out), typed);
+  }
+});
+
 test('link dialog: what an address may be is unchanged', () => {
-  // taken as typed, as the browser's box took it: no check of its own, no trimming, no rewriting
-  assert.match(dialog, /const url = input\.value;/);
+  // taken as typed, as the browser's box took it, a plain domain or email made whole: no check of its own
+  assert.match(dialog, /const url = fullAddress\(input\.value\);/);
+  // a link field's own address box gets the same, and safeUrl as before
+  assert.match(main, /const hrefValue = hrefInput \? safeUrl\(fullAddress\(hrefInput\.value\)\) : null;/);
   assert.match(dialog, /if \(link\) link\.setAttribute\('href', url\); else document\.execCommand\('createLink', false, url\);/);
   assert.equal(/safeUrl\(|KILN_URI|\.trim\(\)|new URL\(/.test(dialog), false, 'the dialog judges the address itself');
   // and decided where it always was: the field's sanitizer, when the edit is kept
