@@ -43,7 +43,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   says why. The link around it, often a whole card that opens another site in
   a new tab, is held back. Ctrl or ⌘ and a click still follows it.
 - Words typed in a box that is still open survive a reload or a closed tab,
-  and are offered back.
+  and are offered back. That holds for a box inside a list too.
+- **History reaches every version.** It listed the newest 20 publishes of a
+  page and stopped. "Show older versions" loads 20 more each time, down to
+  the first, and an older version is brought back like a newer one. A
+  section's own history does the same.
 - The Kiln button can no longer end up over the site's header. It was measured
   while hidden, which saved a position in the top-left corner.
 - On a phone, a block's open control bar stays inside its block. In a card
@@ -70,6 +74,9 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the free trial, when editing ends after a cancellation or a failed payment,
   and what turns it back on. Its refusals are full sentences.
 - No screen says "alt text": a picture has a description.
+- People & access says two things an owner should know where the choice is
+  made: a limit to parts of a page is kept only by the editing screen, and
+  members-only pages can be read by every invited editor.
 - The setup tool's closing steps say to add the site, when the 7 free days
   start, and that no card is needed.
 - `new` writes a README into the new site: what the example is, how to look
