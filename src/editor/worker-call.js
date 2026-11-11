@@ -18,7 +18,9 @@
  *  - The owner's GitHub token runs out every eight hours and the transport
  *    renews it. These routes are sent that token too, so for the owner a 401
  *    is checked the same way; when the check renewed the token, the request
- *    is sent once more with the new one.
+ *    is sent once more with the new one. That is the old way only: an owner
+ *    signed in with an owner session holds no token, the worker renews it,
+ *    and a 401 is an ended sign-in as it is for an invited editor.
  *
  * Pure: fetch and the check are handed in, so all of it is tested in node.
  */
@@ -28,7 +30,8 @@
  *   headers   () → the sign-in headers as they are now
  *   stands    () → resolves when the sign-in still stands; throws what the
  *             transport threw when it does not, or could not be asked
- *   renews    true when `stands` can renew the sign-in (the owner's token)
+ *   renews    true when `stands` can renew the sign-in (the owner's token,
+ *             the old way), or () => that, asked at each request
  *   ended     (err) called with the error whenever an answer says the sign-in is over
  */
 export function makeAsk({ worker, headers, stands = null, renews = false, ended = () => {}, fetchImpl = globalThis.fetch }) {
@@ -45,7 +48,7 @@ export function makeAsk({ worker, headers, stands = null, renews = false, ended 
     };
     let res = await send();
     let good = false;   // the check was made, and the sign-in stands
-    if (stands && (res.status === 403 || (res.status === 401 && renews))) {
+    if (stands && (res.status === 403 || (res.status === 401 && (typeof renews === 'function' ? renews() : renews)))) {
       try {
         await stands();
         good = true;

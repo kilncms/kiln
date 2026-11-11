@@ -135,7 +135,9 @@ test('sign-in ended: "Sign in again" goes to the worker\'s own sign-in and comes
   const github = new URL(signInUrl({ ...at, way: 'github' }));
   assert.equal(github.origin + github.pathname, 'https://worker.example/auth/login');
   assert.equal(github.searchParams.get('return_to'), '/blog/first post.html?x=1&y=2');
-  assert.equal(github.searchParams.has('repo'), false);
+  // The owner signs in for this repository, and the worker keeps the GitHub token (owner sessions).
+  assert.equal(github.searchParams.get('repo'), 'acme/site');
+  assert.equal(github.searchParams.get('keep'), 'server');
   // Both sign-ins refuse a return_to that does not start with "/": never send one.
   assert.equal(new URL(signInUrl({ ...at, path: 'https://elsewhere.example/', way: 'google' })).searchParams.get('return_to'), '/');
   assert.equal(new URL(signInUrl({ ...at, path: '', way: 'github' })).searchParams.get('return_to'), '/');

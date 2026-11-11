@@ -81,8 +81,10 @@ function rateLimited(data) {
 export function signInUrl({ worker, origin, path, repo, way }) {
   const back = String(path || '/').startsWith('/') ? String(path || '/') : '/';
   const q = `origin=${encodeURIComponent(origin)}&return_to=${encodeURIComponent(back)}`;
+  // keep=server: the owner's GitHub token stays on the worker, which answers
+  // with a session for this repository (a worker that does not know it ignores it).
   return way === 'github'
-    ? `${worker}/auth/login?${q}`
+    ? `${worker}/auth/login?${q}&repo=${encodeURIComponent(repo || '')}&keep=server`
     : `${worker}/google/login?${q}&repo=${encodeURIComponent(repo || '')}`;
 }
 

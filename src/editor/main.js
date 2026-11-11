@@ -1,7 +1,11 @@
 /**
  * kiln-editor — loaded only for authenticated admins and invited editors.
  *
- * Admin mode:  GitHub App user token, browser → api.github.com directly.
+ * Admin mode:  the site owner. With an owner session (kiln_admin.session) the
+ *              GitHub token stays on the worker and every call goes through
+ *              its /gh/* proxy, as an invited editor's do. The old way, kept
+ *              for workers that keep no owner sessions: a GitHub App user
+ *              token in this browser, browser → api.github.com directly.
  * Editor mode: invited-editor (Google) session, browser → kiln-auth worker /gh/* proxy
  *              (the worker holds the installation token; no GitHub account needed).
  *
@@ -130,6 +134,8 @@ let leavingToSignIn = false;
 // What a request found out about the sign-in, once one has found it ended; null until then.
 let signInOver = null;
 const BACK_KEY = 'kiln_signin_back';   // sessionStorage: this tab left through "Sign in again"
+// The worker's /healthz answer, asked once per page (workerHealth). Up here: init() asks it while the editor starts.
+let healthzAsk = null;
 
 import { SANITIZE, CONTAINER_SANITIZE, BLOCK_SANITIZE, RESTORE_CHECK } from './sanitize.js';
 
@@ -264,11 +270,19 @@ async function init() {
   const standing = askStanding({ worker: cfg.worker, origin: location.origin });
 
   if (mode === 'admin') {
-    const stored = JSON.parse(localStorage.getItem(ADMIN_KEY));
-    state.gh = watched(withAutoRefresh(makeGh({ mode: 'direct', token: () => JSON.parse(localStorage.getItem(ADMIN_KEY)).token }), stored));
+    let stored = JSON.parse(localStorage.getItem(ADMIN_KEY));
+    // Signed in the old way (a GitHub token in this browser): moved over to
+    // an owner session when the worker keeps them, and carried on as before when not.
+    if (stored?.token && !stored.session) stored = await adoptOwner(stored);
+    if (stored?.session) {
+      // The GitHub token stays on the worker: every GitHub call goes through its proxy with the session.
+      state.gh = watched(makeGh({ mode: 'proxy', worker: cfg.worker, session: stored.session }));
+    } else {
+      state.gh = watched(withAutoRefresh(makeGh({ mode: 'direct', token: () => JSON.parse(localStorage.getItem(ADMIN_KEY)).token }), stored));
+    }
     try {
-      const user = await state.gh.request('GET', '/user');
-      state.user = user.login;
+      const user = stored?.session ? await ownerWho(stored.session) : await state.gh.request('GET', '/user');
+      state.user = user.login || stored.login || '';
     } catch (err) {
       // Only a real auth rejection should sign the owner out. A network or worker
       // blip (no HTTP status) must NOT nuke a valid session — that would log them
@@ -553,7 +567,8 @@ function signInStands() {
 
 /** The worker's own routes, asked with the sign-in (worker-call.js): JSON back, or an error with the answer's status and body. */
 const ask = makeAsk({
-  worker: cfg.worker, headers: workerAuthHeaders, stands: signInStands, renews: mode === 'admin', ended: signInGone,
+  // Only the old way's token is renewed by the check; an owner session is renewed by the worker.
+  worker: cfg.worker, headers: workerAuthHeaders, stands: signInStands, renews: () => mode === 'admin' && !ownerSession(), ended: signInGone,
   fetchImpl: (url, init) => fetch(url, init),
 });
 
@@ -711,7 +726,62 @@ function showUpdateNotice(latest) {
   };
 }
 
-/** Admin tokens expire after 8h; refresh through the worker-held refresh token. */
+/** The owner is signed in with an owner session: no GitHub token in this browser. */
+function ownerSession() {
+  if (mode !== 'admin') return '';
+  try { return JSON.parse(localStorage.getItem(ADMIN_KEY) || 'null')?.session || ''; } catch { return ''; }
+}
+
+/** The worker's /healthz answer (null when it has none in JSON, or cannot be reached), asked once per page. */
+function workerHealth() {
+  if (!healthzAsk) {
+    healthzAsk = fetch(`${cfg.worker}/healthz`)
+      .then(res => (res.ok ? res.json().catch(() => null) : null))
+      .catch(() => null);
+  }
+  return healthzAsk;
+}
+
+/**
+ * Who the owner session belongs to, asked of the worker (GET /auth/session).
+ * Any 401, or an answer that is not a yes, is an ended sign-in.
+ */
+async function ownerWho(session) {
+  const res = await fetch(`${cfg.worker}/auth/session`, { headers: { 'X-Kiln-Session': session } });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok && data && data.ok) return data;
+  const err = new Error(`the sign-in could not be checked (${res.status})`);
+  err.status = res.ok ? 401 : res.status;
+  err.data = data && typeof data === 'object' ? data : {};
+  throw err;
+}
+
+/**
+ * An owner signed in the old way holds a GitHub token in this browser. When
+ * the worker keeps owner sessions, the token is handed to it once
+ * (POST /auth/adopt), the stored sign-in becomes the session it answers
+ * with, and the token is forgotten. Anything else (an older worker, a
+ * refusal, no answer) leaves the sign-in as it was, and the next page tries again.
+ */
+async function adoptOwner(stored) {
+  try {
+    if ((await workerHealth())?.ownerSessions !== true) return stored;
+    const res = await fetch(`${cfg.worker}/auth/adopt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: stored.token, ...(stored.sid && { sid: stored.sid }), repo: cfg.repo }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok || !/^[a-f0-9]{64}$/.test(String(data.session || ''))) return stored;
+    const next = { session: data.session, login: String(data.login || ''), repo: cfg.repo, exp: Number.isFinite(data.exp) ? data.exp : null };
+    localStorage.setItem(ADMIN_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    return stored;
+  }
+}
+
+/** The old way only: admin tokens expire after 8h; refresh through the worker-held refresh token. */
 function withAutoRefresh(gh, stored) {
   return {
     async request(method, path, body) {
@@ -774,7 +844,8 @@ async function loadPageSource() {
 function workerAuthHeaders() {
   if (mode === 'admin') {
     const a = JSON.parse(localStorage.getItem(ADMIN_KEY) || 'null');
-    return a ? { Authorization: `Bearer ${a.token}` } : {};
+    if (a?.session) return { 'X-Kiln-Session': a.session };   // the worker uses the token it keeps
+    return a?.token ? { Authorization: `Bearer ${a.token}` } : {};   // the old way
   }
   const e = JSON.parse(localStorage.getItem(EDITOR_KEY) || 'null');
   return e ? { 'X-Kiln-Session': e.session } : {};
@@ -3876,13 +3947,8 @@ async function initSourceFields() {
 
 /** GET /healthz once per boot; anything that isn't new-style JSON = old worker. */
 async function fetchSourceCaps() {
-  try {
-    const res = await fetch(`${cfg.worker}/healthz`);
-    if (!res.ok) return parseSourceCapabilities(null);
-    return parseSourceCapabilities(await res.json().catch(() => null));   // old workers say plain 'ok'
-  } catch {
-    return parseSourceCapabilities(null);   // unreachable worker — read-only beats a dead Publish
-  }
+  // Old workers say plain 'ok', and an unreachable worker gives null: read-only beats a dead Publish.
+  return parseSourceCapabilities(await workerHealth());
 }
 
 /**

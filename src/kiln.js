@@ -123,18 +123,32 @@
     return /^\/kiln(\.html)?\/?$/.test(p);
   }
 
-  /** After OAuth the worker redirects back with #kiln-token=...&kiln-sid=...&kiln-exp=... */
+  /**
+   * After GitHub sign-in the worker redirects back with
+   * #kiln-owner=<session>&kiln-login=…&kiln-exp=…: the GitHub token stays on
+   * the worker, and the editor asks through it with the session. The old way
+   * (#kiln-token=…&kiln-sid=…, from a worker that keeps no owner sessions)
+   * is still read, so a new shim keeps working with an older worker.
+   */
   function captureAdminToken() {
+    var o = matchFragment(/kiln-owner=([a-f0-9]{64})/);
     var m = matchFragment(/kiln-token=([^&]+)/);
-    if (!m) return;
+    if (!o && !m) return;
     var exp = matchFragment(/kiln-exp=(\d+)/);
     var sid = matchFragment(/kiln-sid=([^&]+)/);
-    write(ADMIN_KEY, {
+    var login = matchFragment(/kiln-login=([^&]+)/);
+    exp = exp ? Number(exp[1]) : null;
+    write(ADMIN_KEY, o ? {
+      session: o[1],
+      login: login ? decodeURIComponent(login[1]) : '',
+      repo: cfg.repo || '',
+      exp: exp,
+    } : {
       token: decodeURIComponent(m[1]),
-      exp: exp ? Number(exp[1]) : null,
+      exp: exp,
       sid: sid ? decodeURIComponent(sid[1]) : null,
     });
-    cleanFragment(['kiln-token', 'kiln-exp', 'kiln-sid']);
+    cleanFragment(['kiln-owner', 'kiln-login', 'kiln-token', 'kiln-exp', 'kiln-sid']);
   }
 
   /** After Google sign-in the worker redirects editors back with a ready session. */
@@ -164,6 +178,7 @@
     }
     var returnTo = cfg.home || '/';
     var q = 'origin=' + encodeURIComponent(location.origin) + '&return_to=' + encodeURIComponent(returnTo);
+    var r = '&repo=' + encodeURIComponent(cfg.repo || '');
     var showGoogle = !(cfg.auth && cfg.auth.google === false);
 
     var wrap = document.createElement('div');
@@ -185,9 +200,10 @@
 
     var btns = card.querySelector('#kiln-entry-btns');
     if (showGoogle) btns.appendChild(loginButton('google', 'Continue with Google', 'Invited editors & members',
-      cfg.worker + '/google/login?' + q + '&repo=' + encodeURIComponent(cfg.repo || '')));
+      cfg.worker + '/google/login?' + q + r));
+    // keep=server: the worker keeps the GitHub token and answers with a session (an older worker ignores it).
     btns.appendChild(loginButton('github', 'Continue with GitHub', 'Site owner / developer',
-      cfg.worker + '/auth/login?' + q));
+      cfg.worker + '/auth/login?' + q + r + '&keep=server'));
 
     wrap.appendChild(card);
     document.body.appendChild(wrap);
@@ -246,17 +262,17 @@
 
   window.Kiln = {
     logout: function () {
-      var admin = read(ADMIN_KEY);
-      if (admin && admin.sid && cfg.worker) {
-        fetch(cfg.worker + '/auth/logout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sid: admin.sid }),
-        }).catch(function () {});
-      }
+      // The stored sign-in is forgotten at once; the page is left once the
+      // worker has been told to end it too (or after three seconds without an answer).
+      var admin = read(ADMIN_KEY) || {};
+      var h = { 'Content-Type': 'application/json' };
+      var go = function () { location.replace(cfg.home || '/'); };
       localStorage.removeItem(ADMIN_KEY);
       localStorage.removeItem(EDITOR_KEY);
-      location.replace(cfg.home || '/');
+      if (admin.session) h['X-Kiln-Session'] = admin.session;
+      if (!cfg.worker || !(admin.sid || admin.session)) return go();
+      fetch(cfg.worker + '/auth/logout', { method: 'POST', headers: h, body: JSON.stringify({ sid: admin.sid }) }).then(go, go);
+      setTimeout(go, 3000);
     },
   };
 })();

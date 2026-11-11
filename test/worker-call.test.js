@@ -199,3 +199,17 @@ test('ask: other answers keep the worker\'s own words and status for the caller'
   const { fetchImpl } = fakeFetch([answer(501, { error: 'ai not configured' })]);
   assert.equal((await thrown(makeAsk({ worker: WORKER, headers: session, fetchImpl })('/ai/assist', { method: 'POST', body: {} }))).status, 501);
 });
+
+test('ask: whether the sign-in can be renewed is asked at each request (an owner moved to an owner session holds no token)', async () => {
+  let renewable = true;
+  let checked = 0;
+  const { fetchImpl } = fakeFetch([answer(401, { code: 'signin_ended' })]);
+  const ask = makeAsk({ worker: WORKER, headers: () => ({ 'X-Kiln-Session': 'a'.repeat(64) }), fetchImpl,
+    renews: () => renewable, stands: async () => { checked++; }, ended: () => {} });
+  await thrown(ask('/comments'));
+  assert.equal(checked, 1, 'the old way: the token is checked, and renewed when it can be');
+  renewable = false;
+  const err = await thrown(ask('/comments'));
+  assert.equal(checked, 1, 'with an owner session a 401 is not checked again');
+  assert.equal(readFailure(err).kind, 'ended');
+});

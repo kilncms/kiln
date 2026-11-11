@@ -129,8 +129,10 @@ test('everywhere: every sentence, for every thing that can be stopped, is plain'
 
 test('everywhere: the worker is asked through one door, which every answer about the sign-in passes', () => {
   // The only places that may call fetch on the worker themselves: the door, the
-  // token renewal it relies on, and the capability check, which is not signed.
-  const allowed = [/\/auth\/refresh/, /\/healthz/];
+  // token renewal it relies on, the capability check, which is not signed, and
+  // the owner session's own two steps while the editor starts (who is signed
+  // in, and moving an old sign-in over), whose failures init() reads itself.
+  const allowed = [/\/auth\/refresh/, /\/healthz/, /\/auth\/session/, /\/auth\/adopt/];
   const direct = [];
   for (const { file, lines } of sources()) {
     if (file === 'worker-call.js') continue;
@@ -142,7 +144,7 @@ test('everywhere: the worker is asked through one door, which every answer about
   assert.deepEqual(direct, []);
   const main = readFileSync(path.join(EDITOR, 'main.js'), 'utf8');
   assert.match(main, /const ask = makeAsk\(\{[^}]*headers: workerAuthHeaders[^}]*stands: signInStands[^}]*ended: signInGone/s);
-  assert.equal((main.match(/state\.gh = watched\(/g) || []).length, 2, 'both GitHub transports (the owner\'s and the proxy) are watched');
+  assert.equal((main.match(/state\.gh = watched\(/g) || []).length, 3, 'every GitHub transport (the owner session\'s proxy, the owner\'s old direct one, and the editor\'s proxy) is watched');
   // nothing reads the stored sign-in to build a header of its own
   assert.equal(/Bearer \$\{(?:admin\(\)|JSON\.parse\(localStorage\.getItem\(ADMIN_KEY\)\))\.token\}/.test(main.replace(/function workerAuthHeaders\(\) \{[\s\S]*?\n\}/, '')), false);
 });
