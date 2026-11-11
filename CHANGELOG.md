@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-11
+
 ### Added
 
 - **Kiln Cloud writes to the owner when a free trial is about to end.** Three
