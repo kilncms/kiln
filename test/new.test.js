@@ -1,12 +1,48 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   REPO_PLACEHOLDER, checkTargetDir, depersonalizeConfig, personalizeHtml,
-  setConfigSiteName, siteNameOf, titleOf,
+  setConfigSiteName, siteNameOf, titleOf, siteGuide, writeSiteGuide,
 } from '../cli/new.mjs';
+
+test('new: siteGuide says what the folder is, how to look at it and put it online, and what to change first', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'kiln-new-guide-'));
+  const plain = mkdtempSync(path.join(tmpdir(), 'kiln-new-guide-'));
+  try {
+    for (const f of ['blog', 'members', 'functions/members']) mkdirSync(path.join(dir, f), { recursive: true });
+    writeFileSync(path.join(dir, 'index.html'), '<title>My Shop</title><footer>Big Dill Pickle Co. All rights brined.</footer>');
+    writeFileSync(path.join(dir, 'about.html'), '<title>About · My Shop</title><img alt="Big Dill pickle jars">');
+    writeFileSync(path.join(dir, 'contact.html'), '<title>Contact</title><p>Big Dillon is someone else</p>');
+    for (const f of ['index.html', 'hello-from-the-editor-mr566orv.html', 'the-monday-brine.html']) writeFileSync(path.join(dir, 'blog', f), '<p>post</p>');
+    writeFileSync(path.join(dir, 'members-login.html'), '');
+    writeFileSync(path.join(dir, '_routes.json'), '{}');
+    const g = siteGuide(dir, { name: 'My Shop', from: 'kilncms/kiln-demo', brand: 'Big Dill' });
+    assert.match(g, /^# My Shop\n/);
+    assert.match(g, /complete example website/);
+    assert.match(g, /made-up pickle company, Big Dill/);
+    assert.match(g, /npx serve \./);
+    assert.match(g, /npx github:kilncms\/kiln#release/);
+    assert.match(g, /Look for "Big Dill" in about\.html and index\.html,/, 'names the pages still carrying the old name, not contact.html');
+    assert.match(g, /blog\/hello-from-the-editor-mr566orv\.html and blog\/the-monday-brine\.html\./);
+    assert.match(g, /delete the members\/ folder, members-login\.html, the functions\/ folder and _routes\.json/);
+    assert.ok(!/[—–]/.test(g), 'no dashes used as punctuation');
+    // the demo's own README is replaced; another template's own is kept
+    assert.equal(writeSiteGuide(dir, g, 'kilncms/kiln-demo'), 'written');
+    assert.equal(writeSiteGuide(dir, g, 'kilncms/kiln-demo'), 'replaced');
+    writeFileSync(path.join(dir, 'README.md'), 'theirs');
+    assert.equal(writeSiteGuide(dir, g, 'someone/template'), 'kept');
+    assert.equal(readFileSync(path.join(dir, 'README.md'), 'utf8'), 'theirs');
+    // another template: no pickles, and nothing to delete that is not there
+    writeFileSync(path.join(plain, 'index.html'), '<title>X</title>');
+    assert.doesNotMatch(siteGuide(plain, { name: 'X', from: 'someone/template' }), /pickle|members|blog|What to change/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(plain, { recursive: true, force: true });
+  }
+});
 
 // ─── kiln-config.js de-personalization ───────────────────────────────────────
 

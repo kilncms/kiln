@@ -10,8 +10,8 @@
  *   npx github:kilncms/kiln#release new [dir] [--from=owner/repo] [--name="Site title"] [--dry]
  *
  * The pure helpers (depersonalizeConfig, setConfigSiteName, titleOf,
- * siteNameOf, personalizeHtml, checkTargetDir) are exported for tests —
- * no network or prompts there.
+ * siteNameOf, personalizeHtml, checkTargetDir, siteGuide, writeSiteGuide) are
+ * exported for tests — no network or prompts there.
  */
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -160,6 +160,66 @@ export function personalizeHtml(html, { title, name, newName }) {
   return { html: out, count };
 }
 
+// ─── the new site's README: what this folder is and what to do next ─────────
+
+const MEMBERS_FILES = ['members', 'members-login.html', 'functions', '_routes.json'];
+
+/**
+ * The README.md written into a new site, read from what is actually in `dir`:
+ * where the template's brand name is still written, the example blog posts,
+ * the members area. The same text is printed at the end of `new`.
+ * opts: { name (the new title), from (template owner/repo), brand (the
+ * template's own name, '' if unknown) }.
+ */
+export function siteGuide(dir, { name, from, brand = '' }) {
+  const isDemo = from === DEFAULT_TEMPLATE;
+  const rel = (f) => path.relative(dir, f).split(path.sep).join('/');
+  const bounded = brand ? new RegExp(`(?<![A-Za-z0-9])${escRe(brand)}(?![A-Za-z0-9])`) : null;
+  const brandFiles = bounded ? [...htmlFiles(dir)].filter(f => bounded.test(readFileSync(f, 'utf8'))).map(rel).sort() : [];
+  const blog = path.join(dir, 'blog');
+  const posts = existsSync(blog) ? readdirSync(blog).filter(f => /\.html?$/i.test(f) && !/^index\.html?$/i.test(f)).sort().map(f => `blog/${f}`) : [];
+  const members = MEMBERS_FILES.filter(f => existsSync(path.join(dir, f)));
+  const hasMembers = members.includes('members') || members.includes('members-login.html');
+  const shown = members.map(f => statSync(path.join(dir, f)).isDirectory() ? `the ${f}/ folder` : f);
+  const repoName = path.basename(path.resolve(dir));
+  const list = (xs) => xs.length > 1 ? `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}` : xs.join('');
+  const L = [`# ${name}`, ''];
+  L.push(isDemo
+    ? `This folder is a complete example website made with Kiln. It is the site of a made-up pickle company${brand ? `, ${brand}` : ''}, and every word and picture in it is there to be changed. Keep what you like, rewrite the rest, and delete what you do not need.`
+    : `This folder is a new website made with Kiln from the template ${from}. Its words and pictures are the template's, and they are there to be changed.`);
+  L.push('', '## Look at it on your own computer', '',
+    'In this folder, run:', '', '    npx serve .', '',
+    'and open the address it prints (usually http://localhost:3000). Clicking a word to edit it works once the site is online and set up, as below.');
+  L.push('', '## Put it online', '',
+    '1. Put this folder on GitHub. With the gh tool:', '',
+    `       gh repo create ${repoName} --private --source=. --push`, '',
+    '   Without it, make an empty repository at https://github.com/new, then:', '',
+    `       git remote add origin https://github.com/YOUR-GITHUB-USER/${repoName}.git`,
+    '       git push -u origin main', '',
+    '2. Run the setup wizard in this folder:', '',
+    '       npx github:kilncms/kiln#release', '',
+    '   It first asks how you want to run Kiln. With Kiln Cloud (the default, paid), we run the sign-in service and the wizard only connects your site to it. Self-hosted (free): the wizard sets up your own sign-in service on Cloudflare, registers a GitHub App for it and connects free hosting.');
+  const todo = [];
+  if (brandFiles.length) todo.push(`- The name. "${brand}" was changed to "${name}" in the page titles and the site header, but it is still written in other places, such as the footer, the short description search engines show, and the descriptions of pictures. Look for "${brand}" in ${list(brandFiles)}, and change each one.`);
+  if (posts.length) todo.push(`- The example blog posts: ${list(posts)}. Delete the ones you do not want (or all of them), and take each one you delete out of the list of posts in blog/index.html.`);
+  if (hasMembers) todo.push(`- The members area: pages that only people you let in can see. If you do not want one, delete ${list(shown)}, and take the links to the members pages out of the menu and the footer of each page.`);
+  if (todo.length) L.push('', '## What to change or delete first', '', ...todo);
+  L.push('');
+  return L.join('\n');
+}
+
+/**
+ * Write the guide as README.md, unless the template has a README of its own
+ * (the demo's own is replaced). Returns 'written', 'replaced' or 'kept'.
+ */
+export function writeSiteGuide(dir, text, from) {
+  const p = path.join(dir, 'README.md');
+  if (existsSync(p) && from !== DEFAULT_TEMPLATE) return 'kept';
+  const had = existsSync(p);
+  writeFileSync(p, text);
+  return had ? 'replaced' : 'written';
+}
+
 // ─── download ────────────────────────────────────────────────────────────────
 
 const filesIn = (dir) => readdirSync(dir).filter((f) => f !== '.git');
@@ -271,11 +331,13 @@ export async function newCmd(dirArg, args = {}) {
   // ── stamp the new site title ──
   const indexPath = path.join(dir, 'index.html');
   const tplTitle = existsSync(indexPath) ? titleOf(readFileSync(indexPath, 'utf8')) : null;
+  let brand = '';
   if (!existsSync(indexPath)) warn('no index.html in this template — skipped the title rename');
   else if (!tplTitle) warn('index.html has no <title> — skipped the title rename');
   else if (tplTitle === name) info(`site title already '${name}' — nothing to rename`);
   else {
     const tplName = siteNameOf(tplTitle);
+    if (tplName !== name) brand = tplName;
     let replaced = 0, pages = 0;
     for (const file of htmlFiles(dir)) {
       const src = readFileSync(file, 'utf8');
@@ -283,13 +345,19 @@ export async function newCmd(dirArg, args = {}) {
       if (count) { writeFileSync(file, html); replaced += count; pages++; }
     }
     ok(`renamed '${tplName}' → '${name}' — ${replaced} replacement${replaced === 1 ? '' : 's'} across ${pages} page${pages === 1 ? '' : 's'}`);
-    info('(only exact title/brand strings — the template\'s placeholder content is yours to edit)');
+    info('Only the exact title and brand name were changed. The rest of the example\'s words are yours to edit: README.md says where to start.');
   }
   if (cfg !== null) {
     const sn = setConfigSiteName(cfg, name);
     if (sn.changed) { cfg = sn.src; ok(`kiln-config.js: siteName → '${name}'`); }
     writeFileSync(cfgPath, cfg);
   }
+
+  // ── a README that says what this folder is, before the first commit ──
+  const guide = siteGuide(dir, { name, from, brand });
+  const wrote = writeSiteGuide(dir, guide, from);
+  if (wrote === 'kept') info('README.md: the template has its own, so it was left as it is');
+  else ok(`README.md: ${wrote === 'replaced' ? 'replaced the demo\'s own with one' : 'written'} that says what this folder is and what to change first`);
 
   // ── fresh git history ──
   if (haveGit) {
@@ -300,24 +368,9 @@ export async function newCmd(dirArg, args = {}) {
     else warn(`git init done but the first commit failed (${c.out.split('\n').pop()}) — commit manually: git add -A && git commit -m "New site"`);
   } else warn('git not found — after installing git: git init -b main && git add -A && git commit -m "New site"');
 
-  // ── hand-off ──
-  const repoName = path.basename(path.resolve(dir));
+  // ── hand-off: the same words as README.md ──
   hr('Next steps');
-  console.log(`  Your site lives in ${dir}/. To put it online:
-
-  1. Create a GitHub repo and push:
-       cd ${dir}
-       gh repo create ${repoName} --private --source=. --push
-     …or without the gh CLI: create an empty repo at https://github.com/new, then
-       git remote add origin https://github.com/YOUR-GITHUB-USER/${repoName}.git
-       git push -u origin main
-
-  2. Run the setup wizard:
-       cd ${dir} && npx github:kilncms/kiln#release
-     It first asks how you want to run Kiln. Kiln Cloud (the default, paid):
-     we run the sign-in service, and the wizard only wires your site to it.
-     Self-hosted (free): the wizard deploys your own sign-in service on
-     Cloudflare, registers a GitHub App for it and connects free hosting.
-`);
+  console.log(`  Your site is in ${dir}/, with a README.md that says the same as this. Go into the folder first:\n\n      cd ${dir}\n`);
+  console.log(guide.split('\n').slice(2).map(l => l ? `  ${l}` : '').join('\n'));
   process.exit(0);
 }
