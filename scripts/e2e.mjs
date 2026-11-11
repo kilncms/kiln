@@ -25,6 +25,11 @@
  *   KILN_E2E_BRANCH   the branch the site is published from (default main)
  *   KILN_E2E_SITE     optional: the site's address. When set, the script also
  *                     waits for one edit to appear there.
+ *   KILN_E2E_ORIGIN   optional: a site address the worker allows (ALLOWED_ORIGINS),
+ *                     for the owner steps: an owner session made from GH_TOKEN
+ *                     reads and edits the page through the worker and is refused
+ *                     elsewhere. Defaults to KILN_E2E_SITE; with neither, those
+ *                     steps are left out and listed to check by hand.
  *   GH_TOKEN          a token with push access to the test repository. Used to
  *                     read the starting state and to put everything back; no
  *                     edit under test goes through it.
@@ -79,7 +84,14 @@ export function readConfig(env = process.env, argv = []) {
   }
   const token = env.GH_TOKEN || env.GITHUB_TOKEN || '';
   if (!smoke && !token) throw new Stop('Set GH_TOKEN to a token with push access to the test repository (for example GH_TOKEN=$(gh auth token)). It is used to read the starting state and to put everything back.');
-  return { worker, repo, branch: env.KILN_E2E_BRANCH || 'main', site: (env.KILN_E2E_SITE || '').replace(/\/+$/, ''), field: env.KILN_E2E_FIELD || '', token, smoke, rename, local };
+  const site = (env.KILN_E2E_SITE || '').replace(/\/+$/, '');
+  // The address the owner session is made for: one the worker allows (its
+  // ALLOWED_ORIGINS). Without one, the owner steps are left out and named in
+  // the list of things to check by hand.
+  let origin = '';
+  try { origin = new URL(env.KILN_E2E_ORIGIN || site).origin; } catch { /* none given */ }
+  if (origin === 'null') origin = '';
+  return { worker, repo, branch: env.KILN_E2E_BRANCH || 'main', site, origin, field: env.KILN_E2E_FIELD || '', token, smoke, rename, local };
 }
 
 /**
@@ -222,6 +234,27 @@ export function editorSessions(cfg, io) {
       post: (route, body) => io.fetch(`${cfg.worker}${route}`, { method: 'POST', headers, body: JSON.stringify(body) }),
     };
   };
+  /**
+   * An owner session, as a sign-in with keep=server makes one, from the
+   * maintainer's GH_TOKEN: the token stays in the worker's KV and every call
+   * goes through the worker's /gh proxy with the session id, from `origin`
+   * (the worker holds an owner session to the address it was made for).
+   */
+  const makeOwner = async (origin) => {
+    const id = io.hex(32);
+    const key = `osess:${id}`;
+    keys.push(key);
+    await io.kvPut(key, JSON.stringify({ v: 1, token: cfg.token, token_exp: null, refresh_token: null, login: 'kiln-e2e', uid: null, repo: cfg.repo, rid: null, origin, created: io.now() }), SESSION_TTL);
+    const headers = { 'X-Kiln-Session': id, 'Content-Type': 'application/json', Origin: origin };
+    const fromSite = (url, init = {}) => io.fetch(url, { ...init, headers: { ...(init.headers || {}), Origin: origin } });
+    return {
+      id, name: 'Kiln E2E owner',
+      gh: makeGh({ mode: 'proxy', worker: cfg.worker, session: id, fetchImpl: fromSite }),
+      /** A raw request through the /gh proxy, from the site's address unless `from` says another. */
+      raw: (method, p, body, from = origin) => io.fetch(`${cfg.worker}/gh${p}`, { method, headers: { ...headers, Origin: from }, body: body === undefined ? undefined : JSON.stringify(body) }),
+      get: (route) => io.fetch(`${cfg.worker}${route}`, { headers }),
+    };
+  };
   /** KV may take a moment to show a new key at the edge: wait until the worker knows this session. */
   const settle = async (editor) => {
     for (let i = 0; i < 20; i++) {
@@ -231,7 +264,7 @@ export function editorSessions(cfg, io) {
     }
     throw new Error('the worker still does not know the session after 30 seconds');
   };
-  return { make, settle, keys };
+  return { make, makeOwner, settle, keys };
 }
 
 /**
@@ -591,6 +624,40 @@ export async function run(cfg, rawIo) {
       await putFile(suggest.gh, R, 'index.html', { text: applyEdits(cur.text, [{ key: field, html: `suggested ${run}` }]).html, sha: cur.sha, branch: name, message: `E2E ${run}: suggestion preview (via Kiln)` });
     });
 
+    // ── The owner, signed in with the GitHub token kept on the worker ──
+    if (cfg.origin) {
+      let site;
+      await step('an owner session made from GH_TOKEN, as a sign-in with keep=server makes one', async () => {
+        site = await editors.makeOwner(cfg.origin);
+        await editors.settle(site);
+        const me = await site.get('/auth/session');
+        const body = await me.json().catch(() => ({}));
+        if (me.status !== 200 || body.role !== 'owner' || String(body.repo).toLowerCase() !== R.toLowerCase()) throw new Error(`/auth/session answered ${me.status} ${JSON.stringify(body).slice(0, 160)}`);
+      });
+      await step('owner reads the page through the worker', async () => {
+        if ((await getFile(site.gh, R, 'index.html', cfg.branch)).text !== original) throw new Error('what the proxy returned is not what the repository holds');
+      });
+      const ownerMark = `Kiln e2e ${run} owner at ${new Date(io.now()).toISOString()}`;
+      await step('owner publishes a text edit through the worker', async () => {
+        const cur = await getFile(site.gh, R, 'index.html', cfg.branch);
+        const next = applyEdits(cur.text, [{ key: field, html: ownerMark }]);
+        if (next.applied.length !== 1) throw new Error(`the field "${field}" could not be edited`);
+        await putFile(site.gh, R, 'index.html', { text: next.html, sha: cur.sha, branch: cfg.branch, message: `E2E ${run}: owner edit ${field}` });
+        await noted();
+        if (!(await pageWhen(owner, t => t.includes(ownerMark))).text.includes(ownerMark)) throw new Error('the repository does not hold the edit');
+        return lastOurs.slice(0, 7);
+      });
+      await step('owner puts the page back, byte for byte', async () => {
+        const cur = await pageWhen(site.gh, t => t.includes(ownerMark));
+        await putFile(site.gh, R, 'index.html', { text: original, sha: cur.sha, branch: cfg.branch, message: `E2E ${run}: owner restore ${field}` });
+        await noted();
+        if ((await pageWhen(owner, t => t === original)).text !== original) throw new Error('the page is not what it was');
+      });
+      await refused('refused: the owner session on another repository', () => site.raw('GET', `/repos/${R.split('/')[0]}/kiln-e2e-not-this-one-${run}/contents/index.html`), 403, 'owner_scope');
+      await refused('refused: the owner session climbing out of its repository', () => site.raw('GET', `${P}/contents/%2e%2e/%2e%2e/kilncms/kiln/contents/README.md`), [400, 403]);
+      await refused('refused: the owner session from another address', () => site.raw('GET', `${P}/contents/index.html`, undefined, 'https://kiln-e2e-elsewhere.invalid'), 403, 'owner_origin');
+    }
+
     // ── Only with --rename: does what the worker stores follow the repository to a new name? ──
     if (cfg.rename) {
       await followsARename({ cfg, io, owner, step, record, run, field, value: readValues(original)[field], suggest, sessions: editors.keys });
@@ -612,7 +679,8 @@ export async function run(cfg, rawIo) {
   · Google sign-in as an invited editor and as a member
   · a member is signed out within five minutes of being removed in People & access
   · Kiln Cloud with billing in test mode: cancel keeps editing until the period ends; Remove cancels the subscription
-  · npx github:kilncms/kiln#release doctor in the test site prints the versions line`);
+  · npx github:kilncms/kiln#release doctor in the test site prints the versions line${cfg.origin ? '' : `
+  · an owner session (set KILN_E2E_ORIGIN, or KILN_E2E_SITE, to an address the worker allows to run those steps here)`}`);
     }
     return { ok: failed.length === 0, checks };
   }

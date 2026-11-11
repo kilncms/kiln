@@ -202,6 +202,7 @@ test('KLR-22 a kiln-drafts branch that was already there is used and left in pla
 
 test('KLR-22 with KILN_E2E_SITE it waits for the edit to show on the site', async () => {
   const s = staging({ env: { KILN_E2E_SITE: 'https://e2e.example/' } });
+  s.env.ALLOWED_ORIGINS = 'https://e2e.example';   // the site is one the worker serves; the owner steps sign in from it
   s.intercept.fn = async (url) => (url.startsWith('https://e2e.example/') ? new Response(s.gh.read('index.html')) : null);
   const r = await s.go();
   assert.equal(r.ok, true, s.out());
@@ -312,4 +313,59 @@ test('--rename: a token that may not rename the repository stops the step before
   assert.deepEqual(s.ren.renames, []);
   assert.equal([...s.kv.map.keys()].some(k => /^(cmt|sug|sched|atok):/.test(k)), false);
   assert.equal(s.gh.head(), s.startHead, 'and the rest of the run is still put back');
+});
+
+// ─── The owner, signed in with the GitHub token kept on the worker ──────────
+
+const SITE_ORIGIN = 'https://e2e-site.example';
+function withOrigin(over = {}) {
+  const s = staging({ env: { KILN_E2E_ORIGIN: SITE_ORIGIN }, ...over });
+  s.env.ALLOWED_ORIGINS = SITE_ORIGIN;
+  return s;
+}
+const OWNER_STEPS = [
+  'an owner session made from GH_TOKEN, as a sign-in with keep=server makes one',
+  'owner reads the page through the worker', 'owner publishes a text edit through the worker', 'owner puts the page back, byte for byte',
+  'refused: the owner session on another repository', 'refused: the owner session climbing out of its repository', 'refused: the owner session from another address',
+];
+
+test('owner session: with an address to sign in from, the owner reads, publishes and puts back through the worker, and is refused elsewhere', async () => {
+  const s = withOrigin();
+  const r = await s.go();
+  assert.deepEqual(names(r, false), [], s.out());
+  assert.equal(r.checks.length, 39 + OWNER_STEPS.length, s.out());
+  for (const name of OWNER_STEPS) assert.ok(names(r, true).includes(name), `missing: ${name}`);
+  // The owner's edit and its restore went through the worker's proxy with the session's (the maintainer's) token.
+  const ownerPuts = s.gh.calls.filter(c => c.method === 'PUT' && c.auth === 'Bearer owner-token').map(c => c.path);
+  assert.deepEqual(ownerPuts, ['/contents/index.html', '/contents/index.html']);
+  assert.ok(s.kvCalls.some(c => c[0] === 'put' && c[1].startsWith('osess:') && c[2] === 900), 'the session expires by itself in 15 minutes');
+  assert.equal([...s.kv.map.keys()].some(k => k.startsWith('osess:')), false, 'and is deleted at the end');
+  assert.equal(s.gh.head(), s.startHead);
+  assert.equal(s.gh.read('index.html'), PAGE);
+  assert.doesNotMatch(s.out(), /an owner session \(set KILN_E2E_ORIGIN/);
+});
+
+test('owner session: it has teeth: a worker that lets the session onto another repository, or from another address, fails the run', async () => {
+  for (const [what, match, expected] of [
+    ['another repository', (url) => /kiln-e2e-not-this-one/.test(url), /refused: the owner session on another repository — expected 403 owner_scope, got 200/],
+    ['another address', (url, init) => /\/gh\//.test(url) && (init.headers || {}).Origin === 'https://kiln-e2e-elsewhere.invalid', /refused: the owner session from another address — expected 403 owner_origin, got 200/],
+  ]) {
+    const s = withOrigin();
+    s.intercept.fn = async (url, init) => (url.startsWith(STAGING_WORKER) && match(url, init) ? new Response('{"content":""}', { status: 200 }) : null);
+    const r = await s.go();
+    assert.equal(r.ok, false, what);
+    assert.match(s.out(), expected, what);
+    assert.equal(s.gh.head(), s.startHead, `${what}: still cleaned up`);
+    assert.equal([...s.kv.map.keys()].some(k => k.startsWith('osess:')), false, `${what}: no session left`);
+  }
+});
+
+test('owner session: with no address given, the owner steps are left out and named among the things to check by hand', async () => {
+  const s = staging();
+  const r = await s.go();
+  assert.equal(r.ok, true);
+  assert.equal(names(r, true).some(n => OWNER_STEPS.includes(n)), false);
+  assert.match(s.out(), /an owner session \(set KILN_E2E_ORIGIN, or KILN_E2E_SITE/);
+  assert.equal(readConfig({ KILN_E2E_REPO: REPO, GH_TOKEN: 't', KILN_E2E_SITE: 'https://site.example/blog/' }).origin, 'https://site.example');
+  assert.equal(readConfig({ KILN_E2E_REPO: REPO, GH_TOKEN: 't', KILN_E2E_ORIGIN: 'not an address' }).origin, '');
 });
