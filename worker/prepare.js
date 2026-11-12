@@ -43,7 +43,11 @@ const AT_ONCE = 6;                            // a Worker waits on six connectio
 // holds the two to each other.
 export const KILN_TAGS = ['<script src="/assets/kiln-config.js"></script>', '<script src="/assets/kiln.js" defer></script>'];
 const LOADS_KILN = /<script\b[^>]*\bsrc=["'][^"']*\bkiln\.js(?:\?[^"']*)?["']/i;
-const SKIP_DIRS = new Set(['node_modules', '_templates', 'functions', 'assets', 'dist', 'build', 'public', 'out', '_site']);
+const SKIP_DIRS = new Set(['node_modules', '_templates', 'dist', '_site']);
+// Build and host folders whose names are also ordinary words in a site's
+// addresses (/lists/public/, /brand/assets/): left out only as the first
+// folder of a path. Deeper down they are folders of pages.
+const SKIP_TOP_DIRS = new Set(['functions', 'assets', 'build', 'public', 'out']);
 const OWN_PAGES = new Set(['kiln.html', 'members-login.html']);
 
 export const EDITOR_FILES = [
@@ -84,7 +88,7 @@ export function isSitePage(path) {
   const parts = String(path).split('/');
   const name = parts.pop();
   if (!name.endsWith('.html') || name.startsWith('.') || OWN_PAGES.has(name)) return false;
-  return !parts.some(d => d.startsWith('.') || SKIP_DIRS.has(d));
+  return !parts.some((d, i) => d.startsWith('.') || SKIP_DIRS.has(d) || (i === 0 && SKIP_TOP_DIRS.has(d)));
 }
 
 /**

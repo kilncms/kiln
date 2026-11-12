@@ -427,8 +427,13 @@ test('prepare: the service adds what the setup tool adds (the same two lines, th
   assert.deepEqual(Function(`return [${tags}]`)(), KILN_TAGS);
   const signIn = cli.match(/writeFileSync\(at\('kiln\.html'\), `([\s\S]+?)`\);/)[1];
   assert.equal(signIn, KILN_PAGE);
-  const skip = Function(`return ${cli.match(/e\.name\.startsWith\('\.'\) \|\| (\[[^\]]+\])\.includes\(e\.name\)\) continue;\n\s+const f = path\.join/)[1]}`)();
-  for (const dir of skip.filter(d => d !== '.git')) assert.equal(isSitePage(`${dir}/index.html`), false, dir);
+  const list = (name) => Function(`return ${cli.match(new RegExp(`const ${name} = (\\[[^\\]]+\\]);`))[1]}`)();
+  const never = list('NEVER').filter(d => d !== '.git'), notAtTop = list('NOT_AT_TOP');
+  assert.ok(never.includes('node_modules') && notAtTop.includes('public'));
+  for (const dir of [...never, ...notAtTop]) assert.equal(isSitePage(`${dir}/index.html`), false, dir);
+  for (const dir of never) assert.equal(isSitePage(`blog/${dir}/index.html`), false, `blog/${dir}`);
+  // names that are also ordinary words in a site's addresses are folders of pages below the top
+  for (const dir of notAtTop) assert.equal(isSitePage(`lists/${dir}/index.html`), true, `lists/${dir}`);
   const config = cli.match(/writeFileSync\(cfgFile, `([\s\S]+?)`\);/)[1];
   const fromCli = config.replace("'${repo}'", "'ada/club'").replace("'${workerUrl}'", "'https://auth.kilncms.com'").replace(/\$\{isSource[\s\S]+?: ''\}/, '');
   assert.equal(kilnConfigFile({ repo: 'ada/club', branch: 'main', worker: 'https://auth.kilncms.com' }), fromCli);

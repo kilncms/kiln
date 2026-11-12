@@ -185,6 +185,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   address it was, like `og:url`, where it used to be cut down to a path. A
   `<link rel="manifest">` is taken out, because the file it names is not
   copied and every page asked for it and got a 404.
+- **The service follows the same folder rule as the setup tool.** When Kiln
+  Cloud adds Kiln to a repository or makes a first pass at what can be edited,
+  it left out any page with a folder called `public`, `assets`, `build`, `out`
+  or `functions` anywhere in its path, as the setup tool did. Those names now
+  count only as the first folder of a path, so a page at
+  `lists/public/index.html` is looked after like any other
+  (`worker/prepare.js`, `isSitePage`).
 
 ## [0.6.0] - 2026-11-12
 
