@@ -443,3 +443,27 @@ test('prepare: the service adds what the setup tool adds (the same two lines, th
   const half = withKilnTags(`<body>\n${KILN_TAGS[0]}\n</body>`);
   assert.equal(half.html, `<body>\n${KILN_TAGS[0]}\n${KILN_TAGS[1]}\n</body>`, 'the settings line is not repeated');
 });
+
+test('prepare: one address cannot ask the dashboard\'s repository routes over and over', { skip: d1Skip }, async () => {
+  const { gh, env, handler } = world({ 'index.html': page('Home') });
+  let left = 2;
+  env.RL = { limit: async ({ key }) => { assert.equal(key, '203.0.113.9'); return { success: left-- > 0 }; } };
+  const from = (pathname, method = 'GET', body) => worker.fetch(new Request(`https://worker.example${pathname}`, {
+    method, headers: { Authorization: 'Bearer tok', 'CF-Connecting-IP': '203.0.113.9', ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined,
+  }), env);
+  const before = gh.head();
+  await withFetch(handler, async (calls) => {
+    assert.equal((await from('/cloud/sites/prepare?site=site-1')).status, 200);
+    assert.equal((await from('/cloud/sites/firstpass?site=site-1')).status, 200);
+    for (const [pathname, method, body] of [['/cloud/sites/prepare', 'POST', { id: 'site-1' }], ['/cloud/sites/check?site=site-1', 'GET'], ['/cloud/sites/update?site=site-1', 'GET']]) {
+      const n = calls.length;
+      const res = await from(pathname, method, body);
+      assert.equal(res.status, 429, pathname);
+      assert.equal(calls.length, n, `${pathname}: nothing is read once the limit is reached`);
+    }
+    left = 5;
+    assert.equal((await from('/cloud/me')).status, 200, 'the account page itself is not held back');
+  });
+  assert.equal(gh.head(), before);
+});
+

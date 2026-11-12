@@ -131,6 +131,13 @@ async function routeRequest(request, env) {
   try {
     if (request.method === 'OPTIONS') return await cors(env, request, new Response(null, { status: 204 }));
     if (path.startsWith('/cloud/') || path.startsWith('/admin/cloud/')) {
+      // What the dashboard does to a site's repository reads every page from
+      // GitHub (and the checklist visits the site itself), so one address cannot
+      // ask for it over and over: the same limit as the sign-in routes.
+      if (path.startsWith('/cloud/sites/')) {
+        const limited = await rateLimited(request, env);
+        if (limited) return limited;
+      }
       // The dashboard's routes get the App's token for a repository from here (cloud.js cannot import this file).
       const r = await handleCloud(request, env, url, path, { installationToken });
       if (r) return await cors(env, request, r);
