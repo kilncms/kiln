@@ -35,7 +35,7 @@ import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, 
 import { checkSite, editingOffLine } from './sitecheck.js';
 import { hostingOn, hostingSentence } from './hosting.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
-import { lookAfter, lookedAfter } from './lookafter.js';
+import { lookAfter, lookedAfter, careOwed } from './lookafter.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -515,12 +515,12 @@ async function preparedTimes(env, accountId) {
   try { return await read('prepared_at, firstpass_at'); } catch { /* 0004 has not reached this database */ }
   try { return await read('prepared_at'); } catch { return {}; }
 }
-async function markPrepared(env, siteId, commit) {
+export async function markPrepared(env, siteId, commit) {
   try {
     await env.kiln_cloud.prepare('UPDATE sites SET prepared_at = COALESCE(prepared_at, ?), prepared_commit = COALESCE(?, prepared_commit) WHERE id = ?').bind(Date.now(), commit || null, siteId).run();
   } catch { /* the repository is prepared all the same; the dashboard offers the button again and is told so */ }
 }
-async function markFirstPass(env, siteId, commit) {
+export async function markFirstPass(env, siteId, commit) {
   try {
     await env.kiln_cloud.prepare('UPDATE sites SET firstpass_at = COALESCE(firstpass_at, ?), firstpass_commit = COALESCE(?, firstpass_commit) WHERE id = ?').bind(Date.now(), commit || null, siteId).run();
   } catch { /* the pages are marked all the same; the dashboard offers the button again and is told there is nothing left */ }
@@ -826,7 +826,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   // A site that has never been up is looked after first (lookafter.js): Kiln's
   // files, a character set on every page and a first pass at what can be
   // edited, so the first copy already holds them. `looked_after` says how each
-  // went; none of it can stop the site from being put up.
+  // went; none of it can stop the site from being put up. A step that was not
+  // done is still owed, and while it is, publishing again tries it again.
   if (path === '/cloud/sites/hosting' && (request.method === 'GET' || request.method === 'POST')) {
     const write = request.method === 'POST';
     const asked = await ownedSite(request, env, url, sess, tools, write ? {} : { needToken: false, needAccess: false });
@@ -853,7 +854,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     }
     const BUSY = 'Kiln is already putting this site up. Give it a minute, then reload this page.';
     let care = null;
-    if (!row || !row.deployed_at) {
+    if (!row || !row.deployed_at || await careOwed(env, site.id)) {
       const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
       care = await lookAfter(env, {
         site, token, worker: url.origin,

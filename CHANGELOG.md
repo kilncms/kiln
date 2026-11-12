@@ -29,8 +29,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   each of `kiln`, `charset` and `marks`, saying `done`, `nothing` or
   `not_done`, with the commit where one was made. The same lines are kept
   for thirty days and come back from `GET /cloud/sites/hosting` and
-  `/cloud/me`. Publishing a site that is already up does none of this again
-  (`worker/lookafter.js`).
+  `/cloud/me`. A step that was not done stays owed for fourteen days. When
+  the reason can pass by itself (GitHub or the release did not answer, or the
+  repository changed meanwhile), the five-minute job tries again for the
+  owner: ten minutes later, then after twice as long each time, six hours at
+  the most, eight times in all. A reason only the owner can change, such as
+  a protected branch, waits for the owner, and publishing the site again
+  then makes the steps. Once nothing is owed, publishing a site that is up
+  is only publishing (`worker/lookafter.js`).
 - **A hosted site's editor is kept current, with nothing to press.** Every
   five minutes the service looks at up to two hosted sites, and at any one
   site once a day. Where the editor in the repository is older than the

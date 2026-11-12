@@ -15,7 +15,7 @@ import { fakeKV, withFetch, githubWrites } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare } from './cloudflare-fake.js';
-import { withCharset, CHARSET_TAG, charsetSentence } from '../worker/lookafter.js';
+import { withCharset, CHARSET_TAG, charsetSentence, careOwed, owedDue } from '../worker/lookafter.js';
 import { withKilnTags, kilnConfigFile, KILN_PAGE, KILN_TAGS } from '../worker/prepare.js';
 import { autotag } from '../src/autotag.js';
 
@@ -65,6 +65,7 @@ function world(repos = { 'ada/club': plain }, { site = {}, kv: seed = {}, out = 
     for (const r of names) {
       if (!url.startsWith(`https://api.github.com/repos/${r}`)) continue;
       if (w.shut.has(r) && init.method === 'PATCH' && url.includes('/git/refs/heads/')) return new Response(JSON.stringify(REFUSED), { status: 422, headers: { 'Content-Type': 'application/json' } });
+      if (w.down && init.method === 'POST' && /\/git\/(commits|trees|blobs)$/.test(url)) return new Response('{"message":"Server Error"}', { status: 502, headers: { 'Content-Type': 'application/json' } });
       return ghs[r].handler(url, init);
     }
     return undefined;
@@ -488,4 +489,121 @@ test('editor: a site that cannot be updated is logged and does not stop the next
   const lines = await warnings(() => withFetch(g.handler, async () => { await sweep(g.env); }));
   assert.deepEqual(lines.filter(l => l.evt === 'hosting_editor_not_updated').map(l => [l.repo, l.reason]), [['ada/one', 'github']]);
   assert.equal(g.ghs['ada/one'].read('assets/kiln.js'), editor('r1'));
+});
+
+// ─── A step that was not done is still owed ───────────────────────────────────
+
+const MIN = 60 * 1000;
+const owedNote = (env, id = 's1') => { const v = env.KILN.map.get(`hostowed:${id}`); return v ? (typeof v === 'string' ? JSON.parse(v) : v) : null; };
+/** Make a note look as if it was written `ms` ago. */
+const age = (env, ms, id = 's1') => { const n = owedNote(env, id); env.KILN.map.set(`hostowed:${id}`, JSON.stringify({ ...n, at: Date.now() - ms })); };
+const byAda = (gh) => [...gh.commits.values()].filter(c => c.author?.name === 'ada');
+
+test('owed: steps GitHub did not answer for are tried again by the five-minute job, in the owner\'s name, once their wait is over', { skip: d1Skip }, async () => {
+  const w = world();
+  w.down = true;                       // GitHub takes no new commit just now
+  await warnings(() => withFetch(w.handler, async () => {
+    const body = await (await switchOn(w.env)).json();
+    assert.equal(body.hosting.state, 'live', 'the site is up all the same, as it is');
+    assert.deepEqual(body.looked_after.map(l => [l.step, l.state, l.code]), [['kiln', 'not_done', 'github'], ['charset', 'not_done', 'github'], ['marks', 'not_done', 'github']]);
+  }));
+  assert.equal(served(w, '/index.html'), plain['index.html']);
+  const note = owedNote(w.env);
+  assert.deepEqual({ tries: note.tries, codes: note.codes, author: note.author, worker: note.worker },
+    { tries: 0, codes: ['github', 'github', 'github'], author: { name: 'ada', email: '42+ada@users.noreply.github.com' }, worker: 'https://worker.example' });
+  assert.deepEqual(await careOwed(w.env, 's1'), { at: note.at, ...{ tries: 0, codes: note.codes, author: note.author, worker: note.worker } });
+
+  // GitHub answers again, but the wait is not over: the job leaves the site alone.
+  w.down = false;
+  await withFetch(w.handler, async (calls) => {
+    await sweep(w.env);
+    assert.deepEqual(githubWrites(calls), []);
+  });
+  assert.equal(owedNote(w.env).tries, 0);
+
+  // Ten minutes on, the job does what the owner asked for, in the owner's name.
+  age(w.env, 11 * MIN);
+  await withFetch(w.handler, async () => { await sweep(w.env); });
+  assert.equal(owedNote(w.env), null, 'nothing is owed any more');
+  assert.equal(byAda(w.gh).length, 3, 'Kiln, the character set, the first pass');
+  assert.equal(w.gh.read('index.html'), ready(page('Home')));
+  const rec = siteRow(w.env);
+  assert.ok(rec.prepared_at > 0 && rec.prepared_commit, 'written down as the button writes it down');
+  assert.ok(rec.firstpass_at > 0 && rec.firstpass_commit);
+  assert.deepEqual(states(JSON.parse(w.env.KILN.map.get('hostcare:s1')).steps), [['kiln', 'done'], ['charset', 'done'], ['marks', 'done']], 'and the dashboard is shown how it went');
+  // The same run, or the next, publishes what moved the branch.
+  await withFetch(w.handler, async () => { await sweep(w.env); });
+  assert.equal(served(w, '/index.html'), ready(page('Home')));
+
+  // Nothing is owed: later runs write nothing more.
+  await withFetch(w.handler, async (calls) => {
+    await sweep(w.env);
+    assert.deepEqual(githubWrites(calls), []);
+  });
+});
+
+test('owed: a reason only the owner can change waits for the owner, who publishes again and is given the steps then', { skip: d1Skip }, async () => {
+  const w = world({ 'ada/club': plain }, { shut: ['ada/club'] });
+  await warnings(() => withFetch(w.handler, async () => { await switchOn(w.env); }));
+  assert.deepEqual(owedNote(w.env).codes, ['protected', 'protected', 'protected']);
+  // However long it waits, the job does not try a protected branch again.
+  age(w.env, 26 * 60 * MIN);
+  await withFetch(w.handler, async (calls) => {
+    await sweep(w.env);
+    assert.deepEqual(githubWrites(calls), []);
+  });
+  assert.equal(owedNote(w.env).tries, 0);
+  // The owner lifts the protection and publishes again: the site is up already, and the steps are made now.
+  w.shut.clear();
+  await withFetch(w.handler, async () => {
+    const body = await (await switchOn(w.env)).json();
+    assert.deepEqual(states(body.looked_after), [['kiln', 'done'], ['charset', 'done'], ['marks', 'done']]);
+    assert.equal(body.hosting.state, 'live');
+    assert.equal(body.hosting.commit, w.gh.head());
+  });
+  assert.equal(owedNote(w.env), null);
+  assert.equal(served(w, '/index.html'), ready(page('Home')));
+  // And from then on publishing again is only publishing.
+  await withFetch(w.handler, async (calls) => {
+    const body = await (await switchOn(w.env)).json();
+    assert.equal(body.looked_after, undefined);
+    assert.deepEqual(githubWrites(calls), []);
+  });
+});
+
+test('owed: the job waits twice as long each time, six hours at most, tries eight times, and one site a run', { skip: d1Skip }, async () => {
+  const at = 1_800_000_000_000;
+  assert.deepEqual([0, 1, 2, 3, 5, 6, 7, 20].map(tries => (owedDue({ at, tries }) - at) / MIN), [10, 20, 40, 80, 320, 360, 360, 360]);
+
+  // While GitHub stays out, each try is counted and the next one waits longer.
+  const w = world();
+  w.down = true;
+  await warnings(() => withFetch(w.handler, async () => { await switchOn(w.env); }));
+  age(w.env, 11 * MIN);
+  await warnings(() => withFetch(w.handler, async () => { await sweep(w.env); }));
+  assert.equal(owedNote(w.env).tries, 1);
+  age(w.env, 11 * MIN);                // twenty minutes are needed now
+  await warnings(() => withFetch(w.handler, async (calls) => { await sweep(w.env); assert.deepEqual(githubWrites(calls), []); }));
+  assert.equal(owedNote(w.env).tries, 1);
+  // After eight tries the job stops; the note stays for the owner's next press.
+  w.env.KILN.map.set('hostowed:s1', JSON.stringify({ ...owedNote(w.env), tries: 8, at: Date.now() - 24 * 60 * MIN }));
+  w.down = false;
+  await withFetch(w.handler, async (calls) => { await sweep(w.env); assert.deepEqual(githubWrites(calls), []); });
+  assert.equal(owedNote(w.env).tries, 8);
+
+  // Two sites with steps owed: one run tries one of them.
+  const two = world({ 'ada/club': plain, 'ada/shop': plain });
+  two.down = true;
+  await warnings(() => withFetch(two.handler, async () => { await switchOn(two.env, 's1'); await switchOn(two.env, 's2'); }));
+  two.down = false;
+  age(two.env, 11 * MIN, 's1'); age(two.env, 11 * MIN, 's2');
+  await withFetch(two.handler, async () => { await sweep(two.env); });
+  assert.equal([owedNote(two.env, 's1'), owedNote(two.env, 's2')].filter(Boolean).length, 1, 'one site was finished, the other waits for the next run');
+  await withFetch(two.handler, async () => { await sweep(two.env); });
+  assert.deepEqual([owedNote(two.env, 's1'), owedNote(two.env, 's2')], [null, null]);
+
+  // A note that is not whole (no author, or an address that is not one) is not acted on.
+  const bad = world();
+  bad.env.KILN.map.set('hostowed:s1', JSON.stringify({ at: 1, tries: 0, codes: ['github'], author: { name: '' }, worker: 'javascript:alert(1)' }));
+  assert.equal(await careOwed(bad.env, 's1'), null);
 });

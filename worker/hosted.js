@@ -21,7 +21,7 @@
 
 import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError } from './hosting.js';
 import { gh, refPath } from './prepare.js';
-import { keepEditorsCurrent } from './lookafter.js';
+import { keepEditorsCurrent, finishCare } from './lookafter.js';
 
 const LOCK_S = 300;
 const RETRY_AFTER_MS = 2 * 60 * 1000;        // a failed copy is tried again this long after it failed
@@ -186,16 +186,16 @@ export async function handleGithubWebhook(request, env, ctx, tools) {
  * GitHub's notice has not done so first. Sites that may not be edited any
  * more are left as they are (ending hosting is its own step).
  */
-export async function sweepHosting(env, { installationToken, hasAccess, endsAt = () => null }) {
-  if (!hostingOn(env) || !env.kiln_cloud) return { published: 0, looked: 0, editors: 0 };
+export async function sweepHosting(env, { installationToken, hasAccess, endsAt = () => null, care = {} }) {
+  if (!hostingOn(env) || !env.kiln_cloud) return { published: 0, looked: 0, editors: 0, cared: 0 };
   const now = Date.now();
-  let published = 0, looked = 0, editors = 0;
+  let published = 0, looked = 0, editors = 0, cared = 0;
   let rows = [];
   try {
     rows = (await env.kiln_cloud.prepare(
-      `SELECT s.id, s.repo, s.status, s.access_until, s.plan, s.created_at, s.ls_subscription_id, h.name, h.state, h.branch, h.commit_sha, h.wanted_sha, h.checked_at, h.updated_at
+      `SELECT s.id, s.repo, s.status, s.access_until, s.plan, s.created_at, s.ls_subscription_id, s.firstpass_at, h.name, h.state, h.branch, h.commit_sha, h.wanted_sha, h.checked_at, h.updated_at
        FROM hosting h LEFT JOIN sites s ON s.id = h.site_id ORDER BY COALESCE(h.checked_at, 0)`).all())?.results || [];
-  } catch { return { published, looked, editors }; }   // migration 0005 has not reached this database
+  } catch { return { published, looked, editors, cared }; }   // migration 0005 has not reached this database
 
   for (const r of rows) {
     if (r.state !== 'removing') continue;
@@ -226,8 +226,11 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
     done.add(r.id);
     if (out.state === 'live') published++;
   }
-  // A hosted site's editor is kept current for its owner. This only moves the
-  // repository's branch; the look below, or GitHub's notice, publishes it.
+  // A step that could not be done when a site was put up (GitHub did not
+  // answer, say) is tried again for one site. Like the editor below, this only
+  // moves the repository's branch; the look below, or GitHub's notice, publishes it.
+  cared = (await finishCare(env, live.filter(x => x.state !== 'ended'), { installationToken, record: care, now })).finished;
+  // A hosted site's editor is kept current for its owner.
   editors = (await keepEditorsCurrent(env, live.filter(x => x.state === 'live'), { installationToken, now })).updated;
   for (const r of live.filter(x => !done.has(x.id) && (x.state === 'live' || x.state === 'waiting')).slice(0, SWEEP_LOOK)) {   // not 'ended': its owner puts it back
     if (published >= SWEEP_PUBLISH) break;
@@ -244,7 +247,7 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
     if (head && head !== r.commit_sha) { if ((await publishSite(env, { site: r, token })).state === 'live') published++; }
     else await save(env, r.id, { checked_at: Date.now() });
   }
-  return { published, looked, editors };
+  return { published, looked, editors, cared };
 }
 
 /**

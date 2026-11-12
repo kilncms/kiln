@@ -16,6 +16,15 @@
  * Nothing here stops a site from being hosted. A step that cannot be done is
  * reported with the reason and the next step is tried.
  *
+ * A step that was not done is still owed, and a note says so (`hostowed:`).
+ * While the note is there, the owner publishing the site again tries the
+ * steps again (cloud.js), and the five-minute job tries them by itself when
+ * the reason is one that can pass without anyone doing anything: GitHub or
+ * the release did not answer, or the repository moved meanwhile (finishCare).
+ * A reason only the owner can change, such as a protected branch, waits for
+ * the owner. Either way the change is the one the owner asked for when they
+ * put the site on Kiln's hosting, so it is made in their name.
+ *
  * The character set is the one step that has no button. Kiln's hosting serves
  * a page as `text/html` and names no character set, so a page has to name its
  * own, or a browser may show é and curly quotes as other letters.
@@ -23,6 +32,7 @@
  * KV:
  *   carelock:<site id>  '1'           one look-after at a time for a site (TTL 5 min)
  *   hostcare:<site id>  {at,steps}    how the last look-after went, for the dashboard (TTL 30 days)
+ *   hostowed:<site id>  {at,tries,codes,author,worker}   a step is still owed, and whose request it was (TTL 14 days)
  *   hostupd:<site id>   a time        this site's editor was looked at for an update (TTL 24 hours)
  */
 
@@ -35,6 +45,12 @@ const KEPT_S = 30 * 24 * 3600;
 const DAY_S = 24 * 3600;
 const SETTLE_MS = DAY_S * 1000;     // hosted sites take a released editor once the service has known it this long
 const UPDATES_A_RUN = 2;            // sites one run looks at for a newer editor, at most
+const OWED_S = 14 * DAY_S;          // how long a step that was not done stays owed
+const OWED_TRIES = 8;               // the job tries this often by itself: about a day in all, then it waits for the owner
+const OWED_WAIT_MS = 10 * 60 * 1000;                 // ten minutes after the first failure, then twice as long each time,
+const OWED_WAIT_MAX_MS = 6 * 3600 * 1000;            // six hours at the most
+// Reasons that can pass by themselves. Every other reason waits for the owner.
+const PASSING = new Set(['github', 'moved', 'release']);
 const UPDATE_SCAN = 20;             // sites one run asks about (was it looked at today?), at most
 
 const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
@@ -139,7 +155,7 @@ const UNREAD = new Set(['no_access', 'github', 'empty', 'built', 'no_pages', 'to
  * `record.prepared(sha)` / `record.firstPass(sha)` write down what the two
  * buttons write down (cloud.js keeps the `sites` table).
  */
-export async function lookAfter(env, { site, token, author, worker, firstpassAt = null, record = {} }) {
+export async function lookAfter(env, { site, token, author, worker, firstpassAt = null, record = {}, tries = 0 }) {
   const repo = site.repo;
   const lock = `carelock:${site.id}`;
   try {
@@ -235,7 +251,59 @@ export async function lookAfter(env, { site, token, author, worker, firstpassAt 
     try { await env.KILN.delete(lock); } catch { /* it runs out by itself in five minutes */ }
   }
   try { await env.KILN.put(`hostcare:${site.id}`, JSON.stringify({ at: Date.now(), steps }), { expirationTtl: KEPT_S }); } catch { /* the answer to this request still says it */ }
+  // What was not done is still owed; when everything is done nothing is.
+  const codes = steps.filter(s => s.state === 'not_done').map(s => s.code || 'github');
+  try {
+    if (codes.length) await env.KILN.put(owedKey(site.id), JSON.stringify({ at: Date.now(), tries, codes, author: { name: author.name, email: author.email }, worker }), { expirationTtl: OWED_S });
+    else await env.KILN.delete(owedKey(site.id));
+  } catch { /* the owner publishing again before the site has been up still tries the steps */ }
   return steps;
+}
+
+const owedKey = (siteId) => `hostowed:${siteId}`;
+
+/** The note that a step is still owed for a site ({ at, tries, codes, author, worker }), or null. Never throws. */
+export async function careOwed(env, siteId) {
+  try {
+    const n = await env.KILN.get(owedKey(siteId), 'json');
+    const whole = n && Array.isArray(n.codes) && n.codes.length && typeof n.author?.name === 'string' && n.author.name
+      && typeof n.author?.email === 'string' && /^https:\/\/[^\s/]+$/.test(String(n.worker || ''));
+    return whole ? { at: Number(n.at) || 0, tries: Number(n.tries) || 0, codes: n.codes.map(String), author: { name: n.author.name, email: n.author.email }, worker: n.worker } : null;
+  } catch { return null; }
+}
+
+/** When the job may try an owed step again: ten minutes after the last try, then twice as long each time, six hours at most. */
+export const owedDue = (note) => note.at + Math.min(OWED_WAIT_MAX_MS, OWED_WAIT_MS * 2 ** note.tries);
+
+/**
+ * The five-minute job's part in what is owed: for ONE hosted site whose note
+ * names a reason that can pass by itself, and whose wait is over, the steps
+ * are tried again as the owner asked for them. `sites` are hosted sites that
+ * may be edited ({ id, repo, firstpass_at }); `record.prepared(siteId, sha)`
+ * and `record.firstPass(siteId, sha)` write down what the buttons write down.
+ * Returns { tried, finished }. Never throws.
+ */
+export async function finishCare(env, sites, { installationToken, record = {}, now = Date.now() } = {}) {
+  let tried = 0, finished = 0;
+  try {
+    for (const s of sites.slice(0, UPDATE_SCAN)) {
+      const note = await careOwed(env, s.id);
+      if (!note || note.tries >= OWED_TRIES || !note.codes.some(c => PASSING.has(c)) || now < owedDue(note)) continue;
+      const token = await installationToken(env, s.repo);
+      if (!token) continue;
+      tried++;
+      const steps = await lookAfter(env, {
+        site: s, token, author: note.author, worker: note.worker, firstpassAt: s.firstpass_at || null, tries: note.tries + 1,
+        record: { prepared: (sha) => record.prepared?.(s.id, sha), firstPass: (sha) => record.firstPass?.(s.id, sha) },
+      });
+      if (steps && steps.every(l => l.state !== 'not_done')) finished++;
+      console.log(JSON.stringify({ evt: 'lookafter_again', repo: s.repo, try: note.tries + 1, steps: (steps || []).map(l => `${l.step}:${l.state}${l.code ? `(${l.code})` : ''}`) }));
+      break;   // one site a run: a look-after reads every page of a site
+    }
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'lookafter_again_failed', detail: String(e?.message || e).slice(0, 200) }));
+  }
+  return { tried, finished };
 }
 
 /** How the last look-after of a site went (the lines lookAfter returned), or null. Never throws. */
