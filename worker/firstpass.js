@@ -21,34 +21,14 @@
  * The routes are in cloud.js (GET and POST /cloud/sites/firstpass).
  */
 
-import { autotag } from '../src/autotag.js';
+import { autotag, onlyAddsMarks } from '../src/autotag.js';
 import { readPages, commitChange } from './prepare.js';
 
 const KINDS = ['fields', 'images', 'repeats', 'menu'];
 
-// What the pass may add to a page, and nothing else: one or more data-cms
-// attributes with a plain value. (A run found by walking the two texts side by
-// side can start or end one space off, so a space is allowed at either end.)
-const ONLY_MARKS = /^ ?(?:data-cms(?:-[a-z]+)*(?:="[a-z0-9_-]*")? ?)+$/;
-
-/**
- * True when `after` is `before` with nothing but marks added: every character
- * of the page is still there, in order, and each added run is a data-cms
- * attribute. The two are walked side by side once.
- */
-export function onlyAddsMarks(before, after) {
-  if (after.length < before.length) return false;
-  let i = 0, j = 0;
-  while (j < after.length) {
-    if (i < before.length && before[i] === after[j]) { i++; j++; continue; }
-    // An added run: it goes on until the page's own text picks up again.
-    let end = j;
-    while (end < after.length && !(i < before.length && before[i] === after[end] && after.startsWith(before.slice(i, i + 12), end))) end++;
-    if (!ONLY_MARKS.test(after.slice(j, end))) return false;
-    j = end;
-  }
-  return i === before.length;
-}
+// The check itself is beside the pass it checks (src/autotag.js), so the editor
+// holds its own whole-page pass to the same rule. Still exported from here.
+export { onlyAddsMarks };
 
 /**
  * Read the repository and work out what a first pass would mark. Writes

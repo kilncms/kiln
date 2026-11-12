@@ -168,8 +168,15 @@ test('first pass: a page is written only when the pass did nothing but add marks
     'an element added': before.replace('</body>', '<script src="//evil.example/x.js"></script></body>'),
     'text added after the end': `${before}<p>more</p>`,
     'an attribute that only starts like a mark': before.replace('<h1', '<h1 data-cmsx="1"'),
+    'a mark run together with the attribute after it': before.replace('<h1 class', '<h1 data-cmsclass'),
+    'a mark run together with the tag name': before.replace('<p>', '<pdata-cms="x">'),
   };
   for (const [what, after] of Object.entries(not)) assert.equal(onlyAddsMarks(before, after), false, what);
+  // two marks a few characters apart (a short heading, then a paragraph): still only marks
+  const close = '<main><div class="card"><h3>Ana</h3><p>Baker</p><img src="/a.jpg" alt="" /></div></main>';
+  assert.match(autotag(close).html, /<h3 data-cms="[a-z_]+">Ana<\/h3><p data-cms="[a-z_]+">Baker<\/p><img src="\/a\.jpg" alt="" +data-cms="[a-z_]+" data-cms-attr="src"\/>/);
+  assert.equal(onlyAddsMarks(close, autotag(close).html), true);
+  assert.equal(onlyAddsMarks(close, autotag(close).html.replace('Baker', 'Maker')), false);
 });
 
 test('first pass: a site that a generator builds, or that has no pages, is refused with the reason, and nothing is written', { skip: d1Skip }, async () => {

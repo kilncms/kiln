@@ -205,3 +205,41 @@ export function autotag(raw) {
   for (const s of splices) html = html.slice(0, s.offset) + s.text + html.slice(s.offset);
   return { html, counts };
 }
+
+// What the pass may add to a page, and nothing else: one or more data-cms
+// attributes with a plain value. (A run found by walking the two texts side by
+// side can start or end one space off, so a space is allowed at either end.)
+// Sticky: it is tried at the exact place where the two texts part.
+const EDGE = /[\s>/]/;   // what may stand next to a mark inside a tag
+const MARKS_RUN = / ?(?:data-cms(?:-[a-z]+)*(?:="[a-z0-9_-]*")? ?)+/y;
+
+/**
+ * True when `after` is `before` with nothing but marks added: every character
+ * of the page is still there, in order, and each added run is a data-cms
+ * attribute. The two are walked side by side once. Where they part, what was
+ * added has to be marks from that very character on, and the page's own text
+ * has to pick up right after them.
+ *
+ * (It used to look for where the page's own text picked up again by its next
+ * twelve characters. Two marks less than twelve characters apart, as in
+ * `<h3>Ana</h3><p>`, were then read as one long run that was not marks, and a
+ * page with a short heading was refused although only marks had been added.
+ * And a bare `data-cms` run together with the attribute after it passed.)
+ */
+export function onlyAddsMarks(before, after) {
+  if (after.length < before.length) return false;
+  let i = 0, j = 0;
+  while (j < after.length) {
+    if (i < before.length && before[i] === after[j]) { i++; j++; continue; }
+    MARKS_RUN.lastIndex = j;
+    const run = MARKS_RUN.exec(after);
+    if (!run) return false;
+    // The marks stand apart from what is around them: `data-cmsclass="x"` is
+    // not a mark put in front of `class="x"`.
+    const end = j + run[0].length;
+    if (!run[0].startsWith(' ') && !EDGE.test(after[j - 1] || '')) return false;
+    if (!run[0].endsWith(' ') && !EDGE.test(after[end] || '>')) return false;
+    j = end;
+  }
+  return i === before.length;
+}

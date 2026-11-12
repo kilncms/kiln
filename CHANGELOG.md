@@ -82,6 +82,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or its `www` form, at most 512 KB read, and no cookies or sign-in details
   sent (`worker/sitecheck.js`, `GET /cloud/sites/check`).
 
+### Fixed
+
+- **The first pass no longer refuses a page with a short heading.** Before a
+  page is written, the pass is checked to have added marks and nothing else.
+  That check misread two marks a few characters apart, as in
+  `<h3>Ana</h3><p>Baker</p>`, and such a page was left alone and named as
+  unsafe although only marks had been added. The check now reads each added
+  run exactly where it starts. It is also stricter in one place: a bare mark
+  run together with the attribute after it is refused. The check moved to
+  `src/autotag.js`, beside the pass, so the dashboard and the editor hold to
+  the same rule.
+
 ### Changed
 
 - **The free trial is seven days in all.** The seven days are Kiln's own,
