@@ -240,6 +240,14 @@ function stageBinary(repoPath, base64) {
   refreshPublishButton();
 }
 
+// Two names that init() reaches, through runJournal() and checkForDraft(). They
+// are declared here, above the line that starts the editor, so they hold their
+// values whenever start-up gets to them: a name declared further down is
+// undefined until the file has been read that far.
+let journalBusy = false;   // a round of asking is under way: the next one waits for it (runJournal)
+// Where this tab remembers which draft it resumed (retireResumedDraft, checkForDraft).
+const draftResumedKey = () => `kiln_draft_resumed:${cfg.repo}:${state.page.path}`;
+
 init().catch(err => {
   console.error('[kiln]', err);
   if (err.kilnFriendly) {
@@ -6221,7 +6229,6 @@ function journalAdd(entry) {
 
 let journalTimer = null;
 let journalTickN = 0;
-let journalBusy = false;   // a round of asking is under way: the next one waits for it
 function runJournal() {
   if (journalTimer) return;
   const run = async () => {
@@ -7731,7 +7738,6 @@ function offerDraftSandbox() {
  * Publish does not lose it. A draft saved again since is a newer one and
  * stays. This never stops a publish, and never fails one.
  */
-const draftResumedKey = () => `kiln_draft_resumed:${cfg.repo}:${state.page.path}`;
 async function retireResumedDraft() {
   let sha = null;
   try { sha = sessionStorage.getItem(draftResumedKey()); } catch { /* no storage: the draft is offered again, as before */ }
