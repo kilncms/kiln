@@ -105,7 +105,9 @@ test('first pass: pressing the button makes one commit in the owner\'s name that
 
   // The dashboard is told, and pressing again finds nothing left to mark.
   assert.equal(recorded(env).firstpass_commit, gh.head());
-  assert.ok((await (await ask(env, 'GET', '/cloud/me')).json()).sites[0].firstpass_at > 0);
+  const me = await (await ask(env, 'GET', '/cloud/me')).json();
+  assert.equal(me.firstpass, true);
+  assert.ok(me.sites[0].firstpass_at > 0);
   const after = gh.head();
   await withFetch(handler, async (calls) => {
     assert.equal((await (await look(env)).json()).state, 'nothing');

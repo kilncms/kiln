@@ -604,8 +604,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       subscribed: !!sub,
       trial_ends: r.status === 'trialing' && !sub && Number(r.created_at) ? Number(r.created_at) + TRIAL_GRACE_DAYS * 86400 * 1000 : null,
     }));
-    // `prepare`: this service can add Kiln to a repository itself (/cloud/sites/prepare).
-    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: typeof tools.installationToken === 'function' });
+    // `prepare`, `firstpass`: this service can add Kiln to a repository itself, and mark a first pass of what can be edited.
+    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: typeof tools.installationToken === 'function', firstpass: typeof tools.installationToken === 'function' });
   }
 
   // The address notices about the account's own sites go to (mail.js). The
