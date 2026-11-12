@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-12
+
 ### Fixed
 
 - **An invited editor can make a new page on a site whose starting page has
