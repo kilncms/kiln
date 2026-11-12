@@ -160,7 +160,7 @@ test('drafts: anyone who can save a draft is shown "Delete draft", and an invite
   // the owner removes the file; an editor writes the page as it is over the draft, saying the draft was deleted
   assert.match(check, /if \(mode === 'admin'\) \{\n        await state\.gh\.request\('DELETE',[^\n]*\n          \{ message: draftDeleteMessage\(state\.page\.path\), sha: draft\.sha, branch: DRAFT_BRANCH \}\);\n      \} else \{\n        await putFile\(state\.gh, cfg\.repo, state\.page\.path,\n          \{ text: state\.page\.text, sha: draft\.sha, branch: DRAFT_BRANCH, message: draftDeleteMessage\(state\.page\.path\) \}\);/);
   // a published draft is put away the same two ways
-  const retire = main.slice(main.indexOf('async function retireResumedDraft()'), main.indexOf('async function checkForDraft()'));
+  const retire = main.slice(main.indexOf('async function retireResumedDraft('), main.indexOf('async function checkForDraft()'));
   assert.match(retire, /\} else if \(now\.text !== state\.page\.text\) \{/);
   assert.match(retire, /\{ text: state\.page\.text, sha, branch: DRAFT_BRANCH, message: draftPublishedMessage\(state\.page\.path\) \}/);
 });

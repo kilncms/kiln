@@ -49,6 +49,7 @@ import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
 import { findEverywhere, replaceEverywhere, changedSinceText } from './find-replace.js';
 import { aiSaid, aiOffered, noAiKey } from './ai-offered.js';
 import { DRAFT_BRANCH, draftSaveMessage, draftDeleteMessage, draftPublishedMessage, blobSha, draftOfPage, draftWords, DRAFT_DELETE_REFUSED } from './draft-state.js';
+import { resumedNote, draftWasPublished, noteIsStale } from './resumed-draft.js';
 import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
@@ -3956,7 +3957,8 @@ async function publish(opts = {}) {
     if (canUndo) offerUndo({ ...record, before: textBefore, after: result.text, sha: result.commit.sha });
     if (told && result && !result.unchanged) guidePublished(told);
     watchDeploy(result?.commit?.sha, result?.text);
-    if (result && !result.unchanged) retireResumedDraft();   // a draft that was resumed is now published: it is not offered again
+    // A draft that was resumed is used up when the parts it brought back were the ones just published (resumed-draft.js).
+    if (result && !result.unchanged) retireResumedDraft([...appliedKeys]);
     // A mixed publish (page edits + source-file edits from the same screen):
     // commit the source half now, sequentially, with its own §11 states.
     if (state.pendingSource.size) await publishSource(opts.note);
@@ -7716,6 +7718,7 @@ async function saveDraft() {
     });
     state.pending.clear();
     clearSavedPending();
+    forgetResumedDraft();   // saved again: a later publish of something else is not the publish of this draft
     // Retire undo history at the draft boundary too: the edits now live in the
     // draft branch, so ⌘Z would revert the DOM while the draft still carries them
     // (and redo would re-stage an already-saved edit for a second commit).
@@ -7800,14 +7803,18 @@ function offerDraftSandbox() {
  * Publish does not lose it. A draft saved again since is a newer one and
  * stays. This never stops a publish, and never fails one.
  */
-async function retireResumedDraft() {
-  let sha = null;
-  try { sha = sessionStorage.getItem(draftResumedKey()); } catch { /* no storage: the draft is offered again, as before */ }
-  if (!sha || !state.page.path) return;
-  const forget = () => { try { sessionStorage.removeItem(draftResumedKey()); } catch { /* nothing kept */ } };
+async function retireResumedDraft(publishedKeys = []) {
+  let note = null;
+  try { note = sessionStorage.getItem(draftResumedKey()); } catch { /* no storage: the draft is offered again, as before */ }
+  if (!note || !state.page.path) return;
+  const forget = () => forgetResumedDraft();
   let now;
   try { now = await getFile(state.gh, cfg.repo, state.page.path, DRAFT_BRANCH); } catch { forget(); return; }
-  if (!now || now.sha !== sha) { forget(); return; }
+  if (noteIsStale(note, now?.sha)) { forget(); return; }
+  // Something else was published, not what the draft brought back: the draft
+  // stays a draft, and is offered again (as the older of the two, if so).
+  if (!draftWasPublished(note, now.sha, publishedKeys)) return;
+  const sha = now.sha;
   try {
     if (mode === 'admin') {
       await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
@@ -7825,6 +7832,11 @@ async function retireResumedDraft() {
     }
     forget();
   } catch (err) { console.warn('[kiln] the published draft could not be taken off the drafts branch', err); }
+}
+
+/** The note that a draft was resumed in this tab is thrown away (resumed-draft.js says when). */
+function forgetResumedDraft() {
+  try { sessionStorage.removeItem(draftResumedKey()); } catch { /* nothing kept */ }
 }
 
 async function checkForDraft() {
@@ -7856,6 +7868,7 @@ async function checkForDraft() {
   const resumeDraft = () => {
     const draftFields = indexHtml(draft.text).fields;
     let applied = 0, refused = 0;
+    const brought = [];   // the names of the parts the draft brings back
     for (const [key, f] of draftFields) {
       if (!f.inner) continue;
       const value = draft.text.slice(f.inner.start, f.inner.end);
@@ -7869,15 +7882,15 @@ async function checkForDraft() {
         writeInside(el, value);
         el.classList.add('kiln-modified');
         stagePending(key, { html: value });
-        applied++;
+        applied++; brought.push(key);
       } else if (liveF?.kind === 'repeat' || el?.hasAttribute('data-cms-repeat')) {
         const cont = document.querySelector(`[data-cms-repeat="${CSS.escape(key)}"]`);
-        if (cont) { applyKeyDom(key, value); stagePending(key, { html: value, whole: true }); applied++; }
+        if (cont) { applyKeyDom(key, value); stagePending(key, { html: value, whole: true }); applied++; brought.push(key); }
       }
     }
     refreshPublishButton();
     // Publishing these is the end of this draft (retireResumedDraft).
-    if (applied) { try { sessionStorage.setItem(draftResumedKey(), draft.sha); } catch { /* it is offered again, as before */ } }
+    if (applied) { try { sessionStorage.setItem(draftResumedKey(), resumedNote(draft.sha, brought)); } catch { /* it is offered again, as before */ } }
     setStatus(`Draft loaded (${applied} change${applied === 1 ? '' : 's'}) — Publish when ready`
       + (refused ? `. ${refused} part${refused === 1 ? ' was' : 's were'} not brought back: ${refused === 1 ? 'it holds' : 'they hold'} code that could run on the page.` : ''), 'saved');
     m.remove();

@@ -10,6 +10,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A draft that was resumed and saved again is not thrown away by a later
+  publish of something else.** The editor noted only that a draft had been
+  resumed in the tab, and any later publish there then counted as the
+  publish of that draft. Resume a draft, save it as a draft again, come back,
+  press "Later", publish some other change: the draft was marked as
+  published, its words never went live, and it was not offered again. A
+  publish now uses a draft up only when the draft is still the one that was
+  resumed and every part it brought back was among the parts that publish
+  wrote. Saving a draft again throws the note away. Otherwise the draft
+  stays, and is offered again as the older of the two
+  (`src/editor/resumed-draft.js`).
+
 - **An invited editor can make a new page on a site whose starting page has
   a script of its own.** "New post or page" copies the site's starting page
   (`_templates/page.html`, or `_templates/post.html` for a post). Kiln's
