@@ -694,7 +694,7 @@ export async function rescueCmd(startUrl, args = {}) {
   try {
     if (!startUrl) throw new Error('missing url');
     start = new URL(/^https?:\/\//i.test(startUrl) ? startUrl : `https://${startUrl}`);
-  } catch { fail('Usage: kiln rescue <url> [--out=dir] [--max-pages=N] [--delay=ms] [--max-asset-mb=N] [--max-total-mb=N] [--keep-scripts] [--no-tag] [--dry] [--render [--browser=path] [--menu-shim]] [--try]'); process.exit(1); }
+  } catch { fail('Usage: kiln rescue <url> [--out=dir] [--max-pages=N] [--delay=ms] [--max-asset-mb=N] [--max-total-mb=N] [--keep-scripts] [--no-tag] [--dry] [--render [--browser=path] [--menu-shim]] [--try]'); info('What each option does: npx github:kilncms/kiln#release rescue --help'); process.exit(1); }
   let origin = start.origin;
   const out = args.out || `rescued-${start.hostname}`;
   const maxPages = Math.max(1, Number(args['max-pages']) || 50);

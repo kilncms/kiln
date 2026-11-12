@@ -886,7 +886,7 @@ function helpText() {
   add-site         Add this site to Kiln Cloud.
   new [dir]        Start a new site from a template.
                      --from <owner/repo>  --name <title>  --dry
-  rescue <url>     Copy a site out of a website builder into plain HTML.
+  rescue <url>     Copy a website into a folder of plain HTML. "rescue --help" says more.
                      --out <dir>  --max-pages <n>  --delay <ms>  --dry  --no-tag  --keep-scripts
                      --max-asset-mb <n>  largest file to copy, in MB (20; Cloudflare Pages takes 25 at most)
                      --max-total-mb <n>  most to copy in all, in MB (250)
@@ -907,6 +907,56 @@ function helpText() {
     wrangler   Cloudflare's command-line tool; wrangler.toml is its settings file
 
   Guides: https://github.com/kilncms/kiln#readme`;
+}
+
+/** What `rescue --help` prints: the one command in full. test/cli-help.test.js holds it to the options rescue takes. */
+function rescueHelpText() {
+  return `${versionLine()}: rescue
+
+  Usage: npx github:kilncms/kiln#release rescue <address> [options]
+
+  Copies a website you own into a folder of plain HTML files, with its pictures,
+  styles and fonts beside them. The old site's own scripts are taken out, the
+  words and pictures are marked so Kiln can edit them, and Kiln's two script
+  tags are added to every page. Nothing on the old site is changed.
+
+  Where the copy goes
+    Into a new folder named after the site, inside the folder you are in:
+    rescued-example.com for https://example.com. --out names another folder.
+    A report of what was copied, what was left out and what stopped working is
+    written there as RESCUE-REPORT.md, and printed when the run ends.
+
+  Options
+    --out <dir>          the folder to write the copy into
+    --max-pages <n>      stop after trying this many addresses (50)
+    --delay <ms>         how long to wait between requests, in milliseconds (250)
+    --dry                read the site and print the report, write nothing
+    --no-tag             mark nothing as editable and leave Kiln's script tags out
+    --keep-scripts       leave the old site's scripts in the pages (not with --render)
+    --max-asset-mb <n>   largest file to copy, in MB (20; Cloudflare Pages takes 25 at most)
+    --max-total-mb <n>   most to copy in all, in MB (250)
+    --try                also set the copy up so you can try editing on this computer
+    --render             for a site that draws its pages with JavaScript (see below)
+    --browser <path>     with --render: the browser to use, if it is not found by itself
+    --menu-shim          with --render: add a small script so the phone menu still opens
+
+  A site that draws its pages with JavaScript (Lovable, v0, Bolt and other apps)
+    The server of such a site sends a page with no words on it, and a script
+    fills it in once it is open in a browser. A plain copy of it is blank
+    pages. Rescue notices this, leaves the blank pages out and tells you. Run
+    it with --render instead: each page is opened in a browser and saved as it
+    looks once it is drawn. --render needs two things:
+      1. Chrome, Edge, Brave or Chromium on this computer.
+      2. The playwright-core package in the folder you run the command in:
+           npm install playwright-core
+         It is small and downloads no browser.
+
+  Examples
+    npx github:kilncms/kiln#release rescue https://example.com
+    npx github:kilncms/kiln#release rescue https://example.com --dry --max-pages 5
+    npx github:kilncms/kiln#release rescue https://example.com --render --menu-shim
+
+  Guides: https://kilncms.com/docs`;
 }
 
 async function wizard() {
@@ -1496,7 +1546,8 @@ for (let i = 0; i < rest.length; i++) {
 // Help and version never run a command: `kiln tag --help` must not tag anything.
 const wantsHelp = cmd === 'help' || cmd === '--help' || cmd === '-h' || args.help === true || rest.includes('-h');
 if (wantsHelp || cmd === '--version' || args.version === true) {
-  console.log(wantsHelp ? helpText() : versionLine());
+  // rescue has help of its own: where the copy goes and what --render needs do not fit in one line
+  console.log(wantsHelp ? (cmd === 'rescue' ? rescueHelpText() : helpText()) : versionLine());
   process.exit(0);
 }
 // An option a command does not have is refused by name, not silently ignored:

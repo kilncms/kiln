@@ -152,6 +152,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the field is called `page_…`. Fields that are already marked keep their
   names. The editor uses the same rule for "Make editable", so its built files
   in `dist/` need rebuilding at the next release.
+- **`rescue --help` explains rescue.** It used to print the same general help
+  as `--help`, which gives rescue six lines and explains none of its options.
+  It now prints help of its own: what the command does, where the copy goes
+  when `--out` is not given (a new folder `rescued-<site name>` inside the
+  folder you are in, with `RESCUE-REPORT.md` in it), one line for each option,
+  and what `--render` needs (Chrome, Edge, Brave or Chromium on the computer,
+  and `npm install playwright-core` in the folder the command is run in). The
+  general help points to it, and so does the usage line printed when no
+  address is given. As with every command, asking for help runs nothing and
+  writes nothing.
 
 ## [0.6.0] - 2026-11-12
 

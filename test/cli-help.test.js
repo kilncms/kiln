@@ -77,7 +77,8 @@ test('KLR-21 <command> --help never runs the command: `kiln tag --help` used to 
     for (const flag of ['--help', '-h']) {
       const r = kiln(s.dir, [c, flag]);
       assert.equal(r.code, 0, `${c} ${flag}: ${r.all}`);
-      assert.ok(isHelp(r.out), `${c} ${flag}`);
+      // rescue has help of its own (see the test for it below); every other command prints the general help
+      assert.ok(c === 'rescue' ? /Usage: npx github:kilncms\/kiln#release rescue <address> \[options\]/.test(r.out) : isHelp(r.out), `${c} ${flag}`);
       assert.equal(s.status(), '', `${c} ${flag} changed a file`);
     }
   }
@@ -209,4 +210,31 @@ test('tag: the undo advice names the pages it changed, never `git checkout -- .`
   assert.match(r.all, /git checkout -- (about\.html index\.html|index\.html about\.html)\n/);
   assert.match(r.all, /script tags/);
   assert.match(r.all, /run the\s+setup wizard again afterwards/);
+});
+
+test('rescue --help explains rescue itself: what it does, every option, where the copy goes and what --render needs', () => {
+  const s = site();
+  const general = kiln(s.dir, ['--help']).out;
+  for (const args of [['rescue', '--help'], ['rescue', '-h'], ['rescue', 'https://example.com', '--render', '--help']]) {
+    const r = kiln(s.dir, args);
+    assert.equal(r.code, 0, r.all);
+    assert.notEqual(r.out, general, 'not the general help again');
+    assert.match(r.out, /Usage: npx github:kilncms\/kiln#release rescue <address> \[options\]/);
+    assert.equal(s.status(), '', 'nothing is run and nothing is written');
+    assert.deepEqual(readdirSync(s.dir).filter(f => f !== '.git').sort(), ['about.html', 'index.html']);
+  }
+  const help = kiln(s.dir, ['rescue', '--help']).out;
+  // every option the command's own usage line names has a line of its own here, with words after it
+  const usage = kiln(s.dir, ['rescue']).all;
+  const inUsage = [...new Set([...usage.slice(usage.indexOf('Usage: kiln rescue'), usage.indexOf('What each option does')).matchAll(/--([a-z][a-z-]+)/g)].map(m => m[1]))];
+  assert.ok(inUsage.length >= 12, inUsage.join(' '));
+  for (const f of inUsage) assert.match(help, new RegExp(`^    --${f}( <[a-z]+>)? {2,}\\S.{15,}$`, 'm'), `--${f} is explained`);
+  assert.match(usage, /What each option does: npx github:kilncms\/kiln#release rescue --help/);
+  assert.match(help, /rescued-example\.com for https:\/\/example\.com/, 'where the copy goes when --out is not given');
+  assert.match(help, /RESCUE-REPORT\.md/);
+  assert.match(help, /Chrome, Edge, Brave or Chromium on this computer/);
+  assert.match(help, /npm install playwright-core/);
+  assert.match(help, /\(50\)/); assert.match(help, /\(250\)/); assert.match(help, /\(20; Cloudflare Pages takes 25 at most\)/);
+  assert.doesNotMatch(help, /—|off-origin|crawl/, 'plain words, no dashes');
+  assert.match(general, /"rescue --help" says more/);
 });
