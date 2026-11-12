@@ -311,6 +311,10 @@ test('hosting: a hosted site whose free days ran out unpaid comes down three day
     await sweep(w.env);
     assert.equal(w.cf.scripts.size, 1, 'one day after the trial');
     assert.equal(row(w.env).state, 'live');
+    // The dashboard is given the day it comes down: ten days after the site was added.
+    const added = w.env.kiln_cloud.row('SELECT created_at FROM sites WHERE id = ?', 'site1').created_at;
+    assert.equal((await standing(w.env)).hosting.ends_at, added + 10 * day);
+    assert.equal((await (await ask(w.env, 'GET', '/cloud/me')).json()).sites[0].hosting.ends_at, added + 10 * day);
     // Four days ago: it comes down, and the record says why.
     w.env.kiln_cloud.exec("UPDATE sites SET created_at = ? WHERE id = 'site1'", Date.now() - 11 * day);
     await sweep(w.env);

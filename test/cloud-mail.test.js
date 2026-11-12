@@ -2,7 +2,9 @@
  * The emails Kiln Cloud writes to a customer (worker/mail.js): one when a site
  * is added, one two days before its free trial runs out, one when it has. A
  * trial needs no card, so nobody else can remind the owner, and it used to end
- * in silence. Each goes once, to the account's own address, through the
+ * in silence. And two for a site Kiln hosts whose paid plan has ended: one
+ * when editing stops, with the day the site comes down, and one seven days
+ * before that day. Each goes once, to the account's own address, through the
  * send_email binding, and only on a worker that is set up to write to
  * customers. The real handlers run over a SQLite-backed D1 stand-in.
  */
