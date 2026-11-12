@@ -57,6 +57,7 @@ import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
 import { noteList, noteCopy, fileTrue, noteInside, noteAs, beginInside, settleInside, insideAsFile, asFileHtml,
   beginOn, endOn, ownStyle, settleOn, showStyle } from './file-state.js';
 import { writeInside, rememberInside } from './keep-inside.js';
+import { keepLink, LINK_KEPT } from './keep-link.js';
 import { takeBase, readAttrs } from './baselines.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { saveMenuEverywhere, menuStepText } from './menu-save.js';
@@ -2481,9 +2482,15 @@ function commitEdit(el, key) {
   // What the file would now say of each element inside: the file's own class
   // and style plus what the person changed, never what a script put there.
   settleInside(el);
-  const html = committedHtml(el, plain);
+  let html = committedHtml(el, plain);
+  // A heading or paragraph that was one link around all of its words is that
+  // link still when the words were typed over (keep-link.js). The link is the
+  // file's own, and it goes through the sanitizer like everything else.
+  const linked = plain || state.active !== el ? html : keepLink(activeOriginalHtml, html);
+  const linkKept = linked !== html;
+  if (linkKept) html = DOMPurify.sanitize(linked, SANITIZE);
   // The page shows what will be published: what the sanitizer does not keep goes now.
-  if (fieldValue(el.innerHTML, plain) !== el.innerHTML) writeInside(el, html);
+  if (linkKept || fieldValue(el.innerHTML, plain) !== el.innerHTML) writeInside(el, html);
   el.contentEditable = 'false';
   el.classList.remove('kiln-editing');
   el.closest('.kiln-repeat-item')?.classList.remove('kiln-row-editing');
@@ -2541,6 +2548,7 @@ function commitEdit(el, key) {
   state.active = null;
   removeToolbar();
   atRest(el, key);
+  if (linkKept) setStatus(LINK_KEPT, 'idle', { hold: 9000 });
 }
 
 /**

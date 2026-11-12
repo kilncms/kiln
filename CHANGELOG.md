@@ -86,6 +86,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A title that is a link stays a link when its words are changed.** On a
+  list of posts, each card's title is a heading with one link around all of
+  its words, and the heading is the part that can be edited. Selecting the
+  title and typing a new one made the browser throw the link away with the
+  old words, so the new title was plain words, for visitors too. Now, when a
+  heading or paragraph was exactly one link around all of its words and has
+  words and no link after editing, the new words go inside the link it had,
+  with every attribute the link had, and the status line says so. The link
+  stays off when the person took it off (the same words with no link), made
+  another link, or turned the part into paragraphs or a list. A part marked
+  "Plain text only" is not covered. The first pass still marks the heading,
+  not the link: pages that are marked already are never marked again, so only
+  the editor can keep their links (`src/editor/keep-link.js`).
 - **A page made with "New post or page" can be edited, and its accents
   read as written, on a site Kiln was added to from the dashboard.** A site
   keeps the templates new pages are made from in `_templates/` (`page.html`,
@@ -110,7 +123,6 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now lists whole-page templates with the pages that lack the two lines, and
   says which are templates. Pages already made from an old template are not
   changed by this: the two lines can be added to them with the same button.
-
 - **Two people editing one site from one network address are no longer
   refused.** The service counted every request it got from one address on a
   single count of 20 a minute, whoever made it: reading a page to edit it, the
