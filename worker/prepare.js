@@ -152,7 +152,17 @@ async function readText(token, repo, sha) {
  *   no_access  the App cannot read the repository (not installed, or removed)
  *   github     GitHub did not answer
  */
-export async function planPrepare({ token, repo, worker }) {
+/**
+ * Read a repository as a site of plain pages: its default branch, the commit
+ * it stands at, every file's path, and the text of every page. Used by each
+ * thing the dashboard does to a site's pages (adding Kiln, the first pass at
+ * what can be edited). `state` is 'ok', or why the pages were not read:
+ * 'no_access', 'github', 'empty', 'built' (with `generator`), 'no_pages',
+ * 'too_big' (with `pageCount`). With 'ok': `files` holds each readable page as
+ * { path, mode, text }, and `skipped` the ones left alone ({ path, why }:
+ * 'large', 'not_text').
+ */
+export async function readPages({ token, repo }) {
   const meta = await gh(token, 'GET', `/repos/${repo}`);
   if ([401, 403, 404].includes(meta.status)) return { state: 'no_access' };
   if (!meta.ok) return { state: 'github' };
@@ -177,23 +187,38 @@ export async function planPrepare({ token, repo, worker }) {
   if (!pages.length) return { ...base, state: 'no_pages' };
   if (tree.truncated || pages.length > MAX_PAGES) return { ...base, state: 'too_big', pageCount: pages.length };
 
-  // Every page is read: whether it loads the editor already is in its text.
-  const changes = [], skipped = [];
-  let already = 0, unread = 0;
+  // Every page is read: what it needs is in its text.
+  const files = [], skipped = [];
+  let unread = 0;
   const read = await inTurn(pages, (e) => (Number(e.size) > MAX_PAGE_BYTES ? { tooLarge: true } : readText(token, repo, e.sha)));
   pages.forEach((e, i) => {
     const r = read[i];
-    if (r.failed) { unread++; return; }
-    if (r.tooLarge) { skipped.push({ path: e.path, why: 'large' }); return; }
-    if (r.notText) { skipped.push({ path: e.path, why: 'not_text' }); return; }
-    const done = withKilnTags(r.text);
-    if (done.state === 'already') already++;
-    else if (done.state === 'no-body') skipped.push({ path: e.path, why: 'no_body' });
-    else changes.push({ path: e.path, mode: e.mode || '100644', text: done.html });
+    if (r.failed) unread++;
+    else if (r.tooLarge) skipped.push({ path: e.path, why: 'large' });
+    else if (r.notText) skipped.push({ path: e.path, why: 'not_text' });
+    else files.push({ path: e.path, mode: e.mode || '100644', text: r.text });
   });
-  // A page GitHub would not hand over might be one that needs the two lines:
+  // A page GitHub would not hand over might be one that needs changing:
   // saying "all done" or writing the rest would both be wrong.
   if (unread) return { state: 'github' };
+  return { ...base, state: 'ok', entries, paths, total: pages.length, files, skipped };
+}
+
+export async function planPrepare({ token, repo, worker }) {
+  const site = await readPages({ token, repo });
+  if (site.state !== 'ok') return site;
+  const { entries, paths } = site;
+  const base = { branch: site.branch, head: site.head, treeSha: site.treeSha };
+  const pages = { length: site.total };
+  const changes = [], skipped = [...site.skipped];
+  let already = 0;
+  for (const f of site.files) {
+    const done = withKilnTags(f.text);
+    if (done.state === 'already') already++;
+    else if (done.state === 'no-body') skipped.push({ path: f.path, why: 'no_body' });
+    else changes.push({ path: f.path, mode: f.mode, text: done.html });
+  }
+  skipped.sort((x, y) => (x.path < y.path ? -1 : 1));
 
   const have = new Set(paths);
   const ours = [...EDITOR_FILES.map(([to]) => to), CONFIG_FILE, SIGN_IN_PAGE, HEADERS_FILE[0]];
@@ -299,6 +324,20 @@ export async function applyPrepare({ token, repo, worker, plan, author, releaseB
   if (wanted.has(SIGN_IN_PAGE)) texts.push({ path: SIGN_IN_PAGE, mode: '100644', text: KILN_PAGE });
   texts.push(...plan.changes);
 
+  const n = plan.changes.length;
+  const message = `Add Kiln to this site\n\n${n ? `${n} page${n === 1 ? ' now loads' : 's now load'} the editor. ` : ''}Added from the Kiln dashboard by ${author.name}.`;
+  const commit = await commitChange({ token, repo, branch: plan.branch, head: plan.head, treeSha: plan.treeSha, entries, texts, message, author });
+  return { ...commit, pages: n, files: [...wanted] };
+}
+
+/**
+ * One commit on top of `head`, moved onto `branch` only if the branch is still
+ * there: `entries` are files already stored at GitHub ({ path, mode, type,
+ * sha }), `texts` are files given as text ({ path, mode, text }). A repository
+ * that changed meanwhile, or a branch that takes no direct change, leaves
+ * everything as it was (PrepareError: 'moved', 'protected', or 'github').
+ */
+export async function commitChange({ token, repo, branch, head, treeSha, entries = [], texts = [], message, author }) {
   // Trees are built one on the other, about a megabyte of text at a time, so
   // no single request to GitHub is large.
   const batches = [[...entries]];
@@ -309,17 +348,13 @@ export async function applyPrepare({ token, repo, worker, plan, author, releaseB
     batches[batches.length - 1].push({ path: t.path, mode: t.mode, type: 'blob', content: t.text });
     size += bytes;
   }
-  let tree = plan.treeSha;
+  let tree = treeSha;
   for (const batch of batches) {
     if (!batch.length) continue;
     tree = (await must(await gh(token, 'POST', `/repos/${repo}/git/trees`, { base_tree: tree, tree: batch }), 'github')).sha;
   }
-
-  const n = plan.changes.length;
-  const message = `Add Kiln to this site\n\n${n ? `${n} page${n === 1 ? ' now loads' : 's now load'} the editor. ` : ''}Added from the Kiln dashboard by ${author.name}.`;
-  const commit = await must(await gh(token, 'POST', `/repos/${repo}/git/commits`, { message, tree, parents: [plan.head], author: { ...author, date: new Date().toISOString() } }), 'github');
-
-  const moved = await gh(token, 'PATCH', `/repos/${repo}/git/refs/heads/${refPath(plan.branch)}`, { sha: commit.sha, force: false });
+  const commit = await must(await gh(token, 'POST', `/repos/${repo}/git/commits`, { message, tree, parents: [head], author: { ...author, date: new Date().toISOString() } }), 'github');
+  const moved = await gh(token, 'PATCH', `/repos/${repo}/git/refs/heads/${refPath(branch)}`, { sha: commit.sha, force: false });
   if (!moved.ok) {
     let why = '';
     try { why = (await moved.json())?.message || ''; } catch { /* no body */ }
@@ -327,7 +362,7 @@ export async function applyPrepare({ token, repo, worker, plan, author, releaseB
     if (/protect|rule violation|required status|pull request/i.test(why) || moved.status === 403) throw new PrepareError('protected', why);
     throw new PrepareError('github', `${moved.status} ${why}`);
   }
-  return { sha: commit.sha, url: `https://github.com/${repo}/commit/${commit.sha}`, pages: n, files: [...wanted] };
+  return { sha: commit.sha, url: `https://github.com/${repo}/commit/${commit.sha}` };
 }
 
 /** The sentence a person reads for each way this can end without a change. */

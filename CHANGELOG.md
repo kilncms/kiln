@@ -8,6 +8,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Kiln Cloud can make a first pass at what can be edited, from the
+  dashboard.** After Kiln is added, **Mark what can be edited** shows how much
+  it would mark (pieces of text, pictures, lists of blocks, the menu, and on
+  which pages), and on a yes marks them in one commit in the owner's name. It
+  is the same cautious pass `kiln tag` makes: headings, paragraphs, quotes,
+  captions, pictures, repeating blocks such as cards, and the site menu.
+  Tables, buttons and forms are left alone, and so is anything already
+  marked. Each page is checked before it is written: the pass may only add
+  marks, and a page where it did anything else is left as it was and named. A
+  visitor sees no difference, and any mark can be taken off again in the
+  editor (`worker/firstpass.js`, `GET` and `POST /cloud/sites/firstpass`,
+  migration `0004`).
 - **Kiln Cloud can add Kiln to a site's repository from the dashboard.** A site
   whose pages are plain files no longer needs a terminal: on the site's row,
   **Add Kiln to this site** first shows what would change (which pages get the

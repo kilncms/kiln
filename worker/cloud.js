@@ -8,6 +8,8 @@
  *   POST /cloud/sites            → register a site (verify repo install) → checkout URL
  *   GET  /cloud/sites/prepare    → what adding Kiln to the site's repository would change
  *   POST /cloud/sites/prepare    → add Kiln to the repository (prepare.js), in one commit
+ *   GET  /cloud/sites/firstpass  → what a first pass at what can be edited would mark
+ *   POST /cloud/sites/firstpass  → mark it (firstpass.js), in one commit
  *   POST /cloud/sites/remove     → cancel its subscription, then delete a site
  *   GET  /cloud/portal?site=     → Lemon Squeezy customer-portal link
  *   POST /cloud/webhook/ls       → Lemon Squeezy webhook (signed) → set site status
@@ -23,6 +25,7 @@
 import { RUNBOOK_HTML } from './runbook.js';
 import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND } from './prepare.js';
+import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -474,15 +477,24 @@ export function isCloudAdmin(sess, env) {
 // already there). The columns arrive with migration 0003; a database it has
 // not reached answers as if nothing were recorded, and nothing else changes.
 async function preparedTimes(env, accountId) {
-  try {
-    const rows = await env.kiln_cloud.prepare('SELECT id, prepared_at FROM sites WHERE account_id = ?').bind(accountId).all();
-    return Object.fromEntries((rows?.results || []).map(r => [r.id, r.prepared_at || null]));
-  } catch { return {}; }
+  const read = async (cols) => {
+    const rows = await env.kiln_cloud.prepare(`SELECT id, ${cols} FROM sites WHERE account_id = ?`).bind(accountId).all();
+    return Object.fromEntries((rows?.results || []).map(r => [r.id, { prepared_at: r.prepared_at || null, firstpass_at: r.firstpass_at || null }]));
+  };
+  // Each column arrives with its own migration (0003, 0004): ask for both,
+  // then for the older one alone, then answer that nothing is recorded.
+  try { return await read('prepared_at, firstpass_at'); } catch { /* 0004 has not reached this database */ }
+  try { return await read('prepared_at'); } catch { return {}; }
 }
 async function markPrepared(env, siteId, commit) {
   try {
     await env.kiln_cloud.prepare('UPDATE sites SET prepared_at = COALESCE(prepared_at, ?), prepared_commit = COALESCE(?, prepared_commit) WHERE id = ?').bind(Date.now(), commit || null, siteId).run();
   } catch { /* the repository is prepared all the same; the dashboard offers the button again and is told so */ }
+}
+async function markFirstPass(env, siteId, commit) {
+  try {
+    await env.kiln_cloud.prepare('UPDATE sites SET firstpass_at = COALESCE(firstpass_at, ?), firstpass_commit = COALESCE(?, firstpass_commit) WHERE id = ?').bind(Date.now(), commit || null, siteId).run();
+  } catch { /* the pages are marked all the same; the dashboard offers the button again and is told there is nothing left */ }
 }
 
 /**
@@ -586,7 +598,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const prepared = await preparedTimes(env, sess.account_id);
     const rows = (sites.results || []).map(({ ls_subscription_id: sub, ...r }) => ({
       ...r,
-      prepared_at: prepared[r.id] ?? null,
+      prepared_at: prepared[r.id]?.prepared_at ?? null,
+      firstpass_at: prepared[r.id]?.firstpass_at ?? null,
       editable: siteHasAccess(r, now),
       subscribed: !!sub,
       trial_ends: r.status === 'trialing' && !sub && Number(r.created_at) ? Number(r.created_at) + TRIAL_GRACE_DAYS * 86400 * 1000 : null,
@@ -706,6 +719,50 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         `Pages: ${done.pages}. Files: ${done.files.join(', ') || 'none'}`,
         done.url,
       ]);
+      return json({ ok: true, ...shown, state: 'done', commit: { sha: done.sha, url: done.url } });
+    } finally {
+      if (write) { try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ } }
+    }
+  }
+
+  // A first pass at what can be edited (firstpass.js): the setup tool's
+  // cautious pass over every page, with one press. GET says what it would
+  // mark and writes nothing; POST marks it, as one commit in the owner's name.
+  if (path === '/cloud/sites/firstpass' && (request.method === 'GET' || request.method === 'POST')) {
+    const asked = await ownedSite(request, env, url, sess, tools);
+    if (asked.response) return asked.response;
+    const { site, token, write } = asked;
+    const sentence = (code, extra = {}) => firstPassSentence(code, extra) || prepareSentence(code, { repo: site.repo, ...extra });
+    const refused = (code, status, extra = {}) => json({ error: sentence(code, extra), code, ...extra }, status);
+    const lock = `fplock:${site.id}`;
+    if (write) {
+      if (await env.KILN.get(lock)) return refused('busy', 409);
+      await env.KILN.put(lock, '1', { expirationTtl: 120 });
+    }
+    try {
+      const plan = await planFirstPass({ token, repo: site.repo });
+      const shown = publicFirstPass(plan, { repo: site.repo });
+      if (plan.state === 'no_access') return refused('no_access', 409, { install_url: INSTALL_URL });
+      if (plan.state === 'github') return refused('github', 502);
+      if (plan.state === 'nothing') {
+        await markFirstPass(env, site.id, null);
+        return json({ ok: true, ...shown });
+      }
+      if (plan.state !== 'ready') {
+        return json({ ok: false, ...shown, error: sentence(plan.state, { generator: plan.generator }), code: plan.state }, write ? 409 : 200);
+      }
+      if (!write) return json({ ok: true, ...shown });
+
+      const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
+      let done;
+      try {
+        done = await applyFirstPass({ token, repo: site.repo, plan, author: { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` } });
+      } catch (e) {
+        const code = e instanceof PrepareError ? e.code : 'github';
+        console.warn(JSON.stringify({ evt: 'firstpass_failed', repo: site.repo, code, detail: e instanceof PrepareError ? e.detail : String(e?.message || e).slice(0, 200) }));
+        return refused(code, code === 'moved' || code === 'protected' ? 409 : 502, code === 'protected' ? { branch: plan.branch } : {});
+      }
+      await markFirstPass(env, site.id, done.sha);
       return json({ ok: true, ...shown, state: 'done', commit: { sha: done.sha, url: done.url } });
     } finally {
       if (write) { try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ } }
