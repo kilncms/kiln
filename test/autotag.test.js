@@ -169,3 +169,35 @@ test('autotag: with a footer outside <main>, parts already marked in it keep the
   assert.match(html, /<p><a data-cms="foot_link"/);
   assert.match(html, /<li><p>In a list already<\/p><\/li>/);
 });
+
+// ─── names never come from styling classes ──────────────────────────────────
+
+test('isStylingName: utility classes of styling frameworks are told from names', async () => {
+  const { isStylingName } = await import('../src/autotag.js');
+  const styling = ['mx-auto', 'gap-10', 'mt-6', 'p-4', 'px-6', 'flex', 'grid', 'hidden', 'relative', 'container', 'text-lg', 'text-center',
+    'md:grid-cols-3', 'hover:bg-white', 'w-1/2', 'p-[3px]', '-mt-2', '!mt-0', 'bg-white', 'bg-gray-100', 'max-w-3xl', 'min-h-screen',
+    'items-center', 'justify-between', 'font-bold', 'rounded-xl', 'shadow-md', 'border-b', 'hairline-t', 'grid-cols-3', 'flex-col',
+    'col-md-6', 'row-span-2', 'space-y-4', 'z-10', 'top-0', 'order-2', 'list-none', 'self-center', 'float-right', 'sr-only',
+    'd-flex', 'btn-sm', 'w-full', 'leading-6', 'tracking-wide', 'opacity-50', 'duration-300', 'from-blue-500', 'col-6', 'section-2', 'root', 'app'];
+  for (const c of styling) assert.equal(isStylingName(c), true, `${c} is styling`);
+  const names = ['hero', 'card', 'footer', 'intro-block', 'card-1', 'teaser-1', 'cards', 'story', 'foot', 'journal', 'posts', 'quote',
+    'about-us', 'site-header', 'main-nav', 'pricing', 'tonight', 'top-bar', 'order-form', 'from-the-blog', 'place-list', 'self-care',
+    'content-area', 'list-events', 'hero_banner', 'Team', 'contact', 'x'];
+  for (const c of names) assert.equal(isStylingName(c), false, `${c} is a name`);
+});
+
+test('autotag: on a page styled with utility classes, names come from the ids and classes that mean something', () => {
+  const html = `<!doctype html><html><body><div id="root">
+<section id="tonight" class="mx-auto max-w-3xl px-6">
+  <div class="flex gap-10 hairline-t"><p class="mt-6 text-lg">Thursday, November 12</p><img src="/a.jpg" alt=""></div>
+</section>
+<section class="mx-auto py-20 pricing md:grid-cols-3"><div class="mt-6"><h2 class="text-2xl font-bold">What it costs</h2></div></section>
+<div class="mx-auto mt-6"><div class="gap-10 flex"><p>The shows you would have missed.</p></div></div>
+</div></body></html>`;
+  const out = autotag(html).html;
+  assert.match(out, /data-cms="tonight_thursday_november_12"/);
+  assert.match(out, /data-cms="tonight_img"/);
+  assert.match(out, /data-cms="pricing_what_it_costs"/);
+  assert.match(out, /data-cms="page_the_shows_you"/, 'nothing meaningful around it: the plain "page", never a styling class or the app\'s root element');
+  assert.doesNotMatch(out, /data-cms="(mx_auto|gap_10|mt_6|hairline_t|flex|root|text|py_20|md)/);
+});

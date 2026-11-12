@@ -135,6 +135,23 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   skipped addresses when there are more than twelve, and `RESCUE-REPORT.md`
   lists them all. "Pages that failed" and "redirected off-origin" are gone
   from the wording.
+- **The first pass no longer names fields after styling classes.** On a page
+  styled with a utility framework such as Tailwind, the first pass at marking
+  what can be edited took the start of a field name from the nearest class,
+  and produced names like `mx_auto_thursday_november_12` and `gap_10_img`.
+  Names now come only from ids and classes that say what a part of the page
+  is. A class is passed over when it has a character a hand-written name never
+  has (`md:grid-cols-3`, `w-1/2`), is one of the single words frameworks lay
+  out with (`flex`, `hidden`, `container`), starts with a property or its
+  short form (`mx-auto`, `gap-10`, `text-lg`, `bg-white`), ends in a side or a
+  size (`border-t`, `btn-sm`), or starts with a word that is also an ordinary
+  word and ends in a number or a setting (`top-0`, `order-2`). The root
+  element of an app (`root`, `app`) is passed over too. Ordinary names such as
+  `hero`, `card`, `footer`, `intro-block`, `card-1`, `top-bar` and
+  `order-form` are used as before, and when nothing around a field has a name
+  the field is called `page_…`. Fields that are already marked keep their
+  names. The editor uses the same rule for "Make editable", so its built files
+  in `dist/` need rebuilding at the next release.
 
 ## [0.6.0] - 2026-11-12
 

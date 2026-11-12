@@ -62,6 +62,54 @@ function textOf(node) {
   return out.replace(/\s+/g, ' ').trim();
 }
 
+// ── Names that say how a thing looks, not what it is ─────────────────────────
+// A field's name starts with the name of the part of the page it is in, taken
+// from an id or a class. A page styled with a utility framework (Tailwind,
+// Bootstrap and the like) carries dozens of classes such as mx-auto, gap-10 or
+// md:grid-cols-3, and a name made from one of those (mx_auto_our_story) tells
+// the owner nothing. isStylingName says which names to pass over. The rule:
+//   1. it has a character a hand-written name never has   md:flex  w-1/2  p-[3px]  -mt-2
+//   2. it is one of the single words frameworks lay out with   flex  grid  hidden  container
+//   3. it starts with a property or its short form        mx-auto  gap-10  text-lg  bg-white
+//   4. it ends in a side or a size                        border-t  hairline-t  btn-sm  w-full
+//   5. it starts with a word that is also an ordinary word, and ends in a
+//      number or a setting                                top-0  order-2  list-none  self-center
+// Everything else is taken as a name: hero, card, footer, intro-block, card-1,
+// top-bar, order-form, self-care.
+const STYLE_WORDS = new Set(['wrap', 'wrapper', 'container', 'inner', 'row', 'col', 'grid', 'flex',
+  'reveal', 'rise', 'fade', 'animate', 'section', 'content', 'main', 'box', 'block', 'body',
+  'hidden', 'visible', 'invisible', 'relative', 'absolute', 'fixed', 'sticky', 'static', 'inline', 'contents',
+  'uppercase', 'lowercase', 'capitalize', 'italic', 'underline', 'truncate', 'antialiased', 'group', 'peer',
+  'isolate', 'clearfix', 'transition', 'transform', 'shadow', 'rounded', 'border', 'grow', 'shrink',
+  'root', 'app']);
+const STYLE_ROOTS = new Set(['m', 'mx', 'my', 'mt', 'mr', 'mb', 'ml', 'ms', 'me', 'p', 'px', 'py', 'pt', 'pr', 'pb', 'pl', 'ps', 'pe',
+  'w', 'h', 'z', 'bg', 'gap', 'min', 'max', 'sr', 'd', 'g', 'gx', 'gy', 'fs', 'fw', 'lh', 'u', 'is', 'has', 'js', 'css', 'sc', 'jsx',
+  'text', 'font', 'border', 'rounded', 'shadow', 'ring', 'outline', 'divide', 'items', 'justify', 'leading', 'tracking',
+  'opacity', 'overflow', 'overscroll', 'space', 'transition', 'duration', 'ease', 'delay', 'animate', 'cursor', 'whitespace',
+  'aspect', 'inset', 'backdrop', 'blur', 'brightness', 'scale', 'rotate', 'translate', 'skew', 'flex', 'grid', 'inline',
+  'col', 'row', 'align', 'display', 'position', 'pointer', 'decoration']);
+const MAYBE_ROOTS = new Set(['top', 'right', 'bottom', 'left', 'start', 'end', 'line', 'size', 'list', 'table', 'content', 'scroll',
+  'basis', 'span', 'order', 'from', 'via', 'to', 'place', 'self', 'select', 'break', 'float', 'columns', 'origin', 'object',
+  'fill', 'stroke', 'snap', 'grow', 'shrink', 'underline']);
+const SIDES = new Set(['t', 'b', 'l', 'r', 'x', 'y', 's', 'e', 'tl', 'tr', 'bl', 'br']);
+const SIZES = new Set(['xs', 'sm', 'md', 'lg', 'xl', 'full', 'auto', 'none', 'screen', 'px', 'fit', 'min', 'max']);
+const SETTINGS = new Set(['center', 'start', 'end', 'between', 'around', 'evenly', 'stretch', 'baseline', 'wrap', 'nowrap',
+  'reverse', 'hidden', 'visible', 'left', 'right', 'top', 'bottom', 'first', 'last', 'col', 'row', 'cols', 'rows', 'cover',
+  'contain', 'words', 'all', 'inside', 'outside', 'disc', 'decimal', 'fixed', 'flex', 'grid', 'block', 'current', 'transparent']);
+
+/** True when an id or class says how a thing looks or is laid out, so it is no name for a part of the page. */
+export function isStylingName(name) {
+  const n = String(name).toLowerCase();
+  if (/[^a-z0-9_-]/.test(n) || n.startsWith('-')) return true;
+  if (STYLE_WORDS.has(n.replace(/[-_]?\d+$/, ''))) return true;
+  const parts = n.split('-').filter(Boolean);
+  if (parts.length < 2) return false;
+  const root = parts[0], last = parts[parts.length - 1];
+  if (STYLE_ROOTS.has(root)) return true;
+  if (SIDES.has(last) || SIZES.has(last) || /^\d+xl$/.test(last)) return true;
+  return MAYBE_ROOTS.has(root) && (/^\d/.test(last) || SETTINGS.has(last));
+}
+
 function slug(text, words = 3) {
   const s = String(text).toLowerCase().replace(/[^a-z0-9\s]+/g, ' ').trim()
     .split(/\s+/).slice(0, words).join('_');
@@ -140,14 +188,15 @@ export function autotag(raw) {
   }
 
   // ── Section prefix for key names: nearest ancestor section/article id/class ──
-  const UTILITY = new Set(['wrap', 'wrapper', 'container', 'inner', 'row', 'col', 'grid', 'flex',
-    'reveal', 'rise', 'fade', 'animate', 'section', 'content', 'main', 'box', 'block', 'body']);
+  // A name is taken from an id or class that says what the part is. Classes
+  // that only style it (see isStylingName) are passed over, so the search
+  // moves on to the next class, then outward to the part that holds this one.
   const prefixFor = (ancestors) => {
     for (let i = ancestors.length - 1; i >= 0; i--) {
       const a = ancestors[i];
       if (!['section', 'article', 'aside', 'footer', 'header', 'div'].includes(a.tagName)) continue;
       const hints = [attrOf(a, 'id'), ...(attrOf(a, 'class') || '').split(/\s+/)].filter(Boolean);
-      const hint = hints.find(h => /^[a-z]/i.test(h) && !UTILITY.has(h.toLowerCase().replace(/[-_]?\d+$/, '')));
+      const hint = hints.find(h => /^[a-z]/i.test(h) && !isStylingName(h));
       if (hint) return slug(hint, 2).slice(0, 14);
     }
     return 'page';
