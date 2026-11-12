@@ -462,3 +462,29 @@ test('hosting: when a hosted site comes down, in so many words', () => {
   assert.equal(hostingEndReason({ ...paid, status: 'canceled' }), 'plan_ended');
   assert.equal(hostingEndsAt(null, now), null);
 });
+
+test('hosting: a plan that is cancelled and then runs out leaves its day on record, so the site is on its way down and not left up for want of one', { skip: d1Skip }, async () => {
+  const day = 86400 * 1000;
+  const notes = [];
+  const w = world(pages, {
+    site: { ls_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day },
+    env: { NOTIFY: { send: async (m) => { notes.push(m); } }, NOTIFY_TO: 'ops@example.com' },
+  });
+  /** A subscription notice as the payment company sends it, signed. */
+  const billing = (status, { at, ends_at }) => {
+    const body = JSON.stringify({ meta: { event_name: `subscription_${status}`, custom_data: { site_id: 'site1' } },
+      data: { type: 'subscriptions', id: '77', attributes: { status, updated_at: new Date(at).toISOString(), ends_at: new Date(ends_at).toISOString() } } });
+    return worker.fetch(new Request('https://worker.example/cloud/webhook/ls', { method: 'POST', headers: { 'X-Signature': createHmac('sha256', 'whsec').update(body).digest('hex') }, body }), w.env);
+  };
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    const paidUntil = Date.now() - 2 * day;
+    assert.equal((await billing('cancelled', { at: paidUntil - 10 * day, ends_at: paidUntil })).status, 200);
+    assert.equal((await billing('expired', { at: paidUntil + 1000, ends_at: paidUntil })).status, 200);
+    assert.equal(w.env.kiln_cloud.row('SELECT status, access_until FROM sites WHERE id = ?', 'site1').access_until, paidUntil);
+    await sweep(w.env);
+    assert.equal(row(w.env).state, 'live', 'two days after: still up');
+    assert.equal((await standing(w.env)).hosting.ends_at, paidUntil + 30 * day);
+    assert.equal(notes.filter(m => /no end date/.test(m.raw)).length, 0, 'the operator is not asked to look: there is a day');
+  });
+});

@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import worker from '../worker/index.js';
-import { siteHasAccess, cloudSiteForOrigin, PAST_DUE_GRACE_DAYS } from '../worker/cloud.js';
+import { siteHasAccess, cloudSiteForOrigin, hostingEndsAt, PAST_DUE_GRACE_DAYS } from '../worker/cloud.js';
 import { fakeKV } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 
@@ -91,8 +91,46 @@ test('S6 expired: the only state that ends access outright, even inside a period
   await hook(env, 'cancelled', { at: t, ends_at: t + 20 * DAY });
   assert.equal(await canEdit(env), true);
   await hook(env, 'expired', { at: t + 1000, ends_at: t + 20 * DAY, event: 'subscription_expired' });
-  assert.deepEqual({ ...row(env) }, { status: 'canceled', access_until: null, ls_subscription_id: '77' });
+  // The day on the row is the moment it ended (now), not the end of the period that was paid.
+  const ended = row(env);
+  assert.deepEqual({ status: ended.status, ls_subscription_id: ended.ls_subscription_id }, { status: 'canceled', ls_subscription_id: '77' });
+  assert.equal(ended.access_until >= t && ended.access_until <= Date.now(), true);
   assert.equal(await canEdit(env), false);
+});
+
+test('S6 expired: the day editing stopped stays on the row, so a hosted site has a day to count its thirty days from', { skip: d1Skip }, async () => {
+  const t = Date.now();
+  const paid = () => ({ ...row(env), created_at: t - 300 * DAY });
+  // Cancelled, the paid time ran out two days ago, and only now does the subscription expire: the day is kept as it was.
+  let env = fresh({ status: 'active', ls_subscription_id: '77' });
+  const paidUntil = new Date(iso(t - 2 * DAY)).getTime();
+  await hook(env, 'cancelled', { at: t - 10 * DAY, ends_at: paidUntil });
+  await hook(env, 'expired', { at: t, ends_at: paidUntil, event: 'subscription_expired' });
+  assert.deepEqual({ ...row(env) }, { status: 'canceled', access_until: paidUntil, ls_subscription_id: '77' });
+  assert.equal(await canEdit(env), false);
+  assert.equal(hostingEndsAt(paid(), t), paidUntil + 30 * DAY);
+  // A failed payment whose grace ran out long ago, then given up on: the day the grace ran out is kept.
+  env = fresh({ status: 'active', ls_subscription_id: '77' });
+  await hook(env, 'past_due', { at: t - 20 * DAY });
+  const graceEnd = row(env).access_until;
+  assert.equal(graceEnd, new Date(iso(t - 20 * DAY)).getTime() + 7 * DAY);
+  await hook(env, 'expired', { at: t, event: 'subscription_expired' });
+  assert.deepEqual({ ...row(env) }, { status: 'canceled', access_until: graceEnd, ls_subscription_id: '77' });
+  // Given up on while the grace still ran: editing stops then, and that moment is the day.
+  env = fresh({ status: 'active', ls_subscription_id: '77' });
+  await hook(env, 'past_due', { at: t - 2 * DAY });
+  assert.equal(await canEdit(env), true);
+  await hook(env, 'expired', { at: t - DAY, event: 'subscription_expired' });
+  assert.equal(row(env).access_until, new Date(iso(t - DAY)).getTime());
+  assert.equal(await canEdit(env), false);
+  // No day on the row and none in the event but its own time: that time.
+  env = fresh({ status: 'active', ls_subscription_id: '77' });
+  await hook(env, 'expired', { at: t - 3 * DAY, event: 'subscription_expired' });
+  assert.equal(row(env).access_until, new Date(iso(t - 3 * DAY)).getTime());
+  assert.equal(hostingEndsAt(paid(), t), row(env).access_until + 30 * DAY);
+  // Subscribed again: the day is cleared, as before.
+  await hook(env, 'active', { at: t - DAY, event: 'subscription_resumed' });
+  assert.deepEqual({ ...row(env) }, { status: 'active', access_until: null, ls_subscription_id: '77' });
 });
 
 test(`S6 past_due, unpaid and paused: ${PAST_DUE_GRACE_DAYS} days of grace from the event, then off`, { skip: d1Skip }, async () => {

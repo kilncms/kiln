@@ -318,7 +318,10 @@ async function verifyLsSignature(request, bodyText, env) {
 //            'grace'  a charge failed (or billing is paused): editing stays on for
 //                     PAST_DUE_GRACE_DAYS from the first such event, while Lemon
 //                     Squeezy retries the card
-//            'no'     the subscription is over: editing is off
+//            'no'     the subscription is over: editing is off, and the day it
+//                     stopped stays on the row (`access_until`, now in the past),
+//                     because a site Kiln hosts comes down a set number of days
+//                     after that day (hostingEndsAt)
 // Only `expired` ends access outright.
 export const PAST_DUE_GRACE_DAYS = 7;
 const LS_STATE = {
@@ -1122,9 +1125,16 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       : null;
     // A site already in its grace keeps the date it was given: a second failed
     // charge (past_due → unpaid) does not start the seven days again.
+    // Over for good: editing stops now. A day already on the row and already
+    // past is kept as it is (the paid time, or the grace, ran out then, and the
+    // owner of a hosted site has been written to about that day); otherwise the
+    // day is the moment the subscription ended, never later than now.
+    const endedAt = state.access === 'no' ? Math.min(ms(attrs.ends_at) ?? Infinity, ms(attrs.updated_at) ?? Infinity, Date.now()) : null;
     const setUntil = state.access === 'grace'
       ? "access_until = CASE WHEN status = 'past_due' AND access_until IS NOT NULL THEN access_until ELSE ? END"
+      : state.access === 'no' ? 'access_until = MIN(COALESCE(access_until, ?), ?)'
       : 'access_until = ?';
+    const untilArgs = state.access === 'no' ? [endedAt, endedAt] : [until];
     // Replay guard: a captured valid delivery could otherwise be re-POSTed to
     // flip a re-subscribed customer back to canceled. Dedupe on a stable id
     // (updated_at makes the same subscription's DISTINCT transitions unique,
@@ -1135,12 +1145,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // failure would leave the key set and silently drop LS's retry of this event.
     if (siteId) {
       await withAccessUntil(
-        () => env.kiln_cloud.prepare(`UPDATE sites SET ${setUntil}, status = ?, ls_subscription_id = ? WHERE id = ?`).bind(until, status, subId || null, siteId).run(),
+        () => env.kiln_cloud.prepare(`UPDATE sites SET ${setUntil}, status = ?, ls_subscription_id = ? WHERE id = ?`).bind(...untilArgs, status, subId || null, siteId).run(),
         () => env.kiln_cloud.prepare('UPDATE sites SET status = ?, ls_subscription_id = ? WHERE id = ?').bind(status, subId || null, siteId).run(),
       );
     } else if (subId) {
       await withAccessUntil(
-        () => env.kiln_cloud.prepare(`UPDATE sites SET ${setUntil}, status = ? WHERE ls_subscription_id = ?`).bind(until, status, subId).run(),
+        () => env.kiln_cloud.prepare(`UPDATE sites SET ${setUntil}, status = ? WHERE ls_subscription_id = ?`).bind(...untilArgs, status, subId).run(),
         () => env.kiln_cloud.prepare('UPDATE sites SET status = ? WHERE ls_subscription_id = ?').bind(status, subId).run(),
       );
     }

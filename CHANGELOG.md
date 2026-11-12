@@ -69,7 +69,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   still up, whether a plan ended or a free trial ran out. A paid site whose
   record has no day on which editing stopped is never taken down by this:
   it is left up, nothing is sent to its owner, and the operator is told
-  once so a person can look. A free trial nobody subscribed for still comes
+  once so a person can look. So that there is such a day, a subscription
+  that is over for good (Lemon Squeezy's `subscription_expired`) now leaves
+  the day editing stopped on the site's row, where it used to clear it.
+  Editing is off from that moment exactly as before, and a site whose
+  subscription expired before this release has no day and is one the
+  operator is told about. A free trial nobody subscribed for still comes
   down three days after it ran out, as before (`worker/cloud.js`
   `hostingEndsAt` and `noticeEndingHosting`, `worker/mail.js`,
   `worker/hosted.js`).
