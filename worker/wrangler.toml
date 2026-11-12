@@ -76,11 +76,14 @@ simple = { limit = 100, period = 60 }   # 100 requests per 60s per IP (see ENVIR
 # are counted for their own session, and the public /standing read for the
 # address, so several editors behind one address are never refused for each
 # other's work. Without it both are counted on RL, each still on its own.
+# 120 a minute covers everything a signed-in person does in a minute, saving
+# the menu of a 100-page site included (106 requests). It is no higher because
+# every one of those requests spends the site owner's allowance at GitHub.
 [[unsafe.bindings]]
 name = "RL_ROOMY"
 type = "ratelimit"
 namespace_id = "1003"
-simple = { limit = 200, period = 60 }  # 200 requests per 60s per session
+simple = { limit = 120, period = 60 }  # 120 requests per 60s per session
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STAGING (kiln-auth-staging.erikkwilder.workers.dev)
@@ -136,7 +139,7 @@ simple = { limit = 100, period = 60 }
 name = "RL_ROOMY"
 type = "ratelimit"
 namespace_id = "1004"
-simple = { limit = 200, period = 60 }
+simple = { limit = 120, period = 60 }
 
 # Cloudflare's record of this upload (id, tag, time), shown by /healthz.
 [env.staging.version_metadata]
@@ -199,7 +202,7 @@ simple = { limit = 100, period = 60 }
 name = "RL_ROOMY"
 type = "ratelimit"
 namespace_id = "1003"
-simple = { limit = 200, period = 60 }
+simple = { limit = 120, period = 60 }
 
 [env.production.version_metadata]
 binding = "CF_VERSION_METADATA"

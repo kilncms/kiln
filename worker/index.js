@@ -420,7 +420,7 @@ function json(obj, status = 200) {
 //   RL        a small count for one network address (100 a minute as shipped):
 //             the sign-in routes, the dashboard's reading of a repository, and
 //             every request that names no session this worker holds.
-//   RL_ROOMY  a roomier count (200 a minute as shipped) for people at work:
+//   RL_ROOMY  a roomier count (120 a minute as shipped) for people at work:
 //             a signed-in person's requests are counted for their own session,
 //             so several editors behind one address do not use up each other's
 //             share, and the public /standing read is counted for the address.

@@ -95,7 +95,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   an office behind one address, were told "Too much was asked of the site
   just now" again and again, and "Editing could not start just now" when
   they opened a page. Now a signed-in person's requests are counted for
-  their own session, on a roomier count (200 a minute, the new `RL_ROOMY`
+  their own session, on a roomier count (120 a minute, the new `RL_ROOMY`
   limiter in `worker/wrangler.toml`), and the public `/standing` read is
   counted for the address apart from the sign-in routes. The count for one
   address (100 a minute, as the entry below tells) still holds for signing in, for the dashboard's reading of

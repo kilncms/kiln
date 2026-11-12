@@ -24,7 +24,7 @@ function limiter(limit) {
   return { counts, async limit({ key }) { const n = (counts.get(key) || 0) + 1; counts.set(key, n); return { success: n <= limit }; } };
 }
 
-function envWith({ rl = limiter(20), roomy = limiter(200), extra = {} } = {}) {
+function envWith({ rl = limiter(20), roomy = limiter(120), extra = {} } = {}) {
   const editor = (name) => ({ repo: REPO, name, role: 'editor', email: `${name.toLowerCase()}@example.com`, paths: [''], keys: [], features: null, mode: null });
   const env = {
     ALLOWED_ORIGINS: ORIGIN,
@@ -169,9 +169,9 @@ test('limit: one session has its own roomy count, which another session at the s
   const env = envWith();
   await withFetch(github, async () => {
     const got = [];
-    for (let i = 0; i < 205; i++) got.push((await call(env, 'GET', page('index.html'), from(SAM))).status);
-    assert.equal(got.slice(0, 200).filter(s => s !== 200).length, 0);
-    assert.deepEqual(got.slice(200), Array(5).fill(429));
+    for (let i = 0; i < 125; i++) got.push((await call(env, 'GET', page('index.html'), from(SAM))).status);
+    assert.equal(got.slice(0, 120).filter(s => s !== 200).length, 0);
+    assert.deepEqual(got.slice(120), Array(5).fill(429));
     // A real session is looked up once (two reads of the store at most), then
     // remembered: a person at work costs the limiter nothing more.
     const r0 = env.reads();
@@ -225,6 +225,13 @@ test('limit: all three environments bind both limiters, and the guide to the set
   for (const head of ['[[unsafe.bindings]]', '[[env.staging.unsafe.bindings]]', '[[env.production.unsafe.bindings]]']) {
     assert.equal(toml.split(head).length - 1, 2, head);
   }
+  // The counts as shipped: 100 a minute for one address, 120 for one signed-in person.
+  const shipped = [...toml.matchAll(/name = "(RL|RL_ROOMY)"[\s\S]*?simple = \{ limit = (\d+), period = (\d+) \}/g)]
+    .map(m => `${m[1]} ${m[2]} in ${m[3]}s`);
+  assert.deepEqual(shipped.sort(), [
+    'RL 100 in 60s', 'RL 100 in 60s', 'RL 100 in 60s',
+    'RL_ROOMY 120 in 60s', 'RL_ROOMY 120 in 60s', 'RL_ROOMY 120 in 60s',
+  ]);
   const guide = readFileSync(new URL('../ENVIRONMENTS.md', import.meta.url), 'utf8');
   assert.match(guide, /^\| `RL` \|/m);
   assert.match(guide, /^\| `RL_ROOMY` \|/m);
