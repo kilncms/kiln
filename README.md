@@ -338,7 +338,8 @@ window.KILN = {
 
 There are three ways to add the attributes: `npx github:kilncms/kiln#release tag` makes a
 careful first pass you can review with `git diff`; **Make text/images editable** in the
-editor lets you click the parts after you sign in; or paste
+editor lets you click the parts after you sign in, or make that same first pass over the
+page that is open with **Make this whole page editable**; or paste
 [KILN_PROMPT.md](KILN_PROMPT.md) into the AI that built the site. That file is also the
 full reference: menus, shared headers and footers, galleries, events, blog templates, new
 pages and the members area.

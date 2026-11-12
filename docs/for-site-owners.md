@@ -177,10 +177,16 @@ that comes from a database.
 Kiln only lets people edit elements that carry a `data-cms` annotation. Three ways to
 add them, from least to most effort:
 
-1. **Auto-tag**: `npx github:kilncms/kiln#release tag` takes a conservative first pass —
-   headings, paragraphs, images, card lists, the nav menu. Review with `git diff`,
-   undo with `git checkout -- .`. It never makes tables repeatable and running it
-   twice adds nothing.
+1. **Auto-tag**: a conservative first pass over headings, paragraphs, images, card
+   lists and the nav menu. Three ways to run it, all the same pass:
+   `npx github:kilncms/kiln#release tag` in a terminal (review with `git diff`, undo
+   with `git checkout -- .`); **Mark what can be edited** on the site's row in the
+   Kiln Cloud dashboard (the whole site, one commit); or **Make this whole page
+   editable** in the editor, in the bar of ✨ Make text/images editable (the page
+   that is open, saved at once as one commit). Each says how much it would mark
+   before it does anything. It never makes tables repeatable, it marks nothing
+   inside or around a part that is already marked, and running it twice adds
+   nothing.
 2. **Click-to-tag**: sign in, open **✨ Make text/images editable** in the Kiln menu,
    and click elements on the page. Kiln writes the annotations into the repo file for
    you — text, plain text, image, repeat block, gallery, events. This is also how you
