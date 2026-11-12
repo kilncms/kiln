@@ -39,6 +39,8 @@ const PAGES_FILE_LIMIT_MB = 25;              // Cloudflare Pages refuses a bigge
 // off-origin hosts that are really "the builder's disk" — localize these too
 const BUILDER_CDN_RE = /(^|\.)(squarespace-cdn\.com|squarespace\.com|wixstatic\.com|parastorage\.com|wp\.com|wordpress\.com|googleusercontent\.com|cloudfront\.net|fastly\.net|fastly\.com|lovable\.app|lovableproject\.com|lovable\.dev|vercel-storage\.com|supabase\.co)$/i;
 const TRACKER_RE = /googletagmanager\.com|google-analytics\.com|doubleclick\.net|googleadservices\.com|connect\.facebook\.net|facebook\.com\/tr|hotjar\.com|clarity\.ms|mc\.yandex|matomo|plausible\.io|segment\.com/i;
+// scripts that count visitors or watch what they do: the report names them when they are taken out
+const VISITOR_RE = new RegExp(TRACKER_RE.source + '|cloudflareinsights\\.com|usefathom\\.com|goatcounter\\.com|simpleanalyticscdn\\.com|umami\\.is|posthog\\.com|mixpanel\\.com|statcounter\\.com|hs-analytics\\.net|analytics', 'i');
 // links that are clearly files, not pages — don't spend crawl budget fetching them
 const NON_PAGE_RE = /\.(pdf|jpe?g|png|gif|webp|avif|svg|ico|css|js|mjs|json|xml|txt|zip|gz|mp3|mp4|webm|mov|woff2?|ttf|otf|eot)$/i;
 const EXT_BY_CT = {
@@ -234,9 +236,12 @@ export function rewriteCssUrls(css, opts = {}) {
  *
  * opts: { baseUrl, pageMap (identity → file), assetMap (assetKey → local path),
  *         keepScripts }.
- * Returns { html, scripts, cruft, offOrigin, leftBehind } — scripts/cruft =
- * removal counts, offOrigin = other sites' asset URLs left as they were,
- * leftBehind = same-site files now loaded from the old site.
+ * Returns { html, scripts, cruft, kinds, previews, offOrigin, leftBehind } —
+ * scripts/cruft = removal counts, kinds = what the removed scripts were
+ * ({ own, inline, visitors: { host: n }, outside: { host: n } }), previews =
+ * link-preview pictures given a full address, offOrigin = other sites' asset
+ * URLs left as they were, leftBehind = same-site files now loaded from the
+ * old site.
  */
 export function cleanPage(html, opts = {}) {
   const pageMap = opts.pageMap || new Map();
@@ -244,8 +249,21 @@ export function cleanPage(html, opts = {}) {
   const doc = parse(html);
   const base = baseOf(doc, opts.baseUrl || 'http://localhost/');
   const offOrigin = new Set(), leftBehind = new Set();
-  let scripts = 0, cruft = 0;
+  let scripts = 0, cruft = 0, previews = 0;
   const removals = [];
+  // what each script taken out was: the site's own, written into the page,
+  // a visitor counter, or something loaded from another site (a chat box, a
+  // cookie notice, a booking widget), so the report can say what was lost
+  const kinds = { own: 0, inline: 0, visitors: {}, outside: {} };
+  const noteScript = (n) => {
+    scripts++;
+    const src = String(getAttr(n, 'src') || '').trim();
+    if (!src) { kinds.inline++; return; }
+    let u; try { u = new URL(src, base); } catch { kinds.own++; return; }
+    if (VISITOR_RE.test(u.href)) kinds.visitors[u.hostname] = (kinds.visitors[u.hostname] || 0) + 1;
+    else if (sameSite(u, base) || BUILDER_CDN_RE.test(u.hostname)) kinds.own++;
+    else kinds.outside[u.hostname] = (kinds.outside[u.hostname] || 0) + 1;
+  };
 
   // one URL value → rewritten string, or null to leave it alone.
   // kind: 'page' (a[href] — may map to a crawled page), 'asset' (report if
@@ -296,8 +314,8 @@ export function cleanPage(html, opts = {}) {
         const type = (getAttr(n, 'type') || '').toLowerCase();
         if (opts.keepScripts) { rwAttr(n, 'src', 'plain'); break; }
         if (type.includes('ld+json')) {   // structured data is content, not runtime
-          try { JSON.parse(textOf(n)); } catch { removals.push(n); scripts++; }
-        } else { removals.push(n); scripts++; }
+          try { JSON.parse(textOf(n)); } catch { removals.push(n); noteScript(n); }
+        } else { removals.push(n); noteScript(n); }
         break;
       }
       case 'link': {
@@ -311,6 +329,11 @@ export function cleanPage(html, opts = {}) {
         // short links, and oEmbed/feed discovery whose endpoints die with it
         else if (rels.some(r => ['pingback', 'edituri', 'wlwmanifest', 'shortlink', 'https://api.w.org/'].includes(r)) ||
             (rels.includes('alternate') && /(json\+oembed|xml\+oembed|rss\+xml|atom\+xml)/.test(linkType))) { removals.push(n); cruft++; }
+        // a web manifest describes an app to install, and its file is not
+        // copied: left in, every page would ask for it and get a 404
+        else if (rels.includes('manifest')) { removals.push(n); cruft++; }
+        // the canonical address is a full address, like og:url: left as it is
+        else if (rels.includes('canonical')) break;
         else if (rels.includes('stylesheet') || rels.some(r => ICON_RELS.includes(r))) rwAttr(n, 'href', 'asset');
         else rwAttr(n, 'href', 'plain');
         break;
@@ -318,7 +341,12 @@ export function cleanPage(html, opts = {}) {
       case 'meta': {
         const key = (getAttr(n, 'property') || getAttr(n, 'name') || '').toLowerCase();
         if (key === 'generator') { removals.push(n); cruft++; }
-        else if (['og:image', 'og:image:secure_url', 'twitter:image', 'twitter:image:src'].includes(key)) rwAttr(n, 'content', 'asset');
+        else if (['og:image', 'og:image:secure_url', 'twitter:image', 'twitter:image:src'].includes(key)) {
+          // the services that draw link previews need the picture's full
+          // address, so a copied one keeps the site's name in front of it
+          const r = rw(getAttr(n, 'content'), 'asset');
+          if (r !== null) { setAttr(n, 'content', r.startsWith('/') ? base.origin + r : r); if (r.startsWith('/')) previews++; }
+        }
         break;
       }
       case 'iframe':
@@ -354,7 +382,7 @@ export function cleanPage(html, opts = {}) {
     const i = kids ? kids.indexOf(n) : -1;
     if (i >= 0) kids.splice(i, 1);
   }
-  return { html: serialize(doc), scripts, cruft, offOrigin: [...offOrigin], leftBehind: [...leftBehind] };
+  return { html: serialize(doc), scripts, cruft, kinds, previews, offOrigin: [...offOrigin], leftBehind: [...leftBehind] };
 }
 
 // ─── pure: sitemap, Kiln wiring, the "what was lost" report ──────────────────
@@ -381,6 +409,27 @@ export function sitemapIndexChildren(xml, origin) {
     if (sameSite(u, base) && /^https?:$/.test(u.protocol) && !out.includes(u.href)) out.push(u.href);
   }
   return out;
+}
+
+/** Add one page's script counts (kinds from cleanPage) to a run's total. */
+export function addKinds(total, k) {
+  total.own += k.own; total.inline += k.inline;
+  for (const g of ['visitors', 'outside']) for (const [h, n] of Object.entries(k[g])) total[g][h] = (total[g][h] || 0) + n;
+  return total;
+}
+
+/** What the scripts taken out were, as a sentence for the report. '' when there is nothing to say. */
+export function scriptKindsLine(k) {
+  if (!k) return '';
+  const group = (o) => { const e = Object.entries(o).sort((a, b) => b[1] - a[1]); return { n: e.reduce((t, [, c]) => t + c, 0), names: e.slice(0, 5).map(([h]) => h).join(', ') + (e.length > 5 ? ` and ${e.length - 5} more` : '') }; };
+  const was = (n) => (n === 1 ? 'was' : 'were');
+  const v = group(k.visitors), o = group(k.outside), parts = [];
+  if (k.own) parts.push(`${k.own} ${was(k.own)} the old site's own`);
+  if (k.inline) parts.push(`${k.inline} ${was(k.inline)} written into the pages themselves`);
+  if (v.n) parts.push(`${v.n} counted visitors (${v.names})`);
+  if (o.n) parts.push(`${o.n} came from other sites (${o.names})`);
+  if (!parts.length) return '';
+  return `Of these, ${parts.join(', ')}.${v.n || o.n ? ' Whatever those did is gone from the copy: if you count visitors, or had a chat box, a cookie notice or a booking widget, add it again on the new site.' : ''}`;
 }
 
 /** The page's title when it reads like an error page, else ''. */
@@ -882,8 +931,9 @@ export async function rescueCmd(startUrl, args = {}) {
 
   if (dry) {
     let scripts = 0;
-    for (const [, p] of pages) scripts += cleanPage(p.html, { baseUrl: p.url, pageMap, keepScripts }).scripts;
-    printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry, scripts, cruft: 0,
+    const kinds = { own: 0, inline: 0, visitors: {}, outside: {} };
+    for (const [, p] of pages) { const c = cleanPage(p.html, { baseUrl: p.url, pageMap, keepScripts }); scripts += c.scripts; addKinds(kinds, c.kinds); }
+    printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry, scripts, cruft: 0, kinds,
       localized: [], localizedBytes: 0, planned: localize.length, offOrigin: [...assetRefs].filter(k => !localize.includes(k)),
       skippedAssets: [], tally: null, firstTitle, sitemapNote, plainLost, blank, elsewhere });
     sayBlank();
@@ -965,11 +1015,12 @@ export async function rescueCmd(startUrl, args = {}) {
   ok(`localized ${downloads.size} assets (${mb(totalBytes)}) into ${path.join(out, 'assets', 'rescued')}/`);
 
   hr('Cleaning pages');
-  let scripts = 0, cruft = 0;
+  let scripts = 0, cruft = 0, previews = 0;
+  const kinds = { own: 0, inline: 0, visitors: {}, outside: {} };
   const offOrigin = new Set(skippedAssets.map(s => s.url));
   for (const [id, p] of pages) {
     const cleaned = cleanPage(p.html, { baseUrl: p.url, pageMap, assetMap, keepScripts });
-    scripts += cleaned.scripts; cruft += cleaned.cruft;
+    scripts += cleaned.scripts; cruft += cleaned.cruft; previews += cleaned.previews; addKinds(kinds, cleaned.kinds);
     cleaned.offOrigin.forEach(u => offOrigin.add(u));
     cleaned.leftBehind.forEach(u => leftBehind.add(u));
     const file = pageMap.get(id);
@@ -1025,7 +1076,7 @@ export async function rescueCmd(startUrl, args = {}) {
     }
   }
 
-  printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry: false, scripts, cruft,
+  printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry: false, scripts, cruft, kinds, previews,
     localized: [...downloads.keys()], localizedBytes: totalBytes, planned: localize.length,
     offOrigin: [...offOrigin], skippedAssets, tally, rendered: !!args.render, left, wantKiln, tryOut, firstTitle,
     requests: renderer?.requests, sitemapNote, plainLost, blank, elsewhere,
@@ -1058,7 +1109,9 @@ function printReport(r) {
     ? `- Assets to localize: ${r.planned}`
     : `- Assets localized: ${r.localized.length} (${mb(r.localizedBytes)})`);
   if (r.sitemapNote) lines.push(`- Sitemap ${r.sitemapNote.path}: ${r.sitemapNote.found} pages listed (${r.sitemapNote.read} sitemap file${r.sitemapNote.read === 1 ? '' : 's'} read${r.sitemapNote.skipped ? `; ${r.sitemapNote.skipped} more beyond the cap` : ''})`);
-  lines.push(`- Scripts stripped: ${r.scripts}${r.cruft ? ` (+ ${r.cruft} builder cruft tags removed)` : ''}`);
+  const kindsLine = r.scripts ? scriptKindsLine(r.kinds) : '';
+  lines.push(`- Scripts stripped: ${r.scripts}${r.cruft ? ` (+ ${r.cruft} builder cruft tags removed)` : ''}${kindsLine ? `. ${kindsLine}` : ''}`);
+  if (r.previews) lines.push(`- The picture for link previews (og:image, twitter:image) is written with this site's full address, ${r.origin}/assets/rescued/…, because the services that draw previews need a full address. If the copy goes live at a different address, change it on each page.`);
   if (r.firstTitle) lines.push(`- Check this first: the first page is titled "${r.firstTitle}". If that is an error page, the address is wrong or the site is not published, and this is a copy of the error.`);
   if (r.rendered && !r.dry) lines.push(`- Rendered in a browser: every page was opened, scrolled to the end and saved as it looked. App scripts left in the pages: ${r.left}. Requests the browser made to do it: ${r.requests}`);
   if (r.tally) lines.push(`- Kiln-tagged: ${r.tally.fields} text fields · ${r.tally.images} images · ${r.tally.repeats} block lists · ${r.tally.menu} menus`);

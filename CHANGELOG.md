@@ -171,6 +171,20 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the site, where a build or a host puts them. `node_modules`, `dist`,
   `_site`, `_templates` and folders whose name starts with a dot are still
   left out at every depth.
+- **The rescue report says what the scripts it took out were, and two
+  leftovers in the copied pages are gone.** "Scripts stripped: 97" is now
+  followed by what they were: how many were the old site's own, how many were
+  written into the pages, how many counted visitors and how many came from
+  other sites, with the names of those sites, and a sentence saying that a
+  visitor counter, chat box, cookie notice or booking widget has to be added
+  again on the new site. The picture for link previews (`og:image`,
+  `twitter:image`) used to be rewritten to a path with no site name, which the
+  services that draw previews cannot use. It now keeps the site's full address
+  in front of the copied file, and the report says to change it if the copy
+  goes live at another address. The canonical address is left as the full
+  address it was, like `og:url`, where it used to be cut down to a path. A
+  `<link rel="manifest">` is taken out, because the file it names is not
+  copied and every page asked for it and got a 404.
 
 ## [0.6.0] - 2026-11-12
 

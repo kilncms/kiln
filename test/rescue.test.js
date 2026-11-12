@@ -527,3 +527,40 @@ test('rescue: an address that answers with an error or is not a page says so in 
   assert.match(r.stdout, /\/feed\n\s+skipped: it is not a page \(application\/rss\+xml\)/);
   assert.doesNotMatch(r.stdout, /have moved to/, 'nothing moved, so no such sentence');
 });
+
+// ─── smaller things the report and the pages get right ──────────────────────
+
+test('rescue: the report says what kinds of script were taken out, the preview picture keeps its site name, and no manifest link is left dangling', async () => {
+  const { scriptKindsLine, addKinds } = await import('../cli/rescue.mjs');
+  const html = `<html><head><link rel="manifest" href="/manifest.webmanifest"><link rel="canonical" href="https://site.com/"><meta property="og:image" content="https://site.com/og.png"><meta name="twitter:image" content="/og.png"><meta property="og:url" content="https://site.com/"><link rel="icon" href="/favicon.ico"></head><body><h1>Hi</h1>
+<script type="module" src="/assets/index-abc.js"></script><script>window.x = 1</script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js"></script><script src="https://widget.intercom.io/widget/abc"></script></body></html>`;
+  const assetMap = new Map([['https://site.com/og.png', 'assets/rescued/1234-og.png']]);
+  const r = cleanPage(html, { baseUrl: 'https://site.com/', assetMap });
+  assert.equal(r.scripts, 4);
+  assert.deepEqual(r.kinds, { own: 1, inline: 1, visitors: { 'static.cloudflareinsights.com': 1 }, outside: { 'widget.intercom.io': 1 } });
+  assert.ok(r.html.includes('<meta property="og:image" content="https://site.com/assets/rescued/1234-og.png">'), r.html);
+  assert.ok(r.html.includes('<meta name="twitter:image" content="https://site.com/assets/rescued/1234-og.png">'));
+  assert.equal(r.previews, 2);
+  assert.ok(r.html.includes('<link rel="canonical" href="https://site.com/">'), 'the canonical address stays a full address, like og:url');
+  assert.ok(!r.html.includes('manifest'), 'the manifest link is gone: its file is not copied');
+  assert.ok(r.html.includes('rel="icon"'));
+  assert.equal(scriptKindsLine(r.kinds), "Of these, 1 was the old site's own, 1 was written into the pages themselves, 1 counted visitors (static.cloudflareinsights.com), 1 came from other sites (widget.intercom.io). Whatever those did is gone from the copy: if you count visitors, or had a chat box, a cookie notice or a booking widget, add it again on the new site.");
+  const two = addKinds(addKinds({ own: 0, inline: 0, visitors: {}, outside: {} }, r.kinds), r.kinds);
+  assert.match(scriptKindsLine(two), /2 were the old site's own, 2 were written into the pages themselves, 2 counted visitors/);
+  assert.equal(scriptKindsLine({ own: 0, inline: 0, visitors: {}, outside: {} }), '');
+  assert.doesNotMatch(scriptKindsLine({ own: 3, inline: 0, visitors: {}, outside: {} }), /gone from the copy/);
+});
+
+test('rescue: the written report names the kinds of script and the preview picture', async (t) => {
+  const page = '<html><head><title>Home</title><meta property="og:image" content="/og.png"><link rel="manifest" href="/site.webmanifest"></head><body><h1>Home</h1><p>Some words here for the page.</p><script src="/app.js"></script><script src="https://static.cloudflareinsights.com/beacon.min.js"></script></body></html>';
+  const s = await tableSite(t, { '/': ['text/html', page], '/og.png': ['image/png', Buffer.alloc(300, 1)] });
+  const r = await rescueRun([s.url, `--out=${s.out}`, '--delay=0']);
+  assert.equal(r.code, 0, r.stdout);
+  const report = readFileSync(path.join(s.out, 'RESCUE-REPORT.md'), 'utf8');
+  assert.match(report, /- Scripts stripped: 2 \(\+ 1 builder cruft tags removed\)\. Of these, 1 was the old site's own, 1 counted visitors \(static\.cloudflareinsights\.com\)\. Whatever those did is gone from the copy/);
+  assert.match(report, /- The picture for link previews \(og:image, twitter:image\) is written with this site's full address, http:\/\/127\.0\.0\.1:\d+\/assets\/rescued\/…/);
+  const html = readFileSync(path.join(s.out, 'index.html'), 'utf8');
+  assert.match(html, new RegExp(`<meta property="og:image" content="${s.url.replace(/[.:/]/g, '\\$&')}/assets/rescued/[0-9a-f]{8}-og\\.png">`));
+  assert.ok(!html.includes('webmanifest'));
+});
