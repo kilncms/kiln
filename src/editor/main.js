@@ -66,6 +66,7 @@ import { saveMenuEverywhere, menuStepText } from './menu-save.js';
 import { plainName, readableName } from './names.js';
 import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
+import { stillThere, restLine, withLastLive, LIVE_STAYS, LIVE_STAYS_PHONE, PUBLISHED_NOT_SEEN, PUBLISHED_NOT_WATCHED, SHARED_NOT_PUBLISHED } from './went-live.js';
 import { listAsFile, ListLoss, LIST_NOT_WHOLE, LIST_NOT_WHOLE_DRAFT } from './list-as-file.js';
 import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists, holdsBlockMarkup, inlineHtml } from './one-paragraph.js';
 import { askFirst, askWhich, tell, ownDialogCopy } from './own-dialogs.js';
@@ -3782,6 +3783,9 @@ async function publish(opts = {}) {
 
   setStatus('Publishing — committing to GitHub…', 'saving');
   disablePublish(true);
+  // Once the page's commit is made, nothing that stops afterwards is a failed
+  // publish, and nothing may say "not published" (went-live.js).
+  let committed = null, sharedDone = !partialEdits.length;
   try {
     // Prune orphaned uploads before committing. A swap that queued an upload and
     // was then undone leaves the binary in pendingBinaries with no edit referencing
@@ -3834,8 +3838,10 @@ async function publish(opts = {}) {
       // at the front); anything added mid-publish stays queued for the next Publish.
       state.pendingStructural.splice(0, structuralOps.length);
       record.structural = structuralOps;
+      if (result && !result.unchanged) committed = result;
     }
     if (partialEdits.length) await publishPartials(partialEdits, noteMsg);
+    sharedDone = true;
     // Retire only the keys we published and that are unchanged since the snapshot.
     // Anything the user edited (or added) during the commit stays pending and keeps
     // its "modified" marker, so the next Publish picks it up.
@@ -3867,7 +3873,17 @@ async function publish(opts = {}) {
     // desync the page from the now-live site (⌘Z would revert the DOM but stage
     // nothing), so retire the history at the publish boundary.
     forgetEditHistory();
-    await loadPageSource();
+    try { await loadPageSource(); }
+    catch (err) {
+      // The file could not be read back (the service was busy, the line dropped).
+      // The commit is made all the same. The editor goes on with the text it
+      // wrote, and the next publish reads the file afresh as every publish does.
+      console.warn('[kiln] the page could not be read back after publishing', err);
+      if (!committed) throw err;
+      state.page = { ...state.page, text: committed.text, sha: null };
+      state.fields = indexHtml(committed.text);
+      state.baseline = readValues(committed.text);
+    }
     refreshPublishButton();
     // Don't let a fully-skipped edit report success silently — tell the user it's
     // still pending because the section it targeted is gone from the page.
@@ -3889,7 +3905,11 @@ async function publish(opts = {}) {
     if (state.pendingSource.size) await publishSource(opts.note);
   } catch (err) {
     console.error('[kiln] publish', err);
-    publishFailed(err, opts);
+    if (!committed) { publishFailed(err, opts); return; }
+    // The page's commit was made before this stopped. What is said is what is true of it.
+    refreshPublishButton();
+    if (!sharedDone) { setStatus(SHARED_NOT_PUBLISHED, 'error'); return; }
+    setStatus(PUBLISHED_NOT_WATCHED, 'saved');
   }
 }
 
@@ -6201,11 +6221,19 @@ function journalAdd(entry) {
 
 let journalTimer = null;
 let journalTickN = 0;
+let journalBusy = false;   // a round of asking is under way: the next one waits for it
 function runJournal() {
   if (journalTimer) return;
-  const tick = async () => {
+  const run = async () => {
     const list = journalAll();
-    if (!list.length) { clearInterval(journalTimer); journalTimer = null; setStatusIdle(); return; }
+    if (!list.length) {
+      clearInterval(journalTimer); journalTimer = null;
+      // "live ✓" has just been said: it stays long enough to be read (went-live.js)
+      const said = state.lastLive ? Date.now() - state.lastLive.at : Infinity;
+      const stays = isMobileEditor() ? LIVE_STAYS_PHONE : LIVE_STAYS;
+      setStatusIdle(said < stays ? Math.max(4000, stays - said) : undefined);
+      return;
+    }
     journalTickN++;
     const keep = [];
     let failed = false;
@@ -6233,16 +6261,26 @@ function runJournal() {
           live = (await fetch(`${e.target}${e.target.includes('?') ? '&' : '?'}kilncb=${Date.now()}`,
             { method: 'HEAD', cache: 'no-store' })).ok;
         } else {
-          const res = await fetch(`${e.target}?kilncb=${Date.now()}`, { cache: 'no-store' });
-          live = res.ok && djb2(await res.text()) === e.expect;
+          // A new address each time, so no copy kept on the way is what answers.
+          const served = async () => {
+            const res = await fetch(`${e.target}?kilncb=${Date.now()}${Math.random().toString(36).slice(2, 6)}`, { cache: 'no-store' });
+            return res.ok && djb2(await res.text()) === e.expect;
+          };
+          // One good answer is not proof: the copies of a site around the network
+          // do not all change at once. Several in a row, a little apart (went-live.js).
+          live = await served() && await stillThere(served);
         }
       } catch { /* network blip — keep waiting */ }
       if (live) {
-        if (e.deployed) setStatus('Live ✓ — view site', 'saved', { href: e.target });
-        else setStatus(`${e.desc} — live ✓`, 'saved');
+        state.lastLive = { at: Date.now(), desc: e.desc };
+        // It stays long enough to be read by someone who had looked away (went-live.js).
+        const hold = isMobileEditor() ? LIVE_STAYS_PHONE : LIVE_STAYS;
+        if (e.deployed) setStatus('Live ✓ — view site', 'saved', { href: e.target, hold });
+        else setStatus(`${e.desc} — live ✓`, 'saved', { hold });
         if (e.target === location.pathname || e.target === location.pathname + location.search) swapImagePreviews();
       } else if (Date.now() - e.started > 6 * 60 * 1000) {
-        setStatus(`${e.desc} — published ✓ (taking longer than usual to appear; it will)`, 'saved');
+        // Saved, and not showing: the editor cannot tell why, and says so, with how to check.
+        setStatus(PUBLISHED_NOT_SEEN, 'saved');
       } else {
         keep.push(e);
       }
@@ -6252,11 +6290,16 @@ function runJournal() {
       setStatus(goingLiveLabel(keep), 'saving');
     }
   };
+  const tick = async () => {
+    if (journalBusy) return;
+    journalBusy = true;
+    try { await run(); } finally { journalBusy = false; }
+  };
   journalTimer = setInterval(tick, 6000);
   tick();
 }
 
-function setStatusIdle() {
+function setStatusIdle(after = 4000) {
   const then = statusShown;
   setTimeout(() => {
     // Never let the idle reset paper over a visible failure (e.g. build failed).
@@ -6268,8 +6311,9 @@ function setStatusIdle() {
     // On a phone the toast covers the page: it returns only with news, and
     // "you are still signed in" is not news.
     if (isMobileEditor()) { el.hidden = true; return; }
-    setStatus(`Signed in as ${state.user}`, 'idle');
-  }, 4000);
+    // After a publish went live the line goes on saying so, with the time (went-live.js).
+    setStatus(restLine(state.user, state.lastLive), 'idle', state.lastLive ? { hold: LIVE_STAYS } : undefined);
+  }, after);
 }
 
 function swapImagePreviews() {
@@ -9451,7 +9495,8 @@ function setStatus(text, kind, opts) {
   placeStatus();
   clearTimeout(statusHideTimer);
   if (opts?.signIn) { signInLine = [text, kind, opts]; return; }
-  if (signInLine && !opts?.offer) { statusHideTimer = setTimeout(() => setStatus(...signInLine), 6000); return; }
+  // The line that says who is signed in comes back after other news, and from then on it also says when the last publish went live (went-live.js).
+  if (signInLine && !opts?.offer) { statusHideTimer = setTimeout(() => setStatus(withLastLive(signInLine[0], state.lastLive), signInLine[1], signInLine[2]), opts?.hold || 6000); return; }
   if (opts?.sticky) return;
   // Busy/error states stay visible; calm states fade away on their own. On a
   // phone the toast sits over the top of the page, so it leaves sooner. A line
