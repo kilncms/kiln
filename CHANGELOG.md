@@ -97,6 +97,25 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `hostingEndsAt`, `hostingDownAt` and `noticeEndingHosting`,
   `worker/mail.js`, `worker/hosted.js`).
 
+### Fixed
+
+- **A site drawn by JavaScript is no longer copied as blank pages and called
+  done.** `rescue` without `--render` on such a site used to write one empty
+  page for every address, print "crawled 50 pages" with a green tick, and tell
+  the person to push and deploy. Now a page the server sends with no words on
+  it (an empty root element and a script) is noticed as it is read, marked
+  "blank" on its progress line, and left out of the copy. The pages that do
+  have words on them are still copied. The run ends by saying how many pages
+  were blank, that the site draws its pages with JavaScript, and the exact
+  command to run instead (`rescue <address> --render`, with the options
+  already given), with what `--render` needs installed. When the first page or
+  half the pages are blank the run counts as not having worked: it ends with
+  exit code 1, the report is headed "This copy is not finished", and the steps
+  for pushing and deploying are not offered. When every page is blank nothing
+  is written at all. A single blank page on a site of real pages is left out
+  and named in the report, and the copy still counts. A short page with a
+  heading, a paragraph, a link or a picture is never called blank.
+
 ## [0.6.0] - 2026-11-12
 
 ### Added

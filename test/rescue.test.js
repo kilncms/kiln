@@ -379,3 +379,104 @@ test('rescue: hitting the size limit leaves no broken pictures and says so in RE
   assert.match(report, /will disappear from your pages/);
   assert.match(report, new RegExp(`rescue ${site.replace(/[.:/]/g, '\\$&')} --out=\\S+ --delay=0 --no-tag --max-total-mb=\\d+`));
 });
+
+// ─── a site drawn by JavaScript, copied without --render ────────────────────
+
+const SHELL = '<!doctype html><html><head><title>Outings</title><link rel="stylesheet" href="/s.css"></head><body><div id="root"></div><noscript>You need to enable JavaScript to run this app.</noscript><script type="module" src="/assets/index-abc.js"></script></body></html>';
+const REAL = (title) => `<!doctype html><html><head><title>${title}</title><link rel="stylesheet" href="/s.css"></head><body><main class="legal"><h1>${title}</h1><p>What we keep about you and why we keep it.</p><a href="/">Back</a></main><script src="/count.js"></script></body></html>`;
+
+/** A site held in a table: path → [content type, body]. Anything else is a 404. */
+async function tableSite(t, files) {
+  const server = createServer((req, res) => {
+    const f = files[new URL(req.url, 'http://x').pathname];
+    if (!f) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('no'); }
+    res.writeHead(f[2] || 200, { 'content-type': f[0], ...(f[3] || {}) });
+    res.end(f[1]);
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => { server.closeAllConnections?.(); server.close(r); }));
+  const dir = mkdtempSync(path.join(tmpdir(), 'kiln-rescue-site-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return { url: `http://127.0.0.1:${server.address().port}`, out: path.join(dir, 'copy') };
+}
+function rescueRun(args) {
+  const CLI = fileURLToPath(new URL('../cli/index.mjs', import.meta.url));
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI, 'rescue', ...args], { env: { ...process.env, NO_COLOR: '1' } });
+    let stdout = '';
+    child.stdout.on('data', d => { stdout += d; });
+    child.stderr.on('data', d => { stdout += d; });
+    child.on('close', code => resolve({ code, stdout }));
+  });
+}
+const sitemapOf = (site, paths) => ['application/xml', `<?xml version="1.0"?><urlset>${paths.map(p => `<url><loc>${site}${p}</loc></url>`).join('')}</urlset>`];
+
+test('rescue: looksBlank knows an empty shell from a short real page', async () => {
+  const { looksBlank } = await import('../cli/rescue.mjs');
+  assert.equal(looksBlank(SHELL), true, 'one empty root element and a script');
+  assert.equal(looksBlank('<html><body><div id="app"><div class="spinner">Loading...</div></div><script src="/a.js"></script></body></html>'), true, 'a few words of "loading" are not a page');
+  assert.equal(looksBlank('<html><body><div id="root"><svg class="spin"><circle r="4"/></svg></div><script>boot()</script></body></html>'), true, 'a drawn spinner is not a page');
+  assert.equal(looksBlank(REAL('Privacy')), false);
+  assert.equal(looksBlank('<html><body><h1>Thanks!</h1><script src="https://www.googletagmanager.com/gtag/js"></script></body></html>'), false, 'a heading is a page, however short');
+  assert.equal(looksBlank('<html><body><div class="hero"><img src="/soon.jpg" alt=""></div><script src="/a.js"></script></body></html>'), false, 'a picture is a page');
+  assert.equal(looksBlank('<html><body><div id="root"></div></body></html>'), false, 'no script: nothing would ever fill it in, so it is not called a JavaScript site');
+  assert.equal(looksBlank('<html><body><div></div><script type="application/ld+json">{"a":1}</script></body></html>'), false, 'structured data is not a script that draws');
+});
+
+test('rescue: a site drawn by JavaScript is not called copied: blank pages are left out, the real ones come across, and the command to use is given', async (t) => {
+  const files = { '/': ['text/html', SHELL], '/browse': ['text/html', SHELL], '/events/one': ['text/html', SHELL],
+    '/privacy': ['text/html', REAL('Privacy')], '/terms': ['text/html', REAL('Terms')], '/s.css': ['text/css', 'body{margin:0}'] };
+  const s = await tableSite(t, files);
+  files['/sitemap.xml'] = sitemapOf(s.url, ['/', '/browse', '/privacy', '/terms', '/events/one']);
+  const r = await rescueRun([s.url, `--out=${s.out}`, '--delay=0']);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stdout, /3 of the 5 pages read from http:\/\/127\.0\.0\.1:\d+ are blank\. This site draws its pages with JavaScript/);
+  assert.match(r.stdout, /the 2 pages that have words on them were copied/);
+  assert.match(r.stdout, /This copy is not finished: do not put it online as it is\./);
+  assert.ok(r.stdout.includes(`npx github:kilncms/kiln#release rescue ${s.url} --render --out=${s.out} --delay=0`), r.stdout);
+  assert.match(r.stdout, /npm install playwright-core/);
+  assert.match(r.stdout, /\[\d\/50\] \/browse\n\s+blank: nothing is on this page until its JavaScript runs/);
+  assert.doesNotMatch(r.stdout, /✅ crawled/, 'no green tick on a copy that is mostly blank');
+  assert.doesNotMatch(r.stdout, /Deploy on Cloudflare Pages|gh repo create/, 'nobody is told to push and deploy it');
+  const { existsSync } = await import('node:fs');
+  for (const f of ['index.html', 'browse/index.html', 'events/one/index.html']) assert.ok(!existsSync(path.join(s.out, f)), `${f} is blank, so it is not written`);
+  const privacy = readFileSync(path.join(s.out, 'privacy', 'index.html'), 'utf8');
+  assert.match(privacy, /<h1 data-cms="[^"]+">Privacy<\/h1>/);
+  assert.ok(readFileSync(path.join(s.out, 'terms', 'index.html'), 'utf8').includes('What we keep about you'));
+  const report = readFileSync(path.join(s.out, 'RESCUE-REPORT.md'), 'utf8');
+  assert.match(report, /- Pages crawled: 2, written: 2/);
+  assert.match(report, /- Blank pages left out: 3 of the 5 read/);
+  assert.match(report, /## This copy is not finished/);
+  assert.match(report, /- \/browse\n/);
+  assert.match(report, /Chrome, Edge, Brave or Chromium on this computer/);
+  assert.doesNotMatch(report, /Deploy on Cloudflare Pages/);
+  assert.doesNotMatch(r.stdout + report, /—.*blank|blank.*—/, 'no dashes in the new sentences');
+});
+
+test('rescue: when every page is blank nothing is written, and --dry says the same', async (t) => {
+  const files = { '/': ['text/html', SHELL], '/browse': ['text/html', SHELL] };
+  const s = await tableSite(t, files);
+  files['/sitemap.xml'] = sitemapOf(s.url, ['/', '/browse']);
+  for (const extra of [[], ['--dry']]) {
+    const r = await rescueRun([s.url, `--out=${s.out}`, '--delay=0', ...extra]);
+    assert.equal(r.code, 1, r.stdout);
+    assert.match(r.stdout, /All 2 pages read from \S+ are blank\. This site draws its pages with JavaScript, so a plain copy of them is empty pages\. Nothing was written\./);
+    assert.ok(r.stdout.includes(`rescue ${s.url} --render`), r.stdout);
+    assert.doesNotMatch(r.stdout, /✅|Next steps/);
+    const { existsSync } = await import('node:fs');
+    assert.ok(!existsSync(s.out), 'no folder is left behind');
+  }
+});
+
+test('rescue: one blank page on a site of real pages is left out and named, and the copy still counts', async (t) => {
+  const home = '<!doctype html><html><head><title>Shop</title></head><body><h1>Shop</h1><p>Bread, cakes and coffee on Mill Lane.</p><a href="/about">About</a> <a href="/app">Order</a></body></html>';
+  const s = await tableSite(t, { '/': ['text/html', home], '/about': ['text/html', REAL('About')], '/app': ['text/html', SHELL] });
+  const r = await rescueRun([s.url, `--out=${s.out}`, '--delay=0']);
+  assert.equal(r.code, 0, r.stdout);
+  assert.match(r.stdout, /1 of the 3 pages read from \S+ is blank\. This site draws that page with JavaScript, so a plain copy of it is an empty page\. It was left out, and the 2 pages that have words on them were copied\./);
+  const report = readFileSync(path.join(s.out, 'RESCUE-REPORT.md'), 'utf8');
+  assert.match(report, /## Blank pages left out/);
+  assert.match(report, /The blank page:\n\n- \/app\n/);
+  assert.match(report, /Deploy on Cloudflare Pages/, 'the usual next steps are still given');
+  assert.ok(readFileSync(path.join(s.out, 'index.html'), 'utf8').includes('href="/app"'), 'the link to the page left out is kept as it was');
+});

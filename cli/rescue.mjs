@@ -389,6 +389,65 @@ export function looksLikeErrorPage(html) {
   return /\b(not found|404|unavailable|no longer available|access denied|forbidden)\b/i.test(title) ? title : '';
 }
 
+/**
+ * True when a page, as the server sends it, has nothing on it to read: it
+ * loads a script, and its body holds no words to speak of and nothing but
+ * empty wrappers (the `<div id="root"></div>` of a site drawn by JavaScript).
+ * A heading, a paragraph, a link, a picture or a form makes it a real page,
+ * however short, so a "Thanks!" page is never called blank.
+ */
+const BLANK_WRAPPERS = new Set(['div', 'span', 'main', 'section', 'article', 'header', 'footer', 'link', 'meta', 'br']);
+const BLANK_UNSEEN = new Set(['script', 'style', 'noscript', 'template', 'svg']);
+export function looksBlank(html) {
+  const doc = parse(String(html));
+  let body = null, scripts = 0;
+  walkTree(doc, n => {
+    if (n.tagName === 'body' && !body) body = n;
+    if (n.tagName === 'script' && !(getAttr(n, 'type') || '').toLowerCase().includes('json')) scripts++;
+  });
+  if (!body || !scripts) return false;
+  let text = '', real = false;
+  (function walk(n) {
+    for (const c of n.childNodes || []) {
+      if (real) return;
+      if (c.nodeName === '#text') { text += c.value; continue; }
+      if (!c.tagName || BLANK_UNSEEN.has(c.tagName)) continue;
+      if (!BLANK_WRAPPERS.has(c.tagName)) { real = true; return; }
+      walk(c);
+    }
+  })(body);
+  return !real && text.replace(/\s+/g, ' ').trim().length < 20;
+}
+
+export const RENDER_NEEDS = 'It needs two things: Chrome, Edge, Brave or Chromium on this computer, and the playwright-core package in the folder you run the command in (npm install playwright-core, which is small and downloads no browser).';
+
+/** The same rescue, with --render: the command to give someone whose plain copy came out blank. */
+export function renderCommand(url, args = {}) {
+  const flags = [];
+  for (const k of ['out', 'max-pages', 'delay', 'max-asset-mb', 'max-total-mb']) if (typeof args[k] === 'string' || typeof args[k] === 'number') flags.push(`--${k}=${quoteArg(String(args[k]))}`);
+  for (const k of ['no-tag', 'try']) if (args[k] === true) flags.push(`--${k}`);
+  return `npx github:kilncms/kiln#release rescue ${quoteArg(String(url))} --render${flags.length ? ' ' + flags.join(' ') : ''}`;
+}
+
+/**
+ * The report section about blank pages. b: { ids, read, drawn, command }, where
+ * ids are the blank pages, read is how many pages were read in all, and drawn
+ * says the site as a whole is drawn by JavaScript. [] when no page was blank.
+ */
+export function blankLines(b) {
+  if (!b?.ids?.length) return [];
+  const n = b.ids.length, kept = b.read - n;
+  const L = [b.drawn ? '## This copy is not finished' : '## Blank pages left out', ''];
+  L.push(`${n === b.read ? `All ${n}` : `${n} of the ${b.read}`} pages read ${n === 1 ? 'is' : 'are'} blank. This site draws ${n === 1 && !b.drawn ? 'that page' : 'its pages'} with JavaScript: the server sends a page with no words on it, and a script fills it in once it is open in a browser. A plain copy of such a page is an empty page, so ${n === 1 ? 'it was' : 'they were'} left out of this folder.${kept ? ` The ${kept === 1 ? 'one page that has' : `${kept} pages that have`} words on ${kept === 1 ? 'it was' : 'them were'} copied.` : ''}`, '');
+  L.push('To copy the pages as they look once they are drawn, run the rescue again with `--render`, from the same folder you ran it in:', '', '```', b.command, '```', '');
+  L.push(`\`--render\` opens each page in a browser and saves what it shows. ${RENDER_NEEDS}`, '');
+  L.push(n === 1 ? 'The blank page:' : 'The blank pages:', '');
+  for (const id of b.ids.slice(0, 20)) L.push(`- ${id}`);
+  if (n > 20) L.push(`- and ${n - 20} more`);
+  L.push('');
+  return L;
+}
+
 const KILN_TAGS = ['<script src="/assets/kiln-config.js"></script>', '<script src="/assets/kiln.js" defer></script>'];
 
 /**
@@ -712,7 +771,10 @@ export async function rescueCmd(startUrl, args = {}) {
       aliases.set(finalId, id);
     }
     const firstPage = !pages.size;
-    pages.set(id, { html, url: landedUrl, rendered });
+    // a plain request to a site drawn by JavaScript gets the empty shell
+    const blank = !renderer && looksBlank(html);
+    if (blank) console.log('         blank: nothing is on this page until its JavaScript runs');
+    pages.set(id, { html, url: landedUrl, rendered, blank });
     const refs = extractRefs(html, landedUrl);
     const found = [...refs.pages];
     // addresses the app moved to by script, and (after the first page) the sitemap
@@ -730,10 +792,30 @@ export async function rescueCmd(startUrl, args = {}) {
   }
   if (renderer) await renderer.close();
   const unvisited = queue.length;
-  ok(`crawled ${pages.size} page${pages.size === 1 ? '' : 's'}${failedPages.length ? `, ${failedPages.length} failed` : ''}${unvisited ? ` (${unvisited} more found beyond --max-pages)` : ''}`);
+  // Blank pages are never written and never counted as copied. When the first
+  // page or half the pages are blank, the site as a whole is drawn by
+  // JavaScript: the run ends by saying so, with the command to use instead.
+  const blankIds = [...pages].filter(([, p]) => p.blank).map(([id]) => id);
+  const read = pages.size;
+  for (const id of blankIds) pages.delete(id);
+  const blank = { ids: blankIds, read, drawn: blankIds.length > 0 && (blankIds.includes(startId) || blankIds.length * 2 >= read), command: renderCommand(startUrl, args) };
+  const sayBlank = () => {
+    if (!blankIds.length) return;
+    const n = blankIds.length;
+    const what = `${n === read ? `All ${n}` : `${n} of the ${read}`} pages read from ${origin} ${n === 1 ? 'is' : 'are'} blank. This site draws ${n === 1 && !blank.drawn ? 'that page' : 'its pages'} with JavaScript, so a plain copy of ${n === 1 ? 'it is an empty page' : 'them is empty pages'}.`;
+    const kept = pages.size ? ` ${n === 1 ? 'It was' : 'They were'} left out, and the ${pages.size === 1 ? 'one page that has' : `${pages.size} pages that have`} words on ${pages.size === 1 ? 'it was' : 'them were'} ${dry ? 'read' : 'copied'}.` : ' Nothing was written.';
+    console.log('');
+    (blank.drawn ? fail : warn)(what + kept + (blank.drawn && pages.size ? ' This copy is not finished: do not put it online as it is.' : ''));
+    info('Run this instead. It opens each page in a browser and saves it as it looks once it is drawn:');
+    console.log(`\n      ${blank.command}\n`);
+    info(RENDER_NEEDS);
+  };
+  if (pages.size) (blank.drawn ? warn : ok)(`crawled ${read} page${read === 1 ? '' : 's'}${blankIds.length ? `, ${blankIds.length} of them blank` : ''}${failedPages.length ? `, ${failedPages.length} failed` : ''}${unvisited ? ` (${unvisited} more found beyond --max-pages)` : ''}`);
   if (!pages.size) {
     for (const f of failedPages) fail(`${f.path}: ${f.reason}`);
-    fail('nothing crawled — check the URL and try again'); process.exit(1);
+    if (blankIds.length) sayBlank();
+    else fail('nothing crawled — check the URL and try again');
+    process.exit(1);
   }
 
   // A host that answers "no such site" with a normal page cannot be told from
@@ -763,8 +845,9 @@ export async function rescueCmd(startUrl, args = {}) {
     for (const [, p] of pages) scripts += cleanPage(p.html, { baseUrl: p.url, pageMap, keepScripts }).scripts;
     printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry, scripts, cruft: 0,
       localized: [], localizedBytes: 0, planned: localize.length, offOrigin: [...assetRefs].filter(k => !localize.includes(k)),
-      skippedAssets: [], tally: null, firstTitle, sitemapNote, plainLost });
-    process.exit(0);
+      skippedAssets: [], tally: null, firstTitle, sitemapNote, plainLost, blank });
+    sayBlank();
+    process.exit(blank.drawn ? 1 : 0);
   }
 
   // ── download assets (incl. url() refs one level deep inside downloaded CSS) ──
@@ -905,10 +988,12 @@ export async function rescueCmd(startUrl, args = {}) {
   printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry: false, scripts, cruft,
     localized: [...downloads.keys()], localizedBytes: totalBytes, planned: localize.length,
     offOrigin: [...offOrigin], skippedAssets, tally, rendered: !!args.render, left, wantKiln, tryOut, firstTitle,
-    requests: renderer?.requests, sitemapNote, plainLost,
+    requests: renderer?.requests, sitemapNote, plainLost, blank,
     notCopied: notCopiedOf(skippedAssets, leftBehind),
     again: { url: startUrl, args, totalBytes, maxAssetBytes, maxTotalBytes, capped } });
-  process.exit(0);
+  sayBlank();
+  // a copy that is mostly blank pages did not work, whatever was written
+  process.exit(blank.drawn ? 1 : 0);
 }
 
 const TRY_CONFIG = `// Try-out copy written by "kiln rescue --try": edits stay in this browser and
@@ -949,7 +1034,9 @@ function printReport(r) {
     for (const u of left.slice(0, 30)) lines.push(`  - ${u}`);
     if (left.length > 30) lines.push(`  - …and ${left.length - 30} more`);
   }
+  if (r.blank?.ids.length) lines.splice(3, 0, `- Blank pages left out: ${r.blank.ids.length} of the ${r.blank.read} read (see "${r.blank.drawn ? 'This copy is not finished' : 'Blank pages left out'}" below)`);
   lines.push('');
+  lines.push(...blankLines(r.blank));
   if (!r.dry) lines.push(...notCopiedLines(notCopied, r.again));
   if (r.rendered) {
     lines.push(...lostLines([...r.pages].map(([id, p]) => ({ href: fileToHref(r.pageMap.get(id)), rendered: p.rendered }))));
@@ -958,6 +1045,17 @@ function printReport(r) {
   }
   lines.push('## Next steps');
   lines.push('');
+  if (r.blank?.drawn) {
+    // most of the site is missing: the steps that put a copy online are not offered
+    lines.push('Run the command under "This copy is not finished" first. Most of the site is missing from this folder, so do not put it online as it is.');
+    lines.push('');
+    const report = lines.join('\n');
+    if (!r.dry) writeFileSync(path.join(r.out, 'RESCUE-REPORT.md'), report + '\n');
+    hr(r.dry ? 'Report (dry run)' : 'Report');
+    console.log(report.split('\n').map(l => `  ${l}`).join('\n'));
+    if (!r.dry) info(`full report saved to ${path.join(r.out, 'RESCUE-REPORT.md')}`);
+    return;
+  }
   if (r.tryOut) {
     lines.push('To try editing now: serve this folder (`npx serve .`), open it and click a word. Nothing is published from a try-out copy.');
     lines.push('Before step 3, delete `assets/kiln-config.js`: the wizard writes the real one.');
