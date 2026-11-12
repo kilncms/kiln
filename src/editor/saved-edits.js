@@ -44,7 +44,17 @@ export function openBoxEdit(pending, key, html, base) {
  */
 export function openListEdit(pending, listKey, { now, before, listHtml }) {
   if (!listKey || typeof now !== 'string' || now === before || typeof listHtml !== 'string') return pending;
-  return openBoxEdit(pending, listKey, listHtml);
+  const out = openBoxEdit(pending, listKey, listHtml);
+  // A list brought back whole from a draft or an earlier version is the text
+  // of a file, and is written as it is. Typed in since, it is no longer that
+  // text: it is written from it, with the change put into it, as main.js
+  // stagePending keeps it when the box is left (list-as-file.js).
+  const was = pending.get(listKey);
+  if (out !== pending && was && was.whole) {
+    const { whole, ...rest } = out.get(listKey);
+    out.set(listKey, { ...rest, from: was.html });
+  }
+  return out;
 }
 
 /** Where typed words can be put back, and what the sentences call them there. */

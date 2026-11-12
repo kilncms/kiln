@@ -50,3 +50,14 @@ test('the editor keeps an open box inside a list too', () => {
   assert.doesNotMatch(fn, /closest\('\[data-cms-repeat\]'\) \|\|/);
   assert.match(fn, /openListEdit\(/);
 });
+
+test('a list brought back whole from a file and then typed in is kept as written from that file, never as the page\'s cleaned copy of it', () => {
+  const file = '<article><svg viewBox="0 0 1 1"></svg><h3 data-cms="t">Old</h3></article>';
+  const typed = '<article><h3 data-cms="t">New</h3></article>';
+  const pending = new Map([['products', { html: file, whole: true }]]);
+  const out = openListEdit(pending, 'products', { now: 'New', before: 'Old', listHtml: typed });
+  assert.deepEqual(out.get('products'), { html: typed, from: file });
+  assert.deepEqual(pending.get('products'), { html: file, whole: true }, 'the map given is not changed');
+  // and it is kept that way in the browser
+  assert.deepEqual(readDraft(draftRecord(out, new Map(), 1000), { now: 2000 }).edits.products, { html: typed, from: file });
+});

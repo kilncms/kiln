@@ -14,7 +14,7 @@
 
 import { parse } from 'parse5';
 
-const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+export const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
   'link', 'meta', 'param', 'source', 'track', 'wbr']);
 
 // Attribute names the splice engine is allowed to write or overwrite. Anything
@@ -159,7 +159,7 @@ export function indexHtml(raw) {
  * value text between the quotes. Handles double/single/unquoted. Returns null
  * for bare attributes with no value.
  */
-function attrValueRange(raw, aloc) {
+export function attrValueRange(raw, aloc) {
   const text = raw.slice(aloc.startOffset, aloc.endOffset);
   const eq = text.indexOf('=');
   if (eq === -1) return null;
@@ -184,7 +184,7 @@ function attrValueRange(raw, aloc) {
  *    DOUBLE-QUOTED value INCLUDING the quotes, turning `name=` + this into a
  *    well-formed `name="…"`.
  */
-function emitAttrValue(value, quote) {
+export function emitAttrValue(value, quote) {
   const v = String(value);
   if (quote === "'") return v.replaceAll('&', '&amp;').replaceAll("'", '&#39;');
   if (quote === '"') return v.replaceAll('&', '&amp;').replaceAll('"', '&quot;');

@@ -14,7 +14,7 @@
  */
 
 import DOMPurify from 'dompurify';
-import { indexHtml, applyEdits, pageFileCandidates, editHead, readHead, readValues, findNthTag, annotateNthTag, appendIntoNthTag, insertAfterNthTag, removeAnnotations, removeKilnSection } from '../engine.js';
+import { indexHtml, applyEdits, attrNameAllowed, pageFileCandidates, editHead, readHead, readValues, findNthTag, annotateNthTag, appendIntoNthTag, insertAfterNthTag, removeAnnotations, removeKilnSection } from '../engine.js';
 import {
   makeGh, getFile, resolvePageFile, editFile, putFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
@@ -66,6 +66,7 @@ import { saveMenuEverywhere, menuStepText } from './menu-save.js';
 import { plainName, readableName } from './names.js';
 import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
+import { listAsFile, ListLoss, LIST_NOT_WHOLE, LIST_NOT_WHOLE_DRAFT } from './list-as-file.js';
 import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists } from './one-paragraph.js';
 import { askFirst, askWhich, tell, ownDialogCopy } from './own-dialogs.js';
 import { offersWholePage, wholePagePass, wholePageWrite, wholePageCopy, wholePageMessage, servesMarks, wholePageNote, fileIsBehind,
@@ -2205,8 +2206,88 @@ function stagedListHtml(clone) {
   return hadChildren && !clone.children.length ? null : clone.innerHTML;
 }
 
+/**
+ * One block as the editor would write it by itself, with its parts
+ * (list-as-file.js says what each is). `el` is a detached, cleaned element.
+ * Null when cleaning does not keep the block's own element.
+ */
+function readBlock(el) {
+  const before = el.outerHTML;
+  const box = document.createElement('div');
+  box.appendChild(el);
+  DOMPurify.sanitize(box, { ...CONTAINER_SANITIZE, IN_PLACE: true });
+  if (box.childNodes.length !== 1 || box.children.length !== 1) return null;
+  const root = box.firstElementChild;
+  const els = [root, ...root.querySelectorAll('[data-cms]')];
+  const parts = els.map((e, k) => {
+    const key = e.getAttribute('data-cms');
+    const attrs = {};
+    for (const a of e.attributes) if (attrNameAllowed(a.name)) attrs[a.name] = a.value;
+    let own = null;
+    if (key != null) {
+      // the fields it holds are parts of their own
+      const copy = e.cloneNode(true);
+      for (const inner of copy.querySelectorAll('[data-cms]')) {
+        inner.innerHTML = '';
+        for (const a of [...inner.attributes]) if (a.name !== 'data-cms') inner.removeAttribute(a.name);
+      }
+      own = copy.innerHTML;
+    }
+    const holder = k ? e.parentElement.closest('[data-cms]') : null;
+    return { key, html: key != null ? e.innerHTML : null, own, attrs, inside: holder ? els.indexOf(holder) : -1 };
+  });
+  return { html: box.innerHTML, lost: before !== box.innerHTML, parts };
+}
+
+/** The blocks in a piece of a list's HTML, each read as above: what list-as-file.js calls `read`. */
+function readList(tag, html) {
+  const box = document.createElement(tag);
+  box.innerHTML = String(html ?? '');
+  cleanBlocks(box);
+  return [...box.children].map(readBlock).filter(Boolean);
+}
+
+/** Is this the name of a list of blocks on this page? */
+function isListKey(key) {
+  try { return !!document.querySelector('[data-cms-repeat="' + CSS.escape(key) + '"]'); } catch { return false; }
+}
+
+/** Every edit waiting that holds HTML, with what the part was before it: what editsForFile needs to write a list. */
+function listsWaiting() {
+  const lists = new Map();
+  for (const [key, v] of state.pending) if (v.html !== undefined) lists.set(key, { entry: JSON.parse(JSON.stringify(v)), base: state.undoBase.get(key) });
+  return lists;
+}
+
+/**
+ * The edits as they go into this text of the page's file. A list is written
+ * from the file's own text, with only what the person changed put into it
+ * (list-as-file.js): a drawing, an embed or an attribute the editor's cleaner
+ * does not know stays exactly as the file has it. A list brought back whole
+ * from a draft or an earlier version is the text of a file already, and goes
+ * in as it is. Throws ListLoss when a list cannot be written without losing
+ * something, which is before anything is sent.
+ */
+function editsForFile(text, edits, lists) {
+  const { fields } = indexHtml(text);
+  return edits.map((e) => {
+    const l = e.html !== undefined ? lists.get(e.key) : null;
+    const f = l ? fields.get(e.key) : null;
+    if (!f || f.kind !== 'repeat' || !f.inner || l.entry.whole) return e;
+    const from = typeof l.entry.from === 'string';
+    const res = listAsFile({
+      tag: f.tag, text: from ? l.entry.from : text.slice(f.inner.start, f.inner.end), now: e.html,
+      base: from ? null : l.base, lost: l.entry.lost || [], read: (html) => readList(f.tag, html),
+    });
+    if (!res.ok) throw new ListLoss(e.key);
+    return { ...e, html: res.html };
+  });
+}
+
 function stageContainer(container, key) {
-  const html = stagedListHtml(containerCleanHtml(container));
+  const clone = containerCleanHtml(container);
+  const before = [...clone.children].map(c => c.outerHTML);
+  const html = stagedListHtml(clone);
 
   // Guard: if sanitizing still dropped the block's element structure (an
   // allowlist gap — e.g. a tag we didn't anticipate), REFUSE to stage rather
@@ -2217,8 +2298,12 @@ function stageContainer(container, key) {
     return;
   }
 
+  // The blocks cleaning took something out of. Such a block is written from
+  // the file's own text, or the publish is refused: never without what it lost.
+  const after = [...clone.children].map(c => c.outerHTML);
+  const lost = before.length === after.length ? before.flatMap((b, i) => (b === after[i] ? [] : [i])) : after.map((_, i) => i);
   container.classList.add('kiln-modified');
-  stagePending(key, { html });
+  stagePending(key, { html, lost });
 }
 
 function startEditing(el, key) {
@@ -2302,7 +2387,17 @@ function stagePending(key, patch, opts = {}) {
     }
   }
   const cur = prev || {};
-  if (patch.html !== undefined) cur.html = patch.html;
+  if (patch.html !== undefined) {
+    // A list brought back whole from a draft or an earlier version is the text
+    // of a file, and is written as it is. Changed on the page after that, it
+    // is written from that text, with the change put into it (editsForFile).
+    if (patch.whole) { cur.whole = true; delete cur.from; delete cur.lost; }
+    else if (patch.lost) {
+      if (cur.whole) { cur.from = cur.html; delete cur.whole; }
+      if (patch.lost.length) cur.lost = patch.lost; else delete cur.lost;
+    }
+    cur.html = patch.html;
+  }
   if (patch.attrs) cur.attrs = { ...(cur.attrs || {}), ...patch.attrs };
   state.pending.set(key, cur);
   if (step) {
@@ -3335,7 +3430,15 @@ function changeCount() {
 function publishItems({ light = false } = {}) {
   const items = [];
   const shown = (key, html) => (light ? plainText(html) : renderedText(key, html));
-  const blocksOf = (html) => [...new DOMParser().parseFromString(`<body>${html ?? ''}</body>`, 'text/html').body.children].map(c => c.outerHTML);
+  // A list's blocks, read as they are staged. What a block was and what it is
+  // now are read the same way, so a block nobody changed is never counted as
+  // changed because the cleaner takes a drawing out of one reading and not the other.
+  const blocksOf = (html, list) => {
+    const box = document.createElement(list ? list.tagName : 'div');
+    box.innerHTML = String(html ?? '');
+    try { tidyBlocks(box); } catch { /* a list in an element the cleaner will not start from: read as it is */ }
+    return [...box.children].map(c => c.outerHTML);
+  };
   for (const [key, v] of state.pending) {
     const el = elementForKey(key);
     const isList = !!el && el.getAttribute('data-cms-repeat') === key;
@@ -3345,7 +3448,7 @@ function publishItems({ light = false } = {}) {
       const baseHtml = state.undoBase.get(key) ?? '';
       if (isList) {
         // Every change is named: what was added, removed and moved, and each block that was changed, by its name.
-        const wasBlocks = blocksOf(baseHtml), nowBlocks = blocksOf(v.html);
+        const wasBlocks = blocksOf(baseHtml, el), nowBlocks = blocksOf(v.html, el);
         const ch = listChanges(wasBlocks, nowBlocks);
         for (const n of ch.added) parts.push({ type: 'note', tone: 'add', text: `Added: ${n}` });
         for (const n of ch.removed) parts.push({ type: 'note', tone: 'remove', text: `Removed: ${n}` });
@@ -3638,6 +3741,16 @@ async function publish(opts = {}) {
   // by key against the fresh source.)
   if (localEdits.length && !(await confirmOverwrites(localEdits))) return;
 
+  // Each list is written from the file's own text. One that cannot be, without
+  // losing something its owner did not change, stops the publish here: it is
+  // said, and nothing is sent.
+  const lists = listsWaiting();
+  try { if (state.page.text) editsForFile(state.page.text, localEdits, lists); }
+  catch (err) {
+    if (err instanceof ListLoss) { setStatus(LIST_NOT_WHOLE(readableName(err.key)), 'error'); return; }
+    console.warn('[kiln] the lists could not be read before publishing', err);
+  }
+
   setStatus('Publishing — committing to GitHub…', 'saving');
   disablePublish(true);
   try {
@@ -3680,7 +3793,7 @@ async function publish(opts = {}) {
           // Structural changes (make/unmake editable) first, so field edits can
           // reference newly-annotated keys; then splice the field edits.
           const t = applyStructural(text, structuralOps);
-          const { html, applied, skipped } = applyEdits(t, localEdits);
+          const { html, applied, skipped } = applyEdits(t, editsForFile(t, localEdits, lists));
           appliedKeys = new Set(applied);
           skippedKeys = new Set(skipped.map(s => s.key));
           for (const s of skipped) console.warn('[kiln] skipped:', s);
@@ -3753,6 +3866,8 @@ async function publish(opts = {}) {
 /** A publish that stopped: what is said, and the edits kept for another try. */
 function publishFailed(err, opts = {}) {
   keptNote = opts.note || '';   // the line typed under "What changed?" is back in its box when the sheet is opened again
+  // A list that could not be written without loss: nothing was sent, and that is what is said.
+  if (err instanceof ListLoss) { refreshPublishButton(); setStatus(LIST_NOT_WHOLE(readableName(err.key)), 'error'); return; }
   // A file the worker would not take (type, size, or contents that don't match
   // its name) comes back with a plain sentence — show it, with the file's name.
   const why = fileRefusalText(err.data);
@@ -6864,7 +6979,7 @@ function previewRestore(changes, label, note, removals = []) {
     previewing.clear();
     undoGroup(() => {
       for (const a of applied) {
-        if (a.value !== undefined) stagePending(a.key, { html: a.value });
+        if (a.value !== undefined) stagePending(a.key, { html: a.value, whole: isListKey(a.key) });
         if (a.attrs) stagePending(a.key, { attrs: a.attrs });
       }
       for (const r of removed) {
@@ -7457,7 +7572,7 @@ async function saveDraft() {
   setStatus('Saving draft…', 'saving');
   try {
     await ensureDraftBranch();
-    const edits = flattenPending();
+    const edits = editsForFile(state.page.text, flattenPending(), listsWaiting());
     const drafted = applyEdits(state.page.text, edits).html;
     let sha;
     try { sha = (await getFile(state.gh, cfg.repo, state.page.path, DRAFT_BRANCH)).sha; } catch { /* new draft */ }
@@ -7476,6 +7591,7 @@ async function saveDraft() {
     setStatus('Draft saved ✓ — nothing is live; resume it any time from this page', 'saved');
   } catch (err) {
     console.error('[kiln] draft', err);
+    if (err instanceof ListLoss) { setStatus(LIST_NOT_WHOLE_DRAFT(readableName(err.key)), 'error'); return; }
     say(err, 'saved', notDone('The draft was not saved.', err));
   }
 }
@@ -7563,7 +7679,7 @@ async function checkForDraft() {
         applied++;
       } else if (liveF?.kind === 'repeat' || el?.hasAttribute('data-cms-repeat')) {
         const cont = document.querySelector(`[data-cms-repeat="${CSS.escape(key)}"]`);
-        if (cont) { applyKeyDom(key, value); stagePending(key, { html: value }); applied++; }
+        if (cont) { applyKeyDom(key, value); stagePending(key, { html: value, whole: true }); applied++; }
       }
     }
     refreshPublishButton();
