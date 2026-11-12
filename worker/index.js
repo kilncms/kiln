@@ -81,7 +81,7 @@ const GH = 'https://api.github.com';
 const UA = 'kiln-auth-worker';
 // Reported by /healthz for the editor's capability handshake (§13). Keep in
 // step with package.json "version" when cutting a release.
-const WORKER_VERSION = '0.5.0';
+const WORKER_VERSION = '0.6.0';
 
 import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingEndsAt } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
