@@ -111,6 +111,20 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   run together with the attribute after it is refused. The check moved to
   `src/autotag.js`, beside the pass, so the dashboard and the editor hold to
   the same rule.
+- **After a change, the editor reads a page's file as it is now, not a copy
+  the browser kept.** For an owner signed in through the service, GitHub's
+  answers were passed on with the day the file last changed and no rule about
+  keeping them. A browser keeps such an answer for a tenth of the file's age:
+  a page nobody had changed for a month was read from that copy for three
+  days. After a publish and a reload the editor then worked from the file as
+  it was before: parts marked since were not editable, and the check that
+  warns when someone else has changed the same part compared against that
+  same old copy, so it could stay silent. The service now tells
+  the browser to keep nothing that came from GitHub (`Cache-Control:
+  no-store` on every `/gh/*` answer, for owners and invited editors), and the
+  editor asks past the browser's kept copies in any case, so a copy kept
+  before this release is no longer read and a service that has not been
+  updated is covered too.
 
 ### Changed
 

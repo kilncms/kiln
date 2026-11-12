@@ -3307,6 +3307,8 @@ function proxyPathTraverses(ghPath) {
 }
 
 // What GitHub says about an answer that the editor may want besides its body.
+/** No browser keeps an answer that came from GitHub through this service: the next read is the file as it is now. */
+const GH_ANSWER_CACHE = 'no-store';
 const OWNER_PASS_HEADERS = ['content-type', 'etag', 'last-modified', 'link', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'x-github-request-id'];
 
 /**
@@ -3351,6 +3353,10 @@ async function ownerProxy(request, env, owner, ghPath) {
   const out = new Headers();
   for (const h of OWNER_PASS_HEADERS) { const v = res.headers.get(h); if (v) out.set(h, v); }
   if (!out.has('content-type')) out.set('content-type', 'application/json');
+  // With GitHub's "last changed" day and no rule for keeping, a browser keeps
+  // the answer for a tenth of the file's age and reads the file from that copy
+  // long after it has changed. What goes through here is never to be kept.
+  out.set('cache-control', GH_ANSWER_CACHE);
   return new Response(res.body, { status: res.status, headers: out });
 }
 
@@ -3559,7 +3565,7 @@ async function ghProxy(request, env, ghPath) {
     }
   }
   const res = await fetch(`${GH}${ghPath}`, { method: request.method, headers, body });
-  return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'application/json' } });
+  return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'application/json', 'Cache-Control': GH_ANSWER_CACHE } });
 }
 
 // An editor session changes and adds files; it never removes one. Removing a

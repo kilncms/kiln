@@ -53,6 +53,22 @@ test('proxy transport routes through worker with session header', async () => {
   assert.equal(seenHeaders.Authorization, undefined, 'no GitHub token leaves the browser in proxy mode');
 });
 
+test('every request, either way, is made past the browser\'s store of earlier answers and is not kept in it', async () => {
+  // A browser keeps an answer that names the day a file last changed, and no
+  // rule for keeping, for a tenth of the file's age. Read from such a copy,
+  // the editor saw a page's file as it was before a publish.
+  const seen = [];
+  const fetchImpl = async (url, opts) => {
+    seen.push([opts.method, opts.cache]);
+    return { ok: true, status: 200, json: async () => ({ content: encodeContent('x'), sha: 's', commit: { sha: 'c' } }) };
+  };
+  for (const gh of [makeGh({ mode: 'proxy', worker: 'https://w.example', session: 'a'.repeat(64), fetchImpl }), makeGh({ mode: 'direct', token: () => 'T', fetchImpl })]) {
+    await getFile(gh, 'o/r', 'index.html', 'main');
+    await gh.request('PUT', '/repos/o/r/contents/index.html', { message: 'm', content: 'eA==', sha: 's' });
+  }
+  assert.deepEqual(seen, [['GET', 'no-store'], ['PUT', 'no-store'], ['GET', 'no-store'], ['PUT', 'no-store']]);
+});
+
 test('editFile retries on sha conflict and merges against fresh source', async () => {
   // Simulates: we read v1; meanwhile someone commits v2 (different field);
   // our PUT 409s; retry reads v2; transform re-applies; PUT succeeds.

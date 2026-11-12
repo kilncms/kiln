@@ -137,6 +137,7 @@ test('proxy: forwards to the session repository and /user with the stored token,
     assert.equal(r.status, 200);
     assert.equal(r.json.path, `${GH}/repos/${REPO}/contents/index.html?ref=main`);
     assert.equal(r.res.headers.get('etag'), '"abc"');
+    assert.equal(r.res.headers.get('cache-control'), 'no-store', 'a browser must not keep a file it read through the service: with GitHub\'s "last changed" day and no rule, it would for days');
     assert.equal(r.res.headers.get('link'), '<x>; rel="next"');
     assert.equal(r.res.headers.get('x-ratelimit-remaining'), '4999');
     assert.equal(calls.at(-1).headers.Authorization, 'Bearer ghu_live');

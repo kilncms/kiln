@@ -23,10 +23,17 @@ export function makeGh(opts) {
     headers.Accept = 'application/vnd.github+json';
     if (body !== undefined) headers['Content-Type'] = 'application/json';
 
+    // Never from the browser's own store of earlier answers, and never kept
+    // in it. GitHub names the day a file last changed; an answer that carries
+    // that day and no rule for keeping is kept by a browser for a tenth of the
+    // file's age. A page nobody had touched for a month was then read from
+    // that copy for three days: the editor went on reading the file as it was
+    // before a publish, so parts marked since were not editable after a reload.
     const res = await fetchImpl(url, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      cache: 'no-store',
     });
     const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
     if (!res.ok) {
