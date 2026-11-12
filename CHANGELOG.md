@@ -125,6 +125,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   editor asks past the browser's kept copies in any case, so a copy kept
   before this release is no longer read and a service that has not been
   updated is covered too.
+- **The first pass leaves the inside and the outside of anything already
+  marked alone.** On a page that was partly marked, it marked paragraphs
+  inside a block of text that was already editable, and a heading or a
+  paragraph around a link that was already marked, so one editable part sat
+  inside another. It turned a group of blocks into a list although someone
+  had marked parts inside those blocks by hand. And it made a list of a row
+  of short labels with nothing in them it could mark, whose blocks could then
+  be copied and moved but never reworded. Now nothing inside a marked part is
+  marked, nothing that holds a marked part is marked, a group is made a list
+  only when no part of it is marked and each of its blocks holds something
+  the pass marks, and a footer that lies inside `<main>` is passed over once.
+  This is the pass `kiln tag`, the dashboard and the editor all use
+  (`src/autotag.js`).
 
 ### Changed
 

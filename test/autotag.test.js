@@ -78,3 +78,94 @@ test('autotag: utility class names are skipped for key prefixes', () => {
   const { html } = autotag(raw);
   assert.ok(/data-cms="intro_block_some_intro_text"/.test(html), html);
 });
+
+// ── A part that is already marked keeps its inside and its outside ──
+
+const strip = (html) => html.replace(/ data-cms(-repeat|-menu|-attr|-plain)?(="[^"]*")?/g, '');
+
+test('autotag: nothing inside a part that is already marked is marked', () => {
+  const raw = `<html><body><main><section class="story">
+    <div data-cms="story_body">
+      <p>In 2019 it started with one crock.</p>
+      <p>Six years later we still brine the same way.</p>
+      <img src="/crock.jpg" alt="">
+    </div>
+    <p>A paragraph outside it.</p>
+  </section></main></body></html>`;
+  const { html, counts } = autotag(raw);
+  assert.deepEqual(counts, { fields: 1, images: 0, repeats: 0, menu: 0 });
+  assert.match(html, /<p data-cms="story_a_paragraph_outside">A paragraph outside it\./);
+  assert.match(html, /<div data-cms="story_body">\s*<p>In 2019/, 'the marked block is as it was, inside too');
+});
+
+test('autotag: nothing that holds a marked part is marked', () => {
+  const raw = `<html><body><main><section class="posts">
+    <h3 class="title"><a data-cms="teaser_1_link" href="/a">The Monday Brine</a></h3>
+    <p class="center"><a class="btn" data-cms="journal_cta" href="/blog">Read the journal</a></p>
+    <blockquote><span data-cms="quote_text">Best pickle in the state.</span> said nobody yet.</blockquote>
+    <figure><img data-cms="pic" data-cms-attr="src" src="/a.jpg"><figcaption>A caption with <b data-cms="cap_bold">a marked word</b></figcaption></figure>
+    <h3>A heading with no mark in it</h3>
+  </section></main></body></html>`;
+  const { html, counts } = autotag(raw);
+  assert.deepEqual(counts, { fields: 1, images: 0, repeats: 0, menu: 0 });
+  assert.match(html, /<h3 data-cms="posts_a_heading_with">A heading with no mark in it/);
+  assert.match(html, /<h3 class="title"><a data-cms="teaser_1_link"/, 'the heading around a marked link is left alone');
+  assert.match(html, /<p class="center"><a class="btn" data-cms="journal_cta"/);
+  assert.match(html, /<blockquote><span data-cms="quote_text">/);
+  assert.match(html, /<figcaption>A caption with/);
+});
+
+test('autotag: a group with a mark anywhere inside is not turned into a list', () => {
+  const card = (n, mark) => `<div class="card"><h3${mark ? ` data-cms="card_${n}_title"` : ''}>Card ${n}</h3><p>Words for card ${n}.</p></div>`;
+  const raw = `<html><body><main><section class="cards">${card(1, true)}${card(2, false)}${card(3, false)}</section></main></body></html>`;
+  const { html, counts } = autotag(raw);
+  assert.equal(counts.repeats, 0);
+  assert.doesNotMatch(html, /data-cms-repeat/);
+  assert.match(html, /<h3 data-cms="card_1_title">Card 1</, 'the mark someone made is as it was');
+  // What is not marked in those cards is still found, each as its own part.
+  assert.match(html, /<p data-cms="card_words_for_card">Words for card 1\./);
+  assert.match(html, /<h3 data-cms="card_card_2">Card 2</);
+  assert.equal(counts.fields, 5);
+  assert.equal(strip(html), strip(raw));
+});
+
+test('autotag: a row of short labels with nothing to mark inside them is not made a list', () => {
+  const raw = `<html><body><main><section class="hero">
+    <div class="pill-row"><span class="pill">No high-fructose anything</span><span class="pill">Fermented, not faked</span><span class="pill">Annoyingly good crunch</span></div>
+    <ul class="plain"><li>One</li><li>Two</li><li>Three</li></ul>
+    <ul class="rich"><li><p>One with a paragraph</p></li><li><p>Two with a paragraph</p></li><li><p>Three with a paragraph</p></li></ul>
+  </section></main></body></html>`;
+  const { html, counts } = autotag(raw);
+  assert.equal(counts.repeats, 1, 'only the list whose blocks hold something that can be reworded');
+  assert.match(html, /<ul class="rich" data-cms-repeat="hero_items">/);
+  assert.doesNotMatch(html, /pill-row" data-cms-repeat|class="plain" data-cms-repeat/);
+});
+
+test('autotag: a menu that is already marked, wherever it is, is left alone inside', () => {
+  const raw = `<html><body><main><div class="side" data-cms-menu="side"><p>Menu words</p><a href="/">a</a></div><p>Outside words here.</p></main></body></html>`;
+  const { html, counts } = autotag(raw);
+  assert.deepEqual(counts, { fields: 1, images: 0, repeats: 0, menu: 0 });
+  assert.match(html, /<p>Menu words<\/p>/);
+});
+
+test('autotag: a footer inside <main> is passed over once, and no element is ever marked twice', () => {
+  const raw = `<html><body><main><section class="a"><p>Some words here.</p></section>
+    <footer><blockquote><p>Words in the footer.</p></blockquote><h4>Say hello</h4></footer></main></body></html>`;
+  const { html, counts } = autotag(raw);
+  assert.equal(counts.fields, 3);
+  assert.doesNotMatch(html, /data-cms="[^"]*"\s+data-cms="/, 'one mark each');
+  assert.doesNotMatch(html, /<blockquote data-cms/, 'the quote holds the paragraph that was marked');
+  assert.equal(autotag(html).html, html, 'and a second run adds nothing');
+});
+
+test('autotag: with a footer outside <main>, parts already marked in it keep their inside and outside', () => {
+  const raw = `<html><body><main><p>Some words here.</p></main>
+    <footer><div data-cms="foot_block"><p>Inside a marked block.</p></div><p><a data-cms="foot_link" href="/x">A marked link</a></p>
+    <ul data-cms-repeat="foot_links"><li><p>In a list already</p></li></ul><h4>Say hello</h4></footer></body></html>`;
+  const { html, counts } = autotag(raw);
+  assert.equal(counts.fields, 2, 'the paragraph in <main> and the footer heading');
+  assert.match(html, /<h4 data-cms="footer_say_hello">/);
+  assert.match(html, /<div data-cms="foot_block"><p>Inside a marked block\.<\/p>/);
+  assert.match(html, /<p><a data-cms="foot_link"/);
+  assert.match(html, /<li><p>In a list already<\/p><\/li>/);
+});

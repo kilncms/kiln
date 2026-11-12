@@ -7,6 +7,13 @@
  * This is deliberately a FIRST PASS: conservative rules, reviewable via
  * `git diff`, refinable in the browser with Make-editable. It never touches
  * anything already annotated, so running it twice is a no-op.
+ *
+ * "Never touches" is meant whole: a part that is already marked keeps its
+ * inside and its outside. Nothing within it is marked (a paragraph in a marked
+ * block of text would become a part inside a part), nothing that holds it is
+ * marked (a heading around a marked link would swallow the link's own mark),
+ * and a group of blocks with a mark anywhere inside is not turned into a list
+ * (that would change how parts someone marked by hand are published).
  */
 
 import { parse } from 'parse5';
@@ -17,6 +24,34 @@ const CMS_ATTRS = ['data-cms', 'data-cms-repeat', 'data-cms-menu'];
 
 const attrOf = (node, name) => node.attrs?.find(a => a.name === name)?.value;
 const hasCms = (node) => !!node.attrs?.some(a => CMS_ATTRS.includes(a.name));
+/** Marked itself in a way that makes its whole inside its own: a field, a menu, or a part that comes from a content file. */
+const ownsInside = (node) => !!node.attrs?.some(a => a.name === 'data-cms' || a.name === 'data-cms-menu' || a.name === 'data-kiln-source');
+/** True when anything under `node` (not `node` itself) is already marked, in the file or by this run (`now`). */
+function holdsMarked(node, now) {
+  for (const c of node.childNodes || []) {
+    if (c.tagName && (hasCms(c) || now?.has(c) || attrOf(c, 'data-kiln-source') !== undefined || holdsMarked(c, now))) return true;
+  }
+  return false;
+}
+/**
+ * True when a block holds something the pass marks inside a list (the same
+ * rules as tagRepeatItem below). A group whose blocks hold none, such as a row
+ * of short labels, is not made a list: its blocks could be copied and moved
+ * but never reworded.
+ */
+function holdsMarkable(node) {
+  if (SKIP_SUBTREES.has(node.tagName)) return false;
+  if (node.tagName && !hasCms(node)) {
+    if (/^h[1-6]$/.test(node.tagName) || ['p', 'figcaption', 'blockquote', 'time'].includes(node.tagName)) { if (textOf(node)) return true; }
+    else if (node.tagName === 'img' && attrOf(node, 'src')) return true;
+  }
+  return (node.childNodes || []).some(c => c.tagName && holdsMarkable(c));
+}
+/** True when `node` is `root` or somewhere under it. */
+function within(root, node) {
+  for (let n = node; n; n = n.parentNode) if (n === root) return true;
+  return false;
+}
 
 function textOf(node) {
   let out = '';
@@ -66,10 +101,13 @@ export function autotag(raw) {
     const text = raw.slice(loc.startOffset, loc.endOffset);
     return loc.endOffset - (text.endsWith('/>') ? 2 : 1);
   };
+  const marked = new Set();   // what this run has marked: never the same element twice
   const annotate = (node, attrs) => {
+    if (marked.has(node)) return false;
     const at = insertPoint(node);
     if (at === null) return false;
     splices.push({ offset: at, text: attrs });
+    marked.add(node);
     return true;
   };
 
@@ -122,14 +160,15 @@ export function autotag(raw) {
 
   const scope = main || body || doc;
   (function findRepeats(n, ancestors) {
-    if (SKIP_SUBTREES.has(n.tagName) || (n.tagName && hasCms(n) && attrOf(n, 'data-cms') !== undefined)) return;
+    if (SKIP_SUBTREES.has(n.tagName) || (n.tagName && ownsInside(n))) return;
     const kids = elementChildren(n).filter(k => k.tagName !== 'template');
-    if (n.tagName && !hasCms(n) && !insideRepeat(ancestors) && !inMenu(ancestors, n) && kids.length >= 3) {
+    if (n.tagName && !hasCms(n) && !insideRepeat(ancestors) && !inMenu(ancestors, n) && kids.length >= 3 && !holdsMarked(n, marked)) {
       const sigs = kids.map(signature);
       const top = sigs.sort().filter((s, i, a) => s === a[0]).length >= 3 ? sigs[0] : null;
       const share = kids.filter(k => signature(k) === sigs[0]).length / kids.length;
       // all (or nearly all) children are the same kind of block, and blocks have content
-      if (top && share >= 0.8 && textOf(kids[0]).length > 0 && !['table', 'tbody', 'thead', 'tfoot', 'tr', 'select', 'optgroup', 'datalist'].includes(n.tagName)) {
+      if (top && share >= 0.8 && textOf(kids[0]).length > 0 && !['table', 'tbody', 'thead', 'tfoot', 'tr', 'select', 'optgroup', 'datalist'].includes(n.tagName)
+        && kids.filter(k => signature(k) === sigs[0]).every(holdsMarkable)) {
         const prefix = prefixFor([...ancestors, n]);
         const key = uniq(`${prefix}_items`);
         if (annotate(n, ` data-cms-repeat="${key}"`)) {
@@ -161,10 +200,11 @@ export function autotag(raw) {
   // ── Plain fields + images everywhere in scope (outside repeats/menu) ──
   (function tagFields(n, ancestors) {
     if (SKIP_SUBTREES.has(n.tagName) || repeatContainers.has(n)) return;
+    if (n.tagName && ownsInside(n)) return;   // already marked: its inside is its own
     if (n.tagName && !hasCms(n) && !insideRepeat(ancestors) && !inMenu(ancestors, n)) {
       if (FIELD_TAGS.has(n.tagName)) {
         const text = textOf(n);
-        if (text.length >= 3 && !elementChildren(n).some(k => FIELD_TAGS.has(k.tagName))) {
+        if (text.length >= 3 && !elementChildren(n).some(k => FIELD_TAGS.has(k.tagName)) && !holdsMarked(n, marked)) {
           const key = uniq(`${prefixFor(ancestors)}_${slug(text)}`);
           if (annotate(n, ` data-cms="${key}"`)) counts.fields++;
           return;
@@ -179,16 +219,18 @@ export function autotag(raw) {
     for (const c of n.childNodes || []) if (c.tagName) tagFields(c, [...ancestors, n]);
   })(scope, []);
 
-  // Also tag footer content (contact lines etc.) when scope was <main>.
+  // Also tag footer content (contact lines etc.) when scope was <main>. A
+  // footer that lies inside <main> has had its pass already.
   if (main && body) {
     let footer = null;
     (function ff(n) { if (n.tagName === 'footer' && !footer) footer = n; for (const c of n.childNodes || []) ff(c); })(body);
-    if (footer) {
+    if (footer && !within(main, footer)) {
       (function tagFields(n, ancestors) {
-        if (SKIP_SUBTREES.has(n.tagName)) return;
+        if (SKIP_SUBTREES.has(n.tagName) || repeatContainers.has(n)) return;
+        if (n.tagName && (ownsInside(n) || marked.has(n) || attrOf(n, 'data-cms-repeat') !== undefined)) return;   // already marked: its inside is its own
         if (n.tagName && !hasCms(n) && !inMenu(ancestors, n) && FIELD_TAGS.has(n.tagName)) {
           const text = textOf(n);
-          if (text.length >= 3) {
+          if (text.length >= 3 && !holdsMarked(n, marked)) {
             const key = uniq(`footer_${slug(text)}`);
             if (annotate(n, ` data-cms="${key}"`)) counts.fields++;
             return;
