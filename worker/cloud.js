@@ -13,6 +13,7 @@
  *   POST /cloud/sites/remove     → cancel its subscription, then delete a site
  *   GET  /cloud/sites/update     → which Kiln editor the site's repository holds, and what an update would replace
  *   POST /cloud/sites/update     → replace the editor's files with the released ones (update.js), in one commit
+ *   GET  /cloud/sites/check      → a checklist of how the site is set up (sitecheck.js); changes nothing
  *   GET  /cloud/portal?site=     → Lemon Squeezy customer-portal link
  *   POST /cloud/webhook/ls       → Lemon Squeezy webhook (signed) → set site status
  *   GET  /admin/cloud/overview   → (owner only) accounts, sites (with the editor build each runs), MRR
@@ -29,6 +30,7 @@ import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, 
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
+import { checkSite, editingOffLine } from './sitecheck.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -508,9 +510,15 @@ async function markFirstPass(env, siteId, commit) {
  * ended, stops this as it stops editing); the person may still change the
  * repository (asked again, because that can have changed since the site was
  * added); and the Kiln app can reach the repository. The answer is
- * { site, token, write, body } or { response }, the refusal to send back.
+ * { site, token, write, body, access } or { response }, the refusal to send back.
+ *
+ * A route that only reads, and has something to say about a site that may
+ * not be edited or that the app cannot reach, asks for `needAccess: false`
+ * or `needToken: false`. It is then handed `access` (false when editing is
+ * switched off) and `token` (null when the app cannot reach the repository)
+ * and answers for itself.
  */
-async function ownedSite(request, env, url, sess, tools = {}) {
+async function ownedSite(request, env, url, sess, tools = {}, { needToken = true, needAccess = true } = {}) {
   if (!sess) return { response: json({ error: 'not signed in' }, 401) };
   const write = request.method === 'POST';
   const body = write ? await request.json().catch(() => ({})) : {};
@@ -520,14 +528,19 @@ async function ownedSite(request, env, url, sess, tools = {}) {
     () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
   );
   if (!site) return { response: json({ error: 'That site is not on this account.', code: 'no_such_site' }, 404) };
-  if (!siteHasAccess(site)) {
+  const access = siteHasAccess(site);
+  if (!access && needAccess) {
     return { response: json({ error: 'Editing is switched off for this site, so Kiln cannot change its repository. Subscribe on the site\'s row, then try again.', code: 'plan_ended' }, 403) };
   }
   const owner = String(site.repo).split('/')[0].toLowerCase();
   if (!(owner === String(sess.login || '').toLowerCase() || await userCanPush(sess.gh, site.repo))) return { response: json({ error: NOT_YOUR_REPO, code: 'not_yours' }, 403) };
-  const token = typeof tools.installationToken === 'function' ? await tools.installationToken(env, site.repo) : null;
-  if (!token) return { response: json({ error: prepareSentence('no_access', { repo: site.repo }), code: 'no_access', install_url: INSTALL_URL }, 409) };
-  return { site, token, write, body };
+  let token = null;
+  if (typeof tools.installationToken === 'function') {
+    try { token = await tools.installationToken(env, site.repo); }
+    catch (e) { if (needToken) throw e; }   // a route that answers without it says so itself
+  }
+  if (!token && needToken) return { response: json({ error: prepareSentence('no_access', { repo: site.repo }), code: 'no_access', install_url: INSTALL_URL }, 409) };
+  return { site, token, write, body, access };
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -854,6 +867,23 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const site = await env.kiln_cloud.prepare('SELECT ls_subscription_id FROM sites WHERE id = ? AND account_id = ?').bind(url.searchParams.get('site'), sess.account_id).first();
     const portal = site ? await lsPortal(env, site.ls_subscription_id) : null;
     return portal ? json({ url: portal }) : json({ error: 'There is no subscription for this site yet, so there is no billing page to open.' }, 404);
+  }
+
+  // "Check this site": a checklist of how the site is set up, for its owner
+  // (sitecheck.js). It reads the repository and the live site and changes
+  // nothing. It answers when the Kiln app is not installed and when editing
+  // is switched off too, because each of those is a line in the list.
+  if (path === '/cloud/sites/check' && request.method === 'GET') {
+    const asked = await ownedSite(request, env, url, sess, tools, { needToken: false, needAccess: false });
+    if (asked.response) return asked.response;
+    const { site, token, access } = asked;
+    const checks = await checkSite({ token, repo: site.repo, origin: site.origin, worker: url.origin, installUrl: INSTALL_URL, canAdd: access });
+    if (!access) {
+      let sub = null;
+      try { sub = await env.kiln_cloud.prepare('SELECT ls_subscription_id FROM sites WHERE id = ?').bind(site.id).first(); } catch { /* worded as a trial that ended */ }
+      checks.unshift(editingOffLine({ status: site.status, subscribed: !!(sub && sub.ls_subscription_id) }));
+    }
+    return json({ ok: true, repo: site.repo, origin: site.origin, checks, all_ok: checks.every(c => c.ok === true) });
   }
 
   // Fresh checkout link for a site that has no live subscription yet (trial,

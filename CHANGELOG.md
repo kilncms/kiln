@@ -47,6 +47,26 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   has from its signed-in editors, and which one is released from the release
   itself, looked up at most once an hour (`worker/update.js`, `GET` and `POST
   /cloud/sites/update`, `editor_build` and `editor_latest` in `/cloud/me`).
+- **Kiln Cloud's dashboard can check a site and say what is wrong with it.**
+  On each site's row, **Check this site** shows a short list with a yes or a
+  no on every line: Kiln can reach the repository, Kiln's files and the two
+  script tags are in it, the settings file names this service and this
+  repository, the site's address answers, the live site loads Kiln, and the
+  sign-in page at `/kiln` answers. Each line is a plain sentence about what
+  was found, and a no comes with what to press or do: the install link, the
+  row's own **Add Kiln to this site** button, or the settings file opened on
+  GitHub. A repository that has Kiln while the live site does not is told
+  that the host has not published the change yet, or publishes from another
+  repository or branch. A line that cannot be looked at because an earlier
+  one failed says "not checked" and why, and is not counted as a no. A site
+  built by a generator is reported as it is and pointed to the setup tool.
+  The check still answers when the Kiln app is not installed and when editing
+  is switched off after a trial, which then is the first line. It changes
+  nothing, in the repository or anywhere else. The site's own address is
+  asked with care: `https` only, never a numbered or private address, eight
+  seconds for each request, at most three redirects and only within the site
+  or its `www` form, at most 512 KB read, and no cookies or sign-in details
+  sent (`worker/sitecheck.js`, `GET /cloud/sites/check`).
 
 ### Changed
 

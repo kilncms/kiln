@@ -27,6 +27,7 @@ const items = [
   ['worker/mail.js', 'worker/mail.js'],                     // imported by worker/cloud.js
   ['worker/prepare.js', 'worker/prepare.js'],               // ditto — adding Kiln to a repository from the dashboard
   ['worker/firstpass.js', 'worker/firstpass.js'],           // ditto — the first pass at what can be edited (uses src/autotag.js)
+  ['worker/sitecheck.js', 'worker/sitecheck.js'],           // ditto — the "Check this site" checklist
   ['worker/section-scope.js', 'worker/section-scope.js'],   // ditto — section limits on page writes
   ['worker/source.js', 'worker/source.js'],                 // ditto — source-mode endpoints
   ['worker/update.js', 'worker/update.js'],                 // imported by worker/cloud.js: updating the editor in a repository from the dashboard
