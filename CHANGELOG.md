@@ -99,6 +99,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "Plain text only" is not covered. The first pass still marks the heading,
   not the link: pages that are marked already are never marked again, so only
   the editor can keep their links (`src/editor/keep-link.js`).
+- **A page made with "New post or page" can always be edited, and shows its
+  accents.** A new page is a copy of the site's starting page. Where that
+  starting page had neither Kiln's two script lines nor a line naming its
+  character set, the new page had no Kiln button, so its owner could not
+  change a word of it, and it showed "Ã©" for "é". Now the page that is
+  written always names its character set (`<meta charset="utf-8">`, first in
+  its head, when it names none) and always loads Kiln (the settings file and
+  the editor before `</body>`, from where this site's pages load them). Each
+  is added only where it is missing, and nothing else on the page is touched.
+  A site with no starting page, no pattern for a post's card, no blog page or
+  no list for posts is now told what is missing and what its owner can do
+  today. It used to read "see the docs", or "blog/index.html needs a
+  data-cms-list container" (`src/editor/new-page.js`).
 - **A page made with "New post or page" can be edited, and its accents
   read as written, on a site Kiln was added to from the dashboard.** A site
   keeps the templates new pages are made from in `_templates/` (`page.html`,

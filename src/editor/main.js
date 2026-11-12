@@ -58,6 +58,7 @@ import { noteList, noteCopy, fileTrue, noteInside, noteAs, beginInside, settleIn
   beginOn, endOn, ownStyle, settleOn, showStyle } from './file-state.js';
 import { writeInside, rememberInside } from './keep-inside.js';
 import { keepLink, LINK_KEPT } from './keep-link.js';
+import { readyPage, kilnFilesOn, missingWords, noPostList } from './new-page.js';
 import { takeBase, readAttrs } from './baselines.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { saveMenuEverywhere, menuStepText } from './menu-save.js';
@@ -6197,26 +6198,32 @@ function newContent() {
       };
 
       const files = [];
+      // A file the new page is made from that is not on the site is told in plain words (new-page.js).
+      const need = (file, what) => getFile(state.gh, cfg.repo, root + file, branch).catch(err => { throw err.status === 404 ? said(missingWords(what)) : err; });
+      // Whatever the starting page holds, the page that is written names its
+      // character set and loads Kiln, from where this site's pages load it.
+      const kilnFiles = kilnFilesOn([...document.scripts].map(s => s.getAttribute('src')), location.href);
+      const ready = (html) => readyPage(html, kilnFiles).html;
       if (kind === 'post') {
-        const tpl = await getFile(state.gh, cfg.repo, root + '_templates/post.html', branch);
-        const cardTpl = await getFile(state.gh, cfg.repo, root + '_templates/post-card.html', branch);
-        const blogIndex = await getFile(state.gh, cfg.repo, root + 'blog/index.html', branch);
-        const postHtml = await aiDraft(applyEdits(tpl.text, [
+        const tpl = await need('_templates/post.html', 'post');
+        const cardTpl = await need('_templates/post-card.html', 'card');
+        const blogIndex = await need('blog/index.html', 'blog');
+        const postHtml = ready(await aiDraft(applyEdits(tpl.text, [
           { key: 'post_title', html: escapeHtml(title) },
           { key: 'post_date', html: escapeHtml(date) },
-        ]).html.replaceAll('{{title}}', escapeHtml(title)));
+        ]).html.replaceAll('{{title}}', escapeHtml(title))));
         const card = cardTpl.text
           .replaceAll('{{title}}', escapeHtml(title))
           .replaceAll('{{href}}', href)
           .replaceAll('{{date}}', escapeHtml(date));
         const newIndex = applyEdits(blogIndex.text, [{ key: 'post_list', prepend: '\n      ' + card.trim() }]);
-        if (!newIndex.applied.length) throw said('The blog page has no list for posts to go into. For the owner: blog/index.html needs a data-cms-list="post_list" container');
+        if (!newIndex.applied.length) throw said(noPostList({ blocks: [...indexHtml(blogIndex.text).fields.values()].some(f => f.kind === 'repeat') }));
         files.push({ path: filePath, text: postHtml }, { path: root + 'blog/index.html', text: newIndex.html });
       } else {
-        const tpl = await getFile(state.gh, cfg.repo, root + '_templates/page.html', branch);
-        const pageHtml = await aiDraft(applyEdits(tpl.text, [
+        const tpl = await need('_templates/page.html', 'page');
+        const pageHtml = ready(await aiDraft(applyEdits(tpl.text, [
           { key: 'page_title', html: escapeHtml(title) },
-        ]).html.replaceAll('{{title}}', escapeHtml(title)));
+        ]).html.replaceAll('{{title}}', escapeHtml(title))));
         files.push({ path: filePath, text: pageHtml });
       }
 
@@ -6253,9 +6260,7 @@ function newContent() {
       // The form again, with what was typed, and why it did not go through.
       body.style.display = 'none';
       form.style.display = '';
-      m.querySelector('#kiln-np-said').textContent = err.status === 404
-        ? `This site has no ${kind} template (_templates/${kind}.html) — see the docs.`
-        : stopped(err, 'created', typedIn(form)) || notDone('Nothing was created.', err);
+      m.querySelector('#kiln-np-said').textContent = stopped(err, 'created', typedIn(form)) || notDone('Nothing was created.', err);
     }
   };
 }
