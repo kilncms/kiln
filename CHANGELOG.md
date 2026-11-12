@@ -121,6 +121,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bare address `/page.html` or `/blog/post.html`, which only the first such
   title could have. It now gets one of its own, such as `/page-mwe0s3hw.html`.
   The title on the page is as it was typed (`src/editor/page-address.js`).
+- **A picture inside a paragraph can be described.** A stand-alone picture has
+  a box for its description on its toolbar and is asked about when it is
+  replaced. A picture put inside a paragraph had a small bar with widths and a
+  remove button and nothing else, so it went live with no description, and
+  the publish sheet could only warn about it. The small bar now has a
+  "Describe" button. It opens the same dialog a replaced picture gets, with
+  this picture's own words in the box, and pointing at the button says what
+  the picture is described as now. The answer is kept with the paragraph,
+  like the picture's size. The publish sheet still warns only about a picture
+  that is new in that publish (`src/editor/describe-picture.js`).
 - **A page made with "New post or page" can be edited, and its accents
   read as written, on a site Kiln was added to from the dashboard.** A site
   keeps the templates new pages are made from in `_templates/` (`page.html`,

@@ -48,11 +48,40 @@ export const LATER_WORDS = 'The new picture still has the old description. Click
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /**
+ * What the dialog says for a picture that is already on the page and is not
+ * being replaced: one inside a paragraph, whose small bar has a "Describe"
+ * button. `alt` is the description it has now.
+ */
+export function describeOwnCopy(alt) {
+  const now = tidy(alt);
+  return {
+    ...describeCopy(alt),
+    title: 'Describe this picture',
+    before: now
+      ? 'The words in the box are what this picture says now. Keep them, change them, or clear the box.'
+      : 'This picture has no description yet.',
+    cancel: 'Cancel',
+  };
+}
+
+/** The button on the small bar of a picture inside a paragraph, and what it says when pointed at. */
+export const DESCRIBE_BUTTON = 'Describe';
+export const describeHint = (alt) => (tidy(alt)
+  ? `This picture is described as “${tidy(alt)}”. Press to change the description.`
+  : 'This picture has no description. Press to say what it shows, for people who cannot see it.');
+
+/** What the status line says once a picture inside a paragraph has been described, or left without on purpose. */
+export const describedWords = (alt) => (tidy(alt)
+  ? 'The picture has its description. Click outside the text, then Publish, to keep it.'
+  : 'The picture has no description, as you chose. Click outside the text, then Publish, to keep it.');
+
+/**
  * Ask. `modal` is main.js's dialog. Resolves with the description to use
  * (possibly ''), or null when the dialog was put away without an answer.
+ * `copy` is what the dialog says: by default, the words for a picture that
+ * was just put in place of another.
  */
-export function askDescription(modal, oldAlt) {
-  const copy = describeCopy(oldAlt);
+export function askDescription(modal, oldAlt, copy = describeCopy(oldAlt)) {
   return new Promise((resolve) => {
     let answer = null;
     const m = modal(`

@@ -71,7 +71,7 @@ import { askFirst, askWhich, tell, ownDialogCopy } from './own-dialogs.js';
 import { offersWholePage, wholePagePass, wholePageWrite, wholePageCopy, wholePageMessage, servesMarks, wholePageNote, fileIsBehind,
   WHOLE_PAGE_NOTE, WHOLE_PAGE_BUTTON, WHOLE_PAGE_READING, WHOLE_PAGE_SAVING, WHOLE_PAGE_SAVED, WHOLE_PAGE_RELOAD, WHOLE_PAGE_NOT_DONE, WHOLE_PAGE_WHY } from './whole-page.js';
 import { askStanding, planEndedNotice } from './plan-ended.js';
-import { askDescription, LATER_WORDS } from './describe-picture.js';
+import { askDescription, LATER_WORDS, describeOwnCopy, DESCRIBE_BUTTON, describeHint, describedWords } from './describe-picture.js';
 import { coverBottom, isUnder, isSiteBar } from './under-bar.js';
 import { fabSpot, isHiddenBox } from './fab-place.js';
 import { whereTo } from './in-view.js';
@@ -1210,7 +1210,28 @@ function revealFields() {
   setTimeout(() => root.classList.remove('kiln-reveal'), still ? 1500 : 2100);
 }
 
-/** Mini popover for an image inside a rich-text field: width presets + remove. */
+/**
+ * "Describe" on the small bar of a picture inside a paragraph: the question a
+ * replaced picture is asked (describe-picture.js), with this picture's own
+ * words in the box. The answer goes on the picture, and the paragraph's own
+ * commit keeps it, like the picture's size. The dialog does not end the
+ * editing of the paragraph (kiln-keeps-edit).
+ */
+async function describeInline(img) {
+  const was = img.getAttribute('alt') || '';
+  const ask = (html, opts) => { const m = modal(html, opts); m.classList.add('kiln-keeps-edit'); return m; };
+  const typed = await askDescription(ask, was, describeOwnCopy(was));
+  if (typed === null || !img.isConnected) return;
+  if (typed !== was) {
+    img.setAttribute('alt', typed);
+    // A paragraph that is no longer being edited is committed now, so the description is staged with it.
+    const field = img.closest('[data-cms]');
+    if (field && !state.active) commitEdit(field, field.getAttribute('data-cms'));
+  }
+  setStatus(describedWords(typed), 'saved');
+}
+
+/** Mini popover for an image inside a rich-text field: width presets, its description, and remove. */
 function inlineImgPopover(img) {
   document.getElementById('kiln-imgpop')?.remove();
   const pop = document.createElement('div');
@@ -1218,6 +1239,7 @@ function inlineImgPopover(img) {
   pop.innerHTML = `<span class="kiln-tb-label">image</span>
     ${['25%', '50%', '75%', '100%'].map(s => `<button class="kiln-tb-fmt" data-w="${s}">${s}</button>`).join('')}
     <button class="kiln-tb-fmt" data-w="orig" title="Original size">Auto</button>
+    <button class="kiln-tb-fmt" data-describe="1" title="${escapeHtml(describeHint(img.getAttribute('alt')))}">${DESCRIBE_BUTTON}</button>
     <button class="kiln-tb-fmt" data-x="1" title="Remove this image">✕</button>`;
   document.body.appendChild(pop);
   const r = img.getBoundingClientRect();
@@ -1228,6 +1250,7 @@ function inlineImgPopover(img) {
     b.addEventListener('mousedown', (e) => e.preventDefault()); // keep the field's selection
     b.onclick = (e) => {
       e.stopPropagation(); e.preventDefault();
+      if (b.dataset.describe) { describeInline(img); return; }
       if (b.dataset.x) { img.remove(); handle.remove(); pop.remove(); return; }
       if (b.dataset.w === 'orig') { img.style.removeProperty('width'); img.style.removeProperty('height'); }
       else { img.style.width = b.dataset.w; img.style.height = 'auto'; }
