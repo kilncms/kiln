@@ -106,6 +106,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   page with a match has changed since. If one has, nothing is replaced, the
   page is named, and you are asked to press "Preview matches" again. A second
   preview also takes the first one's "Replace all" button away with it.
+- **The AI tools are not offered where the site has no AI.** AI assist works
+  only where the Kiln service holds an AI key. On a site without one, the ✨
+  button on the toolbar, "Describe" on a picture and "let AI draft the
+  content" on a new page were all still there, and pressing any of them could
+  only fail. The editor now listens to what the service says about AI. When
+  the owner opens People & access and the service says it has none, the
+  owner's own AI buttons go too. The first time any AI tool is answered "AI
+  is not set up", the tools are put away for the rest of the visit, and the
+  line says so and says who can turn them on. The service does not yet say
+  whether it has AI anywhere an invited editor can read before pressing, so
+  on such a site an editor still sees the tools once. The editor already
+  reads the answer for the day the service gives it.
 
 ## [0.6.1] - 2026-11-12
 

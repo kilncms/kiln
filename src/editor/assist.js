@@ -22,6 +22,7 @@ import DOMPurify from 'dompurify';
 import { SANITIZE } from './sanitize.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { demoSays } from './tryout.js';
+import { aiNotSetUpWords } from './ai-offered.js';
 
 let deps = null;
 
@@ -36,6 +37,8 @@ async function aiRequest(body) {
     return await ask('/ai/assist', { method: 'POST', body: { repo: cfg.repo, ...body } });
   } catch (err) {
     if (err.status !== 501) throw err;
+    // The service has no AI: the AI tools are put away for this visit (main.js noteAi).
+    if (deps.noAi) deps.noAi();
     const none = said('AI is not set up on this site');
     none.notConfigured = true;
     throw none;
@@ -56,12 +59,10 @@ function failed(err, lead, asked = '') {
   else say(err, '', notDone(lead, err), asked ? { name: 'what you asked for', text: asked } : null);
 }
 
-/** The 501 explanation: admins get the fix, editors get who to ask. */
+/** The 501 explanation: the owner gets the way to turn AI on, an editor gets who can. */
 function explainNotConfigured() {
   const { mode, setStatus } = deps;
-  setStatus(mode === 'admin'
-    ? 'AI assist isn’t set up — add your Anthropic key to the worker: wrangler secret put AI_API_KEY'
-    : 'AI assist isn’t set up on this site — ask the site owner to enable it', 'error');
+  setStatus(aiNotSetUpWords(mode), 'error');
 }
 
 function closeMenu() {
