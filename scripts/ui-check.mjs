@@ -8,7 +8,9 @@
  *
  * The URL is a locally served site in sandbox mode (`sandbox: true` in its
  * kiln-config.js), with the bundles from dist/ copied into its assets. Nothing
- * outside that server is contacted: every other request is blocked.
+ * outside that server is contacted: every other request is blocked, and each
+ * one counts as a failure unless it is a stylesheet the site's own page asks
+ * for in its own file (its fonts, say), which is not Kiln's doing.
  *
  * Runs at 1440x900, 390x844 and 360x740, twice each — as a returning visitor
  * and as a first-time one (who gets the demo guide on top of everything else).
@@ -177,6 +179,91 @@ const sideways = (page) => page.evaluate(() => {
   return out;
 });
 
+/**
+ * A request for something outside the local server is never let out, and it
+ * counts against Kiln, with one exception: a stylesheet the site's own page
+ * asks for in its own file (the test demo's page has a line for its fonts at
+ * fonts.googleapis.com). That is the site's doing, with or without Kiln. Only
+ * this passes uncounted: a request for a stylesheet, made by a page of the
+ * local server, for an address that page's file, as the server sends it,
+ * names in a <link rel="stylesheet">. Whatever Kiln's own code asks for (a
+ * fetch, a script, a picture, a font, a stylesheet the file does not name)
+ * still counts, at Google's addresses as much as anywhere else.
+ */
+const namedStylesheets = (html, base) => {
+  const out = [];
+  for (const [tag] of String(html).replace(/<!--[\s\S]*?-->/g, '').matchAll(/<link\b[^>]*>/gi)) {
+    const attr = (name) => { const m = tag.match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i')); return m ? (m[1] ?? m[2] ?? m[3]) : ''; };
+    if (!/(^|\s)stylesheet(\s|$)/i.test(attr('rel'))) continue;
+    try { out.push(new URL(attr('href').replace(/&amp;/gi, '&'), base).href); } catch { /* not an address */ }
+  }
+  return out;
+};
+const pageFiles = new Map();   // a page's address -> the stylesheets its file names
+async function sitesOwnStylesheet(request) {
+  if (request.resourceType() !== 'stylesheet') return false;
+  let at;
+  try { at = new URL(request.frame().url()); } catch { return false; }
+  if (at.origin !== ORIGIN) return false;
+  const file = at.origin + at.pathname;
+  if (!pageFiles.has(file)) pageFiles.set(file, fetch(file).then(r => (r.ok ? r.text() : '')).then(html => namedStylesheets(html, file)).catch(() => []));
+  return (await pageFiles.get(file)).includes(request.url());
+}
+/** Refuse a request for something outside the local server, and note it in `list` unless it is the site's own stylesheet. */
+async function refuse(route, list) {
+  const request = route.request();
+  if (!(await sitesOwnStylesheet(request))) list.push(request.url());
+  return route.abort();
+}
+/** Take out of `list` the requests for one address a press was meant to open (a guide, a link), and leave every other one counted. */
+const forget = (list, address) => { for (let i = list.length - 1; i >= 0; i--) if (list[i].startsWith(address)) list.splice(i, 1); };
+
+/**
+ * Bring a block to where a person has it before reaching for its buttons: on
+ * the screen, with its top below any bar the site keeps at the top of it. A
+ * block's buttons are hidden while they are under such a bar (the "real
+ * sites" pass checks that they are), and scrollIntoViewIfNeeded() is content
+ * with a block whose top is under one: the test demo has a header that stays.
+ */
+async function inReach(page, block) {
+  await block.scrollIntoViewIfNeeded();
+  const bar = (await page.evaluate(roomOnScreen)).top;
+  await block.evaluate((el, under) => {
+    const top = el.getBoundingClientRect().top;
+    if (under && top < under + 16) window.scrollBy({ top: top - under - 16, behavior: 'instant' });
+  }, bar);
+  await page.waitForTimeout(150);
+}
+/**
+ * The part of the screen nothing stays on top of while the page scrolls, from
+ * `top` to `bottom`: below a bar the site keeps at the top of the screen, and
+ * above what Kiln keeps along the bottom of it (the pencil, Undo, Redo and
+ * Publish, the demo's banner, the guide's second tip). Runs in the page.
+ */
+const roomOnScreen = () => {
+  let top = 0, bottom = innerHeight;
+  for (const e of document.querySelectorAll('body *')) {
+    const cs = getComputedStyle(e);
+    if ((cs.position !== 'fixed' && cs.position !== 'sticky') || cs.visibility === 'hidden') continue;
+    const r = e.getBoundingClientRect();
+    if (!r.width || !r.height || r.height > innerHeight / 2 || r.bottom <= 0 || r.top >= innerHeight) continue;
+    const kiln = !!e.closest('[id^="kiln-"], .kiln-item-ctl, .kiln-repeat-add, .kiln-block-gap');
+    if (!kiln && r.top <= 1 && r.width >= innerWidth * 0.9) top = Math.max(top, r.bottom);
+    if (kiln && cs.position === 'fixed' && (r.top + r.bottom) / 2 > innerHeight / 2) bottom = Math.min(bottom, r.top);
+  }
+  return { top, bottom };
+};
+/** Wait until the page has stopped moving (the editor moves it smoothly to show a block's opened buttons). */
+async function atRest(page) {
+  let was = NaN;
+  for (let i = 0; i < 40; i++) {
+    const y = await page.evaluate(() => window.scrollY);
+    if (y === was) return;
+    was = y;
+    await page.waitForTimeout(120);
+  }
+}
+
 async function run(browser, size, firstVisit) {
   const phone = size.width < 600;
   const scope = `${size.width}x${size.height} ${firstVisit ? 'first visit ' : 'returning   '}`;
@@ -186,8 +273,7 @@ async function run(browser, size, firstVisit) {
   await context.route('**/*', (route) => {
     const u = route.request().url();
     if (u.startsWith(ORIGIN) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
-    blocked.push(u);
-    return route.abort();
+    return refuse(route, blocked);
   });
   if (!firstVisit) await context.addInitScript(() => { try { localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ } });
   const page = await context.newPage();
@@ -212,7 +298,33 @@ async function run(browser, size, firstVisit) {
   if (firstVisit) {
     await guide.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
     check(scope, 'guide step 1 points at the first editable heading', /^(Click|Tap) this and type\.$/.test((await guide.locator('span').first().textContent().catch(() => '')) || ''));
-    if (await guide.count()) check(scope, 'guide step 1 does not cover the heading', apart(await box(guide), await box(heading)));
+    if (await guide.count()) {
+      // Under or over the heading, the tip is clear of the heading's whole box. Where both of those places hold
+      // something to read or to press, the editor puts it on the heading's own line, after its words (firstrun.js,
+      // placeBeside): the box of a heading runs the width of its column, so there the tip is inside that box and
+      // must lie on none of the heading's words, begin after the last word of the first line and sit level with
+      // that line, and a press on the words must still land on the heading.
+      const g = await box(guide);
+      const side = ((await guide.getAttribute('class')) || '').replace('kiln-guide--', '');
+      const words = await heading.evaluate((el) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const lines = [...range.getClientRects()].filter(b => b.width > 1 && b.height > 1).map(b => ({ left: b.left, top: b.top, right: b.right, bottom: b.bottom }));
+        if (!lines.length) return { lines, first: null, pressed: false };
+        const top = Math.min(...lines.map(b => b.top));
+        const one = lines.filter(b => b.top < top + (lines[0].bottom - lines[0].top) / 2);
+        const first = { left: Math.min(...one.map(b => b.left)), top, right: Math.max(...one.map(b => b.right)), bottom: Math.max(...one.map(b => b.bottom)) };
+        const under = document.elementFromPoint((first.left + first.right) / 2, (first.top + first.bottom) / 2);
+        return { lines, first, pressed: !!under && (under === el || el.contains(under)) };
+      });
+      const offWords = words.lines.length > 0 && words.lines.every(l => apart(g, l));
+      const level = !!words.first && (g.top + g.bottom) / 2 > words.first.top && (g.top + g.bottom) / 2 < words.first.bottom;
+      const clear = side === 'beside'
+        ? offWords && level && g.left >= words.first.right && words.pressed
+        : apart(g, await box(heading));
+      check(scope, 'guide step 1 does not cover the heading', clear,
+        `tip ${side} the heading, at x ${Math.round(g.left)} to ${Math.round(g.right)}, y ${Math.round(g.top)} to ${Math.round(g.bottom)}${words.first ? `; first line of words x ${Math.round(words.first.left)} to ${Math.round(words.first.right)}, y ${Math.round(words.first.top)} to ${Math.round(words.first.bottom)}` : ''}`);
+    }
     if (await guide.count()) {
       await page.waitForTimeout(2400);   // the page's own fade-ins have settled, and the tip has been looked at again
       const on = await guide.evaluate((g) => {
@@ -433,6 +545,9 @@ async function run(browser, size, firstVisit) {
       const was = await box(item);
       await page.touchscreen.tap(m.left + m.width / 2, m.top + m.height / 2);
       await page.waitForTimeout(250);
+      // The bar opens at the foot of the block. Where that is under Kiln's own buttons along the bottom of
+      // the screen, or below it, the page moves just far enough to show it: every button is then pressed below.
+      await atRest(page);
       // Its corner is the block's corner. The block itself may move: a site's
       // own :hover lift (the demo's cards rise 4px) holds on a phone after a tap.
       const m2 = await box(more), is = await box(item);
@@ -454,10 +569,28 @@ async function run(browser, size, firstVisit) {
       `bar ${Math.round(b.left)}-${Math.round(b.right)}, block ${Math.round(it.left)}-${Math.round(it.right)}`);
     const buttons = bar.locator('button').filter({ visible: true });
     const count = await buttons.count();
-    let reachable = count >= 5;
-    for (let i = 0; i < count; i++) reachable = reachable && (await hit(buttons.nth(i))).ok;
-    check(scope, `every button in the open control bar can be pressed (${count})`, reachable);
+    let unreachable = [];
+    for (let i = 0; i < count; i++) {
+      const h = await hit(buttons.nth(i));
+      if (!h.ok) unreachable.push({ more: await buttons.nth(i).evaluate(el => el.classList.contains('kiln-ctl-more')), said: `${(await buttons.nth(i).getAttribute('title')) || `button ${i + 1}`}: ${h.why}` });
+    }
+    // On a phone the "more" button keeps its corner at the top of the block and the row it opened is at the
+    // foot. A block that is taller, with its row, than the room the screen has between the site's own bar and
+    // Kiln's buttons along the bottom cannot show both. The row is what was asked for, so every button of it
+    // must be pressed all the same; the "more" button may then be above that room, and only there. (It also
+    // folds the bar away. So does a tap anywhere else: checked next.)
+    let tall = '';
+    if (phone && unreachable.some(u => u.more)) {
+      const room = await page.evaluate(roomOnScreen);
+      const whole = await box(item), corner = await box(bar.locator('.kiln-ctl-more'));
+      if (whole.height > room.bottom - room.top && corner.top < room.top) {
+        unreachable = unreachable.filter(u => !u.more);
+        tall = `the block is ${Math.round(whole.height)} px tall and the screen has ${Math.round(room.bottom - room.top)} px between the site's bar and Kiln's buttons: the row shows, and the "more" button is above that room`;
+      }
+    }
+    check(scope, `every button in the open control bar can be pressed (${count})`, count >= 5 && unreachable.length === 0, [...unreachable.map(u => u.said), tall].filter(Boolean).join('; '));
     if (!firstVisit) await shot('grid');
+    else await shot('grid-guided');
     if (phone) {
       await page.touchscreen.tap(4, size.height / 2);   // a tap elsewhere folds it away
       await page.waitForTimeout(200);
@@ -629,7 +762,7 @@ async function run(browser, size, firstVisit) {
     if (await help.count()) await press(help);
     const tab = await popup;
     check(scope, 'Help opens the editors\' guide in a new tab', !!tab && (await help.getAttribute('data-href')) === 'https://kilncms.com/editors', tab ? tab.url() : 'no new tab');
-    if (tab) { blocked.length = 0; await tab.close().catch(() => {}); }
+    if (tab) { forget(blocked, 'https://kilncms.com/editors'); await tab.close().catch(() => {}); }
   }
   check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
   check(scope, 'nothing outside the local server was needed', blocked.length === 0, blocked.slice(0, 3).join(', '));
@@ -652,8 +785,7 @@ async function runSafetyNet(browser, size) {
   await context.route('**/*', (route) => {
     const u = route.request().url();
     if (u.startsWith(ORIGIN) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
-    blocked.push(u);
-    return route.abort();
+    return refuse(route, blocked);
   });
   await context.addInitScript(() => { try { localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ } });
   const page = await context.newPage();
@@ -697,7 +829,7 @@ async function runSafetyNet(browser, size) {
     const start = await look(key);
     check(scope, `list "${key}": every block can be seen to begin with`, allSeen(start), told(start));
     const bar = async (title) => {
-      await second.scrollIntoViewIfNeeded();
+      await inReach(page, second);
       if (phone) { await second.locator('.kiln-ctl-more').tap(); await page.waitForTimeout(250); } else { await second.hover(); await page.waitForTimeout(250); }
       await press(second.locator(`button[title="${title}"]`));
       await page.waitForTimeout(400);
@@ -743,8 +875,12 @@ async function runSafetyNet(browser, size) {
     const second = page.locator(`[data-cms-repeat="${key}"] > .kiln-repeat-item`).nth(1);
     await page.evaluate((q) => document.querySelectorAll(q).forEach((el, i) => { el.__uiCheck = i; }), blocksOf(key));
     const before = await look(key);
-    await second.scrollIntoViewIfNeeded();
-    if (phone) { await second.locator('.kiln-ctl-more').tap(); await page.waitForTimeout(250); } else { await second.hover(); await page.waitForTimeout(250); }
+    // (look() leaves the page wherever the last block it looked at is: the block is brought back within reach each time)
+    const reach = async () => {
+      await inReach(page, second);
+      if (phone) { await second.locator('.kiln-ctl-more').tap(); await page.waitForTimeout(250); } else { await second.hover(); await page.waitForTimeout(250); }
+    };
+    await reach();
     await press(second.locator('button[title="Remove this block"]'));
     await page.waitForTimeout(400);
     const line = page.locator('#kiln-status');
@@ -761,10 +897,10 @@ async function runSafetyNet(browser, size) {
       check(scope, 'it puts the block back where it was, there to be seen', now.length === before.length && allSeen(now) && now.map(b => b.mark).join(',') === before.map(b => b.mark).join(','), told(now));
     }
     // once something else has been changed, that button would undo the wrong thing: the line has gone
-    if (phone) { await second.locator('.kiln-ctl-more').tap(); await page.waitForTimeout(250); } else { await second.hover(); await page.waitForTimeout(250); }
+    await reach();
     await press(second.locator('button[title="Remove this block"]'));
     await page.waitForTimeout(300);
-    if (phone) { await second.locator('.kiln-ctl-more').tap(); await page.waitForTimeout(250); } else { await second.hover(); await page.waitForTimeout(250); }
+    await reach();
     await press(second.locator('button[title="Duplicate this block"]'));
     await page.waitForTimeout(300);
     check(scope, 'after another change the "Removed. Undo" line is put away', !(await line.isVisible()) || !/^Removed/.test((await line.innerText()) || ''));
@@ -1303,7 +1439,7 @@ async function runFirstEdits(browser, size) {
   if (!key) { await context.close(); return; }
   const blocks = page.locator(`[data-cms-repeat="${key}"] > .kiln-repeat-item`);
   const bar = async (block, title) => {
-    await block.scrollIntoViewIfNeeded();
+    await inReach(page, block);
     await page.waitForTimeout(600);
     if (phone) { await block.locator('.kiln-ctl-more').tap(); await page.waitForTimeout(250); }
     else { const b = await block.boundingBox(); await page.mouse.move(b.x + b.width / 2, b.y + Math.min(b.height / 2, 200)); await page.waitForTimeout(250); }
@@ -1853,8 +1989,7 @@ async function runGetKiln(browser, size) {
     await context.route('**/*', (route) => {
       const url = route.request().url();
       if (url.startsWith(ORIGIN) || url.startsWith('data:') || url.startsWith('blob:')) return route.continue();
-      asked.push(url);
-      return route.abort();
+      return refuse(route, asked);
     });
     const page = await context.newPage();
     const errors = [];
@@ -1934,7 +2069,7 @@ async function runGetKiln(browser, size) {
     const opened = await tab;
     check(scope, 'pressing it opens the get-started page in a new tab', !!opened && asked.some(url => url.startsWith(WANT)), asked.slice(-1).join(''));
     if (opened) await opened.close().catch(() => {});
-    asked.length = 0;
+    forget(asked, WANT);
     // with an edit waiting, the pill shares the foot of the screen with Undo, Redo and Publish
     await edit(' Again');
     s = await pillState(page);
@@ -2019,7 +2154,7 @@ async function runSignedIn(browser, size, opts = {}) {
       return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
     }
     if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
-    if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+    if (u.origin !== WORKER) return refuse(route, blocked);
     const p = decodeURIComponent(u.pathname);
     if (req.method() === 'OPTIONS') {
       return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
@@ -2372,7 +2507,7 @@ async function runSignInEnded(browser, size) {
       return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
     }
     if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
-    if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+    if (u.origin !== WORKER) return refuse(route, blocked);
     const p = decodeURIComponent(u.pathname);
     if (req.method() === 'OPTIONS') {
       return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
@@ -2554,7 +2689,7 @@ async function runSignInEverywhere(browser, size) {
       return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
     }
     if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
-    if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+    if (u.origin !== WORKER) return refuse(route, blocked);
     const p = decodeURIComponent(u.pathname);
     const method = req.method();
     if (method === 'OPTIONS') {
@@ -3159,8 +3294,7 @@ async function runRealSites(browser, size) {
     await context.route('**/*', (route) => {
       const u = route.request().url();
       if (u.startsWith(ORIGIN) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
-      blocked.push(u);
-      return route.abort();
+      return refuse(route, blocked);
     });
     await context.addInitScript(() => { try { localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ } });
     const page = await context.newPage();
@@ -3246,7 +3380,7 @@ async function runRealSites(browser, size) {
         return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
       }
       if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
-      if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+      if (u.origin !== WORKER) return refuse(route, blocked);
       const p = decodeURIComponent(u.pathname);
       const head = versions[versions.length - 1];
       if (req.method() === 'OPTIONS') {
@@ -3390,7 +3524,7 @@ async function runRealSites(browser, size) {
         return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
       }
       if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
-      if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+      if (u.origin !== WORKER) return refuse(route, blocked);
       const p = decodeURIComponent(u.pathname);
       const head = versions[versions.length - 1];
       if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
@@ -3521,7 +3655,7 @@ async function runGenerated(browser, size) {
       }
       if (u.origin === ORIGIN && /^\/(sitemap|kiln-no-such-page)/.test(u.pathname)) return route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Not found</h1>' });
       if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
-      if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+      if (u.origin !== WORKER) return refuse(route, blocked);
       const p = decodeURIComponent(u.pathname);
       if (req.method() === 'OPTIONS') {
         return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
@@ -3769,7 +3903,7 @@ async function runFormatted(browser, size) {
     if (u.origin === ORIGIN && u.pathname === AT) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: html });
     if (u.origin === ORIGIN && u.pathname.startsWith(AT)) return route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Not found</h1>' });
     if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
-    if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+    if (u.origin !== WORKER) return refuse(route, blocked);
     const p = decodeURIComponent(u.pathname);
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
     if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: null, mode: null } });
@@ -3949,7 +4083,7 @@ async function runMedia(browser, size) {
     if (u.origin === ORIGIN && assets[u.pathname]) return route.fulfill({ contentType: assets[u.pathname][0], body: assets[u.pathname][1] });
     if (u.origin === ORIGIN && u.pathname.startsWith(AT)) return route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Not found</h1>' });
     if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
-    if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+    if (u.origin !== WORKER) return refuse(route, blocked);
     const p = decodeURIComponent(u.pathname);
     const m = req.method();
     if (m === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
@@ -4170,7 +4304,7 @@ async function runEntries(browser, size) {
     if (u.origin === ORIGIN && u.pathname === '/kiln-schema.json') return route.fulfill({ contentType: 'application/json', body: schema });
     if (u.origin === ORIGIN && u.pathname.startsWith(AT)) return route.fulfill({ status: 404, contentType: 'text/html', body: '<h1>Not found</h1>' });
     if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
-    if (u.origin !== WORKER) { blocked.push(req.url()); return route.abort(); }
+    if (u.origin !== WORKER) return refuse(route, blocked);
     const p = decodeURIComponent(u.pathname);
     const m = req.method();
     const body = () => JSON.parse(req.postData() || '{}');
@@ -4412,7 +4546,7 @@ async function runOwner(browser, size) {
         // The owner's check for a newer Kiln release: a public file, read with no sign-in.
         w.release.push(h.authorization || h['x-kiln-session'] || '');
         return route.abort();
-      } else if (u.origin !== WORKER) { w.blocked.push(req.url()); return route.abort(); }
+      } else if (u.origin !== WORKER) return refuse(route, w.blocked);
       else if (h.authorization) w.bearer.push(`${req.method()} ${p}`);   // a GitHub token sent to the worker
       const session = h['x-kiln-session'] || '';
       const signedIn = u.origin === GITHUB || w.known.has(session);
