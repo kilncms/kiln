@@ -3883,6 +3883,7 @@ async function publish(opts = {}) {
     if (canUndo) offerUndo({ ...record, before: textBefore, after: result.text, sha: result.commit.sha });
     if (told && result && !result.unchanged) guidePublished(told);
     watchDeploy(result?.commit?.sha, result?.text);
+    if (result && !result.unchanged) retireResumedDraft();   // a draft that was resumed is now published: it is not offered again
     // A mixed publish (page edits + source-file edits from the same screen):
     // commit the source half now, sequentially, with its own §11 states.
     if (state.pendingSource.size) await publishSource(opts.note);
@@ -7679,6 +7680,29 @@ function offerDraftSandbox() {
   };
 }
 
+/**
+ * A draft that was resumed is used up by the publish that follows: it comes
+ * off the drafts branch, so the page does not offer it again later, when its
+ * words are old. Remembered for this tab, so a reload between Resume and
+ * Publish does not lose it. A draft saved again since is a newer one and
+ * stays. This never stops a publish, and never fails one.
+ */
+const draftResumedKey = () => `kiln_draft_resumed:${cfg.repo}:${state.page.path}`;
+async function retireResumedDraft() {
+  let sha = null;
+  try { sha = sessionStorage.getItem(draftResumedKey()); } catch { /* no storage: the draft is offered again, as before */ }
+  if (!sha || !state.page.path) return;
+  const forget = () => { try { sessionStorage.removeItem(draftResumedKey()); } catch { /* nothing kept */ } };
+  let now;
+  try { now = await getFile(state.gh, cfg.repo, state.page.path, DRAFT_BRANCH); } catch { forget(); return; }
+  if (!now || now.sha !== sha) { forget(); return; }
+  try {
+    await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
+      { message: `Draft published: ${state.page.path} (via Kiln)`, sha, branch: DRAFT_BRANCH });
+    forget();
+  } catch (err) { console.warn('[kiln] the published draft could not be taken off the drafts branch', err); }
+}
+
 async function checkForDraft() {
   if (!state.page.path) return;   // a page built from content files has no file a draft could be of
   let draft;
@@ -7712,6 +7736,8 @@ async function checkForDraft() {
       }
     }
     refreshPublishButton();
+    // Publishing these is the end of this draft (retireResumedDraft).
+    if (applied) { try { sessionStorage.setItem(draftResumedKey(), draft.sha); } catch { /* it is offered again, as before */ } }
     setStatus(`Draft loaded (${applied} change${applied === 1 ? '' : 's'}) — Publish when ready`
       + (refused ? `. ${refused} part${refused === 1 ? ' was' : 's were'} not brought back: ${refused === 1 ? 'it holds' : 'they hold'} code that could run on the page.` : ''), 'saved');
     m.remove();

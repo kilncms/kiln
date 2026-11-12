@@ -402,7 +402,7 @@ async function cors(env, request, response) {
   if (ok) {
     h.set('Access-Control-Allow-Origin', origin);
     h.set('Vary', 'Origin');
-    h.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, OPTIONS');
+    h.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     h.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Kiln-Session');
     h.set('Access-Control-Max-Age', '86400');
   }
