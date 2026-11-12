@@ -151,8 +151,10 @@ error [code: 10000]"; it can read the namespace and still not be allowed to
 write it), give wrangler a credential that may: `CLOUDFLARE_API_TOKEN` (a token
 with "Workers KV Storage: Edit") and `CLOUDFLARE_ACCOUNT_ID`, or
 `CLOUDFLARE_API_KEY`, `CLOUDFLARE_EMAIL` and `CLOUDFLARE_ACCOUNT_ID`, in the
-environment of the command. Staging allows 20 requests a minute from one
-address; the scripts wait and retry when told to slow down.
+environment of the command. Staging allows 100 requests a minute from one
+address; the scripts wait and retry when told to slow down. (It was 20 until
+2026-11-12. One person who has just published makes about 12 of the counted
+requests a minute by themselves, so two people at one address were refused.)
 
 The full run makes three editor sessions that last 15 minutes (default tools;
 New page and Theme granted; suggest-only), by writing them into the staging KV
