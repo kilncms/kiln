@@ -6,19 +6,6 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-- **Several people at one address are no longer refused by the service.** The
-  service counted 20 requests a minute for one network address, across
-  everyone there. One person who has just published makes about 12 of the
-  counted requests a minute by themselves (the editor asks where the site
-  stands on every page, says who is on the page twice a minute, and follows
-  the publish), so a second person at the same address, or a second page
-  opened in that minute, was told "Too much was asked of the site just now"
-  or found the editor not starting. The address limit is now 100 a minute
-  (`worker/wrangler.toml`). This is a stopgap: counting a signed-in person's
-  requests against their own sign-in follows.
-
 ### Added
 
 - **A site put on Kiln's hosting is made ready by itself.** On the Kiln
@@ -99,6 +86,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Several people at one address are no longer refused by the service.** The
+  service counted 20 requests a minute for one network address, across
+  everyone there. One person who has just published makes about 12 of the
+  counted requests a minute by themselves (the editor asks where the site
+  stands on every page, says who is on the page twice a minute, and follows
+  the publish), so a second person at the same address, or a second page
+  opened in that minute, was told "Too much was asked of the site just now"
+  or found the editor not starting. The address limit is now 100 a minute
+  (`worker/wrangler.toml`). This is a stopgap: counting a signed-in person's
+  requests against their own sign-in follows.
 - **A site drawn by JavaScript is no longer copied as blank pages and called
   done.** `rescue` without `--render` on such a site used to write one empty
   page for every address, print "crawled 50 pages" with a green tick, and tell
