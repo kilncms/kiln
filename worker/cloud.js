@@ -204,6 +204,10 @@ async function lsCheckout(env, site, { email = null } = {}) {
       type: 'checkouts',
       attributes: {
         checkout_data: { ...prefill, custom: { site_id: site.id } },
+        // The free days are Kiln's own: seven, counted from the day the site was
+        // added, with no card. A trial set on the product in Lemon Squeezy would
+        // add its own days on top once a card is entered, so it is skipped here.
+        checkout_options: { skip_trial: true },
         product_options: {
           redirect_url: after,
           receipt_button_text: 'Open your Kiln dashboard',
@@ -704,7 +708,7 @@ export async function handleCloud(request, env, url, path) {
     // The plan on record is the plan that is being paid for. A checkout offers
     // one plan only, but a subscription can be moved to the other one later
     // (in Lemon Squeezy, or by the operator), and the operator has to hear of
-    // it: Fully managed is work somebody does.
+    // it: the plan with hosting is work on our side.
     // The address the customer gave when paying, kept for notices when the account has none.
     if (siteRow && mailAddress(attrs.user_email)) {
       try { await env.kiln_cloud.prepare("UPDATE accounts SET email = ? WHERE id = (SELECT account_id FROM sites WHERE id = ?) AND (email IS NULL OR email = '')").bind(mailAddress(attrs.user_email), siteRow.id).run(); } catch { /* not worth failing a billing event for */ }

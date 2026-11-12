@@ -53,6 +53,8 @@ test('checkout: the customer comes back to the dashboard after paying, and the r
     assert.equal(attributes.product_options.redirect_url, 'https://app.example/?subscribed=site-1');
     assert.equal(attributes.product_options.receipt_link_url, 'https://app.example/');
     assert.equal(attributes.product_options.receipt_button_text, 'Open your Kiln dashboard');
+    // Seven free days in all: the payment company's own trial is never added on top.
+    assert.deepEqual(attributes.checkout_options, { skip_trial: true });
     // What ties the payment to the site, and the store and plan, are as before.
     assert.deepEqual(attributes.checkout_data.custom, { site_id: 'site-1' });
     assert.equal(relationships.store.data.id, '1');
@@ -99,7 +101,7 @@ test('webhook: the plan on record becomes the plan that is paid for, and the ope
   const mail = mailbox();
   const env = cloudEnv(fakeKV(), { LS_VARIANT_MANAGED: '22', NOTIFY: mail.binding, NOTIFY_TO: 'owner@example.com' });
   addSite(env, { status: 'trialing', plan: 'managed' });
-  // Added as Fully managed, but the subscription that arrives is the Kiln Cloud one.
+  // Added on the plan with hosting, but the subscription that arrives is the Kiln Cloud one.
   assert.equal(await hook(env, { status: 'active', variant_id: 11 }, { event: 'subscription_created' }), 200);
   assert.deepEqual({ ...env.kiln_cloud.row('SELECT plan, status FROM sites WHERE id = ?', 'site-1') }, { plan: 'cloud', status: 'active' });
   assert.equal(mail.out.length, 1);
