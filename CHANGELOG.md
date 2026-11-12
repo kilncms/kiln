@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-12
+
 ### Added
 
 - **A site put on Kiln's hosting is made ready by itself.** On the Kiln
