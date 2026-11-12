@@ -6,6 +6,43 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A site put on Kiln's hosting is made ready by itself.** On the Kiln
+  Cloud + hosting plan, putting a site up for the first time used to copy the
+  repository as it stood, and its owner still had three buttons to press. Now
+  the service does three things first, each only where it is needed, and each
+  as one commit in the owner's name: it adds Kiln to the site (the editor's
+  files, the settings file, the sign-in page and the two lines on every
+  page), it gives every page that names no character set the line
+  `<meta charset="utf-8">` at the top of its head, and it marks a first pass
+  of what can be edited. The first copy of the site already holds all three.
+  The character set matters because Kiln's hosting serves a page without
+  naming one, and a browser may then show accented letters and curly quotes
+  as other letters. A page that already names one is left exactly as it is
+  (a `<meta charset>`, the older `http-equiv` line, or a byte order mark at
+  the top of the file all count), and a page with no head is left alone and
+  named. None of this can stop a site from going up. A step that cannot be
+  done, because a generator builds the site, the branch is protected, or
+  GitHub did not answer, is skipped, and the answer says so in a sentence.
+  `POST /cloud/sites/hosting` now answers with `looked_after`, one line for
+  each of `kiln`, `charset` and `marks`, saying `done`, `nothing` or
+  `not_done`, with the commit where one was made. The same lines are kept
+  for thirty days and come back from `GET /cloud/sites/hosting` and
+  `/cloud/me`. Publishing a site that is already up does none of this again
+  (`worker/lookafter.js`).
+- **A hosted site's editor is kept current, with nothing to press.** Every
+  five minutes the service looks at up to two hosted sites, and at any one
+  site once a day. Where the editor in the repository is older than the
+  released one, it replaces Kiln's own files with the released ones, as
+  "Update Kiln" does. A newly released editor is taken up only once the
+  service has known of it for a full day, so Kiln's own sites always run a
+  new editor first. Nobody pressed anything for this change, so the commit
+  names no person and GitHub shows it as made by the Kiln app. A site whose
+  branch is protected, or that GitHub would not answer for, is logged and
+  tried again the next day, and the other sites are still looked at. A site
+  that may not be edited any more is left alone.
+
 ## [0.6.0] - 2026-11-12
 
 ### Added

@@ -35,6 +35,7 @@ import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, 
 import { checkSite, editingOffLine } from './sitecheck.js';
 import { hostingOn, hostingSentence } from './hosting.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
+import { lookAfter, lookedAfter } from './lookafter.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -651,6 +652,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // Where each hosted site stands (hosted.js), and whether this service hosts sites at all.
     const hosted = hostingOn(env) ? await hostingForAccount(env, sess.account_id) : {};
     for (const r of rows) r.hosting = publicHosting(hosted[r.id], { repo: r.repo });
+    // What Kiln did for a hosted site when it was first put up (lookafter.js), while that is kept.
+    await Promise.all(rows.filter(r => r.hosting).map(async (r) => { const care = await lookedAfter(env, r.id); if (care) r.looked_after = care; }));
     // `prepare`, `firstpass`: this service can add Kiln to a repository itself, and mark a first pass of what can be edited.
     const can = typeof tools.installationToken === 'function';
     return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env) });
@@ -820,6 +823,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   // Hosting (the Kiln Cloud + hosting plan): the site's files are copied from
   // its repository to Kiln's Cloudflare and served there. GET says where a
   // site stands; POST puts it up for the first time, or publishes it again.
+  // A site that has never been up is looked after first (lookafter.js): Kiln's
+  // files, a character set on every page and a first pass at what can be
+  // edited, so the first copy already holds them. `looked_after` says how each
+  // went; none of it can stop the site from being put up.
   if (path === '/cloud/sites/hosting' && (request.method === 'GET' || request.method === 'POST')) {
     const write = request.method === 'POST';
     const asked = await ownedSite(request, env, url, sess, tools, write ? {} : { needToken: false, needAccess: false });
@@ -827,7 +834,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const { site, token } = asked;
     const available = hostingOn(env);
     const row = available ? await hostingRow(env, site.id) : null;
-    if (!write) return json({ ok: true, available, on_plan: site.plan === 'managed', hosting: publicHosting(row, { repo: site.repo }) });
+    if (!write) {
+      const care = row ? await lookedAfter(env, site.id) : null;
+      return json({ ok: true, available, on_plan: site.plan === 'managed', hosting: publicHosting(row, { repo: site.repo }), ...(care ? { looked_after: care } : {}) });
+    }
     if (!available) return json({ error: hostingSentence('not_set_up'), code: 'not_set_up' }, 503);
     if (site.plan !== 'managed') {
       return json({ error: 'Hosting is part of the Kiln Cloud + hosting plan. This site is on Kiln Cloud, where it stays on your own host.', code: 'not_on_plan' }, 403);
@@ -841,13 +851,27 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         return json({ error: `During the free days Kiln hosts ${FREE_HOSTED_SITES === 1 ? 'one site' : `${FREE_HOSTED_SITES} sites`} for an account. Subscribe for one of your sites, then put this one up.`, code: 'free_limit' }, 403);
       }
     }
-    const out = await publishSite(env, { site, token });
-    if (out.state === 'busy') return json({ error: 'Kiln is already putting this site up. Give it a minute, then reload this page.', code: 'busy' }, 409);
-    if (out.state === 'failed') return json({ error: out.error || hostingSentence(out.reason), code: out.reason || 'cloudflare', hosting: out }, 502);
-    if (out.state === 'live' && !row) {
-      await notifyOwner(env, `Kiln hosts ${site.repo}`, [`By: ${sess.login}`, `Address: ${out.url}`, `Files: ${out.files}`]);
+    const BUSY = 'Kiln is already putting this site up. Give it a minute, then reload this page.';
+    let care = null;
+    if (!row || !row.deployed_at) {
+      const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
+      care = await lookAfter(env, {
+        site, token, worker: url.origin,
+        author: { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` },
+        firstpassAt: (await preparedTimes(env, sess.account_id))[site.id]?.firstpass_at || null,
+        record: { prepared: (sha) => markPrepared(env, site.id, sha), firstPass: (sha) => markFirstPass(env, site.id, sha) },
+      });
+      if (!care) return json({ error: BUSY, code: 'busy' }, 409);
     }
-    return json({ ok: out.state === 'live', hosting: out, ...(out.state !== 'live' ? { error: out.error, code: out.reason } : {}) });
+    const looked = care ? { looked_after: care } : {};
+    const out = await publishSite(env, { site, token });
+    if (out.state === 'busy') return json({ error: BUSY, code: 'busy', ...looked }, 409);
+    if (out.state === 'failed') return json({ error: out.error || hostingSentence(out.reason), code: out.reason || 'cloudflare', hosting: out, ...looked }, 502);
+    if (out.state === 'live' && !row) {
+      await notifyOwner(env, `Kiln hosts ${site.repo}`, [`By: ${sess.login}`, `Address: ${out.url}`, `Files: ${out.files}`,
+        ...(care || []).map(c => `${c.step}: ${c.state}${c.code ? ` (${c.code})` : ''}${c.commit ? ` ${c.commit.url}` : ''}`)]);
+    }
+    return json({ ok: out.state === 'live', hosting: out, ...looked, ...(out.state !== 'live' ? { error: out.error, code: out.reason } : {}) });
   }
 
   if (path === '/cloud/sites/remove' && request.method === 'POST') {

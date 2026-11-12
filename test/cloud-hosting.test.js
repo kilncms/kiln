@@ -28,6 +28,10 @@ function world(files = pages, { site = {}, env: extra = {}, kv: seed = {} } = {}
     HOSTING_ACCOUNT_ID: cf.account, HOSTING_API_TOKEN: cf.token, HOSTING_SUBDOMAIN: 'kiln-sites', GH_WEBHOOK_SECRET: SECRET, ...extra,
   });
   addSite(env, { id: 'site1', plan: 'managed', status: 'trialing', ...site });
+  // These tests are about the copying. What Kiln does to a repository before a
+  // site's first copy is in cloud-lookafter.test.js; here the first pass is on
+  // record and the release is out of reach, so the repository is only read.
+  try { env.kiln_cloud.exec("UPDATE sites SET firstpass_at = 1 WHERE id = 'site1'"); } catch { /* a database before migration 0004 */ }
   const handler = async (url, init) => (await cf.handler(url, init)) || gh.handler(url, init);
   return { gh, cf, env, handler };
 }

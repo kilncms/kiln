@@ -6,8 +6,10 @@
  * GitHub App instead, so that nobody needs a terminal: the editor's three
  * files in the site's repository are replaced with the released ones. It is
  * one commit on the repository's default branch, in the name of the person
- * who asked for it. A site with a members area gets the current gate with it,
- * as the terminal tool gives it.
+ * who asked for it. (For a site Kiln hosts, the service does this by itself a
+ * day after a release, lookafter.js: nobody asked, so that commit names no
+ * person and GitHub shows it as made by the Kiln app.) A site with a members
+ * area gets the current gate with it, as the terminal tool gives it.
  *
  * Only Kiln's own files are written, byte for byte as released. The site's
  * settings file, its pages and everything else stay as they are, and no
@@ -24,6 +26,7 @@
  *   updlock:<site id>  '1'              one update at a time for a site (TTL 2 min)
  *   elatest            {stamp,at}       the released editor's stamp (TTL 1 hour; 5 min when it could not be fetched)
  *   erepo:<repo>       {build,at}       the editor the repository held when this last read or updated it
+ *   eseen:<stamp>      a time           when this service first knew of that released editor (TTL 180 days)
  */
 
 import { RELEASE_BASE, SETUP_COMMAND, EDITOR_FILES, PrepareError, prepareSentence, gh, refPath, inTurn, readText, base64, must } from './prepare.js';
@@ -229,9 +232,13 @@ export async function applyUpdate({ token, repo, plan, author, releaseBase = REL
   }
   const tree = (await must(await gh(token, 'POST', `/repos/${repo}/git/trees`, { base_tree: plan.treeSha, tree: entries }), 'github')).sha;
 
+  // With no `author` the commit names nobody: GitHub then records it as made
+  // by the app whose token this is, which is the truth when the service
+  // updates a site it hosts by itself.
   const message = `Update the Kiln editor\n\nThe editor's files are now version ${plan.latest}${plan.installed ? ` (they were version ${plan.installed})` : ''}. `
-    + `${plan.gate === 'refresh' ? 'The files that guard the members area are the current ones too. ' : ''}Updated from the Kiln dashboard by ${author.name}.`;
-  const commit = await must(await gh(token, 'POST', `/repos/${repo}/git/commits`, { message, tree, parents: [plan.head], author: { ...author, date: new Date().toISOString() } }), 'github');
+    + `${plan.gate === 'refresh' ? 'The files that guard the members area are the current ones too. ' : ''}`
+    + (author ? `Updated from the Kiln dashboard by ${author.name}.` : 'Updated by Kiln itself, which keeps the editor current on a site it hosts.');
+  const commit = await must(await gh(token, 'POST', `/repos/${repo}/git/commits`, { message, tree, parents: [plan.head], ...(author ? { author: { ...author, date: new Date().toISOString() } } : {}) }), 'github');
 
   const moved = await gh(token, 'PATCH', `/repos/${repo}/git/refs/heads/${refPath(plan.branch)}`, { sha: commit.sha, force: false });
   if (!moved.ok) {
@@ -259,13 +266,39 @@ export function updateSentence(code, { repo = 'the repository', branch = 'main' 
 const LATEST_KEY = 'elatest';
 const LATEST_TTL_S = 3600;
 const LATEST_RETRY_S = 300;
+const SEEN_TTL_S = 180 * 24 * 3600;
 const repoKey = (repo) => `erepo:${repo}`;
+const seenKey = (stamp) => `eseen:${stamp}`;
 const known = (v) => (v && typeof v.build === 'string' && STAMP.test(v.build) ? { build: v.build, at: Number(v.at) || 0 } : null);
 
 /** The released stamp was just read from the release: keep it, so /cloud/me agrees with what the person was shown. */
 export async function rememberLatest(env, stamp) {
   if (!STAMP.test(stamp || '')) return;
   try { await env.KILN.put(LATEST_KEY, JSON.stringify({ stamp, at: Date.now() }), { expirationTtl: LATEST_TTL_S }); } catch { /* it is fetched again next time */ }
+  await noteSeen(env, stamp);
+}
+
+// `elatest` says which editor is released and lasts an hour, so it cannot say
+// how long the service has known of that editor. This does: written the first
+// time a stamp is seen, and never moved after that.
+async function noteSeen(env, stamp) {
+  try {
+    if (!(await env.KILN.get(seenKey(stamp)))) await env.KILN.put(seenKey(stamp), String(Date.now()), { expirationTtl: SEEN_TTL_S });
+  } catch { /* it is noted the next time the stamp is read */ }
+}
+
+/** When this service first knew of the released editor `stamp` (a time in milliseconds), or null. */
+export async function knownSince(env, stamp) {
+  if (!STAMP.test(stamp || '')) return null;
+  try { return Number(await env.KILN.get(seenKey(stamp))) || null; } catch { return null; }
+}
+
+/** The released editor and when this service first knew of it: { stamp, since }, either null when it is not known. */
+export async function releasedBuild(env, releaseBase) {
+  const stamp = await latestStamp(env, releaseBase);
+  const since = stamp ? await knownSince(env, stamp) : null;
+  if (stamp && !since) await noteSeen(env, stamp);   // known from now on
+  return { stamp, since };
 }
 
 /** The editor a repository was just seen to hold, or was just given. */
@@ -282,6 +315,7 @@ async function latestStamp(env, releaseBase) {
   } catch { return null; }
   const stamp = await releasedStamp(releaseBase, { waitMs: 3000 });
   try { await env.KILN.put(LATEST_KEY, JSON.stringify({ stamp, at: Date.now() }), { expirationTtl: stamp ? LATEST_TTL_S : LATEST_RETRY_S }); } catch { /* asked again next time */ }
+  if (stamp) await noteSeen(env, stamp);
   return stamp;
 }
 

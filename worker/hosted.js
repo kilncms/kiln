@@ -5,8 +5,10 @@
  *   publishSite     the owner switches hosting on, or presses Publish again
  *   pushNotice      GitHub says the repository changed (the App's push webhook)
  *   sweepHosting    every five minutes: finish what could not be done at once,
- *                   look whether a repository moved without a notice, and take
- *                   down a site whose time on Kiln's hosting is over
+ *                   look whether a repository moved without a notice, take
+ *                   down a site whose time on Kiln's hosting is over, and
+ *                   bring a hosted site's editor up to the released one
+ *                   (lookafter.js)
  *
  * hosting.js does the copying; this file keeps the record (the `hosting` table,
  * migration 0005) and makes sure one site is copied by one thing at a time.
@@ -19,6 +21,7 @@
 
 import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError } from './hosting.js';
 import { gh, refPath } from './prepare.js';
+import { keepEditorsCurrent } from './lookafter.js';
 
 const LOCK_S = 300;
 const RETRY_AFTER_MS = 2 * 60 * 1000;        // a failed copy is tried again this long after it failed
@@ -176,20 +179,23 @@ export async function handleGithubWebhook(request, env, ctx, tools) {
 /**
  * Every five minutes. First what is owed: a copy that failed, a first copy
  * that never finished, a commit a notice named that is not up, a Worker of a
- * removed site that is still there. Then a look at the repositories checked
- * longest ago, in case one moved and no notice came. Sites that may not be
- * edited any more are left as they are (ending hosting is its own step).
+ * removed site that is still there. Then the editor of a site or two is
+ * brought up to the released one (lookafter.js), and then a look at the
+ * repositories checked longest ago, in case one moved and no notice came:
+ * that look is also what publishes an editor that was just updated, when
+ * GitHub's notice has not done so first. Sites that may not be edited any
+ * more are left as they are (ending hosting is its own step).
  */
 export async function sweepHosting(env, { installationToken, hasAccess, endsAt = () => null }) {
-  if (!hostingOn(env) || !env.kiln_cloud) return { published: 0, looked: 0 };
+  if (!hostingOn(env) || !env.kiln_cloud) return { published: 0, looked: 0, editors: 0 };
   const now = Date.now();
-  let published = 0, looked = 0;
+  let published = 0, looked = 0, editors = 0;
   let rows = [];
   try {
     rows = (await env.kiln_cloud.prepare(
       `SELECT s.id, s.repo, s.status, s.access_until, s.plan, s.created_at, s.ls_subscription_id, h.name, h.state, h.branch, h.commit_sha, h.wanted_sha, h.checked_at, h.updated_at
        FROM hosting h LEFT JOIN sites s ON s.id = h.site_id ORDER BY COALESCE(h.checked_at, 0)`).all())?.results || [];
-  } catch { return { published, looked }; }   // migration 0005 has not reached this database
+  } catch { return { published, looked, editors }; }   // migration 0005 has not reached this database
 
   for (const r of rows) {
     if (r.state !== 'removing') continue;
@@ -220,6 +226,9 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
     done.add(r.id);
     if (out.state === 'live') published++;
   }
+  // A hosted site's editor is kept current for its owner. This only moves the
+  // repository's branch; the look below, or GitHub's notice, publishes it.
+  editors = (await keepEditorsCurrent(env, live.filter(x => x.state === 'live'), { installationToken, now })).updated;
   for (const r of live.filter(x => !done.has(x.id) && (x.state === 'live' || x.state === 'waiting')).slice(0, SWEEP_LOOK)) {   // not 'ended': its owner puts it back
     if (published >= SWEEP_PUBLISH) break;
     const token = await installationToken(env, r.repo);
@@ -235,7 +244,7 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
     if (head && head !== r.commit_sha) { if ((await publishSite(env, { site: r, token })).state === 'live') published++; }
     else await save(env, r.id, { checked_at: Date.now() });
   }
-  return { published, looked };
+  return { published, looked, editors };
 }
 
 /**
