@@ -86,7 +86,7 @@ const WORKER_VERSION = '0.6.1';
 import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
-import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
+import { checkDocumentWrite, checkNewPageWrite, templatePathsFor, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
 import { keyInScope, hasSectionLimit, checkSectionWrite, strictUtf8FromB64, scheduledKeyRefusal, SECTION_REFUSALS } from './section-scope.js';
 import { adapterIds, getAdapter } from '../src/adapters/index.js';
 import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, changedSinceRead, markdownProblems, picturesToCheck, duplicateCandidates, entryRequest, ENTRY_EXISTS, SOURCE_FILE_GONE } from './source.js';
@@ -3571,7 +3571,15 @@ async function ghProxy(request, env, ghPath) {
           else return json({ error: 'could not verify page content safely' }, 502);
         } catch { return json({ error: 'could not verify page content safely' }, 502); }
       }
-      const bad = checkDocumentWrite(oldHtml, newHtml);
+      let bad = checkDocumentWrite(oldHtml, newHtml);
+      // A new page may carry what one of the site's own page templates
+      // carries (a copy of the owner's phone-menu script, say). Only asked
+      // of GitHub when the page would otherwise be refused, and read from
+      // the head of the very branch this write names.
+      if (bad && !curSha) {
+        const templates = await branchTemplates(env, sess.repo, parsedBody.branch, filePath);
+        if (templates.length) bad = checkNewPageWrite(newHtml, templates);
+      }
       if (bad) return json({ error: 'blocked: editors cannot add scripts or executable markup to a page', detail: bad }, 403);
     }
     // Section scope: an editor limited to some parts of a page changes only
@@ -3758,6 +3766,45 @@ async function refWriteCheck(env, itok, sess, method, cleanPath, body) {
 }
 
 /**
+ * The site's page templates a new file at `path` could have been made from,
+ * as the head of `branch` has them (no branch named: the default branch, where
+ * GitHub puts such a write). Read the way a commit's "before" files are: the
+ * branch's head commit, its tree, then each template by the blob that tree
+ * names. A branch is asked for under refs/heads, so a tag of the same name is
+ * never read in its place. Three or four small requests and one per template
+ * found. Anything that cannot be read for sure gives no templates, and the
+ * page is then held to what any new file may carry.
+ */
+async function branchTemplates(env, repo, branch, path) {
+  if (branch !== undefined && (typeof branch !== 'string' || !branch)) return [];
+  try {
+    const itok = await installationToken(env, repo);
+    if (!itok) return [];
+    const gh = async (p) => {
+      const r = await fetch(`${GH}${p}`, { headers: { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
+      if (!r.ok) throw new Error(`gh ${p} ${r.status}`);
+      return r.json();
+    };
+    let name = branch;
+    if (name === undefined) name = (await gh(`/repos/${repo}`)).default_branch;
+    if (typeof name !== 'string' || !name) return [];
+    const ref = await gh(`/repos/${repo}/git/ref/heads/${name.split('/').map(encodeURIComponent).join('/')}`);
+    const head = String(ref?.object?.sha || '');
+    if (!COMMIT_SHA_RE.test(head)) return [];
+    const commit = await gh(`/repos/${repo}/git/commits/${head}`);
+    const tree = await gh(`/repos/${repo}/git/trees/${commit.tree.sha}?recursive=1`);
+    if (tree.truncated) return [];
+    const wanted = new Set(templatePathsFor(path));
+    const out = [];
+    for (const e of tree.tree || []) {
+      if (e.type !== 'blob' || !wanted.has(e.path)) continue;
+      out.push(utf8FromB64((await gh(`/repos/${repo}/git/blobs/${e.sha}`)).content));
+    }
+    return out;
+  } catch { return []; }
+}
+
+/**
  * Reject a proposed commit whose diff (vs its first parent) touches any path
  * outside the editor's scope or any sensitive path. Returns a 403 Response to
  * short-circuit, or null when the commit is in-scope. Fails CLOSED on any error.
@@ -3858,7 +3905,17 @@ async function commitDiffInScope(env, itok, sess, bodyText, { branch } = {}) {
       if (!isHtmlPath(p) || !after.has(p)) continue; // removals need no content check
       const newHtml = await blobText(after.get(p));
       const oldHtml = before.has(p) ? await blobText(before.get(p)) : null;
-      const bad = checkDocumentWrite(oldHtml, newHtml);
+      let bad = checkDocumentWrite(oldHtml, newHtml);
+      // A new page may carry what one of the site's own page templates
+      // carries. The templates are read as every "before" text here is: from
+      // the tree of the commit this one sits on (the branch's head, when a
+      // branch is moved), never from the commit being judged, so a template
+      // changed or added by this same commit does not count.
+      if (bad && !before.has(p)) {
+        const templates = [];
+        for (const t of templatePathsFor(p)) if (before.has(t)) templates.push(await blobText(before.get(t)));
+        if (templates.length) bad = checkNewPageWrite(newHtml, templates);
+      }
       if (bad) return json({ error: 'blocked: editors cannot add scripts or executable markup to a page', path: p, detail: bad }, 403);
     }
     // Section scope: each page this commit changes, compared with its parent

@@ -19,7 +19,10 @@ import { fakeGitHub } from './github-fake.js';
 
 const REPO = 'acme/kiln-e2e';
 const PAGE = '<!doctype html>\n<html>\n<head><title>Test site</title></head>\n<body>\n  <h1 data-cms="hero_title">A test site</h1>\n  <p data-cms="hero_tagline">The original line, exactly as it was.</p>\n  <script src="/assets/kiln-config.js"></script>\n  <script src="/assets/kiln.js" defer></script>\n</body>\n</html>\n';
-const FILES = { 'index.html': PAGE, 'assets/site.css': 'h1{color:teal}', '.kiln-e2e': '' };
+// The starting page for new pages, with a script of the site's own, as Kiln's starter site has for its phone menu.
+const MENU = "document.querySelector('.menu-button').addEventListener('click', () => document.body.classList.toggle('menu-open'));";
+const STARTING_PAGE = `<!doctype html>\n<html>\n<head><title>{{title}}</title></head>\n<body>\n  <button class="menu-button">Menu</button>\n  <h1 data-cms="page_title">{{title}}</h1>\n  <script>${MENU}</script>\n</body>\n</html>\n`;
+const FILES = { 'index.html': PAGE, 'assets/site.css': 'h1{color:teal}', '.kiln-e2e': '', '_templates/page.html': STARTING_PAGE };
 
 /** A real RSA key, so the worker can sign its App token for a name it has no cached token for (a renamed repository). */
 const { privateKey } = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
@@ -95,7 +98,7 @@ test('KLR-22 a full run: every publish goes through the worker as an editor, eve
   const r = await s.go();
   assert.deepEqual(names(r, false), [], s.out());
   assert.equal(r.ok, true);
-  assert.equal(r.checks.length, 41, s.out());
+  assert.equal(r.checks.length, 44, s.out());
   const passed = names(r, true);
   for (const name of [
     'editor publishes a text edit', 'editor puts the page back, byte for byte',
@@ -107,12 +110,22 @@ test('KLR-22 a full run: every publish goes through the worker as an editor, eve
     'refused: an editor limited to some parts of a page changing words outside them',
     'none of the refused requests changed the branch', 'granted editor publishes a new page and a picture in one commit',
     'granted editor makes that whole page editable (the first pass the editor makes: marks added, nothing else, one commit)', 'granted editor writes a stylesheet',
+    'the test repository has a starting page for new pages that holds a script of its own (_templates/page.html)',
+    "granted editor makes a new page from the site's starting page, which holds a script of the owner's (in one commit, as New post or page does, and again as one file)",
+    'refused: the same new page with one script more than the starting page has',
     'refused: a suggest-only editor publishing straight to the site', 'suggest-only editor writes its preview to its own scratch branch',
     'cleanup: the repository is as it was found',
   ]) assert.ok(passed.includes(name), `missing: ${name}`);
   // The publishes were real commits by the editors, made through the proxy with the installation token.
   const byEditors = [...s.gh.commits.values()].filter(c => c.author.email === 'kiln-editor@users.noreply.github.com');
-  assert.equal(byEditors.length, 8, 'edit, restore, uploads, draft, new page, the whole page made editable, stylesheet, suggestion preview');
+  assert.equal(byEditors.length, 10, 'edit, restore, uploads, draft, new page, the whole page made editable, a page from the starting page twice (a commit, then one file), stylesheet, suggestion preview');
+  // The page made from the starting page went in with the site's own script, once, and with Kiln loaded as the site's pages load it.
+  const made = [...s.gh.commits.entries()].find(([, c]) => /new page from the starting page \(via Kiln\)$/.test(c.message));
+  const madeText = s.gh.blobs.get([...s.gh.trees.get(made[1].tree)].find(([p]) => /^kiln-e2e-\w+-made\.html$/.test(p))[1].sha).toString();
+  assert.equal(madeText.split(MENU).length - 1, 1, madeText);
+  assert.match(madeText, /<h1 data-cms="page_title">E2E \w+ from the starting page<\/h1>/);
+  assert.match(madeText, /<meta charset="utf-8">[\s\S]*<script src="\/assets\/kiln-config\.js"><\/script>\s*<script src="\/assets\/kiln\.js" defer><\/script>\s*<\/body>/);
+  assert.equal(made[1].author.name, 'Kiln E2E granted (via Kiln)');
   // The first pass over the whole page is the granted editor's own commit, and says what it marked.
   const whole = byEditors.filter(c => /^Mark a first pass of what can be edited on kiln-e2e-\w+\.html: 2 pieces of text \(via Kiln\)$/.test(c.message));
   assert.deepEqual(whole.map(c => c.author.name), ['Kiln E2E granted (via Kiln)']);
@@ -122,7 +135,7 @@ test('KLR-22 a full run: every publish goes through the worker as an editor, eve
   // The maintainer's token was used to read, and to put things back: nothing else.
   const ownerWrites = s.gh.calls.filter(c => c.method !== 'GET' && c.auth === 'Bearer owner-token').map(c => `${c.method} ${c.path.replace(/\d{10}-e2e-\w+|e2e-\w+/, 'X')}`);
   assert.deepEqual(ownerWrites, ['DELETE /git/refs/heads/kiln-drafts', 'DELETE /git/refs/tags/kiln/X', 'DELETE /git/refs/heads/kiln/suggest-X', 'PATCH /git/refs/heads/main']);
-  assert.match(s.out(), /41\/41 checks passed/);
+  assert.match(s.out(), /44\/44 checks passed/);
   assert.match(s.out(), /Not covered here, check by hand on staging:/);
 });
 
@@ -132,7 +145,8 @@ test('KLR-22 it leaves the repository as it found it: same head, same page, no b
   assert.equal(s.gh.head(), s.startHead);
   assert.equal(s.gh.read('index.html'), PAGE);
   assert.deepEqual([...s.gh.refs.keys()].sort(), s.startRefs, 'only main, as before');
-  assert.deepEqual(s.gh.paths(), ['.kiln-e2e', 'assets/site.css', 'index.html'], 'no upload, page or stylesheet left behind');
+  assert.deepEqual(s.gh.paths(), ['.kiln-e2e', '_templates/page.html', 'assets/site.css', 'index.html'], 'no upload, page or stylesheet left behind');
+  assert.equal(s.gh.read('_templates/page.html'), STARTING_PAGE, 'the starting page is as it was');
   assert.equal([...s.kv.map.keys()].some(k => k.startsWith('esess:')), false);
   assert.deepEqual(s.kvCalls.map(c => c[0]), ['put', 'put', 'put', 'put', 'delete', 'delete', 'delete', 'delete']);   // three editors and the one limited to some parts
   assert.deepEqual(s.kvCalls.filter(c => c[0] === 'put').map(c => c[2]), [900, 900, 900, 900], 'sessions expire by themselves in 15 minutes even if cleanup never ran');
@@ -147,6 +161,47 @@ test('KLR-22 a repository that is not marked as a test repository is never writt
   assert.equal(s.gh.calls.filter(c => c.method !== 'GET').length, 0, 'not one write reached GitHub');
   assert.deepEqual(s.kvCalls, [], 'no session was made');
   assert.equal(s.gh.head(), s.startHead);
+});
+
+test('a test repository with no starting page for new pages, or one with no script of its own, stops the run before anything is written and says what to add', async () => {
+  const { '_templates/page.html': _none, ...without } = FILES;
+  for (const [files, said] of [
+    [without, /there is no _templates\/page\.html on main\. Add one to the test repository: a whole page with a heading marked data-cms="page_title" and one script written into the page itself, for example <script>.*<\/script> before its <\/body>\. Nothing was written/],
+    [{ ...FILES, '_templates/page.html': STARTING_PAGE.replace(/<script>.*<\/script>/, '<script src="/assets/menu.js"></script>') }, /_templates\/page\.html holds no script written into the page itself, .* Add one, for example .* Nothing was written/],
+  ]) {
+    const s = staging({ files });
+    const r = await s.go();
+    assert.equal(r.ok, false);
+    assert.deepEqual(names(r, false), ['the test repository has a starting page for new pages that holds a script of its own (_templates/page.html)']);
+    assert.match(s.out(), said);
+    assert.equal(s.gh.calls.filter(c => c.method !== 'GET').length, 0, 'not one write reached GitHub');
+    assert.deepEqual(s.kvCalls, [], 'no session was made');
+    assert.equal(s.gh.head(), s.startHead);
+  }
+});
+
+test('a page made from the starting page: a worker that refuses it, as the worker did before, fails the run, and so does one that lets a script more through', async () => {
+  // What the worker answered before it counted the starting page's own script: any new file with a script in it was refused.
+  const blocked = () => new Response('{"error":"blocked: editors cannot add scripts or executable markup to a page"}', { status: 403, headers: { 'Content-Type': 'application/json' } });
+  const before = staging();
+  before.intercept.fn = async (url, init) => (url.startsWith(STAGING_WORKER) && init.method === 'POST' && url.endsWith('/git/commits') && /new page from the starting page/.test(init.body || '') ? blocked() : null);
+  const r = await before.go();
+  assert.equal(r.ok, false);
+  assert.deepEqual(names(r, false), ["granted editor makes a new page from the site's starting page, which holds a script of the owner's (in one commit, as New post or page does, and again as one file)"]);
+  assert.match(before.out(), /made in one commit, the worker answered 403: blocked: editors cannot add scripts or executable markup to a page/);
+  assert.equal(before.gh.head(), before.startHead, 'still cleaned up');
+  // The same answer for the page written as one file fails it too.
+  const oneFile = staging();
+  oneFile.intercept.fn = async (url, init) => (url.startsWith(STAGING_WORKER) && init.method === 'PUT' && /-made-2\.html$/.test(url) ? blocked() : null);
+  assert.equal((await oneFile.go()).ok, false);
+  assert.match(oneFile.out(), /written as one file, the worker answered 403: blocked: editors cannot add scripts/);
+  assert.equal(oneFile.gh.head(), oneFile.startHead, 'still cleaned up');
+  // And a worker that takes the page with one script more is caught.
+  const loose = staging();
+  loose.intercept.fn = async (url, init) => (url.startsWith(STAGING_WORKER) && init.method === 'PUT' && /-more\.html$/.test(url) ? new Response('{"sha":"x"}', { status: 201 }) : null);
+  assert.equal((await loose.go()).ok, false);
+  assert.match(loose.out(), /refused: the same new page with one script more than the starting page has — expected 403 scripts or executable markup, got 201/);
+  assert.equal(loose.gh.head(), loose.startHead, 'still cleaned up');
 });
 
 test('KLR-22 when a step fails midway, the run stops there, says which, and still puts everything back', async () => {
@@ -338,7 +393,7 @@ test('owner session: with an address to sign in from, the owner reads, publishes
   const s = withOrigin();
   const r = await s.go();
   assert.deepEqual(names(r, false), [], s.out());
-  assert.equal(r.checks.length, 41 + OWNER_STEPS.length, s.out());
+  assert.equal(r.checks.length, 44 + OWNER_STEPS.length, s.out());
   for (const name of OWNER_STEPS) assert.ok(names(r, true).includes(name), `missing: ${name}`);
   // The owner's edit and its restore went through the worker's proxy with the session's (the maintainer's) token.
   const ownerPuts = s.gh.calls.filter(c => c.method === 'PUT' && c.auth === 'Bearer owner-token').map(c => c.path);

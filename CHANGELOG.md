@@ -6,6 +6,33 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **An invited editor can make a new page on a site whose starting page has
+  a script of its own.** "New post or page" copies the site's starting page
+  (`_templates/page.html`, or `_templates/post.html` for a post). Kiln's
+  starter site keeps a few lines of script in that file for its phone menu,
+  and the service refused any new file from an editor that had a script
+  written into it. So on such a site an editor who had been given the New
+  page tool could never make a page, and was told only that editors cannot
+  add scripts. The owner was never affected. Now a new page from an editor
+  may hold what one of the site's own starting pages holds, word for word and
+  as many times as that file has it, and nothing more. The starting pages are
+  read from the branch the page is being written to, as it stands before the
+  write, so a starting page changed in the same save does not count, and a
+  change to a starting page is itself held to the rule that an editor cannot
+  add a script to a file. A script the starting page does not have, the same
+  script twice, or the script with one letter changed is refused as before,
+  and so is a script on a new page of a site with no starting pages. A site
+  kept in a folder of its repository has its `_templates` folder there, and
+  it counts for pages under that folder. The service asks GitHub for the
+  starting pages only when a new page would otherwise be refused. The staging
+  end-to-end run now makes a page from the test repository's starting page as
+  an editor, both ways a page can be written, and checks that the same page
+  with one script more is refused. For that the test repository needs a
+  `_templates/page.html` with one script written into the page itself
+  (`ENVIRONMENTS.md`); the run stops before writing anything when it has none.
+
 ## [0.6.1] - 2026-11-12
 
 ### Added

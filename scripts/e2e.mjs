@@ -22,6 +22,14 @@
  *                     least one data-cms field, and an empty file `.kiln-e2e`
  *                     at its root: that file is what allows this script to
  *                     write to the repository and to reset it afterwards.
+ *                     It must also have a starting page for new pages,
+ *                     `_templates/page.html`, that holds one script written
+ *                     into the page itself (not loaded from a file), as the
+ *                     starter site's has for its phone menu. An editor's new
+ *                     page is made from it, and the run checks that the page
+ *                     may keep that script and may not carry one more. The
+ *                     run stops before it writes anything when the file is
+ *                     missing or has no such script, and says what to add.
  *   KILN_E2E_BRANCH   the branch the site is published from (default main)
  *   KILN_E2E_SITE     optional: the site's address. When set, the script also
  *                     waits for one edit to appear there.
@@ -58,10 +66,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { applyEdits, readValues } from '../src/engine.js';
 import { makeGh, getFile, putFile, putBinaryFile, commitFiles, encodeContent } from '../src/github.js';
 import { wholePagePass, wholePageWrite, wholePageMessage, markedWords } from '../src/editor/whole-page.js';
+import { readyPage, kilnFilesOn } from '../src/editor/new-page.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const STAGING_WORKER = 'https://kiln-auth-staging.erikkwilder.workers.dev';
 const SENTINEL = '.kiln-e2e';
+// The file "New post or page" copies a new page from (src/editor/main.js).
+const STARTING_PAGE = '_templates/page.html';
+// A script written into the page itself: a script tag with no src and something in it.
+const OWN_SCRIPT = /<script\b(?![^>]*\ssrc\s*=)[^>]*>\s*[^\s<]/i;
 const SESSION_TTL = 900;
 // A 1×1 PNG: a real image, so the worker's check of an upload's leading bytes passes.
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
@@ -498,6 +511,13 @@ export async function run(cfg, rawIo) {
       if (!field || values[field] === undefined) throw new Error('index.html has no plain-text data-cms field to edit (set KILN_E2E_FIELD to one)');
       return `${cfg.branch} at ${start.slice(0, 7)}; editing the field "${field}"`;
     });
+    let startingPage;
+    await step(`the test repository has a starting page for new pages that holds a script of its own (${STARTING_PAGE})`, async () => {
+      const example = 'for example <script>document.documentElement.classList.add("js")</script> before its </body>';
+      try { startingPage = (await getFile(owner, R, STARTING_PAGE, cfg.branch)).text; }
+      catch { throw new Error(`there is no ${STARTING_PAGE} on ${cfg.branch}. Add one to the test repository: a whole page with a heading marked data-cms="page_title" and one script written into the page itself, ${example}. Nothing was written`); }
+      if (!OWN_SCRIPT.test(startingPage)) throw new Error(`${STARTING_PAGE} holds no script written into the page itself, so a new page made from it would not show whether an editor's page may keep the site's own script. Add one, ${example}. Nothing was written`);
+    });
 
     // ── Three editors, as People & access would make them ──
     let plain, granted, suggest;
@@ -637,6 +657,29 @@ export async function run(cfg, rawIo) {
       if ((await read(owner, t => t === write.html))?.text !== write.html) throw new Error('the repository does not hold the page with its marks');
       return markedWords(pass.counts);
     });
+    // What "New post or page" does for a page (src/editor/main.js): the
+    // starting page with the title put in, the character set named and Kiln
+    // loaded from where the site's pages load it.
+    const fromStartingPage = (title) => {
+      const filled = applyEdits(startingPage, [{ key: 'page_title', html: title }]).html.replaceAll('{{title}}', title);
+      const loads = [...original.matchAll(/<script\b[^>]*\ssrc\s*=\s*["']([^"']+)["']/gi)].map(m => m[1]);
+      return readyPage(filled, kilnFilesOn(loads)).html;
+    };
+    await step("granted editor makes a new page from the site's starting page, which holds a script of the owner's (in one commit, as New post or page does, and again as one file)", async () => {
+      const text = fromStartingPage(`E2E ${run} from the starting page`);
+      // The worker's own reason, when it says no: the transport's message leaves it out.
+      const said = (how) => (err) => { throw new Error(`${how}, the worker answered ${err.status || 'nothing'}: ${(err.data && err.data.error) || err.message}${err.data && err.data.detail ? ` (${String(err.data.detail).slice(0, 80)})` : ''}`); };
+      const c = await commitFiles(granted.gh, R, cfg.branch, [{ path: `kiln-e2e-${run}-made.html`, text }], `E2E ${run}: new page from the starting page (via Kiln)`).catch(said('made in one commit'));
+      await noted();
+      if (lastOurs !== c.sha) throw new Error('the branch is not at the commit that was made');
+      await putFile(granted.gh, R, `kiln-e2e-${run}-made-2.html`, { text, branch: cfg.branch, message: `E2E ${run}: new page from the starting page, as one file (via Kiln)` }).catch(said('written as one file'));
+      await noted();
+      return c.sha.slice(0, 7);
+    });
+    await refused('refused: the same new page with one script more than the starting page has', () => {
+      const text = fromStartingPage(`E2E ${run} one script more`).replace(/<\/body>/i, '<script>alert(1)</script></body>');
+      return granted.raw('PUT', `${P}/contents/kiln-e2e-${run}-more.html`, { message: 'x', branch: cfg.branch, content: b64(text) });
+    }, 403, 'scripts or executable markup');
     await step('granted editor writes a stylesheet', async () => {
       await putFile(granted.gh, R, `assets/kiln-e2e-${run}.css`, { text: 'h1 { color: inherit; }\n', branch: cfg.branch, message: `E2E ${run}: stylesheet (via Kiln)` });
       await noted();

@@ -22,6 +22,13 @@
  * else — inline scripts, absolute/protocol-relative script src, handlers,
  * dangerous URLs, frame/form tags — is rejected.
  *
+ * One more thing a brand-new page may carry: what ONE of the site's own page
+ * templates already carries (checkNewPageWrite). "New post or page" makes a
+ * page as a copy of `_templates/page.html` or `_templates/post.html`, and a
+ * site's template may hold a small script of the owner's (a phone menu). The
+ * template is the "before" of such a page, counted the way an existing page's
+ * own markup is: each thing as many times as the template has it, no more.
+ *
  * For FRAGMENTS (a scheduled field's innerHTML) nothing executable is ever
  * legitimate, so any hit is rejected.
  */
@@ -114,7 +121,15 @@ export function isHtmlPath(p) {
 export function checkDocumentWrite(oldHtml, newHtml) {
   const isNew = oldHtml == null || oldHtml === '';
   const oldTokens = isNew ? [] : collect(parse(String(oldHtml)));
-  const newTokens = collect(parse(String(newHtml)));
+  return firstAdded(oldTokens, collect(parse(String(newHtml))), isNew);
+}
+
+/**
+ * The first token in `newTokens` that `oldTokens` does not account for, or
+ * null. Counted: a token the old text has once covers one in the new text,
+ * not two. `isNew` also lets through what any brand-new page may carry.
+ */
+function firstAdded(oldTokens, newTokens, isNew) {
   const counts = new Map();
   for (const t of oldTokens) counts.set(t, (counts.get(t) || 0) + 1);
   for (const t of newTokens) {
@@ -132,6 +147,52 @@ export function checkDocumentWrite(oldHtml, newHtml) {
     return t;
   }
   return null;
+}
+
+// The files "New post or page" copies a new page from (src/editor/main.js).
+const TEMPLATE_FILES = ['_templates/page.html', '_templates/post.html'];
+
+/**
+ * Where the templates a new file at `path` could have been made from are
+ * kept: the `_templates` folder at the top of the repository and in each
+ * folder above the file (a site may live in a folder of its repository, and
+ * the worker is not told which). Every one of these is a page like any other
+ * to this guard, so an editor can never have put a script in one.
+ */
+export function templatePathsFor(path) {
+  const dirs = String(path || '').replace(/^\/+/, '').split('/').slice(0, -1);
+  const out = [];
+  for (let i = 0; i <= dirs.length; i++) {
+    const folder = dirs.slice(0, i).join('/');
+    for (const f of TEMPLATE_FILES) out.push(folder ? `${folder}/${f}` : f);
+  }
+  return out;
+}
+
+/**
+ * Guard a brand-new page that may have been made from one of the site's page
+ * templates. `templates` holds the text of each template as the branch being
+ * written to has it. The page passes if it passes as any new file does, or if
+ * ONE template accounts for everything else in it: the same script, word for
+ * word, as many times as that template has it. Two templates are never added
+ * together, so a page cannot carry a script twice because two templates each
+ * have it once. Returns the first offending token, or null.
+ */
+export function checkNewPageWrite(newHtml, templates = []) {
+  const newTokens = collect(parse(String(newHtml)));
+  const bad = firstAdded([], newTokens, true);
+  if (bad == null) return null;
+  // What is named when the page is refused: the first thing the first
+  // template does not account for (the script that was added, not the
+  // template's own), or with no template the first thing no new file may hold.
+  let beyondTemplate = null;
+  for (const t of templates || []) {
+    if (t == null || t === '') continue;
+    const extra = firstAdded(collect(parse(String(t))), newTokens, true);
+    if (extra == null) return null;
+    if (beyondTemplate == null) beyondTemplate = extra;
+  }
+  return beyondTemplate ?? bad;
 }
 
 /**

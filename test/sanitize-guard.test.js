@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkDocumentWrite, checkFragment, isHtmlPath } from '../worker/sanitize-guard.js';
+import { checkDocumentWrite, checkNewPageWrite, templatePathsFor, checkFragment, isHtmlPath } from '../worker/sanitize-guard.js';
 
 const PAGE = '<!doctype html><html><head><title>t</title></head><body>' +
   '<h1 data-cms="h">Hi</h1><script src="/assets/kiln.js" defer></script></body></html>';
@@ -101,4 +101,72 @@ test('guard: markup hidden inside a plain-text element (noscript, textarea, xmp,
     assert.match(checkDocumentWrite(before, hidden) || '', /^on:onload=/, tag);
   }
   assert.match(checkFragment('<noscript><a href="javascript:void 0">x</a></noscript>') || '', /^url:javascript:/);
+});
+
+// ─── A new page made from one of the site's own templates ────────────────────
+
+const MENU_SCRIPT = "document.querySelector('.menu-button').onclick=()=>document.body.classList.toggle('open')";
+const TPL = `<!doctype html><html><head><title>{{title}}</title></head><body><h1 data-cms="page_title">{{title}}</h1><script>${MENU_SCRIPT}</script></body></html>`;
+const made = (...scripts) => `<!doctype html><html><head><title>About</title></head><body><h1 data-cms="page_title">About</h1>${scripts.map(s => `<script>${s}</script>`).join('')}</body></html>`;
+
+test('a new page that carries the script its template carries → allowed', () => {
+  assert.ok(checkDocumentWrite(null, made(MENU_SCRIPT)), 'refused when no template is given');
+  assert.equal(checkNewPageWrite(made(MENU_SCRIPT), [TPL]), null);
+  // Space around the script's text is not part of it, as on an existing page.
+  assert.equal(checkNewPageWrite(made(`\n  ${MENU_SCRIPT}\n`), [TPL]), null);
+  // What any new page may carry is still allowed beside it.
+  assert.equal(checkNewPageWrite(made(MENU_SCRIPT).replace('</body>', '<style>h1{color:red}</style><script src="/assets/kiln.js"></script></body>'), [TPL]), null);
+});
+
+test('a new page with a script its template does not have → blocked', () => {
+  assert.equal(checkNewPageWrite(made(MENU_SCRIPT, 'steal()'), [TPL]), 'script-inline:steal()');
+  assert.ok(checkNewPageWrite(made('steal()'), [TPL]));
+  assert.ok(checkNewPageWrite(made(MENU_SCRIPT).replace('<h1', '<h1 onclick="steal()"'), [TPL]));
+  assert.ok(checkNewPageWrite(made(MENU_SCRIPT).replace('</body>', '<script src="https://evil.example/x.js"></script></body>'), [TPL]));
+  assert.ok(checkNewPageWrite(made(MENU_SCRIPT).replace('</body>', '<iframe src="//evil"></iframe></body>'), [TPL]));
+});
+
+test('the template\'s script is counted: once in the template is once in the page → twice is blocked', () => {
+  assert.ok(checkNewPageWrite(made(MENU_SCRIPT, MENU_SCRIPT), [TPL]));
+  // A template that has it twice lets a page have it twice, and not three times.
+  const twice = TPL.replace('</body>', `<script>${MENU_SCRIPT}</script></body>`);
+  assert.equal(checkNewPageWrite(made(MENU_SCRIPT, MENU_SCRIPT), [twice]), null);
+  assert.ok(checkNewPageWrite(made(MENU_SCRIPT, MENU_SCRIPT, MENU_SCRIPT), [twice]));
+});
+
+test('two templates are never added together → a page is held to one of them', () => {
+  const other = TPL.replace(MENU_SCRIPT, 'post()');
+  assert.equal(checkNewPageWrite(made(MENU_SCRIPT), [other, TPL]), null);
+  assert.equal(checkNewPageWrite(made('post()'), [other, TPL]), null);
+  assert.ok(checkNewPageWrite(made(MENU_SCRIPT, 'post()'), [other, TPL]), 'one script from each');
+  assert.ok(checkNewPageWrite(made(MENU_SCRIPT, MENU_SCRIPT), [TPL, TPL]), 'once from each of two');
+});
+
+test('a template\'s script with one character changed → blocked', () => {
+  assert.ok(checkNewPageWrite(made(MENU_SCRIPT.replace("'open'", "'opem'")), [TPL]));
+  assert.ok(checkNewPageWrite(made(MENU_SCRIPT + ';'), [TPL]));
+  assert.ok(checkNewPageWrite(made(MENU_SCRIPT.toUpperCase()), [TPL]));
+});
+
+test('no template, an empty one, or one with nothing in it → a new page is held to what any new file may carry', () => {
+  for (const templates of [[], [''], [null], ['<html><body><h1>{{title}}</h1></body></html>'], undefined]) {
+    assert.ok(checkNewPageWrite(made(MENU_SCRIPT), templates));
+    assert.equal(checkNewPageWrite(made(), templates), null);
+  }
+});
+
+test('markup hidden in a template\'s raw text is not a way in: it is counted as what it is, for the page too', () => {
+  const hidden = '<html><body><noscript><img src=x onerror="a()"></noscript></body></html>';
+  assert.equal(checkNewPageWrite(hidden, [hidden]), null);
+  assert.ok(checkNewPageWrite(hidden.replace('a()', 'b()'), [hidden]));
+});
+
+test('templatePathsFor: the templates folder at the top of the repository and in each folder above the file, and nowhere else', () => {
+  assert.deepEqual(templatePathsFor('about.html'), ['_templates/page.html', '_templates/post.html']);
+  assert.deepEqual(templatePathsFor('site/blog/x.html'), [
+    '_templates/page.html', '_templates/post.html',
+    'site/_templates/page.html', 'site/_templates/post.html',
+    'site/blog/_templates/page.html', 'site/blog/_templates/post.html',
+  ]);
+  assert.deepEqual(templatePathsFor('/about.html'), ['_templates/page.html', '_templates/post.html']);
 });

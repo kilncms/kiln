@@ -213,7 +213,7 @@ test('source e2e: a failure midway still puts everything back; --smoke writes no
 
 test('both scripts: a 429 from the worker is waited out, not counted as a failed check', async () => {
   for (const script of [run, runHtml]) {
-    const s = script === run ? staging() : staging({ files: { '.kiln-e2e': '', 'index.html': '<!doctype html>\n<html><body>\n<p data-cms="line">A line.</p>\n</body></html>\n' } });
+    const s = script === run ? staging() : staging({ files: { '.kiln-e2e': '', 'index.html': '<!doctype html>\n<html><body>\n<p data-cms="line">A line.</p>\n</body></html>\n', '_templates/page.html': '<!doctype html>\n<html><body>\n<h1 data-cms="page_title">{{title}}</h1>\n<script>document.documentElement.classList.add("js")</script>\n</body></html>\n' } });
     // The limiter trips on the 5th, 6th and 12th request to the worker; once it says how long to wait.
     let count = 0;
     s.intercept.fn = async (url) => {

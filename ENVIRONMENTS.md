@@ -102,7 +102,12 @@ Wired in `worker/wrangler.toml` under `[env.staging]`:
    push it to a private repository, install the staging App on it, and add an
    empty file named `.kiln-e2e` at its root. That file is what allows the
    end-to-end script to write to the repository and to reset it afterwards: a
-   repository without it is never written to.
+   repository without it is never written to. The script also needs the
+   site's starting page for new pages, `_templates/page.html`, to hold one
+   script written into the page itself, as the starter site's does for its
+   phone menu: it checks that an editor's new page may keep that script and
+   may not carry one more. If the file is missing or has no such script, the
+   run stops before it writes anything and says what to add.
 3. Optional: connect that repository to a Pages project so an edit can be
    watched going live, and set `KILN_E2E_SITE` to its address.
 
