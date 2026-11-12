@@ -199,6 +199,8 @@ function repositoryLines(plan, { repo, installUrl, canAdd }) {
     const p = shown.pages, add = shown.files.add;
     const said = [];
     if (p.add) said.push(`${count(p.add, 'page', 'pages')} out of ${p.total} ${p.add === 1 ? 'does' : 'do'} not have the two lines that load the editor: ${some(p.add_names, p.add)}.`);
+    const t = shown.templates;
+    if (t && t.add) said.push(`${count(t.add, 'page template does', 'page templates do')} not have them either, so a new page made from ${t.add === 1 ? 'it' : 'one'} would have no editor: ${some(t.add_names, t.add)}.`);
     if (add.length) said.push(`${add.length === 1 ? 'This file is' : 'These files are'} missing from ${repo}: ${some(add, add.length, 8)}.`);
     said.push(canAdd
       ? 'Press the button and Kiln shows you the change, then adds what is missing.'

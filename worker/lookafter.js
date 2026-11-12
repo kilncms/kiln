@@ -103,21 +103,34 @@ export async function planCharset({ token, repo }) {
     else if (out.state === 'no-head') noHead.push(f.path);
     else changes.push({ path: f.path, mode: f.mode, text: out.html });
   }
+  // Page templates that are whole pages (prepare.js: readPages): a new page is
+  // made from one, so a template that names no character set makes pages that
+  // name none. Kept apart from the pages, and called templates when spoken of.
+  const templates = { changes: [], already: 0, noHead: [] };
+  for (const f of site.templates || []) {
+    const out = withCharset(f.text);
+    if (out.state === 'already') templates.already++;
+    else if (out.state === 'no-head') templates.noHead.push(f.path);
+    else templates.changes.push({ path: f.path, mode: f.mode, text: out.html });
+  }
   return {
     branch: site.branch, head: site.head, treeSha: site.treeSha,
-    state: changes.length ? 'ready' : 'nothing',
+    state: changes.length || templates.changes.length ? 'ready' : 'nothing',
     pages: { total: site.total, already, noHead, skipped: site.skipped },
     changes,
+    templates,
   };
 }
 
 /** Give the pages of a `ready` plan their character set: one commit, or a PrepareError and nothing changed. */
 export async function applyCharset({ token, repo, plan, author }) {
-  const n = plan.changes.length;
-  const message = `Say which character set each page is written in\n\n${count(n, 'page now says it is', 'pages now say they are')} written in UTF-8 (${CHARSET_TAG}, first in the head). `
+  const templates = plan.templates?.changes || [];
+  const n = plan.changes.length, t = templates.length;
+  const tplSays = t ? `${count(t, 'page template now says so too', 'page templates now say so too')}, so a new page made from ${t === 1 ? 'it' : 'one'} reads as it should. ` : '';
+  const message = `Say which character set each page is written in\n\n${n || !t ? `${count(n, 'page now says it is', 'pages now say they are')} written in UTF-8 (${CHARSET_TAG}, first in the head). ${tplSays}` : `${count(t, 'page template now says it is', 'page templates now say they are')} written in UTF-8 (${CHARSET_TAG}, first in the head), so a new page made from ${t === 1 ? 'it' : 'one'} reads as it should. `}`
     + `Kiln's hosting does not say this for a page, and without it a browser can show accented letters and curly quotes as other letters. Added for ${author.name} when the site went on Kiln's hosting (via Kiln)`;
-  const commit = await commitChange({ token, repo, branch: plan.branch, head: plan.head, treeSha: plan.treeSha, texts: plan.changes, message, author });
-  return { ...commit, pages: n };
+  const commit = await commitChange({ token, repo, branch: plan.branch, head: plan.head, treeSha: plan.treeSha, texts: [...plan.changes, ...templates], message, author });
+  return { ...commit, pages: n, templates: t };
 }
 
 /** The sentences that differ from adding Kiln; the rest are prepareSentence's. */
@@ -189,7 +202,7 @@ export async function lookAfter(env, { site, token, author, worker, firstpassAt 
       } else {
         const done = await applyPrepare({ token, repo, worker, plan, author, ...(env.KILN_RELEASE_BASE ? { releaseBase: env.KILN_RELEASE_BASE } : {}) });
         await noted(record.prepared, done.sha);
-        steps.push({ step: 'kiln', state: 'done', commit: made(done), detail: `Kiln added its files to ${repo}${done.pages ? `, and ${count(done.pages, 'page now loads', 'pages now load')} the editor` : ''}.` });
+        steps.push({ step: 'kiln', state: 'done', commit: made(done), detail: `Kiln added its files to ${repo}${done.pages ? `, and ${count(done.pages, 'page now loads', 'pages now load')} the editor` : ''}.${done.templates ? ` ${count(done.templates, 'page template now loads', 'page templates now load')} the editor too, so a new page made from ${done.templates === 1 ? 'it' : 'one'} can be edited.` : ''}` });
       }
     } catch (e) {
       const line = failed('kiln', e, kilnSays);
@@ -205,12 +218,17 @@ export async function lookAfter(env, { site, token, author, worker, firstpassAt 
       else if (shut) steps.push({ step: 'charset', state: 'not_done', code: 'protected', detail: charsetSays('protected') });
       else {
         plan = await planCharset({ token, repo });
-        const left = plan.pages?.noHead || [];
-        const leftSays = left.length ? `${count(left.length, 'page has', 'pages have')} no <head> and ${left.length === 1 ? 'was' : 'were'} left as ${left.length === 1 ? 'it is' : 'they are'}: ${names(left)}.` : '';
+        const noHead = plan.pages?.noHead || [], tplNoHead = plan.templates?.noHead || [];
+        const left = [...noHead, ...tplNoHead];
+        const leftOf = (list, one, many) => (list.length ? `${count(list.length, one, many)} no <head> and ${list.length === 1 ? 'was' : 'were'} left as ${list.length === 1 ? 'it is' : 'they are'}: ${names(list)}.` : '');
+        const leftSays = [leftOf(noHead, 'page has', 'pages have'), leftOf(tplNoHead, 'page template has', 'page templates have')].filter(Boolean).join(' ');
         if (plan.state === 'ready') {
           const done = await applyCharset({ token, repo, plan, author });
           steps.push({ step: 'charset', state: 'done', commit: made(done), ...(left.length ? { left } : {}),
-            detail: `${count(done.pages, 'page now says which character set it is', 'pages now say which character set they are')} written in, so every letter shows as it should.${leftSays ? ` ${leftSays}` : ''}` });
+            detail: (done.pages || !done.templates
+              ? `${count(done.pages, 'page now says which character set it is', 'pages now say which character set they are')} written in, so every letter shows as it should.${done.templates ? ` ${count(done.templates, 'page template now says so too', 'page templates now say so too')}, so a new page made from ${done.templates === 1 ? 'it' : 'one'} reads as it should.` : ''}`
+              : `${count(done.templates, 'page template now says which character set it is', 'page templates now say which character set they are')} written in, so a new page made from ${done.templates === 1 ? 'it' : 'one'} shows every letter as it should.`)
+              + (leftSays ? ` ${leftSays}` : '') });
         } else if (plan.state === 'nothing' && left.length) {
           steps.push({ step: 'charset', state: 'not_done', code: 'no_head', left, detail: `${leftSays} A page says which character set it is written in inside its <head>, so Kiln could not add that.` });
         } else if (plan.state === 'nothing') {

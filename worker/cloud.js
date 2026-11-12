@@ -925,7 +925,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       await markPrepared(env, site.id, done.sha);
       await notifyOwner(env, `Kiln added to ${site.repo}`, [
         `By: ${sess.login}, from the dashboard`,
-        `Pages: ${done.pages}. Files: ${done.files.join(', ') || 'none'}`,
+        `Pages: ${done.pages}. Page templates: ${done.templates || 0}. Files: ${done.files.join(', ') || 'none'}`,
         done.url,
       ]);
       return json({ ok: true, ...shown, state: 'done', commit: { sha: done.sha, url: done.url } });

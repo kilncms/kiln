@@ -681,6 +681,36 @@ function sitePages(root = '.') {
   return files.sort();
 }
 
+// What makes a page template a whole page and not a piece of one (a post
+// card). The service has the same line (worker/prepare.js).
+const WHOLE_PAGE = /<(?:html|head|body)(?:\s[^>]*)?>/i;
+
+/**
+ * The site's page templates that are whole pages: the .html files in a
+ * _templates folder, anywhere a page could be, that have <html>, a <head> or
+ * a <body>. The editor's "New post or page" makes each new page from one, so
+ * a template without the two lines makes pages the editor never starts on.
+ * A template that is a piece of a page is not listed, and is never changed.
+ */
+function pageTemplates(root = '.') {
+  const files = [];
+  const NEVER = ['node_modules', 'dist', '_site', '.git'];
+  const NOT_AT_TOP = ['functions', 'assets', 'build', 'public', 'out'];
+  (function walk(dir, top, inTemplates) {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name.startsWith('.') || NEVER.includes(e.name) || (top && NOT_AT_TOP.includes(e.name))) continue;
+      const f = path.join(dir, e.name);
+      if (e.isDirectory()) walk(f, false, inTemplates || e.name === '_templates');
+      else if (inTemplates && e.name.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(e.name)) {
+        let text = '';
+        try { text = readFileSync(f, 'utf8'); } catch { continue; }
+        if (WHOLE_PAGE.test(text.replace(/<!--[\s\S]*?(?:-->|$)/g, ''))) files.push(f);
+      }
+    }
+  })(root, true, false);
+  return files.sort();
+}
+
 /**
  * A page with the two script tags before its last </body>. A page that
  * already loads kiln.js is returned as it is ('already'); one with no </body>
@@ -710,9 +740,13 @@ async function offerScriptTags(siteMode = null) {
   hr('Loading the editor on your pages');
   if (siteMode?.mode === 'source') return siteMode.adapter === 'astro' ? offerAstroTags(siteMode) : tellWhereTagsGo(siteMode, KILN_TAGS);
   const pages = sitePages();
+  // Page templates that are whole pages need the two lines as well: a new
+  // page is made from one. They are named as templates in what is printed.
+  const templates = pageTemplates();
+  const isTemplate = (f) => templates.includes(f);
   const todo = [], noBody = [];
   let already = 0;
-  for (const f of pages) {
+  for (const f of [...pages, ...templates]) {
     const r = withKilnTags(readFileSync(f, 'utf8'));
     if (r.state === 'already') already++;
     else if (r.state === 'no-body') noBody.push(f);
@@ -727,8 +761,9 @@ async function offerScriptTags(siteMode = null) {
   console.log(`  The editor starts only on pages that load it. Each page needs these two\n  lines before </body>:\n     ${KILN_TAGS.join('\n     ')}\n`);
   const wrote = [];
   if (todo.length) {
-    console.log(`  ${todo.length === 1 ? 'This page does' : `These ${todo.length} pages do`} not have them yet:`);
-    for (const [f] of todo.slice(0, 20)) console.log(`     ${f}`);
+    const withTemplates = todo.some(([f]) => isTemplate(f));
+    console.log(`  ${todo.length === 1 ? `This ${withTemplates ? 'page template' : 'page'} does` : `These ${todo.length} ${withTemplates ? 'pages and page templates' : 'pages'} do`} not have them yet:`);
+    for (const [f] of todo.slice(0, 20)) console.log(`     ${f}${isTemplate(f) ? '   (a page template: new pages are made from it)' : ''}`);
     if (todo.length > 20) console.log(`     … and ${todo.length - 20} more`);
     if (await yes(`Add the two script tags to ${todo.length === 1 ? 'it' : `these ${todo.length} pages`} now?`, 'y')) {
       for (const [f, html] of todo) { writeFileSync(f, html); wrote.push(f); }

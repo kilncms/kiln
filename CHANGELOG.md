@@ -86,6 +86,31 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A page made with "New post or page" can be edited, and its accents
+  read as written, on a site Kiln was added to from the dashboard.** A site
+  keeps the templates new pages are made from in `_templates/` (`page.html`,
+  `post.html`, `post-card.html`). "Add Kiln to this site" and the
+  character-set step on Kiln's hosting passed that folder over, so a new
+  page had neither the two lines that load the editor (the Kiln button never
+  came up on it, and its owner could not change or delete it from the
+  site) nor `<meta charset="utf-8">` (its accented letters, and the dash in
+  the template's title, came out as other letters). Now a template that is a
+  whole page (it has `<html>`, a `<head>` or a `<body>`) gets the same lines
+  as a page, in the same commits. A template that is a piece of a page, such
+  as a post card, is left exactly as it is. The preview of what will change
+  counts and names templates apart from pages (`templates` beside `pages`
+  in the answer of `GET /cloud/sites/prepare`), the commit messages and the
+  site checklist say "page templates", and the first pass at what can be
+  edited still marks no template. A site that had Kiln added before this is
+  offered the two lines for its templates alone, with the same "Add Kiln to
+  this site" button on its checklist. The character-set line is given when
+  a site is made ready for Kiln's hosting; a site that was made ready before
+  this does not get it for its templates until those steps run again. The
+  setup tool does the same for the two lines: `npx github:kilncms/kiln#release`
+  now lists whole-page templates with the pages that lack the two lines, and
+  says which are templates. Pages already made from an old template are not
+  changed by this: the two lines can be added to them with the same button.
+
 - **Two people editing one site from one network address are no longer
   refused.** The service counted every request it got from one address on a
   single count of 20 a minute, whoever made it: reading a page to edit it, the

@@ -8,6 +8,12 @@
  * </body> on every page. It is one commit on the repository's default branch,
  * in the name of the person who asked for it.
  *
+ * A site may keep page templates in a _templates folder, from which the
+ * editor's "New post or page" makes each new page. A template that is a whole
+ * page gets the same two lines in the same commit, or every page made from it
+ * would have no editor. A template that is a piece of a page (a post card) is
+ * never touched. Templates are counted and named apart from pages.
+ *
  * Only what is missing is added. A file that is already in the repository is
  * never replaced (bringing the editor up to date is `kiln update`'s job), and
  * a page that already loads the editor is not touched. So asking twice changes
@@ -91,6 +97,27 @@ export function isSitePage(path) {
   return !parts.some((d, i) => d.startsWith('.') || SKIP_DIRS.has(d) || (i === 0 && SKIP_TOP_DIRS.has(d)));
 }
 
+// The folder the editor's "New post or page" reads its templates from
+// (src/editor/main.js: _templates/page.html, post.html, post-card.html).
+const TEMPLATE_DIR = '_templates';
+export const MAX_TEMPLATES = 40;              // templates beyond this many are left as they are
+// What makes a template a whole page and not a piece of one. The setup tool
+// has the same line (cli/index.mjs); test/cloud-templates.test.js holds the two to each other.
+const WHOLE_PAGE = /<(?:html|head|body)(?:\s[^>]*)?>/i;
+
+/** Is this path a page template: a web page file in a _templates folder, anywhere a page of the site could be? */
+export function isPageTemplate(path) {
+  const parts = String(path).split('/');
+  const dirs = parts.slice(0, -1);
+  if (!dirs.includes(TEMPLATE_DIR)) return false;
+  return isSitePage([...dirs.filter(d => d !== TEMPLATE_DIR), parts[parts.length - 1]].join('/'));
+}
+
+/** Is this template a whole page (it has <html>, or a <head> or a <body>), and not a piece of one such as a post card? Comments do not count. */
+export function isWholePage(html) {
+  return WHOLE_PAGE.test(String(html).replace(/<!--[\s\S]*?(?:-->|$)/g, ''));
+}
+
 /**
  * A page with the two script tags before its last </body>. A page that
  * already loads kiln.js is returned as it is ('already'); one with no </body>
@@ -164,7 +191,11 @@ export async function readText(token, repo, sha) {
  * 'no_access', 'github', 'empty', 'built' (with `generator`), 'no_pages',
  * 'too_big' (with `pageCount`). With 'ok': `files` holds each readable page as
  * { path, mode, text }, and `skipped` the ones left alone ({ path, why }:
- * 'large', 'not_text').
+ * 'large', 'not_text'). `templates` holds, in the same shape, each page
+ * template that is a whole page (isPageTemplate, isWholePage); a template
+ * that is a piece of a page is not in it, so nothing ever changes one. Adding
+ * Kiln and the character set use `templates`; the first pass at what can be
+ * edited does not, because a template's words are stand-ins for a page's.
  */
 export async function readPages({ token, repo }) {
   const meta = await gh(token, 'GET', `/repos/${repo}`);
@@ -205,7 +236,18 @@ export async function readPages({ token, repo }) {
   // A page GitHub would not hand over might be one that needs changing:
   // saying "all done" or writing the rest would both be wrong.
   if (unread) return { state: 'github' };
-  return { ...base, state: 'ok', entries, paths, total: pages.length, files, skipped };
+
+  // Page templates: read like pages, and only the whole pages among them are
+  // handed on. One that is too large or is not text is left as it is.
+  const templates = [];
+  const drafts = entries.filter(e => isPageTemplate(e.path)).sort((a, b) => (a.path < b.path ? -1 : 1)).slice(0, MAX_TEMPLATES);
+  const drawn = await inTurn(drafts, (e) => (Number(e.size) > MAX_PAGE_BYTES ? { tooLarge: true } : readText(token, repo, e.sha)));
+  if (drawn.some(r => r.failed)) return { state: 'github' };
+  drafts.forEach((e, i) => {
+    const r = drawn[i];
+    if (typeof r.text === 'string' && isWholePage(r.text)) templates.push({ path: e.path, mode: e.mode || '100644', text: r.text });
+  });
+  return { ...base, state: 'ok', entries, paths, total: pages.length, files, skipped, templates };
 }
 
 export async function planPrepare({ token, repo, worker }) {
@@ -224,6 +266,16 @@ export async function planPrepare({ token, repo, worker }) {
   }
   skipped.sort((x, y) => (x.path < y.path ? -1 : 1));
 
+  // Page templates that are whole pages: the same two lines, kept apart from
+  // the pages so that what is shown and said calls them what they are.
+  const templates = { changes: [], already: 0, skipped: [] };
+  for (const f of site.templates || []) {
+    const done = withKilnTags(f.text);
+    if (done.state === 'already') templates.already++;
+    else if (done.state === 'no-body') templates.skipped.push({ path: f.path, why: 'no_body' });
+    else templates.changes.push({ path: f.path, mode: f.mode, text: done.html });
+  }
+
   const have = new Set(paths);
   const ours = [...EDITOR_FILES.map(([to]) => to), CONFIG_FILE, SIGN_IN_PAGE, HEADERS_FILE[0]];
   let add = ours.filter(p => !have.has(p));
@@ -231,7 +283,7 @@ export async function planPrepare({ token, repo, worker }) {
   // The security headers file comes along when Kiln is added. A site that has
   // Kiln and lacks only that file is not asked for a commit for its sake: the
   // editor works without it, and only some hosts read it.
-  const ready = changes.length > 0 || add.some(p => p !== HEADERS_FILE[0]);
+  const ready = changes.length > 0 || templates.changes.length > 0 || add.some(p => p !== HEADERS_FILE[0]);
   if (!ready) add = [];
 
   // Settings that were already there are the owner's. If they name another
@@ -249,6 +301,7 @@ export async function planPrepare({ token, repo, worker }) {
     state: ready ? 'ready' : 'prepared',
     pages: { total: pages.length, already, skipped },
     changes,
+    templates,
     files: { add, kept },
     otherWorker,
   };
@@ -268,6 +321,11 @@ export function publicPlan(plan, { repo } = {}) {
       skipped: plan.pages.skipped.slice(0, 20),
       skipped_count: plan.pages.skipped.length,
     };
+    // Page templates, named as templates, and only when the site has any.
+    const t = plan.templates;
+    if (t && (t.changes.length || t.already || t.skipped.length)) {
+      out.templates = { already: t.already, add: t.changes.length, add_names: t.changes.slice(0, 12).map(c => c.path), skipped: t.skipped.slice(0, 20) };
+    }
     out.files = plan.files;
     if (plan.otherWorker) out.other_worker = plan.otherWorker;
   }
@@ -326,12 +384,14 @@ export async function applyPrepare({ token, repo, worker, plan, author, releaseB
   const texts = [];
   if (wanted.has(CONFIG_FILE)) texts.push({ path: CONFIG_FILE, mode: '100644', text: kilnConfigFile({ repo, branch: plan.branch, worker }) });
   if (wanted.has(SIGN_IN_PAGE)) texts.push({ path: SIGN_IN_PAGE, mode: '100644', text: KILN_PAGE });
-  texts.push(...plan.changes);
+  const templates = plan.templates?.changes || [];
+  texts.push(...plan.changes, ...templates);
 
-  const n = plan.changes.length;
-  const message = `Add Kiln to this site\n\n${n ? `${n} page${n === 1 ? ' now loads' : 's now load'} the editor. ` : ''}Added from the Kiln dashboard by ${author.name}.`;
+  const n = plan.changes.length, t = templates.length;
+  const message = `Add Kiln to this site\n\n${n ? `${n} page${n === 1 ? ' now loads' : 's now load'} the editor. ` : ''}`
+    + `${t ? `${t} page template${t === 1 ? ' now loads' : 's now load'} the editor too, so a new page made from ${t === 1 ? 'it' : 'one'} can be edited. ` : ''}Added from the Kiln dashboard by ${author.name}.`;
   const commit = await commitChange({ token, repo, branch: plan.branch, head: plan.head, treeSha: plan.treeSha, entries, texts, message, author });
-  return { ...commit, pages: n, files: [...wanted] };
+  return { ...commit, pages: n, templates: t, files: [...wanted] };
 }
 
 /**
