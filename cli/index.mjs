@@ -663,14 +663,21 @@ const LOADS_KILN = /<script\b[^>]*\bsrc=["'][^"']*\bkiln\.js(?:\?[^"']*)?["']/i;
 /** The pages of a plain-HTML site: every .html file outside build and tool folders, Kiln's own two pages excepted. */
 function sitePages(root = '.') {
   const files = [];
-  (function walk(dir) {
+  // Build and tool folders hold no pages of the site. Some of their names are
+  // also ordinary words that sites use in their addresses (/lists/public/,
+  // /brand/assets/), so those are left out only at the top of the site, where
+  // a build or a host puts them. Deeper down they are folders of pages: a
+  // copied site with a page at /lists/public was passed over without a word.
+  const NEVER = ['node_modules', '_templates', 'dist', '_site', '.git'];
+  const NOT_AT_TOP = ['functions', 'assets', 'build', 'public', 'out'];
+  (function walk(dir, top) {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.name.startsWith('.') || ['node_modules', '_templates', 'functions', 'assets', 'dist', 'build', 'public', 'out', '_site', '.git'].includes(e.name)) continue;
+      if (e.name.startsWith('.') || NEVER.includes(e.name) || (top && NOT_AT_TOP.includes(e.name))) continue;
       const f = path.join(dir, e.name);
-      if (e.isDirectory()) walk(f);
+      if (e.isDirectory()) walk(f, false);
       else if (e.name.endsWith('.html') && !['kiln.html', 'members-login.html'].includes(e.name)) files.push(f);
     }
-  })(root);
+  })(root, true);
   return files.sort();
 }
 

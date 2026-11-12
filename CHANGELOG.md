@@ -162,6 +162,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   general help points to it, and so does the usage line printed when no
   address is given. As with every command, asking for help runs nothing and
   writes nothing.
+- **`tag` no longer passes over pages in a folder called `public`.** `tag` and
+  the setup wizard leave build and tool folders alone, and did so wherever the
+  name turned up, so on a copied site the page at `/lists/public` (the file
+  `lists/public/index.html`) was never looked at and never mentioned.
+  `public`, `assets`, `build`, `out` and `functions` are ordinary words that
+  sites use in their addresses, so they are now left out only at the top of
+  the site, where a build or a host puts them. `node_modules`, `dist`,
+  `_site`, `_templates` and folders whose name starts with a dot are still
+  left out at every depth.
 
 ## [0.6.0] - 2026-11-12
 

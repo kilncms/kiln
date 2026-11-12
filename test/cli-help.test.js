@@ -238,3 +238,15 @@ test('rescue --help explains rescue itself: what it does, every option, where th
   assert.doesNotMatch(help, /—|off-origin|crawl/, 'plain words, no dashes');
   assert.match(general, /"rescue --help" says more/);
 });
+
+test('tag: a folder of pages named like a build folder is only passed over at the top of the site', () => {
+  // A copied site keeps its addresses as folders: /lists/public becomes lists/public/index.html.
+  const s = site({ 'index.html': PAGE, 'lists/public/index.html': PAGE, 'brand/assets/index.html': PAGE, 'blog/build/index.html': PAGE,
+    'public/built.html': PAGE, 'assets/widget.html': PAGE, 'docs/node_modules/pkg/demo.html': PAGE, 'old/dist/index.html': PAGE });
+  const r = kiln(s.dir, ['tag']);
+  assert.equal(r.code, 0, r.all);
+  const listed = r.out.split('\n').map(l => /^\s+[✓·~] (\S+\.html)/.exec(l)?.[1]).filter(Boolean).sort();
+  assert.deepEqual(listed, ['blog/build/index.html', 'brand/assets/index.html', 'index.html', 'lists/public/index.html']);
+  assert.match(readFileSync(path.join(s.dir, 'lists', 'public', 'index.html'), 'utf8'), /data-cms/);
+  for (const f of ['public/built.html', 'assets/widget.html', 'docs/node_modules/pkg/demo.html', 'old/dist/index.html']) assert.equal(readFileSync(path.join(s.dir, f), 'utf8'), PAGE, `${f} is left alone`);
+});
