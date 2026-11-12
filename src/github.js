@@ -153,25 +153,45 @@ export async function editFile(gh, repo, path, branch, transform, message, attem
  * the post file + the updated index land as ONE commit, so the site never
  * deploys in a half-written state).
  * files: [{ path, text } | { path, base64 }]
+ *
+ * `inlineText`: each text file rides in the request that builds the tree
+ * (GitHub writes it out), not in a request of its own. A change to many pages
+ * then costs five requests however many pages it has, where it cost one more
+ * for each page. That matters twice over: the Kiln service counts a person's
+ * requests by the minute, and GitHub refuses a burst of writes. The text goes
+ * about a megabyte at a time, each tree built on the one before; nothing is
+ * live until the branch is moved at the very end, so it is still all or nothing.
  */
-export async function commitFiles(gh, repo, branch, files, message) {
+const TREE_TEXT_MAX = 1024 * 1024;
+
+export async function commitFiles(gh, repo, branch, files, message, { inlineText = false } = {}) {
   const ref = await gh.request('GET', `/repos/${repo}/git/ref/${encodeURIComponent('heads/' + branch)}`);
   const baseCommitSha = ref.object.sha;
   const baseCommit = await gh.request('GET', `/repos/${repo}/git/commits/${baseCommitSha}`);
 
-  const tree = [];
+  const batches = [[]];
+  let size = 0;
   for (const f of files) {
+    if (inlineText && f.base64 === undefined && typeof f.text === 'string' && f.text) {
+      if (size && size + f.text.length > TREE_TEXT_MAX) { batches.push([]); size = 0; }
+      batches[batches.length - 1].push({ path: f.path, mode: '100644', type: 'blob', content: f.text });
+      size += f.text.length;
+      continue;
+    }
     const blob = await gh.request('POST', `/repos/${repo}/git/blobs`,
       f.base64 !== undefined
         ? { content: f.base64, encoding: 'base64' }
         : { content: f.text, encoding: 'utf-8' });
-    tree.push({ path: f.path, mode: '100644', type: 'blob', sha: blob.sha });
+    batches[0].push({ path: f.path, mode: '100644', type: 'blob', sha: blob.sha });
   }
 
-  const newTree = await gh.request('POST', `/repos/${repo}/git/trees`,
-    { base_tree: baseCommit.tree.sha, tree });
+  let treeSha = baseCommit.tree.sha;
+  for (const tree of batches) {
+    if (!tree.length && batches.length > 1) continue;
+    treeSha = (await gh.request('POST', `/repos/${repo}/git/trees`, { base_tree: treeSha, tree })).sha;
+  }
   const commit = await gh.request('POST', `/repos/${repo}/git/commits`,
-    { message, tree: newTree.sha, parents: [baseCommitSha] });
+    { message, tree: treeSha, parents: [baseCommitSha] });
   await gh.request('PATCH', `/repos/${repo}/git/refs/${encodeURIComponent('heads/' + branch)}`,
     { sha: commit.sha });
   return commit;

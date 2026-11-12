@@ -371,13 +371,27 @@ test('trouble: on page load the sign-in is kept, for an invited editor and for t
         const over = onLoadFailure(err, { mode, asking, draft: true });
         assert.equal(over.drop, false, `${mode} ${asking} ${err.status || err.message}`);
         assert.equal(over.action, 'reload');
+        // Asked too often: reloading at once only asks again, so the notice says how long to wait.
         assert.deepEqual(over.notice, {
-          text: 'Editing could not start just now. You are still signed in, so please reload the page to try again.',
+          text: BUSY.includes(err)
+            ? 'Editing could not start because too much was asked of the site just now. You are still signed in, so please wait a minute and then reload the page.'
+            : 'Editing could not start just now. You are still signed in, so please reload the page to try again.',
           detail: '',
           button: 'Reload',
         });
       }
     }
+  }
+});
+
+test('trouble: the service\'s own "asked too often" answer (429, with when to ask again) reads as busy, never as an ended sign-in', () => {
+  const refused = { status: 429, data: { error: 'Too much was asked of the Kiln service from here in the last minute. Please wait a minute, then try again.', code: 'too_often', retry_after: 60 } };
+  assert.deepEqual([readFailure(refused).kind, readFailure(refused).trouble], ['trouble', 'busy']);
+  for (const mode of ['editor', 'admin']) {
+    const over = onLoadFailure(refused, { mode, asking: 'page' });
+    assert.equal(over.drop, false);
+    assert.match(over.notice.text, /wait a minute and then reload/);
+    assertPlain(over.notice.text);
   }
 });
 

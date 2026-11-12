@@ -129,6 +129,15 @@ export function notStartedNotice({ way, f }) {
       button: '',
     };
   }
+  // Asked too often (a 429, or GitHub's own "rate limit" 403): reloading at
+  // once only asks again, so the sentence says how long to wait.
+  if (f.trouble === 'busy') {
+    return {
+      text: 'Editing could not start because too much was asked of the site just now. You are still signed in, so please wait a minute and then reload the page.',
+      detail: '',
+      button: 'Reload',
+    };
+  }
   return {
     text: 'Editing could not start just now. You are still signed in, so please reload the page to try again.',
     detail: '',

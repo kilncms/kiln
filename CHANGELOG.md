@@ -86,6 +86,46 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Two people editing one site from one network address are no longer
+  refused.** The service counted every request it got from one address on a
+  single count of 20 a minute, whoever made it: reading a page to edit it, the
+  "who else is here" call every 30 seconds, watching a publish go live, and
+  the sign-in routes the count was meant for. One person publishing and
+  opening a few pages could use it up alone, and two people on one site, or
+  an office behind one address, were told "Too much was asked of the site
+  just now" again and again, and "Editing could not start just now" when
+  they opened a page. Now a signed-in person's requests are counted for
+  their own session, on a roomier count (200 a minute, the new `RL_ROOMY`
+  limiter in `worker/wrangler.toml`), and the public `/standing` read is
+  counted for the address apart from the sign-in routes. The count for one
+  address (100 a minute, as the entry below tells) still holds for signing in, for the dashboard's reading of
+  a repository, and for any request that comes with no session, with a
+  session that has ended, or with a session id nobody holds: a made-up id is
+  looked up, found to be nobody's, and counted for the address. A worker
+  with only the first limiter bound counts each session by itself on that
+  one, and a worker with neither limits nothing, as before. **Operators:**
+  deploy the worker with the new `[[unsafe.bindings]]` block for `RL_ROOMY`
+  (it is in all three environments of `worker/wrangler.toml`).
+- **Saving the site menu asks half as much of the service, and still
+  changes every page or none.** The Site menu tool read every page and then
+  sent each changed page by itself before one commit tied them together:
+  2N + 6 requests for a site of N pages, which went over the old count of 20
+  on any site of more than seven pages and stopped part-way with "too much
+  was asked". (Nothing was half-saved: the counter on screen was of pages
+  being read.) The pages' new text now goes in the request that builds the
+  commit, about a megabyte at a time, so a save is N + 6 requests and three
+  of them write, however many pages there are. GitHub's own refusal of a
+  burst of writes is no longer in reach either. The dialog now says
+  "Reading the site's pages… 4/14" while it reads, in place of "Updating
+  menus…".
+- **When the service says it was asked too often, it says when to ask
+  again.** Its answer is a 429 with `Retry-After: 60`, the same in the body
+  (`code: "too_often"`, `retry_after: 60`), and a sentence in place of
+  "rate limited, slow down". A page where the editor could not start for
+  that reason now says "please wait a minute and then reload the page"
+  (it said to reload, which only asked again). And when the editor fails to
+  start before any of it is on the page, the page now says so with a Reload
+  button: it used to stay as it was, with no word at all.
 - **Several people at one address are no longer refused by the service.** The
   service counted 20 requests a minute for one network address, across
   everyone there. One person who has just published makes about 12 of the

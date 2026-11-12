@@ -51,7 +51,7 @@ import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } fro
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
 import { draftRecord, readDraft, draftHolds, TYPED, openBoxEdit, openListEdit } from './saved-edits.js';
-import { onLoadFailure, endedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
+import { onLoadFailure, endedNotice, notStartedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
 import { noteList, noteCopy, fileTrue, noteInside, noteAs, beginInside, settleInside, insideAsFile, asFileHtml,
@@ -59,6 +59,7 @@ import { noteList, noteCopy, fileTrue, noteInside, noteAs, beginInside, settleIn
 import { writeInside, rememberInside } from './keep-inside.js';
 import { takeBase, readAttrs } from './baselines.js';
 import { notDone, whyNot, said } from './plain-failure.js';
+import { saveMenuEverywhere, menuStepText } from './menu-save.js';
 import { plainName, readableName } from './names.js';
 import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
@@ -247,6 +248,14 @@ init().catch(err => {
       + `<br><button style="margin-top:12px;background:#6366f1;color:#fff;border:0;border-radius:8px;padding:7px 14px;cursor:pointer;font:inherit">Dismiss</button>`;
     box.querySelector('button').onclick = () => box.remove();
     document.body.appendChild(box);
+  } else if (!document.getElementById('kiln-status')) {
+    // Nothing of the editor is on the page yet, so there is no status line to
+    // say it on, and the page used to stay as it was with no word at all.
+    const f = readFailure(err);
+    showNotice(f.kind === 'trouble'
+      ? notStartedNotice({ way: signInWay(), f })
+      : { text: 'Editing could not start on this page. Reloading it usually helps.', detail: '', button: 'Reload' },
+    () => location.reload());
   } else {
     setStatus('Editing could not start on this page. Reloading it usually helps.', 'error');
   }
@@ -6336,29 +6345,14 @@ function menuEditor() {
       ? `\n      ${listOpen}\n        ${items}\n      ${listClose}\n    `
       : `\n      ${items}\n    `;
     try {
-      status.textContent = 'Step 1 of 3 · Finding the site’s pages…';
+      // Every page is read, then all of them are saved as one change, or none
+      // is (menu-save.js): a refusal part-way leaves the site as it was.
       const branch = cfg.branch || 'main';
-      const tree = await state.gh.request('GET',
-        `/repos/${cfg.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
-      const htmlFiles = tree.tree
-        .filter(t => t.type === 'blob' && t.path.endsWith('.html'))
-        .map(t => t.path)
-        .slice(0, 100);
-
-      const changed = [];
-      let skippedPages = 0;
-      for (let i = 0; i < htmlFiles.length; i++) {
-        status.textContent = `Updating menus… ${i + 1}/${htmlFiles.length}`;
-        const file = await getFile(state.gh, cfg.repo, htmlFiles[i], branch);
-        const result = applyEdits(file.text, [{ key: menuKey, html: newInner }]);
-        if (result.applied.length) changed.push({ path: htmlFiles[i], text: result.html });
-        else skippedPages++;
-      }
-      if (!changed.length) throw said('No page of the site has this menu marked for Kiln. For the owner: the menu needs a matching data-cms-menu container');
-
-      status.textContent = `Committing ${changed.length} page${changed.length > 1 ? 's' : ''} as one change…`;
-      const commit = await commitFiles(state.gh, cfg.repo, branch, changed,
-        `Update menu on ${changed.length} pages (via Kiln)`);
+      const { changed, skipped: skippedPages, commit } = await saveMenuEverywhere({
+        gh: state.gh, repo: cfg.repo, branch, menuKey, newInner, getFile, applyEdits, commitFiles,
+        onStep: (step) => { status.textContent = menuStepText(step); },
+      });
+      if (!commit) throw said('No page of the site has this menu marked for Kiln. For the owner: the menu needs a matching data-cms-menu container');
       const thisPage = changed.find(c => c.path === state.page.path);
       if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Menu update', sha: commit.sha });
       status.innerHTML = `Step 2 of 3 · Committed ✓ — the site is rebuilding.

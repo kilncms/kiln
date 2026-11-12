@@ -196,7 +196,7 @@ async function routeRequest(request, env, ctx) {
     // does, apart from "this address was on Kiln Cloud and its trial or plan
     // has ended", and anyone may ask it (no sign-in, readable from any page).
     if (path === '/standing' && request.method === 'GET') {
-      const limited = await rateLimited(request, env);
+      const limited = await standingLimited(request, env);
       if (limited) return limited;
       const answer = await siteStanding(env, url.searchParams.get('origin') || request.headers.get('Origin') || '');
       return new Response(JSON.stringify(answer), { headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' } });
@@ -220,7 +220,7 @@ async function routeRequest(request, env, ctx) {
     if (path === '/auth/callback') return authCallback(url, env);
     if (path === '/auth/refresh' && request.method === 'POST') return await cors(env, request, await authRefresh(request, env));
     if (path === '/auth/logout' && request.method === 'POST') return await cors(env, request, await authLogout(request, env));
-    if (path === '/auth/session' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await authSession(request, env));
+    if (path === '/auth/session' && request.method === 'GET') return (await workLimited(request, env)) || await cors(env, request, await authSession(request, env));
     if (path === '/auth/adopt' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await authAdopt(request, env));
     // An owner session (X-Kiln-Session naming an osess: record) is looked up
     // once here, for every route below: its address is checked and its GitHub
@@ -236,40 +236,42 @@ async function routeRequest(request, env, ctx) {
     if (path === '/admin/people' && request.method === 'GET') return await cors(env, request, await peopleList(request, env, url));
     if (path === '/admin/people' && request.method === 'POST') return await cors(env, request, await peopleUpsert(request, env));
     if (path === '/admin/people/remove' && request.method === 'POST') return await cors(env, request, await peopleRemove(request, env));
-    if (path === '/admin/api-tokens' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenList(request, env, url));
-    if (path === '/admin/api-tokens' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenCreate(request, env));
-    if (path === '/admin/api-tokens/revoke' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await apiTokenRevoke(request, env));
+    if (path === '/admin/api-tokens' && request.method === 'GET') return (await workLimited(request, env)) || await cors(env, request, await apiTokenList(request, env, url));
+    if (path === '/admin/api-tokens' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await apiTokenCreate(request, env));
+    if (path === '/admin/api-tokens/revoke' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await apiTokenRevoke(request, env));
     if (path === '/api/v1/pages' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiPages(request, env, url));
     if (path === '/api/v1/fields' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiFields(request, env, url));
     if (path === '/api/v1/edits' && request.method === 'PATCH') return (await rateLimited(request, env)) || await cors(env, request, await apiEdits(request, env));
     if (path === '/schedule' && request.method === 'POST') return await cors(env, request, await scheduleCreate(request, env));
     if (path === '/schedules' && request.method === 'GET') return await cors(env, request, await scheduleList(request, env, url));
     if (path === '/schedule/cancel' && request.method === 'POST') return await cors(env, request, await scheduleCancel(request, env));
-    if (path === '/presence' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await presencePing(request, env));
+    if (path === '/presence' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await presencePing(request, env));
     if (path === '/comments' && request.method === 'GET') return await cors(env, request, await commentList(request, env, url));
-    if (path === '/comments' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentPost(request, env));
+    if (path === '/comments' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await commentPost(request, env));
     if (path === '/comments/counts' && request.method === 'GET') return await cors(env, request, await commentCounts(request, env, url));
-    if (path === '/comments/resolve' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentResolve(request, env));
-    if (path === '/comments/delete' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await commentDelete(request, env));
+    if (path === '/comments/resolve' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await commentResolve(request, env));
+    if (path === '/comments/delete' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await commentDelete(request, env));
     if (path === '/suggestions' && request.method === 'GET') return await cors(env, request, await suggestionList(request, env, url));
-    if (path === '/suggestions' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionCreate(request, env));
-    if (path === '/suggestions/decide' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await suggestionDecide(request, env));
+    if (path === '/suggestions' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await suggestionCreate(request, env));
+    if (path === '/suggestions/decide' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await suggestionDecide(request, env));
     if (path === '/ai/assist' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await aiAssist(request, env));
-    if (path === '/source/commit' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceCommit(request, env));
-    if (path === '/source/read' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceReadField(request, env));
-    if (path === '/source/revert' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceRevert(request, env));
-    if (path === '/source/duplicate' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceDuplicate(request, env));
-    if (path === '/source/create' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceCreate(request, env));
-    if (path === '/source/remove' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceRemove(request, env));
-    if (path === '/source/fields' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceFields(request, env));
-    if (path === '/source/history' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await sourceHistory(request, env));
+    if (path === '/source/commit' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceCommit(request, env));
+    if (path === '/source/read' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceReadField(request, env));
+    if (path === '/source/revert' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceRevert(request, env));
+    if (path === '/source/duplicate' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceDuplicate(request, env));
+    if (path === '/source/create' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceCreate(request, env));
+    if (path === '/source/remove' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceRemove(request, env));
+    if (path === '/source/fields' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceFields(request, env));
+    if (path === '/source/history' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceHistory(request, env));
     if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
     if (path === '/google/callback') return googleCallback(url, env);
     if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
-    // The commit proxy runs on the shared App installation token — throttle it
-    // (per IP) so one editor can't exhaust the owner's GitHub quota and DoS
-    // everyone else's editing. No-op unless the RL binding is configured.
-    if (path.startsWith('/gh/')) return (await rateLimited(request, env)) || await cors(env, request, await ghProxy(request, env, path.slice(3) + url.search));
+    // The commit proxy runs on the shared App installation token: it is counted
+    // for each session (workLimited), so one editor can't exhaust the owner's
+    // GitHub quota and stop everyone else's editing, and a request with no
+    // session this worker holds is counted for its address. No-op unless a
+    // limiter is bound.
+    if (path.startsWith('/gh/')) return (await workLimited(request, env)) || await cors(env, request, await ghProxy(request, env, path.slice(3) + url.search));
 
     return new Response('kiln-auth: not found', { status: 404 });
   } catch (err) {
@@ -412,15 +414,97 @@ function json(obj, status = 200) {
 }
 
 // ─── Rate limiting (graceful) ────────────────────────────────────────────────
-// No-op unless the optional [[unsafe.bindings]] ratelimit binding `RL` is
-// configured (see wrangler.toml). Keyed by client IP. Returns a CORS-wrapped
-// 429 when over the limit, or null to continue.
+// Two optional [[unsafe.bindings]] ratelimit bindings (see wrangler.toml). With
+// neither bound, nothing is limited.
+//
+//   RL        a small count for one network address (100 a minute as shipped):
+//             the sign-in routes, the dashboard's reading of a repository, and
+//             every request that names no session this worker holds.
+//   RL_ROOMY  a roomier count (200 a minute as shipped) for people at work:
+//             a signed-in person's requests are counted for their own session,
+//             so several editors behind one address do not use up each other's
+//             share, and the public /standing read is counted for the address.
+//             Without it those two are counted on RL, each still on its own.
+//
+// A session id that names no session is not a way round the address count: it
+// is looked up (two KV reads at most, nothing at GitHub), found to be nobody's,
+// and counted for the address like a request with no session at all. (One of
+// the two reads is the one routeRequest makes anyway, see ownerRecord.)
+const TOO_OFTEN = 'Too much was asked of the Kiln service from here in the last minute. Please wait a minute, then try again.';
+const RETRY_AFTER_S = 60;   // both limiters count by the minute
+const addressOf = (request) => request.headers.get('CF-Connecting-IP') || 'unknown';
+
+/** What every limiter answers with: a 429 that says when to ask again, in its body and in Retry-After. */
+async function tooOften(env, request, { open = false } = {}) {
+  const res = await cors(env, request, new Response(JSON.stringify({ error: TOO_OFTEN, code: 'too_often', retry_after: RETRY_AFTER_S }), {
+    status: 429,
+    headers: { 'Content-Type': 'application/json', 'Retry-After': String(RETRY_AFTER_S), 'Access-Control-Expose-Headers': 'Retry-After', 'Cache-Control': 'no-store' },
+  }));
+  if (open) res.headers.set('Access-Control-Allow-Origin', '*');   // /standing is readable from any page
+  return res;
+}
+
+/** The address count: sign-in routes, the dashboard, and whatever comes without a session. Null to carry on. */
 async function rateLimited(request, env) {
   if (!env.RL) return null;
-  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-  const { success } = await env.RL.limit({ key: ip });
-  if (success) return null;
-  return await cors(env, request, json({ error: 'rate limited, slow down' }, 429));
+  const { success } = await env.RL.limit({ key: addressOf(request) });
+  return success ? null : tooOften(env, request);
+}
+
+/** The public /standing read, which every editor's page asks once: counted for the address, apart from the sign-in routes. */
+async function standingLimited(request, env) {
+  const limiter = env.RL_ROOMY || env.RL;
+  if (!limiter) return null;
+  const { success } = await limiter.limit({ key: `standing:${addressOf(request)}` });
+  return success ? null : tooOften(env, request, { open: true });
+}
+
+const KNOWN_SESSION_MS = 5 * 60 * 1000;
+const KNOWN_SESSIONS_MAX = 2000;
+const knownSessions = new WeakMap();   // the KV store → Map(session id → the time it is known until)
+
+/**
+ * The session id a request names, when this worker holds that session (an
+ * owner's or an invited editor's, not yet over); '' when it names none, or
+ * one nobody has. Asked of KV once, then remembered here for five minutes, so
+ * a person at work costs no extra read. This decides only whose count a
+ * request goes on: what the session may do is still judged by each route.
+ */
+async function realSession(request, env) {
+  const id = request.headers.get('X-Kiln-Session') || '';
+  if (!OWNER_SESSION_RE.test(id) || !env.KILN) return '';
+  let known = knownSessions.get(env.KILN);
+  if (!known) { known = new Map(); knownSessions.set(env.KILN, known); }
+  const now = Date.now();
+  if ((known.get(id) || 0) > now) return id;
+  let real = false;
+  try {
+    const o = await ownerRecord(request, env, id);
+    if (o && o.v === 1 && typeof o.token === 'string') real = ownerSessionEnds(o) >= now;
+    else {
+      const e = await env.KILN.get(`esess:${id}`, 'json');
+      real = !!e && typeof e === 'object' && (!e.exp || e.exp >= now);
+    }
+  } catch { real = false; }   // the store could not be asked: counted for the address
+  if (!real) { known.delete(id); return ''; }
+  if (known.size >= KNOWN_SESSIONS_MAX) known.clear();
+  known.set(id, now + KNOWN_SESSION_MS);
+  return id;
+}
+
+/**
+ * The count for the routes a signed-in person's editor asks as they work
+ * (reading and saving pages through /gh/*, presence, comments, suggestions,
+ * content files). A request with a session this worker holds is counted for
+ * that session; any other is counted for its address, as rateLimited does.
+ */
+async function workLimited(request, env) {
+  if (!env.RL && !env.RL_ROOMY) return null;
+  const id = await realSession(request, env);
+  if (!id) return rateLimited(request, env);
+  const limiter = env.RL_ROOMY || env.RL;
+  const { success } = await limiter.limit({ key: `session:${id.slice(0, 32)}` });
+  return success ? null : tooOften(env, request);
 }
 
 // ─── One-time GitHub App setup (manifest flow) ──────────────────────────────
@@ -773,6 +857,17 @@ async function freshOwnerSession(env, id, sess) {
 }
 
 /**
+ * The osess: record a request's session id names, read from KV once for the
+ * request: the limiter asks whose count the request goes on (realSession), and
+ * ownerSessionFor asks the same record a moment later.
+ */
+const ownerRecords = new WeakMap();   // request → Promise of the record (or null)
+function ownerRecord(request, env, id) {
+  if (!ownerRecords.has(request)) ownerRecords.set(request, env.KILN.get(`osess:${id}`, 'json'));
+  return ownerRecords.get(request);
+}
+
+/**
  * The one answer to "is an owner asking, and with which GitHub token?" for a
  * request that names a session in X-Kiln-Session:
  *   null       the id names no owner session (it may be an invited editor's)
@@ -785,7 +880,7 @@ async function freshOwnerSession(env, id, sess) {
 async function ownerSessionFor(request, env) {
   const id = request.headers.get('X-Kiln-Session') || '';
   if (!OWNER_SESSION_RE.test(id)) return null;
-  const sess = await env.KILN.get(`osess:${id}`, 'json');
+  const sess = await ownerRecord(request, env, id);
   if (!sess || sess.v !== 1 || typeof sess.token !== 'string') return null;
   if (ownerSessionEnds(sess) < Date.now()) { await env.KILN.delete(`osess:${id}`); return { refuse: signinEnded() }; }
   const origin = request.headers.get('Origin') || '';

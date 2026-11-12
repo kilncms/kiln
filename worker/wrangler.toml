@@ -59,14 +59,28 @@ migrations_dir = "migrations"   # every schema change is a numbered file here; s
 [triggers]
 crons = ["*/5 * * * *"]
 
-# Rate limiting (on by default): per-IP throttle on the abuse-prone sign-in routes
-# /google/login, /google/claim, and /setup/install-check. The guard in index.js is
-# a no-op if this binding is ever removed, so it degrades safely.
+# Rate limiting (on by default), two counts. The guards in index.js are no-ops
+# if a binding is removed, so it degrades safely.
+#
+# RL: a small count for one network address. It covers the sign-in routes
+# (/google/login, /google/claim, /auth/adopt), /setup/install-check, the
+# dashboard's reading of a repository, and any request that names no session
+# the worker holds.
 [[unsafe.bindings]]
 name = "RL"
 type = "ratelimit"
 namespace_id = "1001"          # any unique number across your worker's limiters
 simple = { limit = 100, period = 60 }   # 100 requests per 60s per IP (see ENVIRONMENTS.md for why not fewer)
+
+# RL_ROOMY: a roomier count for people at work. Each signed-in person's requests
+# are counted for their own session, and the public /standing read for the
+# address, so several editors behind one address are never refused for each
+# other's work. Without it both are counted on RL, each still on its own.
+[[unsafe.bindings]]
+name = "RL_ROOMY"
+type = "ratelimit"
+namespace_id = "1003"
+simple = { limit = 200, period = 60 }  # 200 requests per 60s per session
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STAGING (kiln-auth-staging.erikkwilder.workers.dev)
@@ -116,6 +130,13 @@ name = "RL"
 type = "ratelimit"
 namespace_id = "1002"
 simple = { limit = 100, period = 60 }
+
+# The roomier count for signed-in people (see the top of this file).
+[[env.staging.unsafe.bindings]]
+name = "RL_ROOMY"
+type = "ratelimit"
+namespace_id = "1004"
+simple = { limit = 200, period = 60 }
 
 # Cloudflare's record of this upload (id, tag, time), shown by /healthz.
 [env.staging.version_metadata]
@@ -172,6 +193,13 @@ name = "RL"
 type = "ratelimit"
 namespace_id = "1001"
 simple = { limit = 100, period = 60 }
+
+# The roomier count for signed-in people (see the top of this file).
+[[env.production.unsafe.bindings]]
+name = "RL_ROOMY"
+type = "ratelimit"
+namespace_id = "1003"
+simple = { limit = 200, period = 60 }
 
 [env.production.version_metadata]
 binding = "CF_VERSION_METADATA"
