@@ -98,6 +98,13 @@
  * or label the editor put there. The publish sheet and People & access are
  * dialogs named by their headings that hold the keyboard and give it back;
  * the Kiln button opens its menu from Enter and Esc closes it.
+ * "Make this whole page editable" ("whole page"): with the grant, the bar of
+ * make-editable mode offers the button; it asks in the editor's own dialog
+ * with what it would mark; confirming makes exactly one write of the page's
+ * file, which is the old file with only data-cms marks added, and the page
+ * loads again once the site serves it; with a change waiting it says to
+ * publish or discard first; without the grant, for an editor limited to
+ * parts of a page, and in the demo, the button is not there.
  * Exits non-zero if any check fails. `--shots <dir>` also saves a screenshot
  * of each step as <step>-<width>.png. `--only <pass>` runs the passes whose
  * name has that word in it ("safety net", "signed in", "ended elsewhere"…).
@@ -109,6 +116,8 @@
 import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { wholePagePass, markedWords } from '../src/editor/whole-page.js';
+import { onlyAddsMarks } from '../src/autotag.js';
 
 // Playwright is not a dependency of this repo: point PLAYWRIGHT_DIR at an installed copy,
 // or install it here (npm i --no-save playwright) and the plain name resolves.
@@ -2065,6 +2074,7 @@ async function runSignedIn(browser, size, opts = {}) {
     await press(make);
     await page.waitForTimeout(300);
     check(scope, 'the tool starts: "Click anything to make it editable"', /Click anything to make it editable/.test((await page.locator('#kiln-pickbar').innerText().catch(() => '')) || ''));
+    check(scope, 'its bar offers "Make this whole page editable" as well (the "whole page" pass presses it)', ((await page.locator('#kiln-pick-all').innerText().catch(() => '')) || '').trim() === 'Make this whole page editable');
     // something on the page that is not editable yet: plain text outside every field
     const found = await page.evaluate(() => {
       for (const el of document.querySelectorAll('main p, main li, main span, footer p, footer span, footer li')) {
@@ -4569,6 +4579,211 @@ async function runOwner(browser, size) {
   }
 }
 
+/**
+ * "Make this whole page editable": the second button in the bar of
+ * make-editable mode, as an invited editor on a real (not sandbox) site. The
+ * worker is played here as in runSignedIn, and so is the site's host: once
+ * the page's file has been written, the page is served as that file.
+ */
+async function runWholePage(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} whole page  `;
+  const WORKER = 'https://worker.invalid';
+  const REPO = 'acme/site';
+  const GRANTED = ['pagesettings', 'history', 'draft', 'makeeditable'];
+  const source = await (await fetch(URL_ARG)).text();
+  const pagePath = new URL(URL_ARG).pathname;
+  const file = pagePath.replace(/^\/+/, '').replace(/(^|\/)$/, '$1index.html');
+  const b64 = (text) => Buffer.from(text).toString('base64');
+  const plan = wholePagePass(source);
+  check(scope, 'the page this is run on has something a first pass would mark', plan.state === 'ready', plan.state);
+  if (plan.state !== 'ready') return;
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+
+  const open = async ({ features = null, keys = [], sandbox = false } = {}) => {
+    const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+    await context.addInitScript(([repo, signedIn]) => {
+      try {
+        if (signedIn) localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' }));
+        localStorage.setItem('kiln_guide', '1');
+      } catch { /* ignore */ }
+    }, [REPO, !sandbox]);
+    const w = { puts: [], reads: 0, current: source, sha: 'sha0', boxes: 0 };
+    await context.route('**/*', async (route) => {
+      const req = route.request();
+      const u = new URL(req.url());
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': ORIGIN }, body: JSON.stringify(body) });
+      if (!sandbox && u.origin === ORIGIN && u.pathname.endsWith('kiln-config.js')) {
+        return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
+      }
+      // the site as its host serves it: once the page's file has been written, the page is that file
+      if (u.origin === ORIGIN && u.pathname === pagePath && req.method() === 'GET' && w.puts.length) {
+        return route.fulfill({ contentType: 'text/html; charset=utf-8', body: w.current });
+      }
+      if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
+      if (u.origin !== WORKER) return route.abort();
+      const p = decodeURIComponent(u.pathname);
+      if (req.method() === 'OPTIONS') {
+        return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
+      }
+      if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys, features, mode: null } });
+      if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'] });
+      if (p === `/gh/repos/${REPO}/contents/${file}`) {
+        if (req.method() === 'GET') { w.reads++; return json({ sha: w.sha, content: b64(w.current) }); }
+        const body = JSON.parse(req.postData());
+        w.puts.push(body);
+        w.current = Buffer.from(body.content, 'base64').toString();
+        w.sha = `sha${w.puts.length}`;
+        return json({ commit: { sha: `commit${w.puts.length}` }, content: {} });
+      }
+      if (p.includes('/deployments')) return json([]);
+      if (p.endsWith('/status')) return json({ total_count: 0 });
+      return json({ message: 'Not Found' }, 404);
+    });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    page.on('dialog', (d) => { w.boxes++; d.accept().catch(() => {}); });
+    await page.goto(URL_ARG, { waitUntil: 'load' });
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await page.waitForTimeout(700);
+    return { context, page, w, errors };
+  };
+  /** The Kiln menu, then "Make text/images editable". False when the tool is not in the menu. */
+  const startMode = async (page) => {
+    await press(page.locator('#kiln-fab'));
+    await page.waitForTimeout(300);
+    const make = page.locator('#kiln-makeblock');
+    if (!(await make.count())) return false;
+    await press(make);
+    await page.waitForTimeout(300);
+    return true;
+  };
+  const words = async (page) => ((await page.locator('#kiln-modal .kiln-modal-card').innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+  const asks = (page) => page.locator('#kiln-modal.kiln-ask').waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+  const shot = async (page, step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+
+  // ── with the grant: offered, asked about, one write, and the page loads again ──
+  {
+    const { context, page, w, errors } = await open({ features: GRANTED });
+    const fieldsBefore = await page.evaluate(() => document.querySelectorAll('.kiln-field').length);
+    check(scope, 'the tool starts for an editor with the grant', await startMode(page));
+    const btn = page.locator('#kiln-pick-all');
+    check(scope, 'the bar offers "Make this whole page editable"', (await btn.count()) === 1 && ((await btn.innerText().catch(() => '')) || '').trim() === 'Make this whole page editable');
+    if (!(await btn.count())) { await context.close(); return; }
+    const bar = await page.locator('#kiln-pickbar').boundingBox();
+    const hb = await hit(btn), hd = await hit(page.locator('#kiln-pick-exit'));
+    check(scope, 'the bar is on the screen, and both of its buttons can be pressed', !!bar && bar.x >= 0 && bar.x + bar.width <= size.width + 0.5 && hb.ok && hd.ok, `${JSON.stringify(bar)} ${hb.why || ''} ${hd.why || ''}`);
+    await shot(page, 'whole-page-bar');
+    if (!phone) {
+      // from the keyboard: Enter on the button asks, and the keyboard starts on the button that changes nothing
+      await btn.focus();
+      await page.keyboard.press('Enter');
+      await asks(page);
+      const on = await page.evaluate(() => (document.activeElement?.textContent || '').trim());
+      check(scope, 'Enter on the button asks, and the keyboard starts on "Cancel"', /Make this whole page editable\?/.test(await words(page)) && on === 'Cancel', on);
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(300);
+      check(scope, 'Enter on "Cancel" puts the question away, writes nothing and leaves the bar', (await page.locator('#kiln-modal').count()) === 0 && w.puts.length === 0 && (await btn.count()) === 1);
+    }
+    await press(btn);
+    await asks(page);
+    const asked = await words(page);
+    check(scope, 'pressing it asks in the editor\'s own dialog, with what it would mark', asked.includes(`Kiln will mark ${markedWords(plan.counts)} on this page.`), asked.slice(0, 200));
+    check(scope, 'the question says what is left alone, that visitors see no difference, and how it is saved',
+      /leaves tables, buttons and forms alone, and anything that is already marked/.test(asked) && /A visitor sees no difference\./.test(asked)
+      && /made plain again/.test(asked) && /saved at once as one change to this page, in your name/.test(asked), asked.slice(-260));
+    const go = page.locator('#kiln-ask-go'), cancel = page.locator('#kiln-modal .kiln-modal-actions [data-close]');
+    const hg = (await go.count()) ? await hit(go) : { ok: false, why: 'no button' }, hc = (await cancel.count()) ? await hit(cancel) : { ok: false, why: 'no button' };
+    check(scope, 'its buttons are "Make them editable" and "Cancel", and both can be pressed',
+      ((await go.innerText().catch(() => '')) || '').trim() === 'Make them editable' && ((await cancel.innerText().catch(() => '')) || '').trim() === 'Cancel' && hg.ok && hc.ok, `${hg.why || ''} ${hc.why || ''}`);
+    await shot(page, 'whole-page-ask');
+    await press(cancel);
+    await page.waitForTimeout(300);
+    check(scope, '"Cancel" writes nothing', w.puts.length === 0 && (await page.locator('#kiln-modal').count()) === 0);
+    await press(btn);
+    await asks(page);
+    await page.evaluate(() => { window.__uiCheckSamePage = true; });
+    await press(go);
+    // saved, and then the page loads again by itself once the site serves it with the marks
+    let reloaded = false;
+    for (let t = 0; t < 60 && !reloaded; t++) {
+      await page.waitForTimeout(500);
+      reloaded = await page.evaluate(() => document.readyState === 'complete' && !window.__uiCheckSamePage).catch(() => false);
+    }
+    check(scope, 'the page loads again by itself once the site has the marks', reloaded);
+    await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(700);
+    const sent = w.puts.length ? Buffer.from(w.puts[0].content, 'base64').toString() : '';
+    check(scope, 'confirming makes exactly one write of the page\'s file', w.puts.length === 1, `${w.puts.length} writes`);
+    check(scope, 'what is written is the old file with only data-cms marks added', sent !== source && onlyAddsMarks(source, sent) && sent === plan.html, `${sent.length - source.length} characters longer`);
+    check(scope, 'the commit says a first pass was marked on this page, against the file as it was read',
+      w.puts[0]?.message === `Mark a first pass of what can be edited on ${file}: ${markedWords(plan.counts)} (via Kiln)` && w.puts[0]?.branch === 'main' && w.puts[0]?.sha === 'sha0', `${w.puts[0]?.message} ${w.puts[0]?.sha}`);
+    check(scope, 'nothing was asked in a box of the browser\'s', w.boxes === 0, `${w.boxes}`);
+    const fieldsAfter = await page.evaluate(() => document.querySelectorAll('.kiln-field').length);
+    check(scope, 'after the reload more of the page can be edited', fieldsAfter > fieldsBefore, `${fieldsBefore} → ${fieldsAfter}`);
+    await shot(page, 'whole-page-after');
+    // pressed again: nothing more to mark, said in the editor's own dialog, and nothing written
+    await startMode(page);
+    if (await btn.count()) await press(btn);
+    await asks(page);
+    check(scope, 'pressed again, it says there is nothing more to mark, and writes nothing', /There is nothing more to mark on this page/.test(await words(page)) && w.puts.length === 1, (await words(page)).slice(0, 120));
+    check(scope, 'no script errors', errors.length === 0, errors.join(' | ').slice(0, 200));
+    await context.close();
+  }
+  // ── a part marked by clicking is still waiting for Publish: said, and nothing read or written ──
+  {
+    const { context, page, w } = await open({ features: GRANTED });
+    await startMode(page);
+    const found = await page.evaluate(() => {
+      for (const el of document.querySelectorAll('main p, main li, main span, footer p, footer span, footer li')) {
+        if (el.closest('[data-cms],[data-cms-repeat],[data-cms-menu],[id^="kiln-"]') || el.querySelector('[data-cms],[data-cms-repeat]')) continue;
+        if (el.children.length || (el.textContent || '').trim().length < 8 || !el.getClientRects().length) continue;
+        el.scrollIntoView({ block: 'center', behavior: 'instant' });
+        const r = el.getBoundingClientRect();
+        return { x: r.left + Math.min(r.width / 2, 40), y: r.top + r.height / 2 };
+      }
+      return null;
+    });
+    if (found) {
+      await page.waitForTimeout(400);
+      await page.mouse.click(found.x, found.y);
+      await page.waitForTimeout(400);
+      if (await page.locator('#kiln-mk-go').count()) await press(page.locator('#kiln-mk-go'));
+      await page.waitForTimeout(700);
+    }
+    const waiting = await page.evaluate(() => /Publish to save it/.test(document.getElementById('kiln-status')?.textContent || ''));
+    check(scope, 'a part is marked by clicking and waits for Publish', !!found && waiting);
+    const reads = w.reads;
+    await press(page.locator('#kiln-pick-all'));
+    await asks(page);
+    const told = await words(page);
+    check(scope, 'with that waiting, it says to publish or discard first', /Publish or discard your changes first/.test(told) && /saves the page at once/.test(told), told.slice(0, 160));
+    check(scope, 'and it reads and writes nothing', w.puts.length === 0 && w.reads === reads, `${w.puts.length} writes, ${w.reads - reads} reads`);
+    await context.close();
+  }
+  // ── where it is not offered ──
+  {
+    const { context, page } = await open({ features: null });
+    const started = await startMode(page);
+    check(scope, 'without the grant there is no bar and no such button', !started && (await page.locator('#kiln-pickbar, #kiln-pick-all').count()) === 0);
+    await context.close();
+  }
+  {
+    const { context, page } = await open({ features: GRANTED, keys: ['hero'] });
+    const started = await startMode(page);
+    check(scope, 'an editor limited to parts of a page gets the bar without the button', started && (await page.locator('#kiln-pickbar').count()) === 1 && (await page.locator('#kiln-pick-all').count()) === 0);
+    await context.close();
+  }
+  {
+    const { context, page } = await open({ sandbox: true });
+    const started = await startMode(page);
+    const bar = ((await page.locator('#kiln-pickbar').innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
+    check(scope, 'in the demo the bar is as it was, without the button', started && /anything to make it editable/.test(bar) && /Done/.test(bar) && (await page.locator('#kiln-pick-all').count()) === 0, bar.slice(0, 120));
+    await context.close();
+  }
+}
+
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
   if (ONLY && !label.includes(ONLY)) return;
@@ -4600,6 +4815,8 @@ try {
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
   // an invited editor granted "Make things editable" on top of the defaults
   await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
+  // "Make this whole page editable": offered with the grant, asked about, one write of only marks, and where it is not offered
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} whole page  `, () => runWholePage(browser, size));
   // what only shows on a real site: a bar pinned to the top, blocks its own scripts change, History's way back, the editor's own questions
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} real sites  `, () => runRealSites(browser, size));
   // a page a generator built: a field someone else changed, the site's real pages, and what a suggest-only or comment-only editor is offered

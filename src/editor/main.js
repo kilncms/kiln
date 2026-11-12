@@ -63,7 +63,9 @@ import { plainName, readableName } from './names.js';
 import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
 import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists } from './one-paragraph.js';
-import { askFirst, askWhich, ownDialogCopy } from './own-dialogs.js';
+import { askFirst, askWhich, tell, ownDialogCopy } from './own-dialogs.js';
+import { offersWholePage, wholePagePass, wholePageWrite, wholePageCopy, wholePageMessage, servesMarks,
+  WHOLE_PAGE_BUTTON, WHOLE_PAGE_READING, WHOLE_PAGE_SAVING, WHOLE_PAGE_SAVED, WHOLE_PAGE_RELOAD, WHOLE_PAGE_NOT_DONE, WHOLE_PAGE_WHY } from './whole-page.js';
 import { askStanding, planEndedNotice } from './plan-ended.js';
 import { askDescription, LATER_WORDS } from './describe-picture.js';
 import { coverBottom, isUnder, isSiteBar } from './under-bar.js';
@@ -7935,8 +7937,11 @@ function makeEditableMode() {
   bar.id = 'kiln-pickbar';
   bar.innerHTML = `<span><strong>Make-editable mode.</strong> ${isTouch() ? 'Tap' : 'Click'} anything to make it editable, or
     something already editable to make it plain again.<span class="kiln-keys-only"> <kbd>Esc</kbd> exits.</span></span>
+    ${offersWholePageHere() ? `<button id="kiln-pick-all" class="kiln-pick-cancel">${WHOLE_PAGE_BUTTON}</button>` : ''}
     <button id="kiln-pick-exit">Done</button>`;
   document.body.appendChild(bar);
+  const all = bar.querySelector('#kiln-pick-all');
+  if (all) all.onclick = () => wholePage(all);
   const over = (e) => {
     document.querySelectorAll('.kiln-pick-hover').forEach(n => n.classList.remove('kiln-pick-hover'));
     const c = pickCandidate(e.target);
@@ -7960,6 +7965,74 @@ function makeEditableMode() {
   document.addEventListener('click', click, true);
   document.addEventListener('keydown', esc, true);
   pickMode = { bar, over, click, esc };
+}
+
+/** Whether the bar offers "Make this whole page editable" here (whole-page.js). */
+function offersWholePageHere() {
+  return offersWholePage({ canMake: canMakeEditable(), sandbox: !!cfg.sandbox, sourceMode: cfg.mode === 'source',
+    sourceFields: !!document.querySelector(`[${SOURCE_ATTR}]`), path: state.page?.path || '',
+    sectionLimit: mode === 'editor' && !!state.scope?.keys?.length });
+}
+
+/** Anything of this page's that is waiting for Publish. */
+function anythingUnpublished() {
+  return !!(state.pending.size || state.pendingBinaries.size || state.pendingStructural.length || state.pendingSource.size);
+}
+
+/** True once the site serves this page with the marks in `saved`; false when two minutes have gone by. */
+async function siteHasMarks(saved) {
+  const started = Date.now();
+  for (;;) {
+    try {
+      const res = await fetch(`${location.pathname}?kilncb=${Date.now()}`, { cache: 'no-store' });
+      if (res.ok && servesMarks(await res.text(), saved)) return true;
+    } catch { /* a blip on the way: ask again */ }
+    if (Date.now() - started > 2 * 60 * 1000) return false;
+    await new Promise(r => setTimeout(r, 4000));
+  }
+}
+
+/**
+ * "Make this whole page editable": the cautious first pass (src/autotag.js)
+ * for the page that is open, saved at once as one change to this one file.
+ * The words and every decision are in whole-page.js. The write is the one
+ * Publish makes for a page (editFile), so an owner and an invited editor each
+ * go the way they already do, and the service checks it as it checks any
+ * other. The new marks are not switched on in the page as it stands: the page
+ * is loaded again once the site serves it with them.
+ */
+async function wholePage(btn) {
+  if (btn.disabled) return;
+  if (anythingUnpublished()) { tell(modal, wholePageCopy('unpublished')); return; }
+  const path = state.page.path, branch = cfg.branch || 'main';
+  btn.disabled = true;
+  btn.textContent = WHOLE_PAGE_READING;
+  try {
+    const plan = wholePagePass((await getFile(state.gh, cfg.repo, path, branch, true)).text);
+    if (plan.state !== 'ready') { tell(modal, wholePageCopy(plan.state)); return; }
+    if (!(await askFirst(modal, wholePageCopy('ask', { counts: plan.counts })))) return;
+    if (anythingUnpublished()) { tell(modal, wholePageCopy('unpublished')); return; }
+    btn.textContent = WHOLE_PAGE_SAVING;
+    const result = await editFile(state.gh, cfg.repo, path, branch, (text) => {
+      // Worked out again on the very text that is written: nothing but marks, and as many as were agreed to.
+      const write = wholePageWrite(text, plan.counts);
+      if (!write.html) throw said(WHOLE_PAGE_WHY[write.why]);
+      return write.html;
+    }, wholePageMessage(path, plan.counts));
+    exitPickMode();
+    setStatus(WHOLE_PAGE_SAVED, 'saving');
+    // What the editor holds of the file is the file again (a failure to read it here is mended by the reload).
+    await loadPageSource().catch(err => console.warn('[kiln] whole page: the file was not read again', err));
+    // Not under someone who has begun something else meanwhile: an edit, a box being typed in, a panel.
+    const busy = () => anythingUnpublished() || !!state.active || !!document.getElementById('kiln-modal');
+    if (await siteHasMarks(result.text) && !busy()) location.reload();
+    else setStatus(WHOLE_PAGE_RELOAD, 'saved', { hold: 30000 });
+  } catch (err) {
+    console.error('[kiln] whole page', err);
+    setStatus(stopped(err, 'saved') || notDone(WHOLE_PAGE_NOT_DONE, err), 'error');
+  } finally {
+    if (btn.isConnected) { btn.disabled = false; btn.textContent = WHOLE_PAGE_BUTTON; }
+  }
 }
 
 function suggestKey(el) {
@@ -9587,6 +9660,7 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
   border:1px solid rgba(255,255,255,.1);box-shadow:0 12px 40px rgba(0,0,0,.4);max-width:92vw}
 #kiln-pickbar strong{color:#fff}
 #kiln-pickbar .kiln-pick-cancel{background:rgba(255,255,255,.14)}
+#kiln-pickbar button:disabled{opacity:.6;cursor:default}
 /* Advice about keys is for a keyboard: not shown on a screen that is touched. */
 @media (hover:none){.kiln-keys-only{display:none!important}}
 /* Help under a box in People & access: small, but not tiny, and dark enough to read. */

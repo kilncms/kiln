@@ -8,6 +8,22 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A whole page can be made editable with one press, in the editor.**
+  "Make text/images editable" marked a page one click at a time. Its bar now
+  also has **Make this whole page editable**, for the site's owner and for an
+  invited editor who has that tool. It makes the same cautious first pass as
+  `kiln tag` and the dashboard, on the page that is open. The editor's own
+  dialog first says how much would be marked (pieces of text, pictures, lists
+  of blocks, the menu), that tables, buttons, forms and anything already
+  marked are left alone, and that a visitor sees no difference. On a yes it is
+  saved at once as one change to that page, in the person's name, by the same
+  write Publish makes, and the page reloads when the site has the change. The
+  file is read again at the moment of writing, and nothing is written unless
+  the pass adds marks and nothing else. Any part can be made plain again by
+  clicking it in the same mode. With changes waiting for Publish it says to
+  publish or discard them first. The button is not offered in the demo, on a
+  page built from content files, or to an editor limited to parts of a page
+  (`src/editor/whole-page.js`).
 - **Kiln can host a site (the Kiln Cloud + hosting plan), by itself.** The
   service copies a repository's files to a Cloudflare account that holds only
   customers' sites, and the site answers at a temporary address at once. The

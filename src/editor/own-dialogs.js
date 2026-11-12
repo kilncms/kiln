@@ -16,6 +16,11 @@
  *
  * A fifth kind of question has two real answers and is asked by askWhich:
  * whose version of a field stands, when someone else changed it meanwhile.
+ *
+ * And some things are only told, with nothing to decide (tell): that a page
+ * has nothing more to mark, or that changes must be published first. A
+ * question whose yes destroys nothing sets `risky: false`, and its button is
+ * then the ordinary colour, not the red one.
  */
 
 /**
@@ -96,6 +101,11 @@ export function answerOf(copy, typed) {
 
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/** A dialog's words: one paragraph, or a list of short ones (`body` may be either). */
+export function paragraphs(body) {
+  return [].concat(body ?? []).map(p => `<p class="kiln-dim">${esc(p)}</p>`).join('');
+}
+
 /**
  * Ask. `modal` is main.js's dialog; the question goes over whatever panel is
  * open and gives it back when it is put away. Resolves with the answer
@@ -107,12 +117,12 @@ export function askFirst(modal, copy) {
     let answer = null;
     const m = modal(`
       <h3>${esc(copy.title)}</h3>
-      <p class="kiln-dim">${esc(copy.body)}</p>
+      ${paragraphs(copy.body)}
       ${copy.input ? `<label>${esc(copy.input.label)}
         <input type="text" id="kiln-ask-in" autocomplete="off" autocapitalize="off" spellcheck="false"></label>` : ''}
       <div class="kiln-modal-actions">
         <button class="kiln-btn-ghost" data-close>${esc(copy.cancel)}</button>
-        <button class="kiln-btn-publish kiln-btn-risky" id="kiln-ask-go">${esc(copy.go)}</button>
+        <button class="kiln-btn-publish${copy.risky === false ? '' : ' kiln-btn-risky'}" id="kiln-ask-go">${esc(copy.go)}</button>
       </div>`, { over: true, onClose: () => resolve(answer) });
     m.classList.add('kiln-ask');
     const input = m.querySelector('#kiln-ask-in');
@@ -132,6 +142,23 @@ export function askFirst(modal, copy) {
     // The keyboard starts on the box when there is one, and otherwise on the
     // button that changes nothing: Enter must not delete anything by itself.
     (input || m.querySelector('.kiln-modal-actions [data-close]')).focus();
+  });
+}
+
+/**
+ * Tell, with nothing to decide: { title, body, ok }. One button, which puts
+ * the dialog away, as the ✕, Escape and a click outside do. Resolves then.
+ */
+export function tell(modal, copy) {
+  return new Promise((resolve) => {
+    const m = modal(`
+      <h3>${esc(copy.title)}</h3>
+      ${paragraphs(copy.body)}
+      <div class="kiln-modal-actions">
+        <button class="kiln-btn-publish" data-close>${esc(copy.ok || 'OK')}</button>
+      </div>`, { over: true, onClose: () => resolve() });
+    m.classList.add('kiln-ask', 'kiln-tell');
+    m.querySelector('.kiln-modal-actions [data-close]').focus();
   });
 }
 
