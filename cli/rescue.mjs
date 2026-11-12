@@ -430,6 +430,25 @@ export function renderCommand(url, args = {}) {
 }
 
 /**
+ * When more than half of the addresses tried have moved to one other site:
+ * { host, count, tried, command, sentence }, else null. failedPages entries
+ * that moved carry movedTo (the other site's origin).
+ */
+export function elsewhereOf(failedPages, tried, args = {}) {
+  const byOrigin = new Map();
+  for (const f of failedPages) if (f.movedTo) byOrigin.set(f.movedTo, (byOrigin.get(f.movedTo) || 0) + 1);
+  const top = [...byOrigin].sort((a, b) => b[1] - a[1])[0];
+  if (!top || top[1] * 2 <= tried) return null;
+  const [to, count] = top, host = new URL(to).host;
+  const flags = [];
+  for (const k of ['render', 'menu-shim', 'no-tag', 'try']) if (args[k] === true) flags.push(`--${k}`);
+  for (const k of ['max-pages', 'delay']) if (typeof args[k] === 'string' || typeof args[k] === 'number') flags.push(`--${k}=${quoteArg(String(args[k]))}`);
+  const command = `npx github:kilncms/kiln#release rescue ${to}${flags.length ? ' ' + flags.join(' ') : ''}`;
+  return { host, count, tried, command,
+    sentence: `${count} of the ${tried} addresses tried have moved to ${host}, so most of this site lives there now. To copy those pages, run the rescue on that address: ${command}` };
+}
+
+/**
  * The report section about blank pages. b: { ids, read, drawn, command }, where
  * ids are the blank pages, read is how many pages were read in all, and drawn
  * says the site as a whole is drawn by JavaScript. [] when no page was blank.
@@ -737,37 +756,54 @@ export async function rescueCmd(startUrl, args = {}) {
     }
     return null;
   };
-  while (queue.length && pages.size < maxPages) {
+  // --max-pages counts every address tried, not only the ones that became a
+  // page: a sitemap of hundreds of addresses that all lead away from the site
+  // must end the run at the limit, not keep it going for an hour.
+  let tried = 0;
+  const skip = (id, reason, more = {}) => { failedPages.push({ path: id, reason, ...more }); console.log(`         skipped: ${reason}`); };
+  const movedAway = (id, to) => skip(id, `it has moved to another site, ${new URL(to).host}`, { movedTo: new URL(to).origin });
+  while (queue.length && tried < maxPages) {
     const id = queue.shift();
-    if (pages.size || failedPages.length) await sleep(delay);
-    console.log(`  [${pages.size + 1}/${maxPages}] ${id}`);
+    if (tried) await sleep(delay);
+    tried++;
+    console.log(`  [${tried}/${maxPages}] ${id}`);
     let html, landedUrl, rendered = null;
     if (renderer) {
-      let r;
-      try { r = await renderer.render(origin + id, { first: !pages.size && !failedPages.length }); }
-      catch (e) { failedPages.push({ path: id, reason: String(e.message).split('\n')[0] }); continue; }
-      if (r.reason) { failedPages.push({ path: id, reason: r.reason }); continue; }
-      if (new URL(r.url).origin !== origin) {
-        if (!moved(r.url) && !sameSite(r.url, origin)) { failedPages.push({ path: id, reason: `redirected off-origin → ${new URL(r.url).origin}` }); continue; }
+      // An address that only forwards to another site is found out with one
+      // plain request, before a browser is opened for it. (One that is sent
+      // away by script once the page is open is caught in the browser, at once.)
+      if (tried > 1) {
+        let to = null;
+        try { const pre = await get(origin + id); pre.body?.cancel?.().catch(() => {}); if (!sameSite(pre.url, origin)) to = pre.url; }
+        catch { /* the browser will say what is wrong with it */ }
+        if (to) { movedAway(id, to); continue; }
       }
-      if (r.status >= 400) { failedPages.push({ path: id, reason: `HTTP ${r.status}` }); continue; }
-      if (r.html === undefined) { failedPages.push({ path: id, reason: `not HTML (${(r.contentType || '').split(';')[0]})` }); continue; }
+      let r;
+      try { r = await renderer.render(origin + id, { first: tried === 1 }); }
+      catch (e) { skip(id, String(e.message).split('\n')[0]); continue; }
+      if (r.reason) { skip(id, r.reason); continue; }
+      if (r.moved) { movedAway(id, r.moved); continue; }
+      if (new URL(r.url).origin !== origin) {
+        if (!moved(r.url) && !sameSite(r.url, origin)) { movedAway(id, r.url); continue; }
+      }
+      if (r.status >= 400) { skip(id, `the site answered with an error (HTTP ${r.status})`); continue; }
+      if (r.html === undefined) { skip(id, `it is not a page (${(r.contentType || '').split(';')[0]})`); continue; }
       html = r.html; landedUrl = r.url; rendered = r;
     } else {
       let res;
       try { res = await get(origin + id); }
-      catch (e) { failedPages.push({ path: id, reason: e.name === 'TimeoutError' ? 'timeout' : String(e.cause?.code || e.message) }); continue; }
+      catch (e) { skip(id, e.name === 'TimeoutError' ? 'the site took too long to answer' : `it could not be reached (${String(e.cause?.code || e.message)})`); continue; }
       const landed = new URL(res.url);
-      if (landed.origin !== origin && !moved(res.url) && !sameSite(landed, origin)) { failedPages.push({ path: id, reason: `redirected off-origin → ${landed.origin}` }); continue; }
-      if (!res.ok) { failedPages.push({ path: id, reason: `HTTP ${res.status}` }); continue; }
+      if (landed.origin !== origin && !moved(res.url) && !sameSite(landed, origin)) { movedAway(id, res.url); continue; }
+      if (!res.ok) { skip(id, `the site answered with an error (HTTP ${res.status})`); continue; }
       const ct = (res.headers.get('content-type') || '').toLowerCase();
-      if (ct && !ct.includes('text/html')) { failedPages.push({ path: id, reason: `not HTML (${ct.split(';')[0]})` }); continue; }
+      if (ct && !ct.includes('text/html')) { skip(id, `it is not a page (${ct.split(';')[0]})`); continue; }
       html = await res.text(); landedUrl = res.url;
     }
     const finalId = pageIdentity(landedUrl, origin);
     if (finalId && finalId !== id) {
       // redirected within the origin: same page under two paths — keep one copy
-      if (pages.has(finalId)) { aliases.set(id, finalId); continue; }
+      if (pages.has(finalId)) { aliases.set(id, finalId); console.log(`         the same page as ${finalId}, already read`); continue; }
       aliases.set(finalId, id);
     }
     const firstPage = !pages.size;
@@ -810,11 +846,15 @@ export async function rescueCmd(startUrl, args = {}) {
     console.log(`\n      ${blank.command}\n`);
     info(RENDER_NEEDS);
   };
-  if (pages.size) (blank.drawn ? warn : ok)(`crawled ${read} page${read === 1 ? '' : 's'}${blankIds.length ? `, ${blankIds.length} of them blank` : ''}${failedPages.length ? `, ${failedPages.length} failed` : ''}${unvisited ? ` (${unvisited} more found beyond --max-pages)` : ''}`);
+  // When most of what was tried has moved to one other site, that is the thing
+  // to say, once and by name. The address-by-address list goes in the report.
+  const elsewhere = elsewhereOf(failedPages, tried, args);
+  if (pages.size) (blank.drawn ? warn : ok)(`crawled ${read} page${read === 1 ? '' : 's'}${blankIds.length ? `, ${blankIds.length} of them blank` : ''}${failedPages.length ? `, ${failedPages.length} address${failedPages.length === 1 ? '' : 'es'} skipped` : ''}${unvisited ? ` (${unvisited} more found beyond --max-pages)` : ''}`);
+  if (elsewhere) warn(elsewhere.sentence);
   if (!pages.size) {
-    for (const f of failedPages) fail(`${f.path}: ${f.reason}`);
+    if (!elsewhere) for (const f of failedPages) fail(`${f.path}: ${f.reason}`);
     if (blankIds.length) sayBlank();
-    else fail('nothing crawled — check the URL and try again');
+    else fail(elsewhere ? 'No page of this address could be copied.' : 'nothing crawled — check the URL and try again');
     process.exit(1);
   }
 
@@ -845,7 +885,7 @@ export async function rescueCmd(startUrl, args = {}) {
     for (const [, p] of pages) scripts += cleanPage(p.html, { baseUrl: p.url, pageMap, keepScripts }).scripts;
     printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry, scripts, cruft: 0,
       localized: [], localizedBytes: 0, planned: localize.length, offOrigin: [...assetRefs].filter(k => !localize.includes(k)),
-      skippedAssets: [], tally: null, firstTitle, sitemapNote, plainLost, blank });
+      skippedAssets: [], tally: null, firstTitle, sitemapNote, plainLost, blank, elsewhere });
     sayBlank();
     process.exit(blank.drawn ? 1 : 0);
   }
@@ -988,7 +1028,7 @@ export async function rescueCmd(startUrl, args = {}) {
   printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry: false, scripts, cruft,
     localized: [...downloads.keys()], localizedBytes: totalBytes, planned: localize.length,
     offOrigin: [...offOrigin], skippedAssets, tally, rendered: !!args.render, left, wantKiln, tryOut, firstTitle,
-    requests: renderer?.requests, sitemapNote, plainLost, blank,
+    requests: renderer?.requests, sitemapNote, plainLost, blank, elsewhere,
     notCopied: notCopiedOf(skippedAssets, leftBehind),
     again: { url: startUrl, args, totalBytes, maxAssetBytes, maxTotalBytes, capped } });
   sayBlank();
@@ -1022,10 +1062,27 @@ function printReport(r) {
   if (r.firstTitle) lines.push(`- Check this first: the first page is titled "${r.firstTitle}". If that is an error page, the address is wrong or the site is not published, and this is a copy of the error.`);
   if (r.rendered && !r.dry) lines.push(`- Rendered in a browser: every page was opened, scrolled to the end and saved as it looked. App scripts left in the pages: ${r.left}. Requests the browser made to do it: ${r.requests}`);
   if (r.tally) lines.push(`- Kiln-tagged: ${r.tally.fields} text fields · ${r.tally.images} images · ${r.tally.repeats} block lists · ${r.tally.menu} menus`);
+  // The file names every skipped address. The terminal names the first ten
+  // when there are many: hundreds of lines would bury everything else.
+  const SKIPPED_HERE = '\u0000skipped';
+  let skippedFull = [], skippedShort = [];
   if (r.failedPages.length) {
-    lines.push(`- Pages that failed:`);
-    for (const f of r.failedPages) lines.push(`  - ${f.path} — ${f.reason}`);
+    const n = r.failedPages.length;
+    const row = (f) => `  - ${f.path}: ${f.reason}`;
+    const why = r.elsewhere ? ` ${r.elsewhere.sentence}` : '';
+    skippedFull = [`- Addresses skipped: ${n}.${why}${why ? ' Each one, with the reason:' : ''}`, ...r.failedPages.map(row)];
+    skippedShort = n > 12 && !r.dry
+      ? [`- Addresses skipped: ${n}.${why} The first 10 are below, and RESCUE-REPORT.md lists them all with the reason:`, ...r.failedPages.slice(0, 10).map(row), `  - and ${n - 10} more`]
+      : skippedFull;
+    lines.push(SKIPPED_HERE);
   }
+  const emit = () => {
+    const text = (block) => lines.flatMap(l => (l === SKIPPED_HERE ? block : [l])).join('\n');
+    if (!r.dry) writeFileSync(path.join(r.out, 'RESCUE-REPORT.md'), text(skippedFull) + '\n');
+    hr(r.dry ? 'Report (dry run)' : 'Report');
+    console.log(text(skippedShort).split('\n').map(l => `  ${l}`).join('\n'));
+    if (!r.dry) (r.blank?.drawn ? info : ok)(`full report saved to ${path.join(r.out, 'RESCUE-REPORT.md')}`);
+  };
   const notCopied = r.notCopied || [];
   if (notCopied.length) lines.push(`- Files not copied, still loading from the old site: ${notCopied.length} (see "Files not copied" below)`);
   const left = r.offOrigin.filter(u => !r.localized.includes(u) && !notCopied.some(f => f.url === u));
@@ -1049,12 +1106,7 @@ function printReport(r) {
     // most of the site is missing: the steps that put a copy online are not offered
     lines.push('Run the command under "This copy is not finished" first. Most of the site is missing from this folder, so do not put it online as it is.');
     lines.push('');
-    const report = lines.join('\n');
-    if (!r.dry) writeFileSync(path.join(r.out, 'RESCUE-REPORT.md'), report + '\n');
-    hr(r.dry ? 'Report (dry run)' : 'Report');
-    console.log(report.split('\n').map(l => `  ${l}`).join('\n'));
-    if (!r.dry) info(`full report saved to ${path.join(r.out, 'RESCUE-REPORT.md')}`);
-    return;
+    return emit();
   }
   if (r.tryOut) {
     lines.push('To try editing now: serve this folder (`npx serve .`), open it and click a word. Nothing is published from a try-out copy.');
@@ -1071,9 +1123,5 @@ function printReport(r) {
     ? '3. Connect Kiln: `npx github:kilncms/kiln#release` in this folder. Every page already loads Kiln, so after that you open `/kiln`, sign in and click a word.'
     : '3. Wire up Kiln editing: `npx github:kilncms/kiln#release` in this folder.');
   lines.push('');
-  const report = lines.join('\n');
-  if (!r.dry) writeFileSync(path.join(r.out, 'RESCUE-REPORT.md'), report + '\n');
-  hr(r.dry ? 'Report (dry run)' : 'Report');
-  console.log(report.split('\n').map(l => `  ${l}`).join('\n'));
-  if (!r.dry) ok(`full report saved to ${path.join(r.out, 'RESCUE-REPORT.md')}`);
+  emit();
 }

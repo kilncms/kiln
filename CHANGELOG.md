@@ -115,6 +115,26 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is written at all. A single blank page on a site of real pages is left out
   and named in the report, and the copy still counts. A short page with a
   heading, a paragraph, a link or a picture is never called blank.
+- **`rescue --render` no longer spends most of an hour on addresses that lead
+  to another site.** On a site whose sitemap listed 352 addresses that all
+  move to another host, it opened a browser for each one, waited about eight
+  seconds, showed `[4/50]` the whole time, ignored `--max-pages`, and ended
+  with "crawled 3 pages, 352 failed" under a green tick. Four things changed.
+  An address that forwards to another site is found out with one plain
+  request, before a browser is opened for it. An address that is sent to
+  another site by script once the page is open is caught in the browser the
+  moment it asks to leave, and the visit ends there without the other site
+  being read (in the test, under a second where it took eight). `--max-pages`
+  now limits how many addresses are tried, not only how many become pages, for
+  the plain copy as well. The progress line counts every address, and a
+  skipped one says why on the line below it: it has moved to another site
+  (named), the site answered with an error, it is not a page, or it is the
+  same page as one already read. When more than half of the addresses tried
+  have moved to one other site, the end says so in one sentence that names
+  that site and gives the command to copy it. The terminal shows the first ten
+  skipped addresses when there are more than twelve, and `RESCUE-REPORT.md`
+  lists them all. "Pages that failed" and "redirected off-origin" are gone
+  from the wording.
 
 ## [0.6.0] - 2026-11-12
 

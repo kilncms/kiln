@@ -374,3 +374,50 @@ test('render: without --menu-shim the report says the menu button does not open'
   assert.ok(!html.includes('data-kiln-menu-panel'));
   assert.match(readFileSync(path.join(out, 'RESCUE-REPORT.md'), 'utf8'), /Phone menu: the button "Toggle menu" does not open\. Run again with --menu-shim/);
 });
+
+test('render: an address that leads to another site is skipped at once, by redirect or by script, and --max-pages counts it', { skip: SKIP }, async () => {
+  const hits = {};
+  const other = http.createServer((req, res) => { hits.other = (hits.other || 0) + 1; res.writeHead(200, { 'content-type': 'text/html' }); res.end('<html><body><h1>The other site</h1></body></html>'); });
+  await new Promise(r => other.listen(0, '127.0.0.1', r));
+  const otherUrl = `http://127.0.0.1:${other.address().port}`;
+  const app = `const p = location.pathname;
+if (p.startsWith('/gone/')) location.href = '${otherUrl}' + p;
+else document.getElementById('root').innerHTML = '<main><h1>' + (p === '/' ? 'The front page' : 'About the shop') + '</h1><p>Words drawn by the script.</p><a href="/about">About</a></main>';`;
+  let siteUrl = '';
+  const site = http.createServer((req, res) => {
+    const p = new URL(req.url, 'http://x').pathname;
+    hits[p] = (hits[p] || 0) + 1;
+    if (p === '/app.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(app); }
+    if (p === '/old') { res.writeHead(302, { location: otherUrl + '/old' }); return res.end(); }
+    if (p === '/sitemap.xml') { res.writeHead(200, { 'content-type': 'application/xml' }); return res.end(`<urlset>${['/', '/old', '/gone/1', '/gone/2', '/gone/3', '/gone/4', '/gone/5'].map(x => `<url><loc>${siteUrl}${x}</loc></url>`).join('')}</urlset>`); }
+    if (path.extname(p)) { res.writeHead(404); return res.end(); }
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(shell('<div id="root"></div><script type="module" src="/app.js"></script>'));
+  });
+  await new Promise(r => site.listen(0, '127.0.0.1', r));
+  siteUrl = `http://127.0.0.1:${site.address().port}`;
+  const out = path.join(TMP, 'out-moved');
+  try {
+    const started = Date.now();
+    const r = await run(['rescue', siteUrl, '--render', '--out', out, '--delay', '0', '--max-pages', '6']);
+    const took = Date.now() - started;
+    assert.equal(r.code, 0, r.out);
+    const host = otherUrl.replace('http://', '');
+    // tried in order: /, /about (a link), then the sitemap: /old, /gone/1, /gone/2, /gone/3
+    assert.ok(r.out.includes(`[3/6] /old\n         skipped: it has moved to another site, ${host}\n`), r.out);
+    assert.ok(r.out.includes(`[6/6] /gone/3\n         skipped: it has moved to another site, ${host}\n`), r.out);
+    assert.ok(!r.out.includes('[7/6]') && !r.out.includes('/gone/4\n'), 'the limit counts addresses tried');
+    assert.equal(hits['/old'], 1, 'a forwarded address costs one plain request and no browser');
+    assert.ok(r.out.includes(`4 of the 6 addresses tried have moved to ${host}, so most of this site lives there now. To copy those pages, run the rescue on that address: npx github:kilncms/kiln#release rescue ${otherUrl} --render --max-pages=6 --delay=0`), r.out);
+    assert.match(r.out, /crawled 2 pages, 4 addresses skipped \(2 more found beyond --max-pages\)/);
+    assert.ok(readFileSync(path.join(out, 'index.html'), 'utf8').includes('The front page'));
+    assert.ok(readFileSync(path.join(out, 'about', 'index.html'), 'utf8').includes('About the shop'));
+    assert.ok(!existsSync(path.join(out, 'gone')));
+    assert.ok(readFileSync(path.join(out, 'RESCUE-REPORT.md'), 'utf8').includes(`  - /gone/2: it has moved to another site, ${host}\n`));
+    assert.ok(took < 60000, `four dead ends must not cost eight seconds each (took ${took} ms)`);
+    console.log(`# moved-away run took ${took} ms; requests that reached the other site: ${hits.other || 0}`);
+  } finally {
+    await new Promise(r => { site.closeAllConnections?.(); site.close(r); });
+    await new Promise(r => { other.closeAllConnections?.(); other.close(r); });
+  }
+});

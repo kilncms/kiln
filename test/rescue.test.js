@@ -480,3 +480,50 @@ test('rescue: one blank page on a site of real pages is left out and named, and 
   assert.match(report, /Deploy on Cloudflare Pages/, 'the usual next steps are still given');
   assert.ok(readFileSync(path.join(s.out, 'index.html'), 'utf8').includes('href="/app"'), 'the link to the page left out is kept as it was');
 });
+
+// ─── addresses that lead away from the site ─────────────────────────────────
+
+test('rescue: --max-pages counts every address tried, each skipped one says why, and a site that has mostly moved is named once', async (t) => {
+  const other = await tableSite(t, { '/': ['text/html', REAL('Elsewhere')] });
+  const moved = Array.from({ length: 15 }, (_, i) => `/m${i + 1}`);
+  const home = `<html><head><title>Home</title></head><body><h1>Home</h1><p>Some words here for the page.</p>${moved.map(p => `<a href="${p}">x</a>`).join('')}<a href="/a">A</a><a href="/b">B</a></body></html>`;
+  const files = { '/': ['text/html', home], '/a': ['text/html', REAL('A')], '/b': ['text/html', REAL('B')] };
+  for (const p of moved) files[p] = ['text/plain', '', 302, { location: `${other.url}${p}` }];
+  const s = await tableSite(t, files);
+  const host = other.url.replace('http://', '').replace(/\./g, '\\.');
+
+  // the limit is five addresses, and four of them lead away
+  const r = await rescueRun([s.url, `--out=${s.out}`, '--delay=0', '--max-pages', '5']);
+  assert.equal(r.code, 0, r.stdout);
+  for (const n of [1, 2, 3, 4, 5]) assert.equal(r.stdout.split(`[${n}/5] `).length, 2, `one progress line numbered ${n}`);
+  assert.doesNotMatch(r.stdout, /\[6\/5\]|\[1\/5\][^\n]*\n[^\n]*\[1\/5\]/);
+  assert.match(r.stdout, new RegExp(`\\[2/5\\] /m1\\n\\s+skipped: it has moved to another site, ${host}\\n`));
+  assert.match(r.stdout, /crawled 1 page, 4 addresses skipped \(13 more found beyond --max-pages\)/);
+  assert.match(r.stdout, new RegExp(`4 of the 5 addresses tried have moved to ${host}, so most of this site lives there now\\. To copy those pages, run the rescue on that address: npx github:kilncms/kiln#release rescue ${other.url.replace(/\./g, '\\.')} --max-pages=5 --delay=0`));
+  assert.doesNotMatch(r.stdout, /off-origin →|failed/);
+  const report = readFileSync(path.join(s.out, 'RESCUE-REPORT.md'), 'utf8');
+  assert.match(report, /- Addresses skipped: 4\. 4 of the 5 addresses tried have moved to /);
+  assert.match(report, new RegExp(`  - /m4: it has moved to another site, ${host}\\n`));
+
+  // many skipped: the terminal shows ten and the file keeps them all
+  const out2 = s.out + '-2';
+  const r2 = await rescueRun([s.url, `--out=${out2}`, '--delay=0', '--max-pages', '30']);
+  assert.equal(r2.code, 0, r2.stdout);
+  assert.match(r2.stdout, /crawled 3 pages, 15 addresses skipped\n/);
+  assert.match(r2.stdout, /- Addresses skipped: 15\. 15 of the 18 addresses tried have moved to [^\n]+ The first 10 are below, and RESCUE-REPORT\.md lists them all with the reason:/);
+  assert.match(r2.stdout, /  - and 5 more\n/);
+  assert.ok(!r2.stdout.includes('- /m15: it has moved'), 'the long list is not printed');
+  const full = readFileSync(path.join(out2, 'RESCUE-REPORT.md'), 'utf8');
+  for (const p of moved) assert.ok(full.includes(`  - ${p}: it has moved to another site, `), `${p} is in the file`);
+  assert.ok(!full.includes('The first 10 are below'));
+});
+
+test('rescue: an address that answers with an error or is not a page says so in plain words', async (t) => {
+  const home = '<html><head><title>Home</title></head><body><h1>Home</h1><p>Some words here for the page.</p><a href="/gone">Gone</a><a href="/feed">Feed</a></body></html>';
+  const s = await tableSite(t, { '/': ['text/html', home], '/feed': ['application/rss+xml', '<rss/>'] });
+  const r = await rescueRun([s.url, `--out=${s.out}`, '--delay=0']);
+  assert.equal(r.code, 0, r.stdout);
+  assert.match(r.stdout, /\/gone\n\s+skipped: the site answered with an error \(HTTP 404\)/);
+  assert.match(r.stdout, /\/feed\n\s+skipped: it is not a page \(application\/rss\+xml\)/);
+  assert.doesNotMatch(r.stdout, /have moved to/, 'nothing moved, so no such sentence');
+});

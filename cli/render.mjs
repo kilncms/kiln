@@ -513,21 +513,49 @@ export async function openRenderer(opts = {}) {
     await page.waitForLoadState('networkidle', { timeout: 4000 }).catch(() => {});
     await page.waitForTimeout(opts.settle ?? 600);
   };
-  const open = async (url) => {
+  const siteOf = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.hostname.toLowerCase().replace(/^www\./, '') + (x.port ? ':' + x.port : '') : ''; } catch { return ''; } };
+  /**
+   * Open an address. With watch, the visit ends the moment the page asks to go
+   * to another site, whether the server forwards it there or a script sends it
+   * there once the page is open: { moved } is that other address. Nothing is
+   * waited for and the other site's pages are not read.
+   */
+  const open = async (url, { watch = false } = {}) => {
     const page = await context.newPage();
-    let res;
-    try { res = await page.goto(url, { waitUntil: 'load', timeout }); }
-    catch (e) { await page.close().catch(() => {}); return { reason: /Timeout/i.test(e.message) ? 'timeout' : String(e.message).split('\n')[0] }; }
-    return { page, res };
+    let moved = null, tell = () => {};
+    const leaving = new Promise(r => { tell = r; });
+    const home = siteOf(url);
+    // Closing a page in the middle of its move to another site can hang for
+    // good, so the move is given a moment to land first, and the close a limit.
+    const away = async () => {
+      await page.waitForURL(u => { const to = siteOf(String(u)); return !!to && to !== home; }, { waitUntil: 'commit', timeout: 3000 }).catch(() => {});
+      await Promise.race([page.close().catch(() => {}), new Promise(r => setTimeout(r, 5000))]);
+    };
+    if (watch) {
+      page.on('request', (req) => {
+        try {
+          if (moved || !req.isNavigationRequest() || req.frame() !== page.mainFrame()) return;
+          const to = siteOf(req.url());
+          if (to && to !== home) { moved = req.url(); tell(); }
+        } catch { /* a request from a frame that is already gone */ }
+      });
+    }
+    const going = page.goto(url, { waitUntil: 'load', timeout }).then(res => ({ res }), e => ({ e }));
+    const got = await Promise.race([going, leaving.then(() => ({}))]);
+    if (moved) { await away(); return { moved }; }
+    if (got.e) { await page.close().catch(() => {}); return { reason: /Timeout/i.test(got.e.message) ? 'the page took too long to load' : String(got.e.message).split('\n')[0] }; }
+    return { page, res: got.res, leaving, moved: () => moved, away };
   };
 
   /**
-   * Render one page. Returns { reason } when it could not be loaded, else
+   * Render one page. Returns { reason } when it could not be loaded, { moved }
+   * when it sent the browser to another site (never for the first page, which
+   * may forward to the site's real address), else
    * { html, url, status, contentType, lost, routes, menu, changed, scripted }.
    */
   async function render(url, { first = false } = {}) {
-    const o = await open(url);
-    if (o.reason) return o;
+    const o = await open(url, { watch: !first });
+    if (o.reason || typeof o.moved === 'string') return o;
     const { page, res } = o;
     try {
       const status = res ? res.status() : 200;
@@ -537,7 +565,8 @@ export async function openRenderer(opts = {}) {
       // Looked for before the page is scrolled: an app that redraws when the
       // width changes starts its scroll-triggered animations over, and they
       // must have run by the time the page is saved.
-      await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+      await Promise.race([page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}), o.leaving]);
+      if (o.moved()) { await o.away(); return { moved: o.moved() }; }
       const wide = await page.evaluate(noteHiddenButtons);
       await page.setViewportSize(PHONE);
       await page.waitForTimeout(250);
@@ -585,6 +614,7 @@ export async function openRenderer(opts = {}) {
           await again.page.close().catch(() => {});
         }
       }
+      if (o.moved()) { await o.away(); return { moved: o.moved() }; }   // sent away by script while it was being read
       return { html, url: page.url(), status, contentType, lost: frozen.lost, routes, navButtons, menu, changed, scripted };
     } finally {
       await page.close().catch(() => {});
