@@ -295,3 +295,44 @@ test('hosting: on a database the migration has not reached, the dashboard and si
     assert.equal((await notice(w)).status, 200);
   });
 });
+
+test('hosting: a hosted site whose free days ran out unpaid comes down three days later, and subscribing puts it back', { skip: d1Skip }, async () => {
+  const day = 86400 * 1000;
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    // The trial ran out a day ago: the site is still up.
+    w.env.kiln_cloud.exec("UPDATE sites SET status = 'canceled', created_at = ? WHERE id = 'site1'", Date.now() - 8 * day);
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 1, 'one day after the trial');
+    assert.equal(row(w.env).state, 'live');
+    // Four days ago: it comes down, and the record says why.
+    w.env.kiln_cloud.exec("UPDATE sites SET created_at = ? WHERE id = 'site1'", Date.now() - 11 * day);
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 0, 'four days after the trial');
+    assert.equal(row(w.env).state, 'ended');
+    assert.equal(row(w.env).reason, 'trial_ended');
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 0, 'and it is not put back by the sweep');
+    // Subscribed: the owner puts it up again, and its address is switched on again.
+    w.env.kiln_cloud.exec("UPDATE sites SET status = 'active', ls_subscription_id = '77' WHERE id = 'site1'");
+    const shown = (await standing(w.env)).hosting;
+    assert.equal(shown.state, 'ended');
+    assert.match(shown.error, /because the free days ran out\. Your repository is untouched\./);
+    const res = await switchOn(w.env);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).hosting.state, 'live');
+  });
+  assert.equal(w.cf.scripts.get('club-site1').address, true);
+  assert.equal(served(w, '/index.html'), pages['index.html']);
+
+  // A site that was paid for and then cancelled keeps its hosting for now.
+  const p = world(pages, { site: { ls_subscription_id: '77', status: 'active' } });
+  await withFetch(p.handler, async () => {
+    await switchOn(p.env);
+    p.env.kiln_cloud.exec("UPDATE sites SET status = 'canceled', access_until = ?, created_at = ? WHERE id = 'site1'", Date.now() - 20 * day, Date.now() - 60 * day);
+    await sweep(p.env);
+  });
+  assert.equal(p.cf.scripts.size, 1);
+});
+

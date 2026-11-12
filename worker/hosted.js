@@ -5,7 +5,8 @@
  *   publishSite     the owner switches hosting on, or presses Publish again
  *   pushNotice      GitHub says the repository changed (the App's push webhook)
  *   sweepHosting    every five minutes: finish what could not be done at once,
- *                   and look whether a repository moved without a notice
+ *                   look whether a repository moved without a notice, and take
+ *                   down a site whose time on Kiln's hosting is over
  *
  * hosting.js does the copying; this file keeps the record (the `hosting` table,
  * migration 0005) and makes sure one site is copied by one thing at a time.
@@ -179,14 +180,14 @@ export async function handleGithubWebhook(request, env, ctx, tools) {
  * longest ago, in case one moved and no notice came. Sites that may not be
  * edited any more are left as they are (ending hosting is its own step).
  */
-export async function sweepHosting(env, { installationToken, hasAccess }) {
+export async function sweepHosting(env, { installationToken, hasAccess, endsAt = () => null }) {
   if (!hostingOn(env) || !env.kiln_cloud) return { published: 0, looked: 0 };
   const now = Date.now();
   let published = 0, looked = 0;
   let rows = [];
   try {
     rows = (await env.kiln_cloud.prepare(
-      `SELECT s.id, s.repo, s.status, s.access_until, s.plan, h.name, h.state, h.branch, h.commit_sha, h.wanted_sha, h.checked_at, h.updated_at
+      `SELECT s.id, s.repo, s.status, s.access_until, s.plan, s.created_at, s.ls_subscription_id, h.name, h.state, h.branch, h.commit_sha, h.wanted_sha, h.checked_at, h.updated_at
        FROM hosting h LEFT JOIN sites s ON s.id = h.site_id ORDER BY COALESCE(h.checked_at, 0)`).all())?.results || [];
   } catch { return { published, looked }; }   // migration 0005 has not reached this database
 
@@ -194,6 +195,20 @@ export async function sweepHosting(env, { installationToken, hasAccess }) {
     if (r.state !== 'removing') continue;
     try { await removeSite(env, r.name); await env.kiln_cloud.prepare('DELETE FROM hosting WHERE name = ?').bind(r.name).run(); }
     catch (e) { console.warn(JSON.stringify({ evt: 'hosting_remove_failed', name: r.name, detail: String(e?.detail || e?.message || e).slice(0, 200) })); }
+  }
+  // A site whose time on Kiln's hosting is over (`endsAt` says when: today, a
+  // free trial nobody subscribed for, a few days after it ran out) comes down.
+  // Its record stays, so the dashboard can say why, and subscribing puts it
+  // back: `deployed_at` is cleared so its address is switched on again then.
+  for (const r of rows) {
+    if (r.state === 'removing' || r.state === 'ended' || !r.id || hasAccess(r)) continue;
+    const end = endsAt(r);
+    if (!end || now < end) continue;
+    try {
+      await removeSite(env, r.name);
+      await save(env, r.id, { state: 'ended', reason: 'trial_ended', deployed_at: null, wanted_sha: null });
+      console.log(JSON.stringify({ evt: 'hosting_ended', repo: r.repo, name: r.name }));
+    } catch (e) { console.warn(JSON.stringify({ evt: 'hosting_end_failed', name: r.name, detail: String(e?.detail || e?.message || e).slice(0, 200) })); }
   }
   const live = rows.filter(r => r.state !== 'removing' && r.id && hasAccess(r));
   const owed = live.filter(r => (r.wanted_sha && r.wanted_sha !== r.commit_sha) || ((r.state === 'failed' || r.state === 'starting') && now - Number(r.updated_at) > RETRY_AFTER_MS));
@@ -205,7 +220,7 @@ export async function sweepHosting(env, { installationToken, hasAccess }) {
     done.add(r.id);
     if (out.state === 'live') published++;
   }
-  for (const r of live.filter(x => !done.has(x.id) && (x.state === 'live' || x.state === 'waiting')).slice(0, SWEEP_LOOK)) {
+  for (const r of live.filter(x => !done.has(x.id) && (x.state === 'live' || x.state === 'waiting')).slice(0, SWEEP_LOOK)) {   // not 'ended': its owner puts it back
     if (published >= SWEEP_PUBLISH) break;
     const token = await installationToken(env, r.repo);
     if (!token) continue;

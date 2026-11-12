@@ -57,6 +57,9 @@ function message(subject, paragraphs, why) {
   return { subject, text, html };
 }
 
+// What a trial that ends means for a site Kiln hosts (cloud.js: HOSTING_AFTER_TRIAL_DAYS).
+const HOSTED_AFTER_TRIAL = 'If Kiln hosts the site, it stays up at its temporary address for three more days and then comes down. Your repository keeps every file, and subscribing puts the site back up.';
+
 const whyLine = (host) => `You are getting this because ${host} was added to Kiln Cloud with this email address. Reply to this email to reach a person.`;
 
 /** Sent once when a site is added. `endsAt`: when its free trial runs out (ms). */
@@ -83,6 +86,7 @@ export function trialEndingMail({ origin, plan, endsAt, dashboard }) {
     `To keep editing after that, press Subscribe on the site's row in your dashboard before then. ${planOf(plan)} is ${priceOf(plan)} a month for the site, and you can cancel any time.`,
     dashboard,
     `If you do nothing, editing switches off on ${day}. Your site, its files and everything already published stay exactly as they are, and subscribing later turns editing back on.`,
+    ...(plan === 'managed' ? [HOSTED_AFTER_TRIAL] : []),
   ], whyLine(host));
 }
 
@@ -93,6 +97,7 @@ export function trialEndedMail({ origin, plan, dashboard }) {
     'Hello,',
     `The free trial for ${host} has ended, so editing through Kiln is switched off for now.`,
     'Your site, its files and everything already published are untouched. Nothing was charged, and nothing will be.',
+    ...(plan === 'managed' ? [HOSTED_AFTER_TRIAL] : []),
     `To turn editing back on, press Subscribe on the site's row in your dashboard. ${planOf(plan)} is ${priceOf(plan)} a month for the site. Editing comes back as soon as the payment is confirmed.`,
     dashboard,
     'If Kiln was not right for the site, there is nothing to cancel and nothing to remove. We would be glad to hear what was missing: reply to this email.',

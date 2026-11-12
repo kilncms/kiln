@@ -19,7 +19,9 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   was. The site's own `_headers`, `_redirects` and `404.html` are honoured;
   hidden files, `node_modules` and `functions/` are not published. The editor
   works at the temporary address. Removing a site takes it down. Hosting is
-  off until the service has a token for the hosting account
+  off until the service has a token for the hosting account. A hosted site
+  whose free days ran out unpaid stays up three more days and then comes
+  down (the two trial emails say so); subscribing puts it back
   (`worker/hosting.js`, `worker/hosted.js`, `GET` and `POST
   /cloud/sites/hosting`, `POST /gh/webhook`, migration `0005`).
 - **Kiln Cloud can make a first pass at what can be edited, from the

@@ -419,6 +419,18 @@ async function siteNamedByOrigin(env, origin, now) {
 // ls_subscription_id and are untouched — their lifecycle is driven entirely by webhooks.
 const TRIAL_GRACE_DAYS = 7;
 const FREE_HOSTED_SITES = 2;    // hosted sites an account may have before it has paid for any
+export const HOSTING_AFTER_TRIAL_DAYS = 3;   // a hosted site whose free days ran out unpaid stays up this long, then comes down
+
+/**
+ * When a hosted site comes down, or null for "not for now". Today that is one
+ * case: a free trial nobody subscribed for, HOSTING_AFTER_TRIAL_DAYS after it
+ * ran out. (A site that was paid for keeps its hosting; ending that, with its
+ * notices, is its own step.)
+ */
+export function hostingEndsAt(site) {
+  if (!site || site.ls_subscription_id || site.status !== 'canceled' || !Number(site.created_at)) return null;
+  return Number(site.created_at) + (TRIAL_GRACE_DAYS + HOSTING_AFTER_TRIAL_DAYS) * 86400 * 1000;
+}
 const MAILS_PER_RUN = 25;   // a run writes to this many people at most; the rest wait five minutes
 
 /**

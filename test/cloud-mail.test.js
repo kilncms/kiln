@@ -148,3 +148,15 @@ test('the dashboard is told whether this service writes to customers', { skip: d
   const off = await worker.fetch(new Request('https://worker.example/cloud/me', { headers: { Authorization: 'Bearer tok' } }), cloudEnv(fakeKV()));
   assert.equal((await off.json()).mail, false);
 });
+
+test('customer mail: on the hosting plan, the two trial notices say what happens to the hosted site, and the Kiln Cloud ones do not', async () => {
+  const { trialEndingMail, trialEndedMail } = await import('../worker/mail.js');
+  const base = { origin: 'https://club.example', endsAt: Date.UTC(2026, 10, 19), dashboard: 'https://app.kilncms.com' };
+  for (const mail of [trialEndingMail({ ...base, plan: 'managed' }), trialEndedMail({ ...base, plan: 'managed' })]) {
+    assert.match(mail.text, /If Kiln hosts the site, it stays up at its temporary address for three more days and then comes down\./);
+    assert.match(mail.text, /subscribing puts the site back up/);
+    assert.match(mail.html, /three more days/);
+  }
+  for (const mail of [trialEndingMail({ ...base, plan: 'cloud' }), trialEndedMail({ ...base, plan: 'cloud' })]) assert.doesNotMatch(mail.text, /hosts the site/);
+});
+
