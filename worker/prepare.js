@@ -196,8 +196,14 @@ export async function planPrepare({ token, repo, worker }) {
   if (unread) return { state: 'github' };
 
   const have = new Set(paths);
-  const add = [...EDITOR_FILES.map(([to]) => to), CONFIG_FILE, SIGN_IN_PAGE, HEADERS_FILE[0]].filter(p => !have.has(p));
-  const kept = [...EDITOR_FILES.map(([to]) => to), CONFIG_FILE, SIGN_IN_PAGE, HEADERS_FILE[0]].filter(p => have.has(p));
+  const ours = [...EDITOR_FILES.map(([to]) => to), CONFIG_FILE, SIGN_IN_PAGE, HEADERS_FILE[0]];
+  let add = ours.filter(p => !have.has(p));
+  const kept = ours.filter(p => have.has(p));
+  // The security headers file comes along when Kiln is added. A site that has
+  // Kiln and lacks only that file is not asked for a commit for its sake: the
+  // editor works without it, and only some hosts read it.
+  const ready = changes.length > 0 || add.some(p => p !== HEADERS_FILE[0]);
+  if (!ready) add = [];
 
   // Settings that were already there are the owner's. If they name another
   // sign-in service the editor will go there, so say so; change nothing.
@@ -211,7 +217,7 @@ export async function planPrepare({ token, repo, worker }) {
 
   return {
     ...base,
-    state: changes.length || add.length ? 'ready' : 'prepared',
+    state: ready ? 'ready' : 'prepared',
     pages: { total: pages.length, already, skipped },
     changes,
     files: { add, kept },

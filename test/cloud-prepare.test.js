@@ -164,6 +164,23 @@ test('prepare: a file that is already in the repository is never replaced, and s
   await withFetch(same.handler, async () => assert.equal((await (await look(same.env)).json()).other_worker, undefined));
 });
 
+test('prepare: a site that has Kiln and lacks only the security headers file counts as done, and is not written to for that file alone', { skip: d1Skip }, async () => {
+  const { gh, env, handler } = world({
+    'index.html': page('Home', TAGS),
+    'assets/kiln.js': 'k', 'assets/kiln-editor.js': 'e', 'assets/kiln-features.js': 'f', 'assets/kiln-config.js': "window.KILN = { repo: 'ada/club', worker: 'https://worker.example' };", 'kiln.html': KILN_PAGE,
+  });
+  const before = gh.head();
+  await withFetch(handler, async (calls) => {
+    const seen = await (await look(env)).json();
+    assert.equal(seen.state, 'prepared');
+    assert.deepEqual(seen.files.add, []);
+    assert.equal((await (await press(env)).json()).state, 'prepared');
+    assert.deepEqual(githubWrites(calls), []);
+  });
+  assert.equal(gh.head(), before);
+  assert.ok(prepared(env).prepared_at > 0, 'and the dashboard stops offering the button');
+});
+
 test('prepare: a page added later gets its two lines when the button is pressed again, and nothing else is written', { skip: d1Skip }, async () => {
   const { gh, env, handler } = world({ 'index.html': page('Home') });
   await withFetch(handler, async () => assert.equal((await press(env)).status, 200));
