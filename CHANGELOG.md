@@ -86,6 +86,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A file that is not a picture is told so, with what to do.** A tester
+  renamed a text file to end in `.png` and chose it as a picture. The editor
+  said only "Image upload failed", and it said the same for every reason a
+  picture could not be added. Now it says "The picture was not added." and
+  then the reason. For a file that holds something other than its name
+  says: "That file is named like an image, but it holds something else.
+  Check the file and try again." For a file over the size limit: the limit.
+  For a kind of picture the browser cannot read, such as a HEIC photo or a
+  damaged file: "This browser could not open that file as a picture. Save
+  it as a JPG or PNG and try again." Trouble that is not about the file,
+  such as a sign-in that has ended, is said as that. The same holds for a
+  picture put inside a paragraph (`src/editor/picture-not-added.js`).
 - **Changing one block of a list no longer removes anything else from the
   list.** A tester changed the title of one card on a home page, and the
   small drawing in each of the three cards (an inline `<svg>`) was deleted

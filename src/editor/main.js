@@ -62,6 +62,7 @@ import { readyPage, kilnFilesOn, missingWords, noPostList } from './new-page.js'
 import { pageAddress } from './page-address.js';
 import { takeBase, readAttrs } from './baselines.js';
 import { notDone, whyNot, said } from './plain-failure.js';
+import { pictureNotAdded } from './picture-not-added.js';
 import { saveMenuEverywhere, menuStepText } from './menu-save.js';
 import { plainName, readableName } from './names.js';
 import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
@@ -2986,6 +2987,18 @@ function replaceImage(img, key) {
   });
 }
 
+/**
+ * Says why a file chosen as a picture was not added, and what to do
+ * (picture-not-added.js). The file's first bytes are read only now, after the
+ * browser has failed with it: asking the file rules first would refuse kinds
+ * that work today, such as a BMP.
+ */
+async function sayPictureNotAdded(file, err) {
+  let head;
+  try { head = new Uint8Array(await file.slice(0, 48).arrayBuffer()); } catch { /* not readable: said without its first bytes */ }
+  setStatus(pictureNotAdded({ name: file.name, size: file.size, head }, err), 'error');
+}
+
 function pickImage(img, key, after) {
   const input = document.createElement('input');
   input.type = 'file';
@@ -2998,7 +3011,7 @@ function pickImage(img, key, after) {
       if (await addImageWithMaster(img, key, file) && after) after();
     } catch (err) {
       console.error('[kiln] image upload', err);
-      setStatus('Image upload failed', 'error');
+      await sayPictureNotAdded(file, err);
     }
   };
   input.click();
@@ -3277,7 +3290,7 @@ function insertInlineImage(el) {
       setStatus('Image inserted — resize it now if you like, then Save and Publish', 'saved');
     } catch (err) {
       console.error('[kiln] inline image', err);
-      setStatus('Image upload failed', 'error');
+      await sayPictureNotAdded(file, err);
     }
   };
   input.click();
