@@ -32,6 +32,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with one script more is refused. For that the test repository needs a
   `_templates/page.html` with one script written into the page itself
   (`ENVIRONMENTS.md`); the run stops before writing anything when it has none.
+- **The dashboard offers "Update Kiln" within ten minutes of a release.**
+  The service remembered which editor was released for an hour, so for up to
+  an hour after a release the dashboard said a site was up to date while the
+  update itself, which reads the release each time, would have brought it up
+  at once. It now remembers for ten minutes. The release is still read at
+  most once in that time however often a dashboard is opened, and a release
+  that cannot be read is still asked again after five minutes. A site on
+  Kiln's hosting is brought up to date by itself a day after the service
+  first knew of a release, exactly as before: that day is counted from the
+  first sight of the release, which reading it more often does not move.
 
 ## [0.6.1] - 2026-11-12
 

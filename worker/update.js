@@ -24,7 +24,7 @@
  *
  * KV:
  *   updlock:<site id>  '1'              one update at a time for a site (TTL 2 min)
- *   elatest            {stamp,at}       the released editor's stamp (TTL 1 hour; 5 min when it could not be fetched)
+ *   elatest            {stamp,at}       the released editor's stamp (kept 10 minutes; 5 when it could not be fetched)
  *   erepo:<repo>       {build,at}       the editor the repository held when this last read or updated it
  *   eseen:<stamp>      a time           when this service first knew of that released editor (TTL 180 days)
  */
@@ -264,7 +264,11 @@ export function updateSentence(code, { repo = 'the repository', branch = 'main' 
 // ─── What the service remembers, so the dashboard need not read a repository ──
 
 const LATEST_KEY = 'elatest';
-const LATEST_TTL_S = 3600;
+// How long the released stamp is believed before the release is read again.
+// Ten minutes: after a release the dashboard offers "Update Kiln" within ten
+// minutes, and the release is read at most once in that time however often a
+// dashboard is opened. (The update route itself always reads it fresh.)
+const LATEST_TTL_S = 600;
 const LATEST_RETRY_S = 300;
 const SEEN_TTL_S = 180 * 24 * 3600;
 const repoKey = (repo) => `erepo:${repo}`;
@@ -278,7 +282,7 @@ export async function rememberLatest(env, stamp) {
   await noteSeen(env, stamp);
 }
 
-// `elatest` says which editor is released and lasts an hour, so it cannot say
+// `elatest` says which editor is released and lasts ten minutes, so it cannot say
 // how long the service has known of that editor. This does: written the first
 // time a stamp is seen, and never moved after that.
 async function noteSeen(env, stamp) {
@@ -307,11 +311,20 @@ export async function noteRepoBuild(env, repo, build) {
   try { await env.KILN.put(repoKey(repo), JSON.stringify({ build, at: Date.now() })); } catch { /* the dashboard offers the button again and is told the site is up to date */ }
 }
 
-/** The released stamp, kept for an hour. A release that cannot be read is not asked again for five minutes. */
+/**
+ * The released stamp, kept for ten minutes. A release that cannot be read is
+ * not asked again for five minutes. What is kept says when it was read, and
+ * is believed only that long by its own time as well: the store may hand
+ * back a value for a while after it was due to go.
+ */
 async function latestStamp(env, releaseBase) {
   try {
     const had = await env.KILN.get(LATEST_KEY, 'json');
-    if (had && 'stamp' in had) return STAMP.test(had.stamp || '') ? had.stamp : null;
+    if (had && 'stamp' in had) {
+      const stamp = STAMP.test(had.stamp || '') ? had.stamp : null;
+      const age = Date.now() - Number(had.at);
+      if (age < (stamp ? LATEST_TTL_S : LATEST_RETRY_S) * 1000) return stamp;   // no time on it, or too old: read again
+    }
   } catch { return null; }
   const stamp = await releasedStamp(releaseBase, { waitMs: 3000 });
   try { await env.KILN.put(LATEST_KEY, JSON.stringify({ stamp, at: Date.now() }), { expirationTtl: stamp ? LATEST_TTL_S : LATEST_RETRY_S }); } catch { /* asked again next time */ }

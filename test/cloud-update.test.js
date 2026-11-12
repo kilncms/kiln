@@ -429,6 +429,51 @@ test('update: two presses at once make one commit', { skip: d1Skip }, async () =
   await withFetch(other.handler, async () => assert.equal((await press(other.env)).status, 200));
 });
 
+test('update: the dashboard hears of a new release within ten minutes, and the release is not read on every load', { skip: d1Skip }, async () => {
+  const MIN = 60 * 1000;
+  const kept = (stamp, minutesAgo) => ({ 'ebuild:ada/club': { build: 'r1', at: 5 }, elatest: { stamp, at: Date.now() - minutesAgo * MIN } });
+  // r1 was read nine minutes ago and r2 has come out since: still r1, and the release is not asked.
+  const soon = world(site(), { kv: kept('r1', 9) });
+  await withFetch(soon.handler, async (calls) => {
+    assert.equal((await me(soon.env)).editor_latest, 'r1');
+    assert.equal((await me(soon.env)).editor_latest, 'r1');
+    assert.deepEqual(fromRelease(calls), []);
+  });
+  // Read eleven minutes ago: the release is read again, once, and the dashboard says r2 and offers the update.
+  const later = world(site(), { kv: kept('r1', 11) });
+  await withFetch(later.handler, async (calls) => {
+    const body = await me(later.env);
+    assert.equal(body.editor_latest, 'r2');
+    assert.equal(body.sites[0].editor_build, 'r1', 'the site is behind, so the button is offered');
+    assert.equal((await me(later.env)).editor_latest, 'r2');
+    assert.deepEqual(fromRelease(calls), ['dist/VERSION']);
+    assert.ok(Date.now() - (await later.env.KILN.get('elatest', 'json')).at < MIN, 'what is kept says when it was read');
+  });
+  // What an older service kept for an hour is not believed past ten minutes either, and a value with no time on it is read again.
+  for (const elatest of [{ stamp: 'r1', at: Date.now() - 59 * MIN }, { stamp: 'r1' }, { stamp: 'r1', at: 'yesterday' }]) {
+    const old = world(site(), { kv: { 'ebuild:ada/club': { build: 'r1', at: 5 }, elatest } });
+    await withFetch(old.handler, async (calls) => {
+      assert.equal((await me(old.env)).editor_latest, 'r2', JSON.stringify(elatest));
+      assert.deepEqual(fromRelease(calls), ['dist/VERSION']);
+    });
+  }
+  // A release that could not be read is asked again after five minutes, not ten.
+  for (const [minutesAgo, asked] of [[4, []], [6, ['dist/VERSION']]]) {
+    const none = world(site(), { kv: kept(null, minutesAgo) });
+    await withFetch(none.handler, async (calls) => {
+      assert.equal((await me(none.env)).editor_latest, asked.length ? 'r2' : null);
+      assert.deepEqual(fromRelease(calls), asked);
+    });
+  }
+  // The day a hosted site waits is counted from the first sight of a release, which reading it more often does not move.
+  const first = world(site(), { kv: { ...kept('r1', 11), 'eseen:r2': String(Date.now() - 5 * 3600 * 1000) } });
+  await withFetch(first.handler, async () => {
+    const seen = await first.env.KILN.get('eseen:r2');
+    assert.equal((await me(first.env)).editor_latest, 'r2');
+    assert.equal(await first.env.KILN.get('eseen:r2'), seen);
+  });
+});
+
 test('update: the dashboard is told which editor each site has and which one is released, without a repository being read', { skip: d1Skip }, async () => {
   const { env, handler } = world(site(), { kv: { 'ebuild:ada/club': { build: 'r1', at: 5 } } });
   addSite(env, { id: 'site-2', repo: 'ada/shop', origin: 'https://shop.example' });
@@ -438,11 +483,11 @@ test('update: the dashboard is told which editor each site has and which one is 
     assert.equal(first.editor_latest, 'r2');
     assert.deepEqual(builds(first), { 'ada/club': 'r1', 'ada/shop': null });
     assert.equal(calls.some(c => c.url.startsWith('https://api.github.com/')), false, 'no repository is read');
-    // The released stamp is remembered for an hour.
+    // The released stamp is remembered for ten minutes, so opening the dashboard again does not read the release again.
     await me(env);
     assert.deepEqual(fromRelease(calls), ['dist/VERSION']);
     const ttl = env.KILN.expires.get('elatest') - Math.floor(Date.now() / 1000);
-    assert.ok(ttl > 3500 && ttl <= 3600, `kept for about an hour (${ttl}s)`);
+    assert.ok(ttl > 500 && ttl <= 600, `kept for about ten minutes (${ttl}s)`);
   });
 
   // After the update the site counts as up to date at once, even while its
