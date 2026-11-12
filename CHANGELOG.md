@@ -32,6 +32,21 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   changed meanwhile, or whose branch takes no direct change, is left as it
   was, with the reason (`worker/prepare.js`, `GET` and `POST
   /cloud/sites/prepare`, migration `0003`).
+- **Kiln Cloud can update the Kiln editor in a site's repository from the
+  dashboard.** When a newer editor is out than the one a site has, its row
+  says so and offers **Update Kiln**. Pressing it first shows what would
+  change (which of Kiln's files are replaced, and from which version to
+  which), and on a yes replaces them with the released ones as one commit in
+  the owner's name. This is what `npx github:kilncms/kiln#release update` does
+  in a terminal. Only Kiln's own files are written: the pages, the settings
+  file and everything else stay as they are. A site with a members area gets
+  the current files that guard it as well, unless its settings name another
+  sign-in service, and a `_routes.json` that is already there is left alone.
+  A repository that changed meanwhile, or whose branch takes no direct change,
+  is left as it was, with the reason. The dashboard learns which editor a site
+  has from its signed-in editors, and which one is released from the release
+  itself, looked up at most once an hour (`worker/update.js`, `GET` and `POST
+  /cloud/sites/update`, `editor_build` and `editor_latest` in `/cloud/me`).
 
 ### Changed
 

@@ -109,17 +109,17 @@ export function withKilnTags(html, lines = KILN_TAGS) {
 
 // ─── GitHub, with the App's token for this repository ─────────────────────────
 
-function gh(token, method, path, body, accept) {
+export function gh(token, method, path, body, accept) {
   return fetch(`${GH}${path}`, {
     method,
     headers: { Authorization: `Bearer ${token}`, Accept: accept || 'application/vnd.github+json', 'User-Agent': UA, ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
 }
-const refPath = (branch) => String(branch).split('/').map(encodeURIComponent).join('/');
+export const refPath = (branch) => String(branch).split('/').map(encodeURIComponent).join('/');
 
 /** Run `fn` over `items`, a few at a time, keeping their order. */
-async function inTurn(items, fn) {
+export async function inTurn(items, fn) {
   const out = new Array(items.length);
   for (let i = 0; i < items.length; i += AT_ONCE) {
     const part = await Promise.all(items.slice(i, i + AT_ONCE).map((it, j) => fn(it, i + j)));
@@ -129,7 +129,7 @@ async function inTurn(items, fn) {
 }
 
 /** A file's text, exactly: null when it is not UTF-8 text (it is then left alone). */
-async function readText(token, repo, sha) {
+export async function readText(token, repo, sha) {
   const r = await gh(token, 'GET', `/repos/${repo}/git/blobs/${sha}`, null, 'application/vnd.github.raw');
   if (!r.ok) return { failed: true };
   try {
@@ -274,14 +274,14 @@ export class PrepareError extends Error {
   constructor(code, detail = '') { super(code); this.code = code; this.detail = String(detail).slice(0, 200); }
 }
 
-function base64(buf) {
+export function base64(buf) {
   const u = new Uint8Array(buf);
   let s = '';
   for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
   return btoa(s);
 }
 
-async function must(res, code) {
+export async function must(res, code) {
   if (res.ok) return res.json();
   let detail = '';
   try { detail = (await res.json())?.message || ''; } catch { /* no body */ }

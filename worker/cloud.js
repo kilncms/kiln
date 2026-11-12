@@ -11,6 +11,8 @@
  *   GET  /cloud/sites/firstpass  → what a first pass at what can be edited would mark
  *   POST /cloud/sites/firstpass  → mark it (firstpass.js), in one commit
  *   POST /cloud/sites/remove     → cancel its subscription, then delete a site
+ *   GET  /cloud/sites/update     → which Kiln editor the site's repository holds, and what an update would replace
+ *   POST /cloud/sites/update     → replace the editor's files with the released ones (update.js), in one commit
  *   GET  /cloud/portal?site=     → Lemon Squeezy customer-portal link
  *   POST /cloud/webhook/ls       → Lemon Squeezy webhook (signed) → set site status
  *   GET  /admin/cloud/overview   → (owner only) accounts, sites (with the editor build each runs), MRR
@@ -26,6 +28,7 @@ import { RUNBOOK_HTML } from './runbook.js';
 import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
+import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -604,8 +607,14 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       subscribed: !!sub,
       trial_ends: r.status === 'trialing' && !sub && Number(r.created_at) ? Number(r.created_at) + TRIAL_GRACE_DAYS * 86400 * 1000 : null,
     }));
+    // Which Kiln editor each site has (`editor_build`) and which one is released
+    // (`editor_latest`), so the dashboard can offer an update without reading a
+    // repository (update.js). Either is null when it is not known.
+    const editors = await editorStanding(env, rows.map(r => r.repo), env.KILN_RELEASE_BASE).catch(() => ({ latest: null, builds: {} }));
+    for (const r of rows) r.editor_build = editors.builds[r.repo] ?? null;
     // `prepare`, `firstpass`: this service can add Kiln to a repository itself, and mark a first pass of what can be edited.
-    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: typeof tools.installationToken === 'function', firstpass: typeof tools.installationToken === 'function' });
+    const can = typeof tools.installationToken === 'function';
+    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest });
   }
 
   // The address notices about the account's own sites go to (mail.js). The
@@ -781,6 +790,63 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).run();
     if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
     return json({ ok: true, subscription: cancel.state, ...(cancel.ends_at ? { ends_at: cancel.ends_at } : {}) });
+  }
+
+  // Bring the Kiln editor in the site's repository up to the released one
+  // (update.js), so nobody needs a terminal for that either. GET says which
+  // editor the repository holds and what would be replaced, and writes
+  // nothing; POST replaces Kiln's own files, as one commit in the account
+  // holder's name.
+  if (path === '/cloud/sites/update' && (request.method === 'GET' || request.method === 'POST')) {
+    const asked = await ownedSite(request, env, url, sess, tools);
+    if (asked.response) return asked.response;
+    const { site, token, write } = asked;
+    const refused = (code, status, extra = {}) => json({ error: updateSentence(code, { repo: site.repo, ...extra }), code, ...extra }, status);
+
+    // One at a time for a site: two tabs pressing the button make one commit.
+    const lock = `updlock:${site.id}`;
+    if (write) {
+      if (await env.KILN.get(lock)) return refused('busy', 409);
+      await env.KILN.put(lock, '1', { expirationTtl: 120 });
+    }
+    try {
+      const plan = await planUpdate({ token, repo: site.repo, worker: url.origin, releaseBase: env.KILN_RELEASE_BASE });
+      const shown = publicUpdate(plan, { repo: site.repo });
+      if (plan.state === 'no_access') return refused('no_access', 409, { install_url: INSTALL_URL });
+      if (plan.state === 'github' || plan.state === 'release') return refused(plan.state, 502);
+      if (plan.state !== 'behind' && plan.state !== 'current') {
+        // Nothing here to update: say why, and what to do.
+        return json({ ok: false, ...shown, error: updateSentence(plan.state, { repo: site.repo }), code: plan.state, ...(plan.state === 'too_big' ? { command: UPDATE_COMMAND } : {}) }, write ? 409 : 200);
+      }
+      // What was just read is the best answer to which editor this site has
+      // and which is released: /cloud/me goes by it from here on.
+      await rememberLatest(env, plan.latest);
+      await noteRepoBuild(env, site.repo, plan.installed);
+      if (plan.state === 'current' || !write) return json({ ok: true, ...shown });
+
+      const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
+      let done;
+      try {
+        done = await applyUpdate({
+          token, repo: site.repo, plan,
+          author: { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` },
+          releaseBase: env.KILN_RELEASE_BASE,
+        });
+      } catch (e) {
+        const code = e instanceof PrepareError ? e.code : 'github';
+        console.warn(JSON.stringify({ evt: 'update_failed', repo: site.repo, code, detail: e instanceof PrepareError ? e.detail : String(e?.message || e).slice(0, 200) }));
+        return refused(code, code === 'moved' || code === 'protected' ? 409 : 502, code === 'protected' ? { branch: plan.branch, command: UPDATE_COMMAND } : {});
+      }
+      await noteRepoBuild(env, site.repo, done.to);
+      await notifyOwner(env, `Kiln editor updated in ${site.repo}`, [
+        `By: ${sess.login}, from the dashboard`,
+        `Editor: ${done.from || 'an unstamped one'} to ${done.to}. Files: ${done.files.join(', ') || 'none'}`,
+        done.url,
+      ]);
+      return json({ ok: true, ...shown, state: 'done', commit: { sha: done.sha, url: done.url } });
+    } finally {
+      if (write) { try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ } }
+    }
   }
 
   if (path === '/cloud/portal') {
