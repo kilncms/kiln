@@ -59,6 +59,7 @@ import { noteList, noteCopy, fileTrue, noteInside, noteAs, beginInside, settleIn
 import { writeInside, rememberInside } from './keep-inside.js';
 import { keepLink, LINK_KEPT } from './keep-link.js';
 import { readyPage, kilnFilesOn, missingWords, noPostList } from './new-page.js';
+import { pageAddress } from './page-address.js';
 import { takeBase, readAttrs } from './baselines.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { saveMenuEverywhere, menuStepText } from './menu-save.js';
@@ -6151,7 +6152,8 @@ function newContent() {
     const brief = m.querySelector('#kiln-np-brief')?.value.trim() || '';
     if (!title) return;
     if (cfg.sandbox) { m.querySelector('#kiln-np-said').textContent = demoSays('newpage'); return; }
-    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || kind;
+    // An accented letter becomes its plain letter, and a title with none still gets an address of its own (page-address.js).
+    const slug = pageAddress(title, { kind, stamp: Date.now().toString(36) });
     const date = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
     const root = cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '';
     const branch = cfg.branch || 'main';

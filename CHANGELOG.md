@@ -112,6 +112,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no list for posts is now told what is missing and what its owner can do
   today. It used to read "see the docs", or "blog/index.html needs a
   data-cms-list container" (`src/editor/new-page.js`).
+- **A new page's address keeps its accented letters, as plain letters.** A
+  page called "L'été d'Émile à Noël" got the address `/l-t-d-mile-no-l.html`:
+  every accented letter was dropped. It is now `/l-ete-d-emile-a-noel.html`.
+  Letters that are not a plain letter with a mark on it are spelled out (ß as
+  ss, æ as ae, œ as oe, ø as o, ł as l, þ as th). A title with no letter that
+  can be written plainly, such as one in Japanese or Greek, used to get the
+  bare address `/page.html` or `/blog/post.html`, which only the first such
+  title could have. It now gets one of its own, such as `/page-mwe0s3hw.html`.
+  The title on the page is as it was typed (`src/editor/page-address.js`).
 - **A page made with "New post or page" can be edited, and its accents
   read as written, on a site Kiln was added to from the dashboard.** A site
   keeps the templates new pages are made from in `_templates/` (`page.html`,
