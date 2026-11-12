@@ -31,6 +31,7 @@
  */
 
 import { gh, inTurn, refPath, base64 } from './prepare.js';
+import { dayWords } from './mail.js';
 
 const CF = 'https://api.cloudflare.com/client/v4';
 const COMPATIBILITY_DATE = '2026-06-01';
@@ -243,7 +244,7 @@ export async function removeSite(env, name) {
 }
 
 /** The sentence a person reads for each way hosting can stop without the site going up. */
-export function hostingSentence(code, { repo = 'the repository' } = {}) {
+export function hostingSentence(code, { repo = 'the repository', planEnded = null } = {}) {
   switch (code) {
     case 'no_home': return `Kiln found no home page (a file named index.html) at the top of ${repo}, so there is nothing to show at the site's address yet. Add one, and Kiln puts the site up by itself.`;
     case 'empty': return `${repo} has no files yet. Put the site's pages in it, and Kiln puts the site up by itself.`;
@@ -251,6 +252,7 @@ export function hostingSentence(code, { repo = 'the repository' } = {}) {
     case 'no_access': return 'The Kiln app is not installed on that repository yet, or it was removed, so Kiln cannot read the site\'s files.';
     case 'not_set_up': return 'Hosting is not switched on for this service yet.';
     case 'trial_ended': return 'Kiln took this site down from its hosting because the free days ran out. Your repository is untouched. Now that the site is subscribed, put it up again.';
+    case 'plan_ended': return `Kiln took this site down from its hosting because its plan ended${Number(planEnded) ? ` on ${dayWords(Number(planEnded))}` : ''}. Your repository still has everything. To put the site back, subscribe again and then press the button to put it up.`;
     case 'github': return 'GitHub did not answer just now. The site is as it was. Kiln tries again by itself in a few minutes.';
     default: return 'Kiln could not put the new files up just now. The site is as it was. Kiln tries again by itself in a few minutes.';
   }

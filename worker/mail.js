@@ -4,6 +4,9 @@
  *   site added       what to do next, and the day the free trial ends
  *   trial ends soon  two days before that day
  *   trial ended      editing is off, and what turns it back on
+ *   editing stopped  a site Kiln hosts, when its paid plan has ended: the day
+ *                    the site comes down, and what keeps it up
+ *   comes down soon  seven days before that day
  *
  * A free trial needs no card, so the payment company knows nothing of it and
  * cannot remind anyone: before these, a trial ended in silence and the owner
@@ -101,6 +104,46 @@ export function trialEndedMail({ origin, plan, dashboard }) {
     `To turn editing back on, press Subscribe on the site's row in your dashboard. ${planOf(plan)} is ${priceOf(plan)} a month for the site. Editing comes back as soon as the payment is confirmed.`,
     dashboard,
     'If Kiln was not right for the site, there is nothing to cancel and nothing to remove. We would be glad to hear what was missing: reply to this email.',
+  ], whyLine(host));
+}
+
+// How a plan that has ended is taken up again. A plan that was cancelled and
+// has run out is subscribed for anew; one whose payment failed still exists,
+// so its card is put right under Manage billing (cloud.js: /cloud/checkout).
+const takeUpAgain = (plan, pastDue, before = '') => (pastDue
+  ? `open Manage billing in your dashboard${before} and update the card.`
+  : `press Subscribe on the site's row in your dashboard${before}. ${planOf(plan)} is ${priceOf(plan)} a month for the site.`);
+
+/**
+ * Sent once when a site Kiln hosts, and that was paid for, may not be edited
+ * any more. `endsAt`: when the site comes down (ms). `pastDue`: a payment
+ * failed, as against a plan that was cancelled and has run out.
+ */
+export function editingStoppedMail({ origin, plan, repo, endsAt, pastDue = false, dashboard }) {
+  const host = hostOf(origin), day = dayWords(endsAt);
+  return message(`Editing is off for ${host}, and the site stays online until ${day}`, [
+    'Hello,',
+    pastDue
+      ? `The last payment for ${host} has not gone through, so editing through Kiln is switched off for now.`
+      : `The Kiln plan for ${host} has ended, so editing through Kiln is switched off for now.`,
+    `Kiln still hosts the site. It stays online at its address until ${day}, and then it comes down.`,
+    `To turn editing back on and keep the site up, ${takeUpAgain(plan, pastDue)} Editing comes back as soon as the payment is confirmed.`,
+    dashboard,
+    `Everything on the site is still in your own GitHub repository${repo ? ` (${repo})` : ''}. If you would rather move the site to another host, you can do that at any time.`,
+  ], whyLine(host));
+}
+
+/** Sent once, seven days before a site Kiln hosts comes down because its paid plan has ended. */
+export function hostingEndingMail({ origin, plan, repo, endsAt, pastDue = false, dashboard }) {
+  const host = hostOf(origin), day = dayWords(endsAt);
+  return message(`${host} comes down on ${day}`, [
+    'Hello,',
+    pastDue
+      ? `Kiln hosts ${host}, and the last payment for it has not gone through. The site comes down on ${day}.`
+      : `Kiln hosts ${host}, and its plan has ended. The site comes down on ${day}.`,
+    `To keep it up, ${takeUpAgain(plan, pastDue, ' before then')} Editing comes back too, as soon as the payment is confirmed.`,
+    dashboard,
+    `If you do nothing, the site goes offline on ${day}. Nothing is lost. Every file stays in your own GitHub repository${repo ? ` (${repo})` : ''}, so you can subscribe later and put the site back up, or move it to another host.`,
   ], whyLine(host));
 }
 

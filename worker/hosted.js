@@ -6,7 +6,8 @@
  *   pushNotice      GitHub says the repository changed (the App's push webhook)
  *   sweepHosting    every five minutes: finish what could not be done at once,
  *                   look whether a repository moved without a notice, take
- *                   down a site whose time on Kiln's hosting is over, and
+ *                   down a site whose time on Kiln's hosting is over (a trial
+ *                   nobody subscribed for, or a plan that ended), and
  *                   bring a hosted site's editor up to the released one
  *                   (lookafter.js)
  *
@@ -44,13 +45,19 @@ export async function hostingForAccount(env, accountId) {
   } catch { return {}; }
 }
 
-/** What the dashboard is shown of a hosted site. */
-export function publicHosting(row, { repo } = {}) {
+/**
+ * What the dashboard is shown of a hosted site. `endsAt` (ms) is the moment a
+ * site that may not be edited any more comes down: it is passed on as
+ * `ends_at` while the site is still there. `planEnded` (ms) is when its plan
+ * ended, for the sentence that says why it was taken down.
+ */
+export function publicHosting(row, { repo, endsAt = null, planEnded = null } = {}) {
   if (!row || row.state === 'removing') return null;
   const out = { state: row.state, url: row.url, commit: row.commit_sha || null, files: row.files ?? null, deployed_at: row.deployed_at || null };
-  if (row.state !== 'live' && row.reason) { out.reason = row.reason; out.error = hostingSentence(row.reason, { repo }); }
+  if (row.state !== 'live' && row.reason) { out.reason = row.reason; out.error = hostingSentence(row.reason, { repo, planEnded }); }
   // A site that was live and whose last copy failed still serves what it served.
   if (row.state !== 'live' && row.deployed_at) out.serving = true;
+  if (endsAt && row.state !== 'ended') out.ends_at = endsAt;
   return out;
 }
 
@@ -184,9 +191,10 @@ export async function handleGithubWebhook(request, env, ctx, tools) {
  * repositories checked longest ago, in case one moved and no notice came:
  * that look is also what publishes an editor that was just updated, when
  * GitHub's notice has not done so first. Sites that may not be edited any
- * more are left as they are (ending hosting is its own step).
+ * more are not published again, and come down when `endsAt` says their time
+ * is over; `endReason` names why, for the record the dashboard reads.
  */
-export async function sweepHosting(env, { installationToken, hasAccess, endsAt = () => null, care = {} }) {
+export async function sweepHosting(env, { installationToken, hasAccess, endsAt = () => null, endReason = () => 'trial_ended', care = {} }) {
   if (!hostingOn(env) || !env.kiln_cloud) return { published: 0, looked: 0, editors: 0, cared: 0 };
   const now = Date.now();
   let published = 0, looked = 0, editors = 0, cared = 0;
@@ -202,18 +210,21 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
     try { await removeSite(env, r.name); await env.kiln_cloud.prepare('DELETE FROM hosting WHERE name = ?').bind(r.name).run(); }
     catch (e) { console.warn(JSON.stringify({ evt: 'hosting_remove_failed', name: r.name, detail: String(e?.detail || e?.message || e).slice(0, 200) })); }
   }
-  // A site whose time on Kiln's hosting is over (`endsAt` says when: today, a
-  // free trial nobody subscribed for, a few days after it ran out) comes down.
-  // Its record stays, so the dashboard can say why, and subscribing puts it
-  // back: `deployed_at` is cleared so its address is switched on again then.
+  // A site whose time on Kiln's hosting is over comes down. `endsAt` says
+  // when: a free trial nobody subscribed for, a few days after it ran out
+  // (`trial_ended`), or a site that was paid for, thirty days after its plan
+  // ended (`plan_ended`). Its record stays, so the dashboard can say why, and
+  // subscribing puts it back: `deployed_at` is cleared so its address is
+  // switched on again then.
   for (const r of rows) {
     if (r.state === 'removing' || r.state === 'ended' || !r.id || hasAccess(r)) continue;
     const end = endsAt(r);
     if (!end || now < end) continue;
     try {
       await removeSite(env, r.name);
-      await save(env, r.id, { state: 'ended', reason: 'trial_ended', deployed_at: null, wanted_sha: null });
-      console.log(JSON.stringify({ evt: 'hosting_ended', repo: r.repo, name: r.name }));
+      const reason = endReason(r) || 'trial_ended';
+      await save(env, r.id, { state: 'ended', reason, deployed_at: null, wanted_sha: null });
+      console.log(JSON.stringify({ evt: 'hosting_ended', repo: r.repo, name: r.name, reason }));
     } catch (e) { console.warn(JSON.stringify({ evt: 'hosting_end_failed', name: r.name, detail: String(e?.detail || e?.message || e).slice(0, 200) })); }
   }
   const live = rows.filter(r => r.state !== 'removing' && r.id && hasAccess(r));

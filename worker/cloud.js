@@ -28,7 +28,7 @@
  */
 
 import { RUNBOOK_HTML } from './runbook.js';
-import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
+import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
@@ -421,18 +421,109 @@ async function siteNamedByOrigin(env, origin, now) {
 const TRIAL_GRACE_DAYS = 7;
 const FREE_HOSTED_SITES = 2;    // hosted sites an account may have before it has paid for any
 export const HOSTING_AFTER_TRIAL_DAYS = 3;   // a hosted site whose free days ran out unpaid stays up this long, then comes down
+export const HOSTING_AFTER_PAID_DAYS = 30;   // a hosted site that was paid for stays up this long after its plan ended, then comes down
+export const HOSTING_NOTICE_DAYS = 7;        // its owner is told once more this many days before it comes down
 
 /**
- * When a hosted site comes down, or null for "not for now". Today that is one
- * case: a free trial nobody subscribed for, HOSTING_AFTER_TRIAL_DAYS after it
- * ran out. (A site that was paid for keeps its hosting; ending that, with its
- * notices, is its own step.)
+ * When a hosted site comes down, or null for "not for now". Two cases:
+ *
+ *   a free trial nobody subscribed for   HOSTING_AFTER_TRIAL_DAYS after it ran out
+ *   a site that was paid for             HOSTING_AFTER_PAID_DAYS after the day it
+ *                                        could last be edited (`access_until`: the
+ *                                        end of the paid time after a cancellation,
+ *                                        or of the grace after a failed payment)
+ *
+ * A site that may be edited is never on its way down. Nor is a paid site with
+ * no `access_until` on record: there is no day to count from, and a site is
+ * not taken down by guesswork (noticeEndingHosting tells the operator instead).
  */
-export function hostingEndsAt(site) {
-  if (!site || site.ls_subscription_id || site.status !== 'canceled' || !Number(site.created_at)) return null;
-  return Number(site.created_at) + (TRIAL_GRACE_DAYS + HOSTING_AFTER_TRIAL_DAYS) * 86400 * 1000;
+export function hostingEndsAt(site, now = Date.now()) {
+  if (!site || siteHasAccess(site, now)) return null;
+  const day = 86400 * 1000;
+  if (!site.ls_subscription_id) {
+    if (site.status !== 'canceled' || !Number(site.created_at)) return null;
+    return Number(site.created_at) + (TRIAL_GRACE_DAYS + HOSTING_AFTER_TRIAL_DAYS) * day;
+  }
+  if ((site.status !== 'canceled' && site.status !== 'past_due') || !Number(site.access_until)) return null;
+  return Number(site.access_until) + HOSTING_AFTER_PAID_DAYS * day;
 }
+/** Why a hosted site comes down when hostingEndsAt says it does: the word kept on its record (hosting.js has the sentence). */
+export const hostingEndReason = (site) => (site && site.ls_subscription_id ? 'plan_ended' : 'trial_ended');
+/** What the dashboard is shown of a hosted site, with the day it comes down when it is on its way down. `site` is its whole row. */
+const shownHosting = (row, site, now = Date.now()) => publicHosting(row, { repo: site.repo, endsAt: hostingEndsAt(site, now), planEnded: Number(site.access_until) || null });
 const MAILS_PER_RUN = 25;   // a run writes to this many people at most; the rest wait five minutes
+
+/**
+ * A site Kiln hosts, that was paid for, and whose plan has ended (cancelled
+ * and run out, or a payment that failed and used up its grace) stays up for
+ * HOSTING_AFTER_PAID_DAYS, and its owner is written to twice (mail.js): when
+ * editing has stopped, with the day the site comes down, and once more
+ * HOSTING_NOTICE_DAYS before that day. Each goes once for one ending: the key
+ * holds the site and its `access_until`, so a site that is subscribed again
+ * and ends again later is written to again. Only one of the two goes in a
+ * run, so a site first seen in its last week gets the second one alone.
+ * sweepHosting, which runs after this, takes the site down on the day.
+ *
+ * A paid site with no `access_until` has no day to count from. It is left
+ * up, and the operator is told, once for that site and subscription: the
+ * marker `hostnodate:<site id>:<subscription id>` is written to KV before the
+ * note goes and never runs out, so a note that could not be marked is not
+ * sent (it would go every five minutes otherwise).
+ *
+ * Never throws: a failure leaves a line, and the sweep goes on.
+ */
+export async function noticeEndingHosting(env, now = Date.now()) {
+  const out = { sent: 0, undated: 0 };
+  if (!env.kiln_cloud || !hostingOn(env)) return out;
+  let rows = [];
+  try {
+    rows = (await env.kiln_cloud.prepare(
+      `SELECT s.id, s.repo, s.origin, s.plan, s.status, s.access_until, s.created_at, s.ls_subscription_id, h.deployed_at, a.email
+       FROM hosting h JOIN sites s ON s.id = h.site_id LEFT JOIN accounts a ON a.id = s.account_id
+       WHERE s.ls_subscription_id IS NOT NULL AND s.status IN ('canceled','past_due') AND h.state NOT IN ('removing','ended')
+       ORDER BY s.access_until`).all())?.results || [];
+  } catch { return out; }   // a database migration 0005 (or 0002) has not reached: nothing to say
+  try {
+    const mailOn = customerMailOn(env);
+    const dashboard = env.CLOUD_DASHBOARD || 'https://app.kilncms.com';
+    const undated = [];
+    for (const r of rows) {
+      if (siteHasAccess(r, now)) continue;
+      const end = hostingEndsAt(r, now);
+      if (!end) { undated.push(r); continue; }
+      // Not for a site that comes down in this very run, nor for one that never went up.
+      if (!mailOn || out.sent >= MAILS_PER_RUN || now >= end || !r.deployed_at || !mailAddress(r.email)) continue;
+      const about = { origin: r.origin, plan: r.plan, repo: r.repo, endsAt: end, pastDue: r.status === 'past_due', dashboard };
+      const res = now >= end - HOSTING_NOTICE_DAYS * 86400 * 1000
+        ? await sendOnce(env, `hosting-ending:${r.id}:${r.access_until}`, r.email, hostingEndingMail(about))
+        : await sendOnce(env, `hosting-stays:${r.id}:${r.access_until}`, r.email, editingStoppedMail(about));
+      if (res.ok) out.sent++;
+    }
+    out.undated = undated.length;
+    if (undated.length && env.NOTIFY && env.NOTIFY_TO) {
+      const fresh = [];
+      for (const r of undated) {
+        const marker = `hostnodate:${r.id}:${r.ls_subscription_id}`;
+        try {
+          if (await env.KILN.get(marker)) continue;
+          await env.KILN.put(marker, String(now));
+          fresh.push(r);
+        } catch { /* not marked, so not told: the next run tries again */ }
+      }
+      if (fresh.length) {
+        await notifyOwner(env, `Kiln: ${fresh.length} hosted site${fresh.length === 1 ? '' : 's'} with a plan that ended and no end date`, [
+          'Kiln hosts these, their plan has ended or a payment failed, and the record has no day on which editing stopped (access_until is empty).',
+          `Kiln takes a paid site down ${HOSTING_AFTER_PAID_DAYS} days after that day, so with no day it leaves the site up and writes nothing to its owner. Please look at each one. You are told once for each.`,
+          '',
+          ...fresh.map(r => `${r.repo} (${r.origin}), status ${r.status}`),
+        ]);
+      }
+    }
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'hosting_notices_failed', err: String(e?.message || e).slice(0, 200) }));
+  }
+  return out;
+}
 
 /**
  * Two days before a free trial runs out, its owner is told, once (mail.js).
@@ -636,6 +727,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // Squeezy subscription exists, without handing its id to the browser.
     const now = Date.now();
     const prepared = await preparedTimes(env, sess.account_id);
+    const whole = Object.fromEntries((sites.results || []).map(s => [s.id, s]));   // each row as read, for what hosting has to say
     const rows = (sites.results || []).map(({ ls_subscription_id: sub, ...r }) => ({
       ...r,
       prepared_at: prepared[r.id]?.prepared_at ?? null,
@@ -651,7 +743,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     for (const r of rows) r.editor_build = editors.builds[r.repo] ?? null;
     // Where each hosted site stands (hosted.js), and whether this service hosts sites at all.
     const hosted = hostingOn(env) ? await hostingForAccount(env, sess.account_id) : {};
-    for (const r of rows) r.hosting = publicHosting(hosted[r.id], { repo: r.repo });
+    for (const r of rows) r.hosting = shownHosting(hosted[r.id], whole[r.id], now);
     // What Kiln did for a hosted site when it was first put up (lookafter.js), while that is kept.
     await Promise.all(rows.filter(r => r.hosting).map(async (r) => { const care = await lookedAfter(env, r.id); if (care) r.looked_after = care; }));
     // `prepare`, `firstpass`: this service can add Kiln to a repository itself, and mark a first pass of what can be edited.
@@ -837,7 +929,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const row = available ? await hostingRow(env, site.id) : null;
     if (!write) {
       const care = row ? await lookedAfter(env, site.id) : null;
-      return json({ ok: true, available, on_plan: site.plan === 'managed', hosting: publicHosting(row, { repo: site.repo }), ...(care ? { looked_after: care } : {}) });
+      // A hosted site that may not be edited any more: the rest of its row says when it comes down.
+      const rest = row && !asked.access
+        ? await env.kiln_cloud.prepare('SELECT created_at, ls_subscription_id FROM sites WHERE id = ?').bind(site.id).first().catch(() => null) : null;
+      return json({ ok: true, available, on_plan: site.plan === 'managed', hosting: shownHosting(row, { ...site, ...(rest || {}) }), ...(care ? { looked_after: care } : {}) });
     }
     if (!available) return json({ error: hostingSentence('not_set_up'), code: 'not_set_up' }, 503);
     if (site.plan !== 'managed') {

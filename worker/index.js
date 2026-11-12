@@ -83,7 +83,7 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.6.0';
 
-import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingEndsAt, markPrepared, markFirstPass } from './cloud.js';
+import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingEndsAt, hostingEndReason, noticeEndingHosting, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
@@ -116,9 +116,14 @@ export default {
     // repository's new name, and a move can only finish once it has.
     await cronJob('moves', () => continueMoves(env));
     // Hosted sites: finish a copy that could not be made at once, and notice a
-    // repository that moved without a notice from GitHub (hosted.js).
-    await cronJob('hosting', () => sweepHosting(env, { installationToken, hasAccess: siteHasAccess, endsAt: hostingEndsAt,
-      care: { prepared: (id, sha) => markPrepared(env, id, sha), firstPass: (id, sha) => markFirstPass(env, id, sha) } }));
+    // repository that moved without a notice from GitHub (hosted.js). Before
+    // that, the owner of a paid site whose plan has ended is told when the site
+    // comes down (cloud.js); that never throws, so it cannot stop the sweep.
+    await cronJob('hosting', async () => {
+      await noticeEndingHosting(env);
+      return sweepHosting(env, { installationToken, hasAccess: siteHasAccess, endsAt: hostingEndsAt, endReason: hostingEndReason,
+        care: { prepared: (id, sha) => markPrepared(env, id, sha), firstPass: (id, sha) => markFirstPass(env, id, sha) } });
+    });
   },
   async fetch(request, env, ctx) {
     const response = await routeRequest(request, env, ctx);

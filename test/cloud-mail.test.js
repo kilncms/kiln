@@ -10,8 +10,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import worker from '../worker/index.js';
-import { expireStaleTrials, remindEndingTrials } from '../worker/cloud.js';
-import { mailAddress, dayWords, siteAddedMail, trialEndingMail, trialEndedMail, sendMail, customerMailOn } from '../worker/mail.js';
+import { expireStaleTrials, remindEndingTrials, noticeEndingHosting } from '../worker/cloud.js';
+import { mailAddress, dayWords, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, sendMail, customerMailOn } from '../worker/mail.js';
 import { fakeKV, withFetch, jsonRes } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 
@@ -160,3 +160,171 @@ test('customer mail: on the hosting plan, the two trial notices say what happens
   for (const mail of [trialEndingMail({ ...base, plan: 'cloud' }), trialEndedMail({ ...base, plan: 'cloud' })]) assert.doesNotMatch(mail.text, /hosts the site/);
 });
 
+
+// ── A site Kiln hosts, that was paid for, when its plan has ended ──
+
+const HOSTS = { HOSTING_ACCOUNT_ID: 'acc', HOSTING_API_TOKEN: 'cf-token', HOSTING_SUBDOMAIN: 'kiln-sites' };
+/** A hosted site that was paid for: its row, and its record on Kiln's hosting. */
+function hosted(env, id, { status = 'canceled', until = null, sub = `sub-${id}`, state = 'live', deployed_at = 5, ...site } = {}) {
+  addSite(env, { id, origin: `https://${id}.example`, repo: `ada/${id}`, plan: 'managed', status, ls_subscription_id: sub, created_at: Date.now() - 300 * DAY, ...site });
+  env.kiln_cloud.exec('UPDATE sites SET access_until = ? WHERE id = ?', until, id);
+  env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, deployed_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
+    id, `${id}-x`, `https://${id}-x.kiln-sites.workers.dev`, state, deployed_at, 1, 1);
+}
+const subjects = (mail) => mail.out.filter(m => m && m.subject).map(m => m.subject);
+
+test('the words: a paid site whose plan ended is told the day it comes down, what keeps it up, and that its files are its own', () => {
+  const ends = Date.UTC(2027, 0, 15, 9, 0, 0);
+  const about = { origin: 'https://rosasbakery.example', plan: 'managed', repo: 'rosa/bakery', endsAt: ends, dashboard: DASH };
+  const stopped = editingStoppedMail(about);
+  assert.equal(stopped.subject, 'Editing is off for rosasbakery.example, and the site stays online until Friday, January 15');
+  assert.match(stopped.text, /The Kiln plan for rosasbakery\.example has ended, so editing through Kiln is switched off for now\./);
+  assert.match(stopped.text, /Kiln still hosts the site\. It stays online at its address until Friday, January 15, and then it comes down\./);
+  assert.match(stopped.text, /To turn editing back on and keep the site up, press Subscribe on the site's row in your dashboard\. Kiln Cloud \+ hosting is \$14\.99 a month for the site\./);
+  assert.match(stopped.text, /Everything on the site is still in your own GitHub repository \(rosa\/bakery\)\. If you would rather move the site to another host, you can do that at any time\./);
+  const soon = hostingEndingMail(about);
+  assert.equal(soon.subject, 'rosasbakery.example comes down on Friday, January 15');
+  assert.match(soon.text, /Kiln hosts rosasbakery\.example, and its plan has ended\. The site comes down on Friday, January 15\./);
+  assert.match(soon.text, /To keep it up, press Subscribe on the site's row in your dashboard before then\. Kiln Cloud \+ hosting is \$14\.99 a month/);
+  assert.match(soon.text, /Every file stays in your own GitHub repository \(rosa\/bakery\), so you can subscribe later and put the site back up, or move it to another host\./);
+  // A payment that failed: the plan is still there, so the card is put right, and nobody is sent to pay twice.
+  const failed = [editingStoppedMail({ ...about, pastDue: true }), hostingEndingMail({ ...about, pastDue: true })];
+  assert.match(failed[0].text, /The last payment for rosasbakery\.example has not gone through, so editing through Kiln is switched off for now\./);
+  assert.match(failed[0].text, /To turn editing back on and keep the site up, open Manage billing in your dashboard and update the card\./);
+  assert.match(failed[1].text, /To keep it up, open Manage billing in your dashboard before then and update the card\./);
+  for (const m of failed) assert.doesNotMatch(m.text, /Subscribe/);
+  for (const m of [stopped, soon, ...failed]) {
+    assert.match(m.text, new RegExp(`\\n${DASH}\\n`), 'the dashboard is a line of its own');
+    assert.match(m.html, new RegExp(`<a href="${DASH}"`));
+    assert.match(m.text, /\n\nKiln\nYou are getting this because rosasbakery\.example was added to Kiln Cloud with this email address\. Reply to this email to reach a person\.\n$/);
+    assert.equal(/[—–]|!/.test(m.subject + m.text), false, m.subject);
+  }
+  assert.doesNotMatch(editingStoppedMail({ ...about, origin: 'https://x.example/"><script>alert(1)</script>', repo: '<b>r</b>' }).html, /<script>|<b>/);
+});
+
+test('a paid, hosted site whose plan ended: its owner is told once when editing stops, and once more seven days before it comes down', { skip: d1Skip }, async () => {
+  const mail = box();
+  const env = cloud(mail, HOSTS);
+  const now = Date.now();
+  const until = now - 60e3;   // editing stopped a minute ago
+  hosted(env, 'club', { until });
+  // Sites this is not about: still paid up, paying again, never up, already down, and a free trial that ran out.
+  hosted(env, 'paidup', { until: now + 200 * DAY });
+  hosted(env, 'back', { status: 'active', until: now - 3 * DAY });
+  hosted(env, 'neverup', { until, state: 'waiting', deployed_at: null });
+  hosted(env, 'down', { until: now - 40 * DAY, state: 'ended', deployed_at: null });
+  hosted(env, 'trial', { sub: null, until: null, created_at: now - 8 * DAY });
+
+  assert.deepEqual(await noticeEndingHosting(env, now), { sent: 1, undated: 0 });
+  assert.equal(mail.out.length, 1);
+  assert.equal(mail.out[0].to, 'ada@example.com');
+  assert.equal(mail.out[0].subject, `Editing is off for club.example, and the site stays online until ${dayWords(until + 30 * DAY)}`);
+  assert.match(mail.out[0].text, /still in your own GitHub repository \(ada\/club\)/);
+  // five minutes later, the next day, and on day 22: nothing more
+  for (const later of [5 * 60e3, DAY, 22.9 * DAY]) assert.equal((await noticeEndingHosting(env, now + later)).sent, 0);
+  assert.equal(mail.out.length, 1);
+  // seven days before it comes down (day 23): the second one, once
+  const day23 = until + 23 * DAY;
+  assert.equal((await noticeEndingHosting(env, day23 - 60e3)).sent, 0, 'not before day 23');
+  assert.equal((await noticeEndingHosting(env, day23 + 60e3)).sent, 1);
+  assert.equal(mail.out[1].subject, `club.example comes down on ${dayWords(until + 30 * DAY)}`);
+  for (const later of [day23 + 5 * 60e3, day23 + 3 * DAY, until + 29.9 * DAY]) assert.equal((await noticeEndingHosting(env, later)).sent, 0);
+  // on the day itself the sweep takes it down; nothing is written then, or after
+  assert.equal((await noticeEndingHosting(env, until + 30 * DAY + 60e3)).sent, 0);
+  assert.equal(mail.out.length, 2);
+
+  // Subscribed again (the day is cleared), then stopped again later: that is a new ending, and both go again.
+  env.kiln_cloud.exec("UPDATE sites SET status = 'active', access_until = NULL WHERE id = 'club'");
+  assert.deepEqual(await noticeEndingHosting(env, until + 40 * DAY), { sent: 0, undated: 0 });
+  const again = until + 100 * DAY;
+  env.kiln_cloud.exec("UPDATE sites SET status = 'past_due', access_until = ? WHERE id = 'club'", again);
+  assert.equal((await noticeEndingHosting(env, again - 60e3)).sent, 0, 'not while it may still be edited');
+  assert.equal((await noticeEndingHosting(env, again + 60e3)).sent, 1);
+  assert.equal((await noticeEndingHosting(env, again + 24 * DAY)).sent, 1);
+  assert.equal((await noticeEndingHosting(env, again + 25 * DAY)).sent, 0);
+  assert.deepEqual(subjects(mail).slice(2), [
+    `Editing is off for club.example, and the site stays online until ${dayWords(again + 30 * DAY)}`,
+    `club.example comes down on ${dayWords(again + 30 * DAY)}`,
+  ]);
+  assert.match(mail.out[2].text, /open Manage billing in your dashboard and update the card/);
+  assert.equal(mail.out.every(m => /club\.example/.test(m.subject)), true, 'nobody else was written to');
+});
+
+test('a paid, hosted site first seen in its last week gets the second message alone', { skip: d1Skip }, async () => {
+  const mail = box();
+  const env = cloud(mail, HOSTS);
+  const now = Date.now();
+  hosted(env, 'late', { until: now - 25 * DAY });
+  assert.equal((await noticeEndingHosting(env, now)).sent, 1);
+  assert.equal((await noticeEndingHosting(env, now + 5 * 60e3)).sent, 0);
+  assert.deepEqual(subjects(mail), [`late.example comes down on ${dayWords(now + 5 * DAY)}`]);
+});
+
+test('the two messages go only to an address, only from a service that writes to customers, and only where Kiln hosts', { skip: d1Skip }, async () => {
+  const now = Date.now();
+  // no address on the account: skipped, and sent once there is one
+  const mail = box();
+  const env = cloud(mail, HOSTS);
+  env.kiln_cloud.exec('UPDATE accounts SET email = NULL');
+  hosted(env, 'club', { until: now - DAY });
+  assert.equal((await noticeEndingHosting(env, now)).sent, 0);
+  env.kiln_cloud.exec("UPDATE accounts SET email = 'rosa@example.com'");
+  assert.equal((await noticeEndingHosting(env, now)).sent, 1);
+  assert.equal(mail.out[0].to, 'rosa@example.com');
+  // customer mail off: nothing, and nothing fails
+  const quiet = box();
+  const off = cloud(quiet, { ...HOSTS, CUSTOMER_MAIL_FROM: '' });
+  hosted(off, 'club', { until: now - DAY });
+  assert.deepEqual(await noticeEndingHosting(off, now), { sent: 0, undated: 0 });
+  assert.equal(quiet.out.length, 0);
+  // a service that hosts nothing does not look at all
+  const none = cloud(box());
+  hosted(none, 'club', { until: now - DAY });
+  assert.deepEqual(await noticeEndingHosting(none, now), { sent: 0, undated: 0 });
+  // a send that fails is tried again at the next run, and never throws
+  const flaky = box();
+  let fail = true;
+  const env2 = cloud({ out: flaky.out, binding: { send: async (m) => { if (fail) throw new Error('quota'); return flaky.binding.send(m); } } }, HOSTS);
+  hosted(env2, 'club', { until: now - DAY });
+  assert.equal((await noticeEndingHosting(env2, now)).sent, 0);
+  fail = false;
+  assert.equal((await noticeEndingHosting(env2, now + 5 * 60e3)).sent, 1);
+  // a database that cannot be read is not an exception either
+  assert.deepEqual(await noticeEndingHosting({ ...env2, kiln_cloud: { prepare: () => { throw new Error('down'); } } }, now), { sent: 0, undated: 0 });
+});
+
+test('a run writes to twenty-five people at most, and the rest hear five minutes later', { skip: d1Skip }, async () => {
+  const mail = box();
+  const env = cloud(mail, HOSTS);
+  const now = Date.now();
+  for (let i = 0; i < 27; i++) hosted(env, `s${i}`, { until: now - DAY - i });
+  assert.equal((await noticeEndingHosting(env, now)).sent, 25);
+  assert.equal((await noticeEndingHosting(env, now + 5 * 60e3)).sent, 2);
+  assert.equal((await noticeEndingHosting(env, now + 10 * 60e3)).sent, 0);
+  assert.equal(new Set(subjects(mail)).size, 27);
+});
+
+test('a paid, hosted site with no day on record: its owner is not written to, and the operator is told once', { skip: d1Skip }, async () => {
+  const mail = box();
+  const env = cloud(mail, { ...HOSTS, NOTIFY_TO: 'ops@example.com' });
+  const now = Date.now();
+  hosted(env, 'nodate', { until: null });
+  hosted(env, 'failed', { status: 'past_due', until: null });
+  hosted(env, 'fine', { status: 'active', until: null });
+  assert.deepEqual(await noticeEndingHosting(env, now), { sent: 0, undated: 2 });
+  assert.deepEqual(await noticeEndingHosting(env, now + 5 * 60e3), { sent: 0, undated: 2 });
+  assert.equal(mail.out.length, 1, 'one note for both, and not again');
+  assert.equal(mail.out[0].to, 'ops@example.com');
+  assert.match(mail.out[0].raw, /Subject: Kiln: 2 hosted sites with a plan that ended and no end date/);
+  assert.match(mail.out[0].raw, /ada\/nodate \(https:\/\/nodate\.example\), status canceled/);
+  assert.match(mail.out[0].raw, /ada\/failed \(https:\/\/failed\.example\), status past_due/);
+  assert.doesNotMatch(mail.out[0].raw, /ada\/fine/);
+  // a marker that cannot be written means no note, not a note every five minutes
+  const mail2 = box();
+  const kv = fakeKV();
+  kv.put = async () => { throw new Error('KV write limit'); };
+  const env2 = { ...cloud(mail2, { ...HOSTS, NOTIFY_TO: 'ops@example.com' }), KILN: kv };
+  hosted(env2, 'nodate', { until: null });
+  assert.deepEqual(await noticeEndingHosting(env2, now), { sent: 0, undated: 1 });
+  assert.equal(mail2.out.length, 0);
+});

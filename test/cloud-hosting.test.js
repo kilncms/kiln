@@ -15,7 +15,8 @@ import { fakeKV, withFetch, githubWrites } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare } from './cloudflare-fake.js';
-import { cloudSiteForOrigin } from '../worker/cloud.js';
+import { cloudSiteForOrigin, hostingEndsAt, hostingEndReason } from '../worker/cloud.js';
+import { dayWords } from '../worker/mail.js';
 
 const SECRET = 'whsec-github';
 const pages = { 'index.html': '<!doctype html><h1>Home</h1>', 'about.html': '<!doctype html><h1>About</h1>', 'assets/site.css': 'h1{}' };
@@ -330,7 +331,8 @@ test('hosting: a hosted site whose free days ran out unpaid comes down three day
   assert.equal(w.cf.scripts.get('club-site1').address, true);
   assert.equal(served(w, '/index.html'), pages['index.html']);
 
-  // A site that was paid for and then cancelled keeps its hosting for now.
+  // A site that was paid for and then cancelled is on another clock (the next
+  // tests): twenty days after its paid time ran out it is still up.
   const p = world(pages, { site: { ls_subscription_id: '77', status: 'active' } });
   await withFetch(p.handler, async () => {
     await switchOn(p.env);
@@ -340,3 +342,123 @@ test('hosting: a hosted site whose free days ran out unpaid comes down three day
   assert.equal(p.cf.scripts.size, 1);
 });
 
+
+test('hosting: a site that was paid for comes down thirty days after its plan ended, and subscribing again puts it back', { skip: d1Skip }, async () => {
+  const day = 86400 * 1000;
+  const w = world(pages, { site: { ls_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day } });
+  const stopped = (status, until) => w.env.kiln_cloud.exec("UPDATE sites SET status = ?, access_until = ? WHERE id = 'site1'", status, until);
+  const me = async () => (await (await ask(w.env, 'GET', '/cloud/me')).json()).sites[0];
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    // Cancelled and still paid up: nothing is on its way down, and nothing says so.
+    stopped('canceled', Date.now() + 3 * day);
+    await sweep(w.env);
+    assert.equal(row(w.env).state, 'live');
+    assert.equal('ends_at' in (await standing(w.env)).hosting, false);
+    assert.equal('ends_at' in (await me()).hosting, false);
+    // Its paid time ran out 29 days ago: still up, not published any more, and the dashboard is given the day.
+    const until = Date.now() - 29 * day;
+    stopped('canceled', until);
+    w.gh.commit({ 'index.html': '<!doctype html><h1>After the plan</h1>' });
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 1, '29 days after the plan ended');
+    assert.equal(row(w.env).state, 'live');
+    assert.equal(served(w, '/index.html'), pages['index.html']);
+    assert.equal((await standing(w.env)).hosting.ends_at, until + 30 * day);
+    const mine = await me();
+    assert.equal(mine.editable, false);
+    assert.equal(mine.hosting.ends_at, until + 30 * day);
+    assert.equal('ls_subscription_id' in mine, false, 'the subscription is still not handed to the browser');
+    // Paid again in time: it is not on its way down any more.
+    stopped('active', null);
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 1);
+    assert.equal('ends_at' in (await standing(w.env)).hosting, false);
+    // Active again with an old date still on its row: left alone all the same.
+    stopped('active', Date.now() - 90 * day);
+    await sweep(w.env);
+    assert.equal(row(w.env).state, 'live');
+    // 31 days ago: it comes down, and the record says why.
+    const over = Date.now() - 31 * day;
+    stopped('canceled', over);
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 0, '31 days after the plan ended');
+    assert.deepEqual({ state: row(w.env).state, reason: row(w.env).reason, deployed_at: row(w.env).deployed_at }, { state: 'ended', reason: 'plan_ended', deployed_at: null });
+    const down = (await standing(w.env)).hosting;
+    assert.equal(down.state, 'ended');
+    assert.equal(down.error, `Kiln took this site down from its hosting because its plan ended on ${dayWords(over)}. Your repository still has everything. To put the site back, subscribe again and then press the button to put it up.`);
+    assert.equal('ends_at' in down, false, 'a site that is down has no day to come down on');
+    assert.equal(/[—–]|!/.test(down.error), false);
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 0, 'and it is not put back by the sweep');
+    // Subscribed again: the sweep still leaves it, and its owner puts it up with the button.
+    stopped('active', null);
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 0);
+    assert.match((await standing(w.env)).hosting.error, /because its plan ended\. Your repository still has everything\./);
+    const res = await switchOn(w.env);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).hosting.state, 'live');
+  });
+  assert.equal(w.cf.scripts.get('club-site1').address, true);
+  assert.equal(served(w, '/index.html'), '<!doctype html><h1>After the plan</h1>');
+
+  // A payment that failed, and whose grace ran out 31 days ago, ends the same way.
+  const f = world(pages, { site: { ls_subscription_id: '78', status: 'active' } });
+  await withFetch(f.handler, async () => {
+    await switchOn(f.env);
+    f.env.kiln_cloud.exec("UPDATE sites SET status = 'past_due', access_until = ? WHERE id = 'site1'", Date.now() - 31 * day);
+    await sweep(f.env);
+  });
+  assert.equal(f.cf.scripts.size, 0);
+  assert.equal(row(f.env).reason, 'plan_ended');
+});
+
+test('hosting: a paid site with no day on record is left up, and the operator is told once', { skip: d1Skip }, async () => {
+  const day = 86400 * 1000;
+  const notes = [];
+  const w = world(pages, {
+    site: { ls_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day },
+    env: { NOTIFY: { send: async (m) => { notes.push(m); } }, NOTIFY_TO: 'ops@example.com' },
+  });
+  const told = () => notes.filter(m => /no end date/.test(m.raw));
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    notes.length = 0;
+    w.env.kiln_cloud.exec("UPDATE sites SET status = 'canceled', access_until = NULL WHERE id = 'site1'");
+    await sweep(w.env);
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 1, 'not taken down by guesswork');
+    assert.equal(row(w.env).state, 'live');
+    assert.equal('ends_at' in (await standing(w.env)).hosting, false);
+    assert.equal(told().length, 1, 'told once, not at every sweep');
+    assert.match(told()[0].raw, /Subject: Kiln: 1 hosted site with a plan that ended and no end date/);
+    assert.match(told()[0].raw, /ada\/club \(https:\/\/club\.example\), status canceled/);
+    assert.equal(await w.env.KILN.get('hostnodate:site1:77') !== null, true);
+    // Subscribed anew and ended again with no day: that is another ending, and it is said again.
+    w.env.kiln_cloud.exec("UPDATE sites SET status = 'past_due', ls_subscription_id = '99' WHERE id = 'site1'");
+    await sweep(w.env);
+    await sweep(w.env);
+    assert.equal(told().length, 2);
+    assert.equal(w.cf.scripts.size, 1);
+  });
+});
+
+test('hosting: when a hosted site comes down, in so many words', () => {
+  const day = 86400 * 1000, now = Date.UTC(2026, 10, 12, 12);
+  const paid = { ls_subscription_id: '77', created_at: now - 300 * day };
+  // a trial nobody subscribed for: ten days after it was added, as before
+  assert.equal(hostingEndsAt({ status: 'canceled', created_at: now - 8 * day }, now), now + 2 * day);
+  assert.equal(hostingEndsAt({ status: 'trialing', created_at: now - 3 * day }, now), null);
+  assert.equal(hostingEndReason({ status: 'canceled' }), 'trial_ended');
+  // a site that was paid for: thirty days after the day it could last be edited
+  for (const status of ['canceled', 'past_due']) {
+    assert.equal(hostingEndsAt({ ...paid, status, access_until: now - day }, now), now + 29 * day, status);
+    assert.equal(hostingEndsAt({ ...paid, status, access_until: now + day }, now), null, `${status}, and it may still be edited`);
+    assert.equal(hostingEndsAt({ ...paid, status, access_until: null }, now), null, `${status}, with no day on record`);
+  }
+  assert.equal(hostingEndsAt({ ...paid, status: 'active', access_until: now - 40 * day }, now), null);
+  assert.equal(hostingEndsAt({ ...paid, status: 'trialing', access_until: null }, now), null);
+  assert.equal(hostingEndReason({ ...paid, status: 'canceled' }), 'plan_ended');
+  assert.equal(hostingEndsAt(null, now), null);
+});
