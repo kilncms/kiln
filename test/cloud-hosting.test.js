@@ -1,0 +1,297 @@
+/**
+ * Kiln hosting a site (the Kiln Cloud + hosting plan): switching it on from
+ * the dashboard, publishing again when GitHub says the repository changed, the
+ * five-minute sweep that catches what was missed, editing at the temporary
+ * address, and taking a site down (worker/hosted.js, worker/hosting.js, the
+ * routes in worker/cloud.js and /gh/webhook in worker/index.js). The real
+ * handlers run over the SQLite-backed D1 stand-in, an in-memory GitHub and an
+ * in-memory Cloudflare. Nothing here touches the network.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
+import worker from '../worker/index.js';
+import { fakeKV, withFetch, githubWrites } from './worker-harness.js';
+import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
+import { fakeGitHub } from './github-fake.js';
+import { fakeCloudflare } from './cloudflare-fake.js';
+import { cloudSiteForOrigin } from '../worker/cloud.js';
+
+const SECRET = 'whsec-github';
+const pages = { 'index.html': '<!doctype html><h1>Home</h1>', 'about.html': '<!doctype html><h1>About</h1>', 'assets/site.css': 'h1{}' };
+const URL_1 = 'https://club-site1.kiln-sites.workers.dev';
+
+function world(files = pages, { site = {}, env: extra = {}, kv: seed = {} } = {}) {
+  const gh = fakeGitHub({ repo: 'ada/club', files });
+  const cf = fakeCloudflare();
+  const env = cloudEnv(fakeKV({ 'itok:ada/club': 'inst-token', ...seed }), {
+    HOSTING_ACCOUNT_ID: cf.account, HOSTING_API_TOKEN: cf.token, HOSTING_SUBDOMAIN: 'kiln-sites', GH_WEBHOOK_SECRET: SECRET, ...extra,
+  });
+  addSite(env, { id: 'site1', plan: 'managed', status: 'trialing', ...site });
+  const handler = async (url, init) => (await cf.handler(url, init)) || gh.handler(url, init);
+  return { gh, cf, env, handler };
+}
+const ask = (env, method, pathname, body, token = 'tok') => worker.fetch(new Request(`https://worker.example${pathname}`, {
+  method, headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined,
+}), env);
+const switchOn = (env, id = 'site1') => ask(env, 'POST', '/cloud/sites/hosting', { id });
+const standing = async (env, id = 'site1') => (await (await ask(env, 'GET', `/cloud/sites/hosting?site=${id}`)).json());
+const row = (env, id = 'site1') => env.kiln_cloud.row('SELECT * FROM hosting WHERE site_id = ?', id);
+const served = (w, path, name = 'club-site1') => w.cf.serve(name, path)?.bytes.toString() ?? null;
+/** A push notice as GitHub sends it, signed with `secret`. */
+function notice(w, { ref = 'refs/heads/main', repo = 'ada/club', secret = SECRET, event = 'push', after = w.gh.head(), deleted = false, ctx } = {}) {
+  const body = JSON.stringify({ ref, after, deleted, repository: { full_name: repo, default_branch: 'main' } });
+  const sig = `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
+  return worker.fetch(new Request('https://worker.example/gh/webhook', { method: 'POST', headers: { 'X-GitHub-Event': event, 'X-Hub-Signature-256': sig, 'Content-Type': 'application/json' }, body }), w.env, ctx);
+}
+const sweep = (env) => worker.scheduled({}, env);
+
+test('hosting: the owner switches it on, the site is up at a temporary address, and the dashboard knows', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async (calls) => {
+    assert.deepEqual(await standing(w.env), { ok: true, available: true, on_plan: true, hosting: null });
+    const res = await switchOn(w.env);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.deepEqual({ state: body.hosting.state, url: body.hosting.url, commit: body.hosting.commit, files: body.hosting.files }, { state: 'live', url: URL_1, commit: w.gh.head(), files: 3 });
+    assert.ok(body.hosting.deployed_at > 0);
+    assert.deepEqual(githubWrites(calls), [], 'the repository is only read');
+    const me = await (await ask(w.env, 'GET', '/cloud/me')).json();
+    assert.equal(me.hosting, true);
+    assert.equal(me.sites[0].hosting.state, 'live');
+    assert.equal(me.sites[0].hosting.url, URL_1);
+    assert.equal((await standing(w.env)).hosting.state, 'live');
+  });
+  assert.equal(served(w, '/index.html'), pages['index.html']);
+  assert.equal(w.cf.scripts.get('club-site1').address, true);
+  assert.equal(row(w.env).name, 'club-site1');
+  assert.equal(await w.env.KILN.get('hostlock:site1'), null);
+});
+
+test('hosting: it is part of the hosting plan, of a service that hosts, and of the first few sites until one is paid for', { skip: d1Skip }, async () => {
+  let w = world(pages, { site: { plan: 'cloud' } });
+  await withFetch(w.handler, async (calls) => {
+    assert.equal((await standing(w.env)).on_plan, false);
+    const res = await switchOn(w.env);
+    assert.equal(res.status, 403);
+    const body = await res.json();
+    assert.equal(body.code, 'not_on_plan');
+    assert.match(body.error, /Kiln Cloud \+ hosting plan/);
+    assert.deepEqual(calls, []);
+  });
+  // A service with no hosting account: the dashboard is told, and nothing is tried.
+  w = world(pages, { env: { HOSTING_API_TOKEN: '' } });
+  await withFetch(w.handler, async (calls) => {
+    assert.deepEqual(await standing(w.env), { ok: true, available: false, on_plan: true, hosting: null });
+    const res = await switchOn(w.env);
+    assert.equal(res.status, 503);
+    assert.equal((await res.json()).code, 'not_set_up');
+    assert.equal((await (await ask(w.env, 'GET', '/cloud/me')).json()).hosting, false);
+    assert.equal(calls.filter(c => c.url.includes('cloudflare')).length, 0);
+  });
+  // Not signed in, and somebody else's site.
+  w = world();
+  await withFetch(w.handler, async () => {
+    assert.equal((await ask(w.env, 'POST', '/cloud/sites/hosting', { id: 'site1' }, 'nobody')).status, 401);
+    assert.equal((await switchOn(w.env, 'nope')).status, 404);
+  });
+  // Two hosted sites during the free days, a third only once something is paid for.
+  w = world();
+  for (const n of [2, 3]) { addSite(w.env, { id: `site${n}`, plan: 'managed', status: 'trialing', repo: 'ada/club', origin: `https://club${n}.example` }); }
+  await withFetch(w.handler, async () => {
+    assert.equal((await switchOn(w.env, 'site1')).status, 200);
+    assert.equal((await switchOn(w.env, 'site2')).status, 200);
+    const third = await switchOn(w.env, 'site3');
+    assert.equal(third.status, 403);
+    const body = await third.json();
+    assert.equal(body.code, 'free_limit');
+    assert.match(body.error, /During the free days Kiln hosts 2 sites/);
+    assert.equal(w.cf.scripts.size, 2);
+    assert.equal((await switchOn(w.env, 'site1')).status, 200, 'publishing a site that is already up again is not a new site');
+    w.env.kiln_cloud.exec("UPDATE sites SET ls_subscription_id = '77', status = 'active' WHERE id = 'site1'");
+    assert.equal((await switchOn(w.env, 'site3')).status, 200);
+  });
+});
+
+test('hosting: a repository that cannot be a website yet is told why, and goes up by itself once it can', { skip: d1Skip }, async () => {
+  const w = world({ 'README.md': '# soon' });
+  await withFetch(w.handler, async () => {
+    const res = await switchOn(w.env);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.equal(body.code, 'no_home');
+    assert.match(body.error, /no home page \(a file named index\.html\)/);
+    assert.equal(body.hosting.state, 'waiting');
+    assert.equal(w.cf.scripts.size, 0);
+    w.gh.commit({ 'index.html': '<h1>Now there is one</h1>' });
+    await sweep(w.env);
+  });
+  assert.equal(row(w.env).state, 'live');
+  assert.equal(served(w, '/index.html'), '<h1>Now there is one</h1>');
+});
+
+test('hosting: when GitHub says the repository changed, the site is published again', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async (calls) => {
+    await switchOn(w.env);
+    w.gh.commit({ 'about.html': '<!doctype html><h1>About us</h1>' });
+    const n = calls.length;
+    const res = await notice(w);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, published: 1 });
+    assert.equal(calls.slice(n).filter(c => /assets\/upload/.test(c.url)).length, 1, 'only the changed page is sent');
+  });
+  assert.equal(served(w, '/about.html'), '<!doctype html><h1>About us</h1>');
+  assert.equal(row(w.env).commit_sha, w.gh.head());
+
+  // The same notice again (GitHub delivers twice at times) copies nothing.
+  await withFetch(w.handler, async (calls) => {
+    assert.deepEqual(await (await notice(w)).json(), { ok: true, published: 0 });
+    assert.equal(calls.filter(c => c.url.includes('cloudflare')).length, 0);
+  });
+  // On the real service the answer goes back at once and the copying carries on after it.
+  w.gh.commit({ 'index.html': '<!doctype html><h1>Home, again</h1>' });
+  await withFetch(w.handler, async () => {
+    const later = [];
+    const res = await notice(w, { ctx: { waitUntil: (p) => later.push(p) } });
+    assert.equal(res.status, 202);
+    assert.equal(later.length, 1);
+    assert.equal(await later[0], 1);
+  });
+  assert.equal(served(w, '/index.html'), '<!doctype html><h1>Home, again</h1>');
+});
+
+test('hosting: a notice is acted on only when GitHub signed it, and only for the branch the site is made from', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async (calls) => {
+    await switchOn(w.env);
+    w.gh.commit({ 'index.html': '<!doctype html><h1>Changed</h1>' });
+    const n = calls.length;
+    const forged = await notice(w, { secret: 'guess' });
+    assert.equal(forged.status, 401);
+    const unsigned = await worker.fetch(new Request('https://worker.example/gh/webhook', { method: 'POST', headers: { 'X-GitHub-Event': 'push' }, body: '{}' }), w.env);
+    assert.equal(unsigned.status, 401);
+    for (const [why, opts] of Object.entries({
+      'another branch': { ref: 'refs/heads/draft' },
+      'a tag': { ref: 'refs/tags/v1' },
+      'a branch being deleted': { deleted: true },
+      'another kind of event': { event: 'installation' },
+      'a repository Kiln does not host': { repo: 'bob/elsewhere' },
+      'a name that is not a repository': { repo: '../../etc' },
+    })) {
+      const res = await notice(w, opts);
+      assert.equal(res.status, 200, why);
+      const body = await res.json();
+      assert.ok(body.ignored || body.published === 0, why);
+    }
+    assert.equal(calls.slice(n).filter(c => c.url.includes('cloudflare')).length, 0, 'none of these copied anything');
+  });
+  assert.equal(served(w, '/index.html'), pages['index.html']);
+  // A service with no webhook secret has no such route at all.
+  const off = world(pages, { env: { GH_WEBHOOK_SECRET: '' } });
+  await withFetch(off.handler, async () => assert.equal((await notice(off)).status, 404));
+});
+
+test('hosting: the five-minute sweep publishes what a notice never announced, retries what failed, and leaves a site that may not be edited', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    // A change with no notice.
+    w.gh.commit({ 'index.html': '<!doctype html><h1>Quiet change</h1>' });
+    await sweep(w.env);
+    assert.equal(served(w, '/index.html'), '<!doctype html><h1>Quiet change</h1>');
+    // A copy that fails is kept as it was, said so, and tried again later.
+    w.gh.commit({ 'index.html': '<!doctype html><h1>Third</h1>' });
+    w.cf.failOn((method) => method === 'PUT');
+    const res = await notice(w);
+    assert.deepEqual(await res.json(), { ok: true, published: 0 });
+    assert.equal(row(w.env).state, 'failed');
+    assert.equal(served(w, '/index.html'), '<!doctype html><h1>Quiet change</h1>', 'visitors still get the site as it was');
+    const shown = (await standing(w.env)).hosting;
+    assert.equal(shown.serving, true);
+    assert.match(shown.error, /The site is as it was\. Kiln tries again by itself/);
+    w.cf.failOn(null);
+    await sweep(w.env);
+    assert.equal(served(w, '/index.html'), '<!doctype html><h1>Third</h1>', 'the commit the notice named is published at the next sweep');
+    assert.equal(row(w.env).state, 'live');
+    assert.equal(row(w.env).wanted_sha, null);
+    // A site whose free days ran out is not published any more.
+    w.env.kiln_cloud.exec("UPDATE sites SET status = 'canceled' WHERE id = 'site1'");
+    w.gh.commit({ 'index.html': '<!doctype html><h1>After the trial</h1>' });
+    await sweep(w.env);
+    assert.deepEqual(await (await notice(w)).json(), { ok: true, published: 0 });
+    assert.equal(served(w, '/index.html'), '<!doctype html><h1>Third</h1>');
+  });
+});
+
+test('hosting: a change that arrives while a copy is running is not lost', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    w.gh.commit({ 'index.html': '<!doctype html><h1>While busy</h1>' });
+    await w.env.KILN.put('hostlock:site1', '1');
+    assert.deepEqual(await (await notice(w)).json(), { ok: true, published: 0 });
+    assert.equal(row(w.env).wanted_sha, w.gh.head(), 'the commit is remembered');
+    const busy = await switchOn(w.env);
+    assert.equal(busy.status, 409);
+    assert.equal((await busy.json()).code, 'busy');
+    await w.env.KILN.delete('hostlock:site1');
+    await sweep(w.env);
+  });
+  assert.equal(served(w, '/index.html'), '<!doctype html><h1>While busy</h1>');
+  assert.equal(row(w.env).wanted_sha, null);
+});
+
+test('hosting: the site can be edited at its temporary address while it may be edited at all', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => { await switchOn(w.env); });
+  assert.equal((await cloudSiteForOrigin(w.env, URL_1))?.repo, 'ada/club');
+  assert.equal((await cloudSiteForOrigin(w.env, 'https://club.example'))?.repo, 'ada/club', 'its own address works as before');
+  assert.equal(await cloudSiteForOrigin(w.env, 'https://club-other.kiln-sites.workers.dev'), null);
+  w.env.kiln_cloud.exec("UPDATE sites SET status = 'canceled' WHERE id = 'site1'");
+  assert.equal(await cloudSiteForOrigin(w.env, URL_1), null, 'not after the free days ran out');
+});
+
+test('hosting: removing a site takes it down, and a take-down Cloudflare did not answer is finished by the sweep', { skip: d1Skip }, async () => {
+  let w = world();
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    const res = await ask(w.env, 'POST', '/cloud/sites/remove', { id: 'site1' });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(w.cf.scripts.size, 0);
+  assert.equal(row(w.env), null);
+
+  w = world();
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    w.cf.failOn((method) => method === 'DELETE');
+    assert.equal((await ask(w.env, 'POST', '/cloud/sites/remove', { id: 'site1' })).status, 200, 'the site is removed from the account all the same');
+    assert.equal(row(w.env).state, 'removing');
+    assert.equal(w.cf.scripts.size, 1);
+    assert.equal((await (await ask(w.env, 'GET', '/cloud/me')).json()).sites.length, 0);
+    w.cf.failOn(null);
+    await sweep(w.env);
+  });
+  assert.equal(w.cf.scripts.size, 0);
+  assert.equal(row(w.env), null);
+});
+
+test('hosting: on a database the migration has not reached, the dashboard and sign-in work as before', { skip: d1Skip }, async () => {
+  const w = world(pages, { env: { d1: { upTo: 4 } } });
+  await withFetch(w.handler, async () => {
+    const me = await ask(w.env, 'GET', '/cloud/me');
+    assert.equal(me.status, 200);
+    assert.equal((await me.json()).sites[0].hosting, null);
+    assert.equal((await standing(w.env)).hosting, null);
+    assert.equal((await cloudSiteForOrigin(w.env, 'https://club.example'))?.repo, 'ada/club');
+    assert.equal(await cloudSiteForOrigin(w.env, URL_1), null);
+    const res = await switchOn(w.env);
+    assert.equal(res.status, 502);
+    assert.match((await res.json()).error, /could not put the new files up/);
+    await sweep(w.env);
+    assert.equal((await notice(w)).status, 200);
+  });
+});

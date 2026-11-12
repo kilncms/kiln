@@ -25,6 +25,8 @@ const items = [
   ['worker/runbook.js', 'worker/runbook.js'],
   ['worker/sanitize-guard.js', 'worker/sanitize-guard.js'], // imported by worker/index.js — wizard deploy fails without it
   ['worker/mail.js', 'worker/mail.js'],                     // imported by worker/cloud.js
+  ['worker/hosting.js', 'worker/hosting.js'],               // ditto — copying a hosted site's files to Cloudflare
+  ['worker/hosted.js', 'worker/hosted.js'],                 // ditto — the record of hosted sites, the push webhook, the sweep
   ['worker/prepare.js', 'worker/prepare.js'],               // ditto — adding Kiln to a repository from the dashboard
   ['worker/firstpass.js', 'worker/firstpass.js'],           // ditto — the first pass at what can be edited (uses src/autotag.js)
   ['worker/sitecheck.js', 'worker/sitecheck.js'],           // ditto — the "Check this site" checklist

@@ -477,14 +477,14 @@ async function doctor(args) {
 
 /** The worker's code as the self-host wizard lays it out in kiln-worker/. The
  *  worker is several modules: worker/index.js imports ./cloud.js (which imports
- *  ./runbook.js, ./mail.js, ./prepare.js, ./firstpass.js which uses ../src/autotag.js, ./update.js, ./sitecheck.js), ./sanitize-guard.js, ./section-scope.js, ./source.js, ../src/engine.js,
+ *  ./runbook.js, ./mail.js, ./prepare.js, ./firstpass.js which uses ../src/autotag.js, ./update.js, ./sitecheck.js, ./hosting.js, ./hosted.js), ./sanitize-guard.js, ./section-scope.js, ./source.js, ../src/engine.js,
  *  ../src/file-policy.js and ../src/adapters/. The folder mirrors this
  *  repository's layout so every relative import still resolves. One list, for
  *  the wizard that first writes them and for `update --worker` that replaces
  *  them (test/cli-update-worker.test.js follows the imports and fails if a
  *  file the worker needs is missing from it). */
 const WORKER_FILES = [
-  ...['index.js', 'cloud.js', 'firstpass.js', 'mail.js', 'prepare.js', 'runbook.js', 'sanitize-guard.js', 'section-scope.js', 'sitecheck.js', 'source.js', 'update.js'].map(f => ['worker', f]),
+  ...['index.js', 'cloud.js', 'firstpass.js', 'hosted.js', 'hosting.js', 'mail.js', 'prepare.js', 'runbook.js', 'sanitize-guard.js', 'section-scope.js', 'sitecheck.js', 'source.js', 'update.js'].map(f => ['worker', f]),
   ['src', 'autotag.js'],
   ['src', 'engine.js'],
   ['src', 'file-policy.js'],

@@ -14,6 +14,8 @@
  *   GET  /cloud/sites/update     → which Kiln editor the site's repository holds, and what an update would replace
  *   POST /cloud/sites/update     → replace the editor's files with the released ones (update.js), in one commit
  *   GET  /cloud/sites/check      → a checklist of how the site is set up (sitecheck.js); changes nothing
+ *   GET  /cloud/sites/hosting    → where a hosted site stands (hosted.js)
+ *   POST /cloud/sites/hosting    → put the site on Kiln's hosting, or publish it again (hosting.js)
  *   GET  /cloud/portal?site=     → Lemon Squeezy customer-portal link
  *   POST /cloud/webhook/ls       → Lemon Squeezy webhook (signed) → set site status
  *   GET  /admin/cloud/overview   → (owner only) accounts, sites (with the editor build each runs), MRR
@@ -31,6 +33,8 @@ import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, S
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine } from './sitecheck.js';
+import { hostingOn, hostingSentence } from './hosting.js';
+import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -395,6 +399,12 @@ export async function cloudOriginStanding(env, origin) {
 /** The site row for an origin that may be edited right now, or null. */
 export async function cloudSiteForOrigin(env, origin, now = Date.now()) {
   if (!env.kiln_cloud || !origin) return null;
+  const named = await siteNamedByOrigin(env, origin, now);
+  // A hosted site is also edited at its temporary address, before (and after)
+  // its own domain points at Kiln.
+  return named || siteForHostingAddress(env, origin, (s) => siteHasAccess(s, now));
+}
+async function siteNamedByOrigin(env, origin, now) {
   return withAccessUntil(
     () => env.kiln_cloud.prepare(`SELECT repo, status, access_until FROM sites WHERE origin = ? AND ${ACCESS_SQL} LIMIT 1`).bind(origin, now).first(),
     () => env.kiln_cloud.prepare("SELECT repo, status FROM sites WHERE origin = ? AND status IN ('active','trialing') LIMIT 1").bind(origin).first(),
@@ -408,6 +418,7 @@ export async function cloudSiteForOrigin(env, origin, now = Date.now()) {
 // allowlist (a canceled site with no access_until has no access). Real LS trials carry an
 // ls_subscription_id and are untouched — their lifecycle is driven entirely by webhooks.
 const TRIAL_GRACE_DAYS = 7;
+const FREE_HOSTED_SITES = 2;    // hosted sites an account may have before it has paid for any
 const MAILS_PER_RUN = 25;   // a run writes to this many people at most; the rest wait five minutes
 
 /**
@@ -625,9 +636,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // repository (update.js). Either is null when it is not known.
     const editors = await editorStanding(env, rows.map(r => r.repo), env.KILN_RELEASE_BASE).catch(() => ({ latest: null, builds: {} }));
     for (const r of rows) r.editor_build = editors.builds[r.repo] ?? null;
+    // Where each hosted site stands (hosted.js), and whether this service hosts sites at all.
+    const hosted = hostingOn(env) ? await hostingForAccount(env, sess.account_id) : {};
+    for (const r of rows) r.hosting = publicHosting(hosted[r.id], { repo: r.repo });
     // `prepare`, `firstpass`: this service can add Kiln to a repository itself, and mark a first pass of what can be edited.
     const can = typeof tools.installationToken === 'function';
-    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest });
+    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env) });
   }
 
   // The address notices about the account's own sites go to (mail.js). The
@@ -791,6 +805,39 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     }
   }
 
+  // Hosting (the Kiln Cloud + hosting plan): the site's files are copied from
+  // its repository to Kiln's Cloudflare and served there. GET says where a
+  // site stands; POST puts it up for the first time, or publishes it again.
+  if (path === '/cloud/sites/hosting' && (request.method === 'GET' || request.method === 'POST')) {
+    const write = request.method === 'POST';
+    const asked = await ownedSite(request, env, url, sess, tools, write ? {} : { needToken: false, needAccess: false });
+    if (asked.response) return asked.response;
+    const { site, token } = asked;
+    const available = hostingOn(env);
+    const row = available ? await hostingRow(env, site.id) : null;
+    if (!write) return json({ ok: true, available, on_plan: site.plan === 'managed', hosting: publicHosting(row, { repo: site.repo }) });
+    if (!available) return json({ error: hostingSentence('not_set_up'), code: 'not_set_up' }, 503);
+    if (site.plan !== 'managed') {
+      return json({ error: 'Hosting is part of the Kiln Cloud + hosting plan. This site is on Kiln Cloud, where it stays on your own host.', code: 'not_on_plan' }, 403);
+    }
+    // Until an account has paid for a site, it may have this many hosted ones.
+    if (!row) {
+      const unpaid = await env.kiln_cloud.prepare(
+        "SELECT COUNT(*) n FROM hosting h JOIN sites s ON s.id = h.site_id WHERE s.account_id = ? AND s.ls_subscription_id IS NULL AND h.state != 'removing'").bind(sess.account_id).first().catch(() => ({ n: 0 }));
+      const paid = await env.kiln_cloud.prepare('SELECT COUNT(*) n FROM sites WHERE account_id = ? AND ls_subscription_id IS NOT NULL').bind(sess.account_id).first().catch(() => ({ n: 0 }));
+      if (!Number(paid?.n) && Number(unpaid?.n) >= FREE_HOSTED_SITES) {
+        return json({ error: `During the free days Kiln hosts ${FREE_HOSTED_SITES === 1 ? 'one site' : `${FREE_HOSTED_SITES} sites`} for an account. Subscribe for one of your sites, then put this one up.`, code: 'free_limit' }, 403);
+      }
+    }
+    const out = await publishSite(env, { site, token });
+    if (out.state === 'busy') return json({ error: 'Kiln is already putting this site up. Give it a minute, then reload this page.', code: 'busy' }, 409);
+    if (out.state === 'failed') return json({ error: out.error || hostingSentence(out.reason), code: out.reason || 'cloudflare', hosting: out }, 502);
+    if (out.state === 'live' && !row) {
+      await notifyOwner(env, `Kiln hosts ${site.repo}`, [`By: ${sess.login}`, `Address: ${out.url}`, `Files: ${out.files}`]);
+    }
+    return json({ ok: out.state === 'live', hosting: out, ...(out.state !== 'live' ? { error: out.error, code: out.reason } : {}) });
+  }
+
   if (path === '/cloud/sites/remove' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const { id } = await request.json().catch(() => ({}));
@@ -800,6 +847,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // is cancelled first, and the site stays if that cannot be confirmed.
     const cancel = await lsCancel(env, site.ls_subscription_id);
     if (!cancel.ok) return json({ error: NOT_CANCELLED, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
+    await forgetHosting(env, site.id);   // a hosted site comes down with it
     await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).run();
     if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
     return json({ ok: true, subscription: cancel.state, ...(cancel.ends_at ? { ends_at: cancel.ends_at } : {}) });
@@ -1040,6 +1088,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       if (!cancel.ok) {
         return json({ error: `subscription ${site.ls_subscription_id} could not be cancelled (${cancel.state}); cancel it in Lemon Squeezy, then remove with force`, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
       }
+      await forgetHosting(env, site.id);
       await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ?').bind(site.id).run();
       return json({ ok: true, subscription: cancel.state });
     }

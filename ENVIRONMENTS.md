@@ -489,6 +489,9 @@ and are never in a file. A self-hosted worker needs only the rows marked
 | `CUSTOMER_MAIL_FROM` | variable | the From address on the emails to a customer (site added, free trial ends in two days, free trial ended: `worker/mail.js`). Unset, no customer is written to | an address of a domain that is set up for sending in the same Cloudflare account (dashboard → Email Service → Email Sending → Onboard Domain) | production only, with the `NOTIFY` binding |
 | `CUSTOMER_MAIL_REPLY_TO` | variable | where a customer's reply goes | optional; the default is the From address | with `CUSTOMER_MAIL_FROM` |
 | `KILN_RELEASE_BASE` | variable | where the service fetches the editor's files from when it adds Kiln to a repository from the dashboard (`worker/prepare.js`) or updates the editor there (`worker/update.js`), and where it reads which editor is released (`dist/VERSION`) | optional; the default is the `release` branch of `kilncms/kiln` on raw.githubusercontent.com. A fork that runs its own Kiln Cloud names its own | staging, production |
+| `HOSTING_ACCOUNT_ID` | variable | the Cloudflare account that holds the sites Kiln hosts (the Kiln Cloud + hosting plan, `worker/hosting.js`). It holds nothing else | the account's id | staging, production |
+| `HOSTING_SUBDOMAIN` | variable | that account's workers.dev name: a hosted site's temporary address is `<site>.<this>.workers.dev` | Cloudflare dashboard → Workers & Pages, in the hosting account | with the account id |
+| `HOSTING_PREFIX` | variable | put before the name of every site this environment hosts, so staging's sites are told apart from real ones | `stg-` on staging; unset on production | staging |
 | `KILN_BUILD` | variable | the commit the worker was deployed from, shown by `/healthz` | `scripts/release.mjs` passes it at deploy; never set by hand | staging, production |
 | `GOOGLE_CLIENT_ID` | secret | Google sign-in for invited editors and members | Google Cloud console → Credentials → OAuth client (web). Redirect URI: `<worker>/google/callback` | production; optional for self-host and staging |
 | `GOOGLE_CLIENT_SECRET` | secret | the same client's secret | same place | with the id |
@@ -498,6 +501,8 @@ and are never in a file. A self-hosted worker needs only the rows marked
 | `LS_VARIANT_CLOUD` | secret | the variant id of the Kiln Cloud plan | Lemon Squeezy → the product → variant | with the API key |
 | `LS_VARIANT_MANAGED` | secret | the variant id of the managed plan | same | with the API key |
 | `LS_WEBHOOK_SECRET` | secret | verifies that a webhook came from Lemon Squeezy | you choose it when creating the webhook | with the API key |
+| `HOSTING_API_TOKEN` | secret | lets the worker put sites up in the hosting account. Without it nothing is hosted and the dashboard does not offer it | a token of the hosting account alone (Workers Scripts: Edit). On the Mini: `~/.keys/kiln-hosting-cf.token` | staging; production once hosting is released |
+| `GH_WEBHOOK_SECRET` | secret | verifies that a notice at `/gh/webhook` came from GitHub. Without it that route answers 404 | you choose it, and enter the same value in the GitHub App's settings (Webhook secret) | with the hosting token |
 | `NOTIFY_TO` | secret | where operator notes go (new signup, billing change, trials expiring unpaid) | a VERIFIED Email Routing destination address on the account | production only, beside the `NOTIFY` send_email binding in wrangler.toml |
 
 Without the `LS_*` secrets the worker still runs: sites register as trialing
@@ -509,6 +514,8 @@ the value of `LS_WEBHOOK_SECRET`. Events: `subscription_created`,
 `subscription_updated`, `subscription_cancelled`, `subscription_resumed`,
 `subscription_expired`, `subscription_paused`, `subscription_unpaused`. The
 worker ignores everything else (order and payment events).
+
+**The GitHub App's webhook (hosted sites).** In the App's settings: Webhook → Active, URL `<worker>/gh/webhook`, the secret in `GH_WEBHOOK_SECRET`; Permissions & events → Subscribe to events → Push. A push to a hosted site's default branch then publishes it within seconds. Without the webhook the five-minute job still notices the change.
 
 **Addresses to register with the sign-in providers.** GitHub App callback URLs:
 `<worker>/auth/callback` (site owners) and `<worker>/cloud/callback` (the

@@ -83,7 +83,8 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.5.0';
 
-import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken } from './cloud.js';
+import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess } from './cloud.js';
+import { handleGithubWebhook, sweepHosting } from './hosted.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
 import { keyInScope, hasSectionLimit, checkSectionWrite, strictUtf8FromB64, scheduledKeyRefusal, SECTION_REFUSALS } from './section-scope.js';
@@ -114,9 +115,12 @@ export default {
     // After the schedules: that pass is what files scheduled publishes under a
     // repository's new name, and a move can only finish once it has.
     await cronJob('moves', () => continueMoves(env));
+    // Hosted sites: finish a copy that could not be made at once, and notice a
+    // repository that moved without a notice from GitHub (hosted.js).
+    await cronJob('hosting', () => sweepHosting(env, { installationToken, hasAccess: siteHasAccess }));
   },
-  async fetch(request, env) {
-    const response = await routeRequest(request, env);
+  async fetch(request, env, ctx) {
+    const response = await routeRequest(request, env, ctx);
     // An owner session that GitHub stopped accepting while this request was
     // being answered has been ended (endOwnerSession): whatever the route made
     // of that, the editor is told the sign-in has ended, so it can say so.
@@ -125,11 +129,16 @@ export default {
   },
 };
 
-async function routeRequest(request, env) {
+async function routeRequest(request, env, ctx) {
   const url = new URL(request.url);
   const path = url.pathname;
   try {
     if (request.method === 'OPTIONS') return await cors(env, request, new Response(null, { status: 204 }));
+    // GitHub tells the App when a repository changes: a hosted site is then
+    // published again (hosted.js). Signed by GitHub, so it needs no session.
+    if (path === '/gh/webhook' && request.method === 'POST') {
+      return await handleGithubWebhook(request, env, ctx, { installationToken, hasAccess: siteHasAccess });
+    }
     if (path.startsWith('/cloud/') || path.startsWith('/admin/cloud/')) {
       // What the dashboard does to a site's repository reads every page from
       // GitHub (and the checklist visits the site itself), so one address cannot

@@ -8,6 +8,20 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Kiln can host a site (the Kiln Cloud + hosting plan), by itself.** The
+  service copies a repository's files to a Cloudflare account that holds only
+  customers' sites, and the site answers at a temporary address at once. The
+  first copy sends every file; a later one sends only what changed, so a
+  published edit is live in seconds. It publishes again when GitHub says the
+  repository changed (the App's push webhook, signed, default branch only),
+  and a five-minute job publishes what no notice announced and retries a copy
+  that failed. A copy that fails part-way leaves visitors with the site as it
+  was. The site's own `_headers`, `_redirects` and `404.html` are honoured;
+  hidden files, `node_modules` and `functions/` are not published. The editor
+  works at the temporary address. Removing a site takes it down. Hosting is
+  off until the service has a token for the hosting account
+  (`worker/hosting.js`, `worker/hosted.js`, `GET` and `POST
+  /cloud/sites/hosting`, `POST /gh/webhook`, migration `0005`).
 - **Kiln Cloud can make a first pass at what can be edited, from the
   dashboard.** After Kiln is added, **Mark what can be edited** shows how much
   it would mark (pieces of text, pictures, lists of blocks, the menu, and on

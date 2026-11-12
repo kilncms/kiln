@@ -89,6 +89,13 @@ enabled = true
 ALLOWED_ORIGINS = "https://staging.kilncms.com,https://kiln-demo.pages.dev,http://localhost:8788,http://localhost:8787,http://127.0.0.1:8788"
 CLOUD_DASHBOARD = "https://staging-app.kilncms.com"
 CLOUD_ADMIN = "erikkwilder"
+# Hosting (the Kiln Cloud + hosting plan): the Cloudflare account that holds
+# customers' sites, and nothing else. Sites put up from staging carry "stg-"
+# so they are told apart from real ones. The token is the secret
+# HOSTING_API_TOKEN; without it nothing is hosted.
+HOSTING_ACCOUNT_ID = "8713e668d8f277a1d9097a186d92e575"
+HOSTING_SUBDOMAIN = "kiln-sites"
+HOSTING_PREFIX = "stg-"
 
 [[env.staging.kv_namespaces]]
 binding = "KILN"
@@ -141,6 +148,11 @@ CLOUD_ADMIN_ID = "3237366"     # that account's numeric GitHub id (`gh api user 
 # CUSTOMER_MAIL_FROM no customer is ever written to.
 CUSTOMER_MAIL_FROM = "hello@kilncms.com"
 CUSTOMER_MAIL_REPLY_TO = "info@kilncms.com"
+# Hosting: the account that holds customers' sites (see staging above). It is
+# switched on by the secret HOSTING_API_TOKEN, which production does not have
+# until hosting is released.
+HOSTING_ACCOUNT_ID = "8713e668d8f277a1d9097a186d92e575"
+HOSTING_SUBDOMAIN = "kiln-sites"
 
 [[env.production.kv_namespaces]]
 binding = "KILN"

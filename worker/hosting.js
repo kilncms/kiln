@@ -60,7 +60,7 @@ export function hostingOn(env) {
 export function siteName(env, { repo, id }) {
   const words = String(repo || '').split('/').pop().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'site';
   const tail = String(id || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || '0';
-  const prefix = String(env?.HOSTING_PREFIX || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 8);
+  const prefix = String((env && env.HOSTING_PREFIX) || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 8);
   return `${prefix}${words}-${tail}`.replace(/^-+/, '').slice(0, 63);
 }
 
