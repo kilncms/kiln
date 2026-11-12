@@ -477,14 +477,14 @@ async function doctor(args) {
 
 /** The worker's code as the self-host wizard lays it out in kiln-worker/. The
  *  worker is several modules: worker/index.js imports ./cloud.js (which imports
- *  ./runbook.js, ./mail.js), ./sanitize-guard.js, ./section-scope.js, ./source.js, ../src/engine.js,
+ *  ./runbook.js, ./mail.js, ./prepare.js), ./sanitize-guard.js, ./section-scope.js, ./source.js, ../src/engine.js,
  *  ../src/file-policy.js and ../src/adapters/. The folder mirrors this
  *  repository's layout so every relative import still resolves. One list, for
  *  the wizard that first writes them and for `update --worker` that replaces
  *  them (test/cli-update-worker.test.js follows the imports and fails if a
  *  file the worker needs is missing from it). */
 const WORKER_FILES = [
-  ...['index.js', 'cloud.js', 'mail.js', 'runbook.js', 'sanitize-guard.js', 'section-scope.js', 'source.js'].map(f => ['worker', f]),
+  ...['index.js', 'cloud.js', 'mail.js', 'prepare.js', 'runbook.js', 'sanitize-guard.js', 'section-scope.js', 'source.js'].map(f => ['worker', f]),
   ['src', 'engine.js'],
   ['src', 'file-policy.js'],
   ...['astro.js', 'detect.js', 'frontmatter.js', 'index.js', 'json-splice.js', 'markdown.js', 'pictures.js', 'pointer.js', 'toml-splice.js', 'yaml-splice.js'].map(f => ['src', 'adapters', f]),

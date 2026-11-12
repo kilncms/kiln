@@ -6,6 +6,8 @@
  *   GET  /cloud/callback         → upsert account, set session cookie, → dashboard
  *   GET  /cloud/me               → { account, sites }
  *   POST /cloud/sites            → register a site (verify repo install) → checkout URL
+ *   GET  /cloud/sites/prepare    → what adding Kiln to the site's repository would change
+ *   POST /cloud/sites/prepare    → add Kiln to the repository (prepare.js), in one commit
  *   POST /cloud/sites/remove     → cancel its subscription, then delete a site
  *   GET  /cloud/portal?site=     → Lemon Squeezy customer-portal link
  *   POST /cloud/webhook/ls       → Lemon Squeezy webhook (signed) → set site status
@@ -20,10 +22,13 @@
 
 import { RUNBOOK_HTML } from './runbook.js';
 import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
+import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND } from './prepare.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
 const UA = 'kiln-cloud';
+const INSTALL_URL = 'https://github.com/apps/kiln-cms/installations/new';
+const NOT_YOUR_REPO = 'The GitHub account you signed in with cannot change that repository. Check the spelling, or sign in with the account that owns it.';
 
 const json = (obj, status = 200, headers = {}) =>
   new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json', ...headers } });
@@ -465,9 +470,24 @@ export function isCloudAdmin(sess, env) {
   return !!env.CLOUD_ADMIN && sess.login === env.CLOUD_ADMIN;
 }
 
+// When Kiln was added to each site's repository from the dashboard (or found
+// already there). The columns arrive with migration 0003; a database it has
+// not reached answers as if nothing were recorded, and nothing else changes.
+async function preparedTimes(env, accountId) {
+  try {
+    const rows = await env.kiln_cloud.prepare('SELECT id, prepared_at FROM sites WHERE account_id = ?').bind(accountId).all();
+    return Object.fromEntries((rows?.results || []).map(r => [r.id, r.prepared_at || null]));
+  } catch { return {}; }
+}
+async function markPrepared(env, siteId, commit) {
+  try {
+    await env.kiln_cloud.prepare('UPDATE sites SET prepared_at = COALESCE(prepared_at, ?), prepared_commit = COALESCE(?, prepared_commit) WHERE id = ?').bind(Date.now(), commit || null, siteId).run();
+  } catch { /* the repository is prepared all the same; the dashboard offers the button again and is told so */ }
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
-export async function handleCloud(request, env, url, path) {
+export async function handleCloud(request, env, url, path, tools = {}) {
   const dash = env.CLOUD_DASHBOARD || 'https://app.kilncms.com';
 
   // GitHub OAuth — identity only.
@@ -533,13 +553,16 @@ export async function handleCloud(request, env, url, path) {
     // (the same rule expireStaleTrials applies); `subscribed` says a Lemon
     // Squeezy subscription exists, without handing its id to the browser.
     const now = Date.now();
+    const prepared = await preparedTimes(env, sess.account_id);
     const rows = (sites.results || []).map(({ ls_subscription_id: sub, ...r }) => ({
       ...r,
+      prepared_at: prepared[r.id] ?? null,
       editable: siteHasAccess(r, now),
       subscribed: !!sub,
       trial_ends: r.status === 'trialing' && !sub && Number(r.created_at) ? Number(r.created_at) + TRIAL_GRACE_DAYS * 86400 * 1000 : null,
     }));
-    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env) });
+    // `prepare`: this service can add Kiln to a repository itself (/cloud/sites/prepare).
+    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: typeof tools.installationToken === 'function' });
   }
 
   // The address notices about the account's own sites go to (mail.js). The
@@ -569,10 +592,10 @@ export async function handleCloud(request, env, url, path) {
     const owner = repo.split('/')[0].toLowerCase();
     const ownsIt = owner === String(sess.login || '').toLowerCase() || await userCanPush(sess.gh, repo);
     if (!ownsIt) {
-      return json({ error: 'The GitHub account you signed in with cannot change that repository. Check the spelling, or sign in with the account that owns it.' }, 403);
+      return json({ error: NOT_YOUR_REPO }, 403);
     }
     if (!(await repoInstalled(env, repo))) {
-      return json({ error: 'The Kiln app is not installed on that repository yet.', install_url: 'https://github.com/apps/kiln-cms/installations/new' }, 409);
+      return json({ error: 'The Kiln app is not installed on that repository yet.', install_url: INSTALL_URL }, 409);
     }
     const dupe = await env.kiln_cloud.prepare('SELECT id FROM sites WHERE origin = ?').bind(o).first();
     if (dupe) return json({ error: 'That site address is already on Kiln Cloud. If it is yours and you cannot see it here, write to info@kilncms.com.' }, 409);
@@ -600,6 +623,77 @@ export async function handleCloud(request, env, url, path) {
       checkout ? 'A checkout link was issued.' : 'No checkout: billing is not configured.',
     ]);
     return json({ ok: true, site, checkout });   // checkout null until LS is configured
+  }
+
+  // Add Kiln to the site's repository (prepare.js), so nobody needs a terminal.
+  // GET says what would change and writes nothing; POST makes the change, as
+  // one commit in the account holder's name.
+  if (path === '/cloud/sites/prepare' && (request.method === 'GET' || request.method === 'POST')) {
+    if (!sess) return json({ error: 'not signed in' }, 401);
+    const write = request.method === 'POST';
+    const id = write ? (await request.json().catch(() => ({}))).id : url.searchParams.get('site');
+    const site = await withAccessUntil(
+      () => env.kiln_cloud.prepare('SELECT id, repo, origin, status, access_until FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
+      () => env.kiln_cloud.prepare('SELECT id, repo, origin, status FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
+    );
+    if (!site) return json({ error: 'That site is not on this account.', code: 'no_such_site' }, 404);
+    const refused = (code, status, extra = {}) => json({ error: prepareSentence(code, { repo: site.repo, ...extra }), code, ...extra }, status);
+    if (!siteHasAccess(site)) {
+      return json({ error: 'Editing is switched off for this site, so Kiln cannot change its repository. Subscribe on the site\'s row, then try again.', code: 'plan_ended' }, 403);
+    }
+    // The same question as when the site was added, asked again: who may
+    // change a repository can have changed since.
+    const owner = String(site.repo).split('/')[0].toLowerCase();
+    if (!(owner === String(sess.login || '').toLowerCase() || await userCanPush(sess.gh, site.repo))) return json({ error: NOT_YOUR_REPO, code: 'not_yours' }, 403);
+    const token = typeof tools.installationToken === 'function' ? await tools.installationToken(env, site.repo) : null;
+    if (!token) return refused('no_access', 409, { install_url: INSTALL_URL });
+
+    // One at a time for a site: two tabs pressing the button make one commit.
+    const lock = `preplock:${site.id}`;
+    if (write) {
+      if (await env.KILN.get(lock)) return refused('busy', 409);
+      await env.KILN.put(lock, '1', { expirationTtl: 120 });
+    }
+    try {
+      const plan = await planPrepare({ token, repo: site.repo, worker: url.origin });
+      const shown = publicPlan(plan, { repo: site.repo });
+      if (plan.state === 'no_access') return refused('no_access', 409, { install_url: INSTALL_URL });
+      if (plan.state === 'github') return refused('github', 502);
+      if (plan.state === 'prepared') {
+        await markPrepared(env, site.id, null);
+        return json({ ok: true, ...shown });
+      }
+      if (plan.state !== 'ready') {
+        // A site this cannot take: say why, and what does take it.
+        const body = { ok: false, ...shown, error: prepareSentence(plan.state, { repo: site.repo, generator: plan.generator }), code: plan.state,
+          ...(plan.state === 'built' || plan.state === 'too_big' ? { command: SETUP_COMMAND } : {}) };
+        return json(body, write ? 409 : 200);
+      }
+      if (!write) return json({ ok: true, ...shown });
+
+      const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
+      let done;
+      try {
+        done = await applyPrepare({
+          token, repo: site.repo, worker: url.origin, plan,
+          author: { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` },
+          ...(env.KILN_RELEASE_BASE ? { releaseBase: env.KILN_RELEASE_BASE } : {}),
+        });
+      } catch (e) {
+        const code = e instanceof PrepareError ? e.code : 'github';
+        console.warn(JSON.stringify({ evt: 'prepare_failed', repo: site.repo, code, detail: e instanceof PrepareError ? e.detail : String(e?.message || e).slice(0, 200) }));
+        return refused(code, code === 'moved' || code === 'protected' ? 409 : 502, code === 'protected' ? { branch: plan.branch, command: SETUP_COMMAND } : {});
+      }
+      await markPrepared(env, site.id, done.sha);
+      await notifyOwner(env, `Kiln added to ${site.repo}`, [
+        `By: ${sess.login}, from the dashboard`,
+        `Pages: ${done.pages}. Files: ${done.files.join(', ') || 'none'}`,
+        done.url,
+      ]);
+      return json({ ok: true, ...shown, state: 'done', commit: { sha: done.sha, url: done.url } });
+    } finally {
+      if (write) { try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ } }
+    }
   }
 
   if (path === '/cloud/sites/remove' && request.method === 'POST') {

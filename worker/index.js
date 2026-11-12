@@ -131,7 +131,8 @@ async function routeRequest(request, env) {
   try {
     if (request.method === 'OPTIONS') return await cors(env, request, new Response(null, { status: 204 }));
     if (path.startsWith('/cloud/') || path.startsWith('/admin/cloud/')) {
-      const r = await handleCloud(request, env, url, path);
+      // The dashboard's routes get the App's token for a repository from here (cloud.js cannot import this file).
+      const r = await handleCloud(request, env, url, path, { installationToken });
       if (r) return await cors(env, request, r);
     }
 

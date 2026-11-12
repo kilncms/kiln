@@ -6,6 +6,21 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Kiln Cloud can add Kiln to a site's repository from the dashboard.** A site
+  whose pages are plain files no longer needs a terminal: on the site's row,
+  **Add Kiln to this site** first shows what would change (which pages get the
+  two script tags, which files are added), and on a yes makes that change as
+  one commit in the owner's name. Only what is missing is added: a file that
+  is already in the repository is never replaced, a page that already loads
+  the editor is not touched, and pressing it again after adding a page adds
+  the two lines to that page alone. A site built by a generator (Astro and
+  the others) is told to use the setup tool, as before. A repository that
+  changed meanwhile, or whose branch takes no direct change, is left as it
+  was, with the reason (`worker/prepare.js`, `GET` and `POST
+  /cloud/sites/prepare`, migration `0003`).
+
 ### Changed
 
 - **The free trial is seven days in all.** The seven days are Kiln's own,
