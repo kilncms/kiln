@@ -46,6 +46,7 @@ import { publishLabel, editCommitMessage, goingLiveLabel, initGuide, guideSync, 
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
+import { DRAFT_BRANCH, draftSaveMessage, draftDeleteMessage, draftPublishedMessage, blobSha, draftOfPage, draftWords, DRAFT_DELETE_REFUSED } from './draft-state.js';
 import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
@@ -7640,7 +7641,7 @@ function findReplacePanel() {
 
 // ─── Drafts (kiln-drafts branch) ─────────────────────────────────────────────
 
-const DRAFT_BRANCH = 'kiln-drafts';
+// Which file on the drafts branch is a draft, and what is said about it: draft-state.js.
 
 async function ensureDraftBranch() {
   try {
@@ -7670,9 +7671,12 @@ async function saveDraft() {
     const drafted = applyEdits(state.page.text, edits).html;
     let sha;
     try { sha = (await getFile(state.gh, cfg.repo, state.page.path, DRAFT_BRANCH)).sha; } catch { /* new draft */ }
+    // The save says which version of the page the draft was made from, so the
+    // next visit can tell a draft that is newer than the page from one the
+    // page has since overtaken (draft-state.js).
     await putFile(state.gh, cfg.repo, state.page.path, {
       text: drafted, sha, branch: DRAFT_BRANCH,
-      message: `Draft: ${state.page.path} (via Kiln)`,
+      message: draftSaveMessage(state.page.path, await blobSha(state.page.text)),
     });
     state.pending.clear();
     clearSavedPending();
@@ -7690,11 +7694,20 @@ async function saveDraft() {
   }
 }
 
-/** "There's a saved draft of this page": the same question on a real site and in the demo. */
-function draftDialog(canDelete) {
+/**
+ * "There's a saved draft of this page": the same question on a real site and
+ * in the demo. `words` (draftWords): who saved it and when, and, when the page
+ * has been published since, that the draft is the older of the two.
+ */
+function draftDialog(canDelete, words = null) {
+  const m = draftDialogBox(canDelete);
+  if (words) { m.querySelector('h3').textContent = words.title; m.querySelector('#kiln-dr-about').textContent = words.body; }
+  return m;
+}
+function draftDialogBox(canDelete) {
   return modal(`
     <h3>There's a saved draft of this page</h3>
-    <p class="kiln-dim">It isn't live. Resume editing it, publish it as-is, or leave it for later.</p>
+    <p class="kiln-dim" id="kiln-dr-about">It isn't live. Resume editing it, publish it as-is, or leave it for later.</p>
     <div class="kiln-modal-actions kiln-acts-grid">
       <button class="kiln-btn-ghost" data-close>Later</button>
       ${canDelete ? '<button class="kiln-btn-ghost" id="kiln-dr-del">Delete draft</button>' : ''}
@@ -7760,8 +7773,20 @@ async function retireResumedDraft() {
   try { now = await getFile(state.gh, cfg.repo, state.page.path, DRAFT_BRANCH); } catch { forget(); return; }
   if (!now || now.sha !== sha) { forget(); return; }
   try {
-    await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
-      { message: `Draft published: ${state.page.path} (via Kiln)`, sha, branch: DRAFT_BRANCH });
+    if (mode === 'admin') {
+      await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
+        { message: draftPublishedMessage(state.page.path), sha, branch: DRAFT_BRANCH });
+    } else if (now.text !== state.page.text) {
+      // An invited editor's sign-in cannot delete a file. The page as it was
+      // just published is written over the draft, in a commit that says the
+      // draft was published: the last change to the file on the drafts branch
+      // is then no longer a save of a draft, so it is not offered again.
+      // (When the draft and the page are the same text there is nothing to
+      // write. That draft is offered once more after the page next changes,
+      // as the older of the two, and can be deleted there.)
+      await putFile(state.gh, cfg.repo, state.page.path,
+        { text: state.page.text, sha, branch: DRAFT_BRANCH, message: draftPublishedMessage(state.page.path) });
+    }
     forget();
   } catch (err) { console.warn('[kiln] the published draft could not be taken off the drafts branch', err); }
 }
@@ -7771,8 +7796,24 @@ async function checkForDraft() {
   let draft;
   try { draft = await getFile(state.gh, cfg.repo, state.page.path, DRAFT_BRANCH); } catch { return; }
   if (!draft || djb2(draft.text) === djb2(state.page.text)) return;
+  // A file that differs is not yet a draft: the drafts branch began as a copy
+  // of the whole site, and every page published since differs from its copy
+  // there. It is a draft when the last change to it on that branch is a save
+  // of a draft (one request, made only now that the texts differ). When that
+  // cannot be asked, nothing is offered on this visit: old words are never put
+  // in front of anyone as a draft on a guess.
+  let saved;
+  try {
+    saved = await draftOfPage({ gh: state.gh, repo: cfg.repo, path: state.page.path, branch: cfg.branch || 'main', pageText: state.page.text });
+  } catch (err) { console.warn('[kiln] could not ask whether this page has a draft', err); return; }
+  if (!saved) return;
   await restoreAsked;   // one question at a time, and the unpublished edits first
-  const m = draftDialog(mode === 'admin');
+  // Anyone who can save a draft can delete one: the owner by removing the file,
+  // an invited editor (whose sign-in cannot remove a file) by writing the page
+  // as it is over the draft, in a commit that says the draft was deleted.
+  // (Not someone who can only read and comment: that sign-in writes nothing.)
+  const canDelete = hasFeature('draft') && !(mode === 'editor' && state.scope?.mode === 'review');
+  const m = draftDialog(canDelete, draftWords(saved, { canDelete }));
   const status = m.querySelector('#kiln-dr-status');
   // Bring the draft's parts onto the page as staged edits (each checked first),
   // exactly as typing them would. Both buttons start here.
@@ -7821,11 +7862,19 @@ async function checkForDraft() {
     if (!(await askFirst(modal, ownDialogCopy('delete-draft', { changes })))) return;
     status.textContent = 'Deleting…';
     try {
-      await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
-        { message: `Discard draft: ${state.page.path} (via Kiln)`, sha: draft.sha, branch: DRAFT_BRANCH });
+      if (mode === 'admin') {
+        await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
+          { message: draftDeleteMessage(state.page.path), sha: draft.sha, branch: DRAFT_BRANCH });
+      } else {
+        await putFile(state.gh, cfg.repo, state.page.path,
+          { text: state.page.text, sha: draft.sha, branch: DRAFT_BRANCH, message: draftDeleteMessage(state.page.path) });
+      }
       status.textContent = 'Draft deleted.';
       setTimeout(() => m.remove(), 600);
-    } catch (err) { status.textContent = stopped(err, 'deleted') || notDone('The draft was not deleted.', err); }
+    } catch (err) {
+      status.textContent = stopped(err, 'deleted')
+        || (mode !== 'admin' && err.status === 403 ? DRAFT_DELETE_REFUSED : notDone('The draft was not deleted.', err));
+    }
   };
 }
 

@@ -201,8 +201,10 @@ other device.
 
 **Save as draft**, in the Kiln menu, puts your waiting text changes aside without
 publishing them. The next time that page is opened in Kiln it says there is a saved
-draft and offers to resume it, publish it, or leave it for later. **Delete draft**
-asks first, and says how many changes the draft holds. A draft holds text
+draft and offers to resume it, publish it, or leave it for later. It says who saved
+the draft and on which day. If the page has been published since the draft was
+saved, Kiln says that the draft is older than the page before you resume or publish
+it. **Delete draft** asks first, and says how many changes the draft holds. A draft holds text
 changes, so publish new pictures and added sections first. If the page has both a
 draft and unpublished edits, you are asked about the edits first.
 

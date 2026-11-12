@@ -60,6 +60,36 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`state`, `pages`, `page_names`, `templates`, `template_names`, `no_head`,
   and a `sentence` to show as it is), and `state` is `ready` while the line
   is still to add.
+- **A page is said to have a saved draft only when somebody saved one.**
+  Opening a page could bring up "There's a saved draft of this page" for a
+  draft nobody had saved, and the "draft" held the page's OLD words, with
+  "Publish it now" beside them. A tester saw it on three pages in one sitting.
+  Drafts are kept on a branch of their own, which is made, the first time
+  anyone saves a draft, as a copy of the whole site that day. The editor
+  offered a draft whenever a page's file on that branch differed from the
+  page, so every page published since was offered its own old copy. The
+  editor now asks GitHub what last changed the page's file on the drafts
+  branch, and offers a draft only when that was somebody saving a draft of
+  that page. A copy left over from the day the branch was made is never
+  offered, and neither is a draft that was deleted or has been published. It
+  is one more request, and only on a page whose copy differs.
+- **A draft that is older than the page says so.** When one person saves a
+  draft and another then publishes the page, the draft holds older words than
+  the page does. It was offered exactly like a new one. Each saved draft now
+  records which version of the page it was made from, and the question reads
+  "This page has a draft that is older than the page", says who saved it and
+  on which day, and says that resuming it puts the older words back for you
+  to look over before anything goes live. A draft that is newer than the page
+  also says who saved it and when. Drafts saved before this version are still
+  offered: for those the editor asks one thing more, when the page was last
+  published, and compares the two days.
+- **An invited editor can delete a draft.** Only the owner's question had
+  "Delete draft", so an editor with the Drafts tool could save a draft and
+  never be rid of it. Everyone who can save a draft now has the button. The
+  service does not let an editor's sign-in remove a file, so the editor's
+  delete writes the page as it is over the draft, in a change that says the
+  draft was deleted; the draft is not offered again. Someone without the
+  Drafts tool is told who can delete it.
 
 ## [0.6.1] - 2026-11-12
 
