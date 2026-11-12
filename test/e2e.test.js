@@ -95,7 +95,7 @@ test('KLR-22 a full run: every publish goes through the worker as an editor, eve
   const r = await s.go();
   assert.deepEqual(names(r, false), [], s.out());
   assert.equal(r.ok, true);
-  assert.equal(r.checks.length, 40, s.out());
+  assert.equal(r.checks.length, 41, s.out());
   const passed = names(r, true);
   for (const name of [
     'editor publishes a text edit', 'editor puts the page back, byte for byte',
@@ -105,20 +105,24 @@ test('KLR-22 a full run: every publish goes through the worker as an editor, eve
     'refused: deleting a file (a tree entry with no content)', 'refused: moving the branch back to an earlier commit', 'refused: a forced branch update',
     'refused: a new branch at a commit the repository does not have', 'refused: a stylesheet, without the Theme tool', 'refused: a new page, without the New page tool',
     'refused: an editor limited to some parts of a page changing words outside them',
-    'none of the refused requests changed the branch', 'granted editor publishes a new page and a picture in one commit', 'granted editor writes a stylesheet',
+    'none of the refused requests changed the branch', 'granted editor publishes a new page and a picture in one commit',
+    'granted editor makes that whole page editable (the first pass the editor makes: marks added, nothing else, one commit)', 'granted editor writes a stylesheet',
     'refused: a suggest-only editor publishing straight to the site', 'suggest-only editor writes its preview to its own scratch branch',
     'cleanup: the repository is as it was found',
   ]) assert.ok(passed.includes(name), `missing: ${name}`);
   // The publishes were real commits by the editors, made through the proxy with the installation token.
   const byEditors = [...s.gh.commits.values()].filter(c => c.author.email === 'kiln-editor@users.noreply.github.com');
-  assert.equal(byEditors.length, 7, 'edit, restore, uploads, draft, new page, stylesheet, suggestion preview');
+  assert.equal(byEditors.length, 8, 'edit, restore, uploads, draft, new page, the whole page made editable, stylesheet, suggestion preview');
+  // The first pass over the whole page is the granted editor's own commit, and says what it marked.
+  const whole = byEditors.filter(c => /^Mark a first pass of what can be edited on kiln-e2e-\w+\.html: 2 pieces of text \(via Kiln\)$/.test(c.message));
+  assert.deepEqual(whole.map(c => c.author.name), ['Kiln E2E granted (via Kiln)']);
   assert.deepEqual([...new Set(byEditors.map(c => c.author.name))].sort(), ['Kiln E2E default (via Kiln)', 'Kiln E2E granted (via Kiln)', 'Kiln E2E suggest (via Kiln)']);
   const editorWrites = s.gh.calls.filter(c => c.method !== 'GET' && c.auth === 'Bearer installation-token');
   assert.ok(editorWrites.length >= 15);
   // The maintainer's token was used to read, and to put things back: nothing else.
   const ownerWrites = s.gh.calls.filter(c => c.method !== 'GET' && c.auth === 'Bearer owner-token').map(c => `${c.method} ${c.path.replace(/\d{10}-e2e-\w+|e2e-\w+/, 'X')}`);
   assert.deepEqual(ownerWrites, ['DELETE /git/refs/heads/kiln-drafts', 'DELETE /git/refs/tags/kiln/X', 'DELETE /git/refs/heads/kiln/suggest-X', 'PATCH /git/refs/heads/main']);
-  assert.match(s.out(), /40\/40 checks passed/);
+  assert.match(s.out(), /41\/41 checks passed/);
   assert.match(s.out(), /Not covered here, check by hand on staging:/);
 });
 
@@ -334,7 +338,7 @@ test('owner session: with an address to sign in from, the owner reads, publishes
   const s = withOrigin();
   const r = await s.go();
   assert.deepEqual(names(r, false), [], s.out());
-  assert.equal(r.checks.length, 40 + OWNER_STEPS.length, s.out());
+  assert.equal(r.checks.length, 41 + OWNER_STEPS.length, s.out());
   for (const name of OWNER_STEPS) assert.ok(names(r, true).includes(name), `missing: ${name}`);
   // The owner's edit and its restore went through the worker's proxy with the session's (the maintainer's) token.
   const ownerPuts = s.gh.calls.filter(c => c.method === 'PUT' && c.auth === 'Bearer owner-token').map(c => c.path);

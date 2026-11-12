@@ -19,8 +19,10 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   saved at once as one change to that page, in the person's name, by the same
   write Publish makes, and the page reloads when the site has the change. The
   file is read again at the moment of writing, and nothing is written unless
-  the pass adds marks and nothing else. Any part can be made plain again by
-  clicking it in the same mode. With changes waiting for Publish it says to
+  the pass adds marks and nothing else. After the reload the editor waits, a
+  few seconds at most, until the file it reads holds the marks that were
+  saved (GitHub can answer with the file as it was for a moment after a
+  write). Any part can be made plain again by clicking it in the same mode. With changes waiting for Publish it says to
   publish or discard them first. The button is not offered in the demo, on a
   page built from content files, or to an editor limited to parts of a page
   (`src/editor/whole-page.js`).

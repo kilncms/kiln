@@ -64,8 +64,8 @@ import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedL
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
 import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists } from './one-paragraph.js';
 import { askFirst, askWhich, tell, ownDialogCopy } from './own-dialogs.js';
-import { offersWholePage, wholePagePass, wholePageWrite, wholePageCopy, wholePageMessage, servesMarks,
-  WHOLE_PAGE_BUTTON, WHOLE_PAGE_READING, WHOLE_PAGE_SAVING, WHOLE_PAGE_SAVED, WHOLE_PAGE_RELOAD, WHOLE_PAGE_NOT_DONE, WHOLE_PAGE_WHY } from './whole-page.js';
+import { offersWholePage, wholePagePass, wholePageWrite, wholePageCopy, wholePageMessage, servesMarks, wholePageNote, fileIsBehind,
+  WHOLE_PAGE_NOTE, WHOLE_PAGE_BUTTON, WHOLE_PAGE_READING, WHOLE_PAGE_SAVING, WHOLE_PAGE_SAVED, WHOLE_PAGE_RELOAD, WHOLE_PAGE_NOT_DONE, WHOLE_PAGE_WHY } from './whole-page.js';
 import { askStanding, planEndedNotice } from './plan-ended.js';
 import { askDescription, LATER_WORDS } from './describe-picture.js';
 import { coverBottom, isUnder, isSiteBar } from './under-bar.js';
@@ -841,6 +841,7 @@ async function loadPageSource() {
     }
     throw err;
   }
+  await fileAfterWholePage();
   state.fields = indexHtml(state.page.text);
   // Snapshot every field's source value: publish uses this to detect when
   // ANOTHER editor changed the same field while we were editing (see publish()).
@@ -848,6 +849,24 @@ async function loadPageSource() {
   for (const w of state.fields.warnings) console.warn('[kiln]', w);
   noteFileLists();
   noteFileFields();
+}
+
+/**
+ * The page was reloaded by "Make this whole page editable" (whole-page.js
+ * says why this is needed): if the file just read is still the one from
+ * before that write, it is read again, past every store of earlier answers,
+ * until it holds the marks that were saved. A few seconds at the most; after
+ * that the editor starts with what it has, as it would have without this.
+ */
+async function fileAfterWholePage() {
+  let note = null;
+  try { note = sessionStorage.getItem(WHOLE_PAGE_NOTE); sessionStorage.removeItem(WHOLE_PAGE_NOTE); } catch { /* private mode: nothing was left */ }
+  if (!note || !state.page?.path) return;
+  for (let i = 0; i < 5 && fileIsBehind(note, state.page.path, state.page.text); i++) {
+    await new Promise(r => setTimeout(r, 700));
+    try { state.page = { path: state.page.path, ...(await getFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main', true)) }; }
+    catch (err) { console.warn('[kiln] whole page: the file was not read again', err); return; }
+  }
 }
 
 /** Auth headers for worker endpoints, whichever way this session signed in. */
@@ -8025,7 +8044,10 @@ async function wholePage(btn) {
     await loadPageSource().catch(err => console.warn('[kiln] whole page: the file was not read again', err));
     // Not under someone who has begun something else meanwhile: an edit, a box being typed in, a panel.
     const busy = () => anythingUnpublished() || !!state.active || !!document.getElementById('kiln-modal');
-    if (await siteHasMarks(result.text) && !busy()) location.reload();
+    if (await siteHasMarks(result.text) && !busy()) {
+      try { sessionStorage.setItem(WHOLE_PAGE_NOTE, wholePageNote(path, result.text)); } catch { /* private mode: the reload goes ahead without it */ }
+      location.reload();
+    }
     else setStatus(WHOLE_PAGE_RELOAD, 'saved', { hold: 30000 });
   } catch (err) {
     console.error('[kiln] whole page', err);
@@ -10168,7 +10190,9 @@ body:has(#kiln-topbar){padding-top:56px!important}
 .kiln-img-handle{width:32px;height:32px;border-width:3px}
 .kiln-img-handle::after{inset:8px}
 /* Helper bars wrap instead of overflowing a 390px screen. */
-#kiln-pickbar{flex-wrap:wrap;max-width:94vw;top:calc(10px + env(safe-area-inset-top,0px))}
+/* As wide as its words need, up to the screen: left to itself a box that starts
+   at the middle of the screen is given only half of it, and stands tall and narrow. */
+#kiln-pickbar{flex-wrap:wrap;width:max-content;max-width:94vw;top:calc(10px + env(safe-area-inset-top,0px))}
 #kiln-pickbar button,#kiln-previewbar button{min-height:40px}
 /* The bars that wait for an answer: as wide as the screen, above the pencil
    and its row of buttons. The top is the status line's, and the site's header's. */

@@ -15,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   offersWholePage, wholePagePass, wholePageWrite, wholePageCopy, wholePageMessage, markedWords, marksIn, servesMarks,
-  WHOLE_PAGE_BUTTON, WHOLE_PAGE_SAVED, WHOLE_PAGE_RELOAD, WHOLE_PAGE_NOT_DONE, WHOLE_PAGE_WHY,
+  wholePageNote, fileIsBehind, WHOLE_PAGE_NOTE, WHOLE_PAGE_BUTTON, WHOLE_PAGE_SAVED, WHOLE_PAGE_RELOAD, WHOLE_PAGE_NOT_DONE, WHOLE_PAGE_WHY,
 } from '../src/editor/whole-page.js';
 import { autotag, onlyAddsMarks } from '../src/autotag.js';
 import * as firstpass from '../worker/firstpass.js';
@@ -186,4 +186,33 @@ test('main.js: the bar offers it, the editor\'s own dialogs ask and tell, and Pu
   assert.match(offer, /sandbox: !!cfg\.sandbox/);
   assert.match(offer, /sourceMode: cfg\.mode === 'source'/);
   assert.match(offer, /sectionLimit: mode === 'editor' && !!state\.scope\?\.keys\?\.length/);
+});
+
+// ── After the reload: the file the editor reads must be the one that was saved ──
+
+test('across the reload the editor notes which file it wrote and how many marks it held, and reads again while the file is behind', () => {
+  const before = '<main><h1 data-cms="t">A</h1><p>B</p><p>C</p></main>';
+  const saved = '<main><h1 data-cms="t">A</h1><p data-cms="b">B</p><p data-cms="c">C</p></main>';
+  const note = wholePageNote('about.html', saved);
+  assert.deepEqual(JSON.parse(note), { path: 'about.html', marks: 3 });
+  assert.equal(fileIsBehind(note, 'about.html', before), true, 'GitHub answered with the file as it was');
+  assert.equal(fileIsBehind(note, 'about.html', saved), false, 'the file that was saved');
+  assert.equal(fileIsBehind(note, 'about.html', saved.replace('<p data-cms="c">C</p>', '<p data-cms="c">C</p><p data-cms="d">D</p>')), false, 'someone has marked more since');
+  assert.equal(fileIsBehind(note, 'index.html', before), false, 'a note about another page says nothing here');
+  for (const none of [null, undefined, '', 'not json', '{}', '{"path":"about.html"}', '{"path":"about.html","marks":0}', '[]', '7']) {
+    assert.equal(fileIsBehind(none, 'about.html', before), false, `no usable note (${none}): the editor starts as it always did`);
+  }
+  assert.equal(typeof WHOLE_PAGE_NOTE, 'string');
+});
+
+test('main.js leaves the note before it reloads, and reads the file again after it, before deciding what is editable', () => {
+  const main = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'editor', 'main.js'), 'utf8');
+  const press = main.slice(main.indexOf('async function wholePage(btn)'));
+  assert.ok(press.indexOf('sessionStorage.setItem(WHOLE_PAGE_NOTE, wholePageNote(path, result.text))') > 0 && press.indexOf('sessionStorage.setItem(WHOLE_PAGE_NOTE') < press.indexOf('location.reload()'), 'the note is left before the reload');
+  const load = main.slice(main.indexOf('async function loadPageSource()'), main.indexOf('async function fileAfterWholePage()'));
+  assert.ok(load.indexOf('await fileAfterWholePage();') > 0 && load.indexOf('await fileAfterWholePage();') < load.indexOf('state.fields = indexHtml(state.page.text)'), 'read again before the parts are listed');
+  const again = main.slice(main.indexOf('async function fileAfterWholePage()'), main.indexOf('function workerAuthHeaders()'));
+  assert.match(again, /sessionStorage\.removeItem\(WHOLE_PAGE_NOTE\)/, 'the note is used once');
+  assert.match(again, /getFile\(state\.gh, cfg\.repo, state\.page\.path, cfg\.branch \|\| 'main', true\)/, 'past every store of earlier answers');
+  assert.match(again, /i < 5/, 'and not for ever');
 });

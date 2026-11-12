@@ -102,7 +102,9 @@
  * make-editable mode offers the button; it asks in the editor's own dialog
  * with what it would mark; confirming makes exactly one write of the page's
  * file, which is the old file with only data-cms marks added, and the page
- * loads again once the site serves it; with a change waiting it says to
+ * loads again once the site serves it, with every new part editable even
+ * though the file is first answered as it was before the write (GitHub does
+ * that for a moment); with a change waiting it says to
  * publish or discard first; without the grant, for an editor limited to
  * parts of a page, and in the demo, the button is not there.
  * Exits non-zero if any check fails. `--shots <dir>` also saves a screenshot
@@ -4608,7 +4610,10 @@ async function runWholePage(browser, size) {
         localStorage.setItem('kiln_guide', '1');
       } catch { /* ignore */ }
     }, [REPO, !sandbox]);
-    const w = { puts: [], reads: 0, current: source, sha: 'sha0', boxes: 0 };
+    // `behind`: how many reads of the file, counted from a write, are still answered with the
+    // file as it was before it. GitHub does that for a moment after a write, and a fast host has
+    // the page out sooner. (The first of them is the editor's own read straight after the write.)
+    const w = { puts: [], reads: 0, current: source, sha: 'sha0', boxes: 0, behind: 0, was: null };
     await context.route('**/*', async (route) => {
       const req = route.request();
       const u = new URL(req.url());
@@ -4629,9 +4634,15 @@ async function runWholePage(browser, size) {
       if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys, features, mode: null } });
       if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'] });
       if (p === `/gh/repos/${REPO}/contents/${file}`) {
-        if (req.method() === 'GET') { w.reads++; return json({ sha: w.sha, content: b64(w.current) }); }
+        if (req.method() === 'GET') {
+          w.reads++;
+          if (w.behind > 0 && w.was) { w.behind--; return json({ sha: w.was.sha, content: b64(w.was.text) }); }
+          return json({ sha: w.sha, content: b64(w.current) });
+        }
         const body = JSON.parse(req.postData());
         w.puts.push(body);
+        w.was = { text: w.current, sha: w.sha };
+        w.behind = 3;
         w.current = Buffer.from(body.content, 'base64').toString();
         w.sha = `sha${w.puts.length}`;
         return json({ commit: { sha: `commit${w.puts.length}` }, content: {} });
@@ -4722,6 +4733,14 @@ async function runWholePage(browser, size) {
     check(scope, 'nothing was asked in a box of the browser\'s', w.boxes === 0, `${w.boxes}`);
     const fieldsAfter = await page.evaluate(() => document.querySelectorAll('.kiln-field').length);
     check(scope, 'after the reload more of the page can be edited', fieldsAfter > fieldsBefore, `${fieldsBefore} → ${fieldsAfter}`);
+    // Each part the pass marked is editable now, although the first reads of the file after the
+    // write were answered with the file as it was: the editor read it again until it had the marks.
+    const keysOf = (text) => new Set([...text.matchAll(/\sdata-cms="([^"]+)"/g)].map(m => m[1]));
+    const had = keysOf(source);
+    const fresh = [...keysOf(plan.html)].filter(k => !had.has(k));
+    const dead = await page.evaluate((keys) => keys.filter(k => { const all = [...document.querySelectorAll(`[data-cms="${k}"]`)]; return !all.length || all.some(n => !n.classList.contains('kiln-field')); }), fresh);
+    check(scope, 'every part it marked can be edited after the reload, though the file was first read as it had been', fresh.length > 0 && dead.length === 0 && w.behind === 0, `${fresh.length} new, not editable: ${dead.join(', ') || 'none'}; reads still behind: ${w.behind}`);
+    check(scope, 'and nothing is left behind in the browser for the next reload', (await page.evaluate(() => sessionStorage.getItem('kiln_whole_page'))) === null);
     await shot(page, 'whole-page-after');
     // pressed again: nothing more to mark, said in the editor's own dialog, and nothing written
     await startMode(page);

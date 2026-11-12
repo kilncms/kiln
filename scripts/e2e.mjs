@@ -57,6 +57,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { applyEdits, readValues } from '../src/engine.js';
 import { makeGh, getFile, putFile, putBinaryFile, commitFiles, encodeContent } from '../src/github.js';
+import { wholePagePass, wholePageWrite, wholePageMessage, markedWords } from '../src/editor/whole-page.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const STAGING_WORKER = 'https://kiln-auth-staging.erikkwilder.workers.dev';
@@ -502,7 +503,7 @@ export async function run(cfg, rawIo) {
     let plain, granted, suggest;
     await step('three short-lived editor sessions made (default tools; New page + Theme; suggest-only)', async () => {
       plain = await editors.make('default');
-      granted = await editors.make('granted', { features: ['newpost', 'theme', 'draft', 'pagesettings', 'history'] });
+      granted = await editors.make('granted', { features: ['newpost', 'theme', 'draft', 'pagesettings', 'history', 'makeeditable'] });
       suggest = await editors.make('suggest', { mode: 'suggest' });
       await editors.settle(plain);
     });
@@ -607,11 +608,34 @@ export async function run(cfg, rawIo) {
     // ── An editor who was given New page and Theme ──
     await step('granted editor publishes a new page and a picture in one commit', async () => {
       const c = await commitFiles(granted.gh, R, cfg.branch, [
-        { path: `kiln-e2e-${run}.html`, text: `<!doctype html>\n<html><head><title>E2E ${run}</title></head>\n<body>\n<h1 data-cms="t">E2E ${run}</h1>\n</body></html>\n` },
+        { path: `kiln-e2e-${run}.html`, text: `<!doctype html>\n<html><head><title>E2E ${run}</title></head>\n<body>\n<h1 data-cms="t">E2E ${run}</h1>\n<h2>What nobody has marked yet</h2>\n<p>A paragraph the first pass should find.</p>\n</body></html>\n` },
         { path: `assets/uploads/kiln-e2e-${run}-c.png`, base64: PNG },
       ], `E2E ${run}: new page (via Kiln)`);
       await noted();
       return c.sha.slice(0, 7);
+    });
+    await step('granted editor makes that whole page editable (the first pass the editor makes: marks added, nothing else, one commit)', async () => {
+      // What "Make this whole page editable" does in the editor (src/editor/whole-page.js), through the same write.
+      const file = `kiln-e2e-${run}.html`;
+      const read = async (gh, ok) => {
+        let f = null;
+        for (let i = 0; i < 6; i++) {
+          try { f = await getFile(gh, R, file, cfg.branch); } catch { f = null; }
+          if (f && ok(f.text)) break;
+          if (io.sleep) await io.sleep(1500);
+        }
+        return f;
+      };
+      const cur = await read(granted.gh, () => true);
+      if (!cur) throw new Error(`the new page ${file} could not be read through the worker`);
+      const pass = wholePagePass(cur.text);
+      if (pass.state !== 'ready' || pass.counts.fields !== 2) throw new Error(`the first pass over the new page said ${pass.state} ${JSON.stringify(pass.counts || {})}; it should find the heading and the paragraph`);
+      const write = wholePageWrite(cur.text, pass.counts);
+      if (!write.html) throw new Error(`nothing to write: ${write.why}`);
+      await putFile(granted.gh, R, file, { text: write.html, sha: cur.sha, branch: cfg.branch, message: wholePageMessage(file, pass.counts) });
+      await noted();
+      if ((await read(owner, t => t === write.html))?.text !== write.html) throw new Error('the repository does not hold the page with its marks');
+      return markedWords(pass.counts);
     });
     await step('granted editor writes a stylesheet', async () => {
       await putFile(granted.gh, R, `assets/kiln-e2e-${run}.css`, { text: 'h1 { color: inherit; }\n', branch: cfg.branch, message: `E2E ${run}: stylesheet (via Kiln)` });

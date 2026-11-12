@@ -120,7 +120,7 @@ export function wholePageCopy(kind, info = {}) {
   }
   if (kind === 'nothing') {
     return { title: 'There is nothing more to mark on this page',
-      body: ['The first pass marks headings, paragraphs, quotes, captions, pictures, repeating blocks such as cards, and the menu. Everything of that kind on this page is already marked. Anything else can still be made editable by clicking it.'],
+      body: ['The first pass marks headings, paragraphs, quotes, captions, pictures, repeating blocks such as cards, and the menu. It found nothing more of that kind to mark here: what is left is already marked, or is part of something that is. Anything else can still be made editable by clicking it.'],
       ok: 'OK' };
   }
   if (kind === 'unsafe') {
@@ -139,6 +139,27 @@ export function wholePageMessage(path, counts) {
 /** How many marks a page's text holds. */
 export function marksIn(text) {
   return (String(text || '').match(/\sdata-cms(?:-repeat|-menu)?="/g) || []).length;
+}
+
+/**
+ * What the editor leaves for itself across the reload (sessionStorage, under
+ * WHOLE_PAGE_NOTE): which file was written and how many marks it then held.
+ * GitHub can answer a read with a file as it was for a moment after a write,
+ * and a fast host has the page out before that moment is over. The page would
+ * then show the new marks while the file the editor read had none of them, and
+ * a part is only editable when the file has its mark.
+ */
+export const WHOLE_PAGE_NOTE = 'kiln_whole_page';
+export function wholePageNote(path, saved) {
+  return JSON.stringify({ path: String(path || ''), marks: marksIn(saved) });
+}
+/** True when the file just read for `path` is still the one from before the write the note is about. */
+export function fileIsBehind(note, path, text) {
+  let n = null;
+  try { n = typeof note === 'string' ? JSON.parse(note) : note; } catch { n = null; }
+  if (!n || typeof n !== 'object' || !n.path || n.path !== path) return false;
+  const want = Number(n.marks) || 0;
+  return want > 0 && marksIn(text) < want;
 }
 
 /**
