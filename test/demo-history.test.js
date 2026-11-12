@@ -172,7 +172,9 @@ test('demo menu: each of those dialogs says the demo\'s sentence where it would 
   d = says('function pageSettingsPanel()', '\n}\n', 'pagesettings');
   assert.ok(d.at < d.body.indexOf('editFile(state.gh'), 'page settings');
   d = says('function menuEditor()', '\n}\n', 'menu');
-  assert.ok(d.at < d.body.indexOf("state.gh.request('GET'"), 'site menu');
+  // the save itself is in menu-save.js now: the demo's sentence comes before it is handed anything
+  assert.ok(d.body.indexOf('saveMenuEverywhere({') !== -1 && d.at < d.body.indexOf('saveMenuEverywhere({'), 'site menu');
+  assert.equal(d.body.indexOf("state.gh.request('GET'"), -1, 'the site menu asks the repository nowhere else');
   d = says('function findReplacePanel()', '\n}\n', 'findreplace');
   assert.ok(d.at < d.body.indexOf("state.gh.request('GET'"), 'find and replace');
   d = says('async function invitePanel()', '\n}\n\n// ─── History', 'people');
