@@ -41,3 +41,48 @@ export function whereTo(box, screen, covered = {}) {
   // Taller than the screen (a whole list, a long text): a good piece of it in sight is enough.
   return seen >= Math.min(room / 3, 160) ? 'stay' : 'start';
 }
+
+/**
+ * How much of the screen's top and bottom is under things that stay there
+ * while the page scrolls (the editor's own buttons, its line of words, the
+ * demo's banner, the guide's tip).
+ *   boxes   { top, bottom } of each, measured from the top of the screen
+ *   screen  the height of the screen
+ * Each counts for the edge it is nearer to. One that takes more than half the
+ * screen (a sheet, a dialog) is not a strip along an edge and is left out, and
+ * so is one that is off the screen.
+ * Returns { top, bottom } in pixels.
+ */
+export function coveredBy(boxes, screen) {
+  let top = 0, bottom = 0;
+  for (const b of boxes || []) {
+    if (!b || !(b.bottom > b.top) || b.bottom <= 0 || b.top >= screen || b.bottom - b.top > screen / 2) continue;
+    if ((b.top + b.bottom) / 2 < screen / 2) top = Math.max(top, b.bottom);
+    else bottom = Math.max(bottom, screen - b.top);
+  }
+  return { top, bottom };
+}
+
+/**
+ * How far to move the page so that something the person has just opened can
+ * be seen whole and pressed: in pixels, more than 0 to go down the page, less
+ * than 0 to go up it, 0 when it already shows. It is the least that brings it
+ * clear of what covers the top and the bottom of the screen, by `gap` pixels.
+ *
+ * On a phone a block's buttons open in a row at the foot of the block. On a
+ * tall block that is a long way from the "more" button that opened them: under
+ * the editor's own buttons along the bottom of the screen, or below the screen
+ * altogether, where the tap seemed to do nothing.
+ *   box      { top, bottom } of what was opened, from the top of the screen
+ *   screen   the height of the screen
+ *   covered  { top, bottom }: how much of the screen's top and bottom is
+ *            under something
+ * Something taller than the room there is shows where it begins.
+ */
+export function nudge(box, screen, covered = {}, gap = 8) {
+  const from = (covered.top || 0) + gap, to = screen - (covered.bottom || 0) - gap;
+  if (box.bottom - box.top > to - from) return Math.round(box.top - from);
+  if (box.bottom > to) return Math.round(box.bottom - to);
+  if (box.top < from) return Math.round(box.top - from);
+  return 0;
+}

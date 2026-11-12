@@ -83,7 +83,7 @@ import { askStanding, planEndedNotice } from './plan-ended.js';
 import { askDescription, LATER_WORDS, describeOwnCopy, DESCRIBE_BUTTON, describeHint, describedWords } from './describe-picture.js';
 import { coverBottom, isUnder, isSiteBar } from './under-bar.js';
 import { fabSpot, isHiddenBox } from './fab-place.js';
-import { whereTo } from './in-view.js';
+import { whereTo, coveredBy, nudge } from './in-view.js';
 import { findTwin, notHereWords } from './not-here.js';
 import { missingEvent, missingPerson, scheduleTitle, pickBarWords, removedHold, PEOPLE_WORDS, tooBigForDemo, headingVars, ADDED_CSS } from './first-edits.js';
 import { demoSays, demoShort, DEMO_DRAFT_SAVED, DEMO_HISTORY_EMPTY, DEMO_HISTORY_NOTE,
@@ -1802,6 +1802,7 @@ function attachItemControls(container, key, item) {
     // the block's HEIGHT: the bar ran far below the block, over the next one.
     ctl.classList.toggle('kiln-ctl-col', open && /flex/.test(cs.display) && cs.flexDirection.startsWith('column'));
     more.setAttribute('aria-expanded', String(open));
+    if (open) showOpenedBar(ctl);
   };
   ctl.prepend(more);
   // A <div> is not valid inside <tr> — anchor the controls in the row's last
@@ -1839,6 +1840,28 @@ function attachItemControls(container, key, item) {
     e.preventDefault();
     stageContainer(container, key);
   });
+}
+
+/**
+ * A block's opened buttons, where they can be seen and pressed (phones). They
+ * take a row at the foot of their block, and on a tall block that is a long
+ * way from the "more" button: under the editor's own buttons along the bottom
+ * of the screen, or below the screen, where the tap seemed to do nothing. The
+ * page moves just far enough to show them (in-view.js), and stays where it is
+ * when they already show.
+ */
+function showOpenedBar(ctl) {
+  const r = ctl.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  // What the editor keeps on the screen while the page scrolls: fixed there, or
+  // inside something that is. (The guide's first tip rides the page instead.)
+  const stays = (el) => { for (let n = el; n && n !== document.documentElement; n = n.parentElement) if (getComputedStyle(n).position === 'fixed') return true; return false; };
+  const own = [...document.querySelectorAll('#kiln-fab-wrap, #kiln-quick, #kiln-sandbox-banner, #kiln-topbar, #kiln-status, #kiln-toolbar, #kiln-guide')]
+    .filter(stays).map(el => el.getBoundingClientRect()).filter(b => b.width && b.height).map(b => ({ top: b.top, bottom: b.bottom }));
+  const covered = coveredBy(own, window.innerHeight);
+  covered.top = Math.max(covered.top, siteBarsBottom());   // and the site's own bar at the top
+  const by = nudge({ top: r.top, bottom: r.bottom }, window.innerHeight, covered);
+  if (by) window.scrollBy({ top: by, behavior: 'smooth' });
 }
 
 /** Fold every block's control bar back to its "more" button (phones). */
