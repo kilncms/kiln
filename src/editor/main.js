@@ -46,6 +46,7 @@ import { publishLabel, editCommitMessage, goingLiveLabel, initGuide, guideSync, 
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
+import { findEverywhere, replaceEverywhere, changedSinceText } from './find-replace.js';
 import { DRAFT_BRANCH, draftSaveMessage, draftDeleteMessage, draftPublishedMessage, blobSha, draftOfPage, draftWords, DRAFT_DELETE_REFUSED } from './draft-state.js';
 import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
@@ -7604,36 +7605,36 @@ function findReplacePanel() {
     if (cfg.sandbox) { status.textContent = demoSays('findreplace'); return; }
     status.textContent = 'Scanning every page…';
     out.innerHTML = '';
+    // The matches of an earlier preview go with it: only what is on show can be replaced.
+    m.querySelectorAll('.kiln-fr-act').forEach(old => old.remove());
     try {
+      // Every page is read once here; "Replace all" then saves every page with
+      // a match as one change, or none (find-replace.js).
       const branch = cfg.branch || 'main';
-      const tree = await state.gh.request('GET', `/repos/${cfg.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
-      const files = tree.tree.filter(x => x.type === 'blob' && x.path.endsWith('.html')).map(x => x.path).slice(0, 100);
-      const hits = [];
-      for (let i = 0; i < files.length; i++) {
-        status.textContent = `Scanning… ${i + 1}/${files.length}`;
-        const f = await getFile(state.gh, cfg.repo, files[i], branch);
-        const count = f.text.split(find).length - 1;
-        if (count) hits.push({ path: files[i], count, text: f.text });
-      }
+      const { hits } = await findEverywhere({ gh: state.gh, repo: cfg.repo, branch, find, getFile,
+        onStep: ({ done, of }) => { status.textContent = `Scanning… ${done}/${of}`; } });
       if (!hits.length) { status.textContent = `No matches for “${find}”.`; return; }
       out.innerHTML = hits.map(h => `<div class="kiln-inv-row"><span>${escapeHtml(h.path)}</span><small>${h.count}×</small></div>`).join('');
       status.innerHTML = `${hits.reduce((n, h) => n + h.count, 0)} match(es) in ${hits.length} file(s).
         <strong>This replaces matches anywhere in the page source</strong> — review on GitHub afterwards if unsure.`;
       const act = document.createElement('div');
-      act.className = 'kiln-modal-actions';
+      act.className = 'kiln-modal-actions kiln-fr-act';
       act.innerHTML = `<button class="kiln-btn-ghost" data-close>Cancel</button>
         <button class="kiln-btn-publish">Replace all (1 commit)</button>`;
       out.after(act);
       act.querySelector('.kiln-btn-publish').onclick = async () => {
         status.textContent = 'Committing…';
         try {
-          const changed = hits.map(h => ({ path: h.path, text: h.text.split(find).join(repl) }));
-          const commit = await commitFiles(state.gh, cfg.repo, branch, changed, `Replace “${find}” → “${repl}” on ${changed.length} pages (via Kiln)`);
+          const { changed, commit } = await replaceEverywhere({ gh: state.gh, repo: cfg.repo, branch, hits, find, repl, commitFiles });
           const thisPage = changed.find(c => c.path === state.page.path);
           if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Find & replace', sha: commit.sha });
           status.textContent = 'Committed ✓ — rebuilding. Safe to close; Kiln will confirm when live.';
           act.remove();
-        } catch (err) { status.textContent = stopped(err, 'replaced', typedIn(m)) || notDone('Nothing was replaced.', err); }
+        } catch (err) {
+          // A page changed since the preview read it: its words here are old, so they are not written. Preview again.
+          if (err.changedSince) { status.textContent = changedSinceText(err.changedSince); act.remove(); out.innerHTML = ''; return; }
+          status.textContent = stopped(err, 'replaced', typedIn(m)) || notDone('Nothing was replaced.', err);
+        }
       };
     } catch (err) { status.textContent = stopped(err, '', typedIn(m)) || notDone('The pages could not be searched.', err); }
   };

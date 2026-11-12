@@ -176,7 +176,9 @@ test('demo menu: each of those dialogs says the demo\'s sentence where it would 
   assert.ok(d.body.indexOf('saveMenuEverywhere({') !== -1 && d.at < d.body.indexOf('saveMenuEverywhere({'), 'site menu');
   assert.equal(d.body.indexOf("state.gh.request('GET'"), -1, 'the site menu asks the repository nowhere else');
   d = says('function findReplacePanel()', '\n}\n', 'findreplace');
-  assert.ok(d.at < d.body.indexOf("state.gh.request('GET'"), 'find and replace');
+  // the search itself is in find-replace.js now: the demo's sentence comes before it is handed anything
+  assert.ok(d.body.indexOf('findEverywhere({') !== -1 && d.at < d.body.indexOf('findEverywhere({'), 'find and replace');
+  assert.equal(d.body.indexOf("state.gh.request('GET'"), -1, 'find and replace asks the repository nowhere else');
   d = says('async function invitePanel()', '\n}\n\n// ─── History', 'people');
   assert.ok(d.at < d.body.indexOf('await ask(`/admin/people'), 'people');
   // the list of pages People offers comes from the page itself in the demo

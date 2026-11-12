@@ -90,6 +90,22 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   delete writes the page as it is over the draft, in a change that says the
   draft was deleted; the draft is not offered again. Someone without the
   Drafts tool is told who can delete it.
+- **Find & replace gets through a large site without being told to wait.**
+  The Kiln service counts what each signed-in person asks of it, 120 requests
+  to the minute. Find & replace read every page once for its preview and then
+  sent every page with a match in a request of its own, so a site of more than
+  about 57 pages was told "too much was asked" part-way. The pages now go in
+  the one request that makes the change, as the Site menu tool's do: a site of
+  N pages takes N + 7 requests where it took up to 2N + 6, so the hundred pages
+  it searches at most fit in a minute. It is still one commit, every page or
+  none, and what it finds, shows and replaces is what it did before.
+- **Find & replace does not put older words back on a page.** The words are
+  replaced in the text the preview read. A page that somebody published while
+  the preview was on the screen was written back as it had been, with the
+  replacement made. Before it replaces, the tool now asks once whether any
+  page with a match has changed since. If one has, nothing is replaced, the
+  page is named, and you are asked to press "Preview matches" again. A second
+  preview also takes the first one's "Replace all" button away with it.
 
 ## [0.6.1] - 2026-11-12
 
