@@ -485,6 +485,36 @@ async function markPrepared(env, siteId, commit) {
   } catch { /* the repository is prepared all the same; the dashboard offers the button again and is told so */ }
 }
 
+/**
+ * The site a dashboard request names, checked once for every route that reads
+ * or changes a site's repository for its owner (GET ?site=<id>, or POST with
+ * { id } in the body). In order: the person is signed in; the site is on
+ * their account; it may be edited (a trial that ran out, or a plan that
+ * ended, stops this as it stops editing); the person may still change the
+ * repository (asked again, because that can have changed since the site was
+ * added); and the Kiln app can reach the repository. The answer is
+ * { site, token, write, body } or { response }, the refusal to send back.
+ */
+async function ownedSite(request, env, url, sess, tools = {}) {
+  if (!sess) return { response: json({ error: 'not signed in' }, 401) };
+  const write = request.method === 'POST';
+  const body = write ? await request.json().catch(() => ({})) : {};
+  const id = write ? body.id : url.searchParams.get('site');
+  const site = await withAccessUntil(
+    () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
+    () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
+  );
+  if (!site) return { response: json({ error: 'That site is not on this account.', code: 'no_such_site' }, 404) };
+  if (!siteHasAccess(site)) {
+    return { response: json({ error: 'Editing is switched off for this site, so Kiln cannot change its repository. Subscribe on the site\'s row, then try again.', code: 'plan_ended' }, 403) };
+  }
+  const owner = String(site.repo).split('/')[0].toLowerCase();
+  if (!(owner === String(sess.login || '').toLowerCase() || await userCanPush(sess.gh, site.repo))) return { response: json({ error: NOT_YOUR_REPO, code: 'not_yours' }, 403) };
+  const token = typeof tools.installationToken === 'function' ? await tools.installationToken(env, site.repo) : null;
+  if (!token) return { response: json({ error: prepareSentence('no_access', { repo: site.repo }), code: 'no_access', install_url: INSTALL_URL }, 409) };
+  return { site, token, write, body };
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 export async function handleCloud(request, env, url, path, tools = {}) {
@@ -629,24 +659,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   // GET says what would change and writes nothing; POST makes the change, as
   // one commit in the account holder's name.
   if (path === '/cloud/sites/prepare' && (request.method === 'GET' || request.method === 'POST')) {
-    if (!sess) return json({ error: 'not signed in' }, 401);
-    const write = request.method === 'POST';
-    const id = write ? (await request.json().catch(() => ({}))).id : url.searchParams.get('site');
-    const site = await withAccessUntil(
-      () => env.kiln_cloud.prepare('SELECT id, repo, origin, status, access_until FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
-      () => env.kiln_cloud.prepare('SELECT id, repo, origin, status FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
-    );
-    if (!site) return json({ error: 'That site is not on this account.', code: 'no_such_site' }, 404);
+    const asked = await ownedSite(request, env, url, sess, tools);
+    if (asked.response) return asked.response;
+    const { site, token, write } = asked;
     const refused = (code, status, extra = {}) => json({ error: prepareSentence(code, { repo: site.repo, ...extra }), code, ...extra }, status);
-    if (!siteHasAccess(site)) {
-      return json({ error: 'Editing is switched off for this site, so Kiln cannot change its repository. Subscribe on the site\'s row, then try again.', code: 'plan_ended' }, 403);
-    }
-    // The same question as when the site was added, asked again: who may
-    // change a repository can have changed since.
-    const owner = String(site.repo).split('/')[0].toLowerCase();
-    if (!(owner === String(sess.login || '').toLowerCase() || await userCanPush(sess.gh, site.repo))) return json({ error: NOT_YOUR_REPO, code: 'not_yours' }, 403);
-    const token = typeof tools.installationToken === 'function' ? await tools.installationToken(env, site.repo) : null;
-    if (!token) return refused('no_access', 409, { install_url: INSTALL_URL });
 
     // One at a time for a site: two tabs pressing the button make one commit.
     const lock = `preplock:${site.id}`;
