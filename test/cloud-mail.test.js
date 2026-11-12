@@ -33,7 +33,7 @@ test('the words: each message names the site, the day and the way out, in plain 
   assert.match(added.text, /Kiln Cloud is \$4\.99 a month/);
   const soon = trialEndingMail({ origin: 'https://rosasbakery.example', plan: 'managed', endsAt: ends, dashboard: DASH });
   assert.equal(soon.subject, 'The Kiln free trial for rosasbakery.example ends on Tuesday, November 17');
-  assert.match(soon.text, /Fully managed is \$14\.99 a month/);
+  assert.match(soon.text, /Kiln Cloud \+ hosting is \$14\.99 a month/);
   assert.match(soon.text, /stay exactly as they are/);
   const ended = trialEndedMail({ origin: 'https://rosasbakery.example', plan: 'cloud', dashboard: DASH });
   assert.equal(ended.subject, 'The Kiln free trial for rosasbakery.example has ended');

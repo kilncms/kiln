@@ -13,7 +13,7 @@ are entries in the site's People list.
 
 The members area needs Cloudflare Pages, because the gate is a Pages Function. Members
 sign in with Google, so the sign-in service needs [Google sign-in](google-sign-in.md)
-(Kiln Cloud and Fully managed have it already).
+(sites on Kiln Cloud, with or without hosting, have it already).
 
 ## Setup
 

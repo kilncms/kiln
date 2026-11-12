@@ -167,7 +167,7 @@ export const RUNBOOK_HTML = `<!doctype html>
       </ul>
       <h3 class="sub">Where "separate" does happen — and it's not your infrastructure</h3>
       <p>The genuinely per-customer thing is <strong>their GitHub repo</strong> (and, on self-host/Cloud, their host). Content and full history live there, owned by them; the GitHub App is installed on their repo, by them. The isolation that matters — "my content is mine" — is real and lives in <em>their</em> accounts.</p>
-      <h3 class="sub">Fully Managed specifically</h3>
+      <h3 class="sub">Kiln Cloud + hosting specifically</h3>
       <p>For Managed we also run the hosting — still on <strong>your</strong> Cloudflare account, as <strong>separate Pages projects</strong> (one per customer site, free) plus a <strong>Cloudflare Email Routing</strong> rule on their domain. So a Managed customer costs you: one free Pages project + one database row + fractions of a cent in Worker requests. <code>scripts/managed-onboard.mjs</code> sets it all up in one command.</p>
       <p><strong>Done-for-you (the customer has no GitHub):</strong> register the site from <em>your own</em> dashboard account — on Managed the repo lives under your GitHub anyway — then set its plan with <code>/admin/cloud/grant</code>. The customer edits through Google sign-in as a named editor and never needs a GitHub account. A new signup or billing change mails the operator (the <code>NOTIFY</code> send_email binding plus the <code>NOTIFY_TO</code> secret), so nothing waits unnoticed.</p>
       <div class="call rule"><span class="tag">Bottom line</span><p>One small worker and one small database for everyone, plus free Pages projects for Managed. This scales to hundreds of customers on a few dollars a month. Don't let anyone talk you into "a separate instance per customer" — that would be a mistake.</p></div>
@@ -207,7 +207,7 @@ export const RUNBOOK_HTML = `<!doctype html>
       <div class="tw"><table>
         <thead><tr><th>Customer</th><th>How they get editor updates</th></tr></thead>
         <tbody>
-          <tr><td><strong>Fully Managed</strong></td><td>We update it for them — <code>npx github:kilncms/kiln#release update</code> in their repo, commit, push.</td></tr>
+          <tr><td><strong>Kiln Cloud + hosting</strong></td><td>We update it for them — <code>npx github:kilncms/kiln#release update</code> in their repo, commit, push.</td></tr>
           <tr><td><strong>Kiln Cloud</strong></td><td>They run <code>npx github:kilncms/kiln#release update</code> themselves; we tell them when it matters.</td></tr>
           <tr><td><strong>Self-hosted</strong></td><td>They run <code>update</code> on their own schedule.</td></tr>
         </tbody>
@@ -261,7 +261,7 @@ export const RUNBOOK_HTML = `<!doctype html>
         <li><strong>"My change isn't showing up."</strong> — Their host is rebuilding (~a minute). Longer? Run <code>doctor</code> — usually the host isn't Git-connected, so Kiln's commit never deploys.</li>
         <li><strong>"I can't sign in."</strong> — Session expired or access changed. Re-sign-in at <code>theirsite.com/kiln</code>.</li>
         <li><strong>"I want to cancel."</strong> — In trial: Remove the site in the dashboard (no charge). Subscribed: dashboard → Manage billing → Lemon Squeezy portal.</li>
-        <li><strong>"Can you set up my site?"</strong> — That's Managed, or the $399 Concierge add-on. Point them there.</li>
+        <li><strong>"Can you set up my site?"</strong> — Setup as a paid service is no longer sold (since November 2026: the payment company does not allow it). The plan with hosting (“Managed” on this page, sold as “Kiln Cloud + hosting”) covers hosting, and the guides cover the rest. Point them there.</li>
       </ol>
       <div class="call rule"><span class="tag">What a customer genuinely cannot break</span><p>A customer touches only <strong>their own repo</strong>, only <strong>content</strong> fields, and every change is a reversible git commit. They can't reach another customer, your Worker's internals, or your infrastructure, and can't lose data. The worst a confused customer does is make their own page look wrong — fixable with History → Undo in ten seconds. By design. It's why this is a safe first business.</p></div>
     </section>
@@ -273,7 +273,7 @@ export const RUNBOOK_HTML = `<!doctype html>
         <li><strong>Only a signed webhook from Lemon Squeezy makes a site "active."</strong> A customer can't fake being paid; forged payment events are rejected (audited, replay-guarded).</li>
         <li><strong>Trials</strong> are editable for 7 days, then auto-expire if no subscription arrives — automatic, no action from you.</li>
         <li><strong>Your admin dashboard</strong> (app.kilncms.com/admin) shows accounts, sites, active count, MRR, and expiring trials. Check it for a pulse.</li>
-        <li><strong>Prices live in three places that must agree:</strong> the Lemon Squeezy product, the Worker's MRR math, and the marketing site. Today: Cloud <strong>$4.99</strong>/mo, Managed <strong>$14.99</strong>/mo, Concierge <strong>$399</strong> one-time. Change one → change all three (I do the code/site half; you do Lemon Squeezy).</li>
+        <li><strong>Prices live in three places that must agree:</strong> the Lemon Squeezy product, the Worker's MRR math, and the marketing site. Today: Cloud <strong>$4.99</strong>/mo, Managed (sold as “Kiln Cloud + hosting”) <strong>$14.99</strong>/mo. Change one → change all three (I do the code/site half; you do Lemon Squeezy).</li>
       </ul>
     </section>
 

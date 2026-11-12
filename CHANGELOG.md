@@ -6,6 +6,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The free trial is seven days in all.** The seven days are Kiln's own,
+  counted from the day a site is added, with no card. The checkout now tells
+  Lemon Squeezy to skip any trial set on the product there, which used to add
+  its own days on top once a card was entered.
+- **The plan with hosting is called "Kiln Cloud + hosting".** It was called
+  "Fully managed". It is Kiln Cloud with the site served from Kiln's
+  Cloudflare account on the customer's own domain. The one-time setup service
+  is no longer offered.
+
 ## [0.5.0] - 2026-11-11
 
 ### Added

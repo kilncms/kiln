@@ -21,7 +21,7 @@ Three ways to run it:
 |---|---|---|
 | Self-host | free | you (about 10 minutes of setup, [guide](self-hosting.md)) |
 | Kiln Cloud | $4.99/mo per site | we do; your content stays in your repo and host |
-| Fully managed | $14.99/mo per site | we set up everything: hosting, worker, app, tagging |
+| Kiln Cloud + hosting | $14.99/mo per site | we do, and we host the site on your own domain |
 
 All three run the same open-source (AGPL-3.0) engine. Nothing is gated or crippled in
 the free version, and you can move between routes because the content never leaves
@@ -528,7 +528,7 @@ It copies the latest `kiln.js`, `kiln-editor.js`, and `kiln-features.js` into yo
 site wherever the current ones live, and offers to commit and push. That's the whole
 upgrade. Who does it depends on the plan. Self-hosted: you, for the site, and you
 also redeploy your worker. Kiln Cloud: you, for the site (the same command); the
-worker is ours and is updated for you. Fully managed: we update both.
+worker is ours and is updated for you. Kiln Cloud + hosting: both are updated for you.
 `kiln doctor` and the editor tell you when a newer editor exists.
 
 ## Leaving

@@ -40,7 +40,7 @@ export function dayWords(ms) {
 
 const hostOf = (origin) => { try { return new URL(origin).host; } catch { return String(origin || 'your site'); } };
 const priceOf = (plan) => (plan === 'managed' ? '$14.99' : '$4.99');
-const planOf = (plan) => (plan === 'managed' ? 'Fully managed' : 'Kiln Cloud');
+const planOf = (plan) => (plan === 'managed' ? 'Kiln Cloud + hosting' : 'Kiln Cloud');
 
 /** Paragraphs → the plain text and the simple HTML of one message. A line that is only a web address becomes a link. */
 function message(subject, paragraphs, why) {

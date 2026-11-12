@@ -254,11 +254,11 @@ whole walkthrough is in [self-hosting.md](docs/self-hosting.md).
 
 </details>
 
-### Fully managed: we set it up and host it
+### Kiln Cloud + hosting: we host the site too
 
-For people who want to touch no code. Start the free trial on
+For a site that needs a home as well. Start the free trial on
 [kilncms.com/pricing](https://kilncms.com/pricing): you need a free GitHub account, and
-we help you make one.
+you point your domain's name servers at Kiln once.
 
 ### Start a new site from a template
 
@@ -367,17 +367,16 @@ More on each command, the limits of `rescue`, and what freezing an app costs:
 The editor is the same on all three. On all three your site's files stay in a GitHub
 account you own, and you can move between them later.
 
-| | Run it yourself | Kiln Cloud | Fully managed |
+| | Run it yourself | Kiln Cloud | Kiln Cloud + hosting |
 |---|---|---|---|
 | **Price** | $0, open source | $4.99 a month per site | $14.99 a month per site |
-| **Who runs what** | You run the sign-in service on your own Cloudflare account, with your own GitHub App | We run the sign-in service, the GitHub App and Google sign-in for your editors | We set your existing site up on Kiln and host it |
-| **Your part** | About 30 to 45 minutes the first time, for developers at home in a terminal | One command in your site's folder, about 15 to 25 minutes | You touch no code; you need a free GitHub account |
+| **Who runs what** | You run the sign-in service on your own Cloudflare account, with your own GitHub App | We run the sign-in service, the GitHub App and Google sign-in for your editors | Everything in Kiln Cloud, and your site is served from Kiln's Cloudflare account on your own domain |
+| **Your part** | About 30 to 45 minutes the first time, for developers at home in a terminal | One command in your site's folder, about 15 to 25 minutes | Add the site in the dashboard and point your domain's name servers at Kiln; you need a free GitHub account |
 | **Included** | Every feature, including the AI writing helper with your own Anthropic key | Editors, members, drafts, History, scheduling, comments and suggestions (not the AI writing helper) | Everything in Kiln Cloud, email forwarding on your domain if it has no email yet, and your support requests answered first |
 | **Trial** | | 7 days free, no card | 7 days free, no card |
 
 Plans are per site, not per person: add as many editors and members as the site needs.
-Concierge setup, where we mark every part of the site by hand and set up each editor's
-access with you, is $399 once on any plan. Billing is handled by Lemon Squeezy; prices and
+Billing is handled by Lemon Squeezy; prices and
 billing questions are on [kilncms.com/pricing](https://kilncms.com/pricing).
 
 **When a plan ends**, the editor stops working on the site, and so do its API tokens,

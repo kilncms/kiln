@@ -1,6 +1,6 @@
 # Google sign-in for editors and members
 
-Back to the [README](../README.md). Kiln Cloud and Fully managed sites have this set up already: this page is for a sign-in service you run yourself. The rest of self-hosting is in [self-hosting.md](self-hosting.md).
+Back to the [README](../README.md). Sites on Kiln Cloud, with or without hosting, have this set up already: this page is for a sign-in service you run yourself. The rest of self-hosting is in [self-hosting.md](self-hosting.md).
 
 ## What it gives you
 
