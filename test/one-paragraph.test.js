@@ -94,3 +94,42 @@ test('liftLists: a list the browser put inside a paragraph is moved out, with th
   assert.equal(liftLists(fine), 0);
   assert.equal(fine.innerHTML, '<p>a</p><ul><li>b</li></ul>');
 });
+
+// ─── What one paragraph or heading may hold: a paste, and Enter ──────────────
+
+const { holdsBlockMarkup, inlineHtml } = await import('../src/editor/one-paragraph.js');
+
+test('text pasted from a web page comes in as words with bold, italic and links, and nothing else', () => {
+  const clip = page(`<div><!--StartFragment--><h2 class="mw-headline" style="font-family:Georgia;color:#c00;font-size:28px">Pasted heading</h2>
+    <p class="MsoNormal" style="margin:0;background:yellow">A <span style="color:red;font-weight:bold">red bold</span> line with
+      <a href="https://example.org/x?a=1&amp;b=2" onclick="evil()" class="ext" target="_blank">a link</a> and <a href="javascript:alert(1)">a script link</a></p>
+    <img src="x" onerror="alert(1)"><table><tbody><tr><td>cell one</td><td>cell two</td></tr></tbody></table>
+    <div>Second <i class="x">pasted</i> block</div><script>alert(1)</script><!--EndFragment--></div>`);
+  const got = inlineHtml(clip, { strict: true });
+  assert.equal(got, 'Pasted heading<br>A <strong>red bold</strong> line with <a href="https://example.org/x?a=1&amp;b=2">a link</a> and a script link<br>cell one cell two<br>Second <i>pasted</i> block');
+  assert.equal(holdsBlockMarkup(page(`<p>${got}</p>`)), false, 'a paragraph can hold all of it');
+  assert.ok(!/class=|style=|<img|<h2|<p|<table|onclick|javascript:|alert/.test(got));
+});
+
+test('a paste from a word processor: its styles are read as the bold and italic they stand for', () => {
+  const clip = page('<div><b style="font-weight:normal" id="docs-internal-guid-1"><span style="font-weight:700">Bold</span><span style="font-weight:400"> and </span><span style="font-style:italic">slanted</span></b></div>');
+  assert.equal(inlineHtml(clip, { strict: true }), '<strong>Bold</strong> and <em>slanted</em>');
+});
+
+test('each Enter in a paragraph or heading is kept as a line break, not as a block inside it', () => {
+  const typed = page('<h2>Line one<div>Line two</div><div><br></div><div>Line <b>four</b><br></div></h2>');
+  assert.equal(holdsBlockMarkup(typed), true);
+  assert.equal(inlineHtml(typed), 'Line one<br>Line two<br><br>Line <b>four</b>');
+  assert.equal(holdsBlockMarkup(page('<p>a <b>b</b><br>c <span class="accent">d</span></p>')), false);
+});
+
+test('the page\'s own inline elements are kept exactly when blocks are taken out', () => {
+  const part = page('<p>Hello <span class="accent" data-x="a&quot;b">world</span> <img src="/i.png" alt="An icon"><h3>Sub</h3><ul><li>one</li><li>two</li></ul></p>'.replace('<p>', '<div>').replace('</p>', '</div>'));
+  assert.equal(inlineHtml(part), 'Hello <span class="accent" data-x="a&quot;b">world</span> <img src="/i.png" alt="An icon"><br>Sub<br>one<br>two');
+});
+
+test('the editor brings a paste into a single paragraph through these rules, and keeps an edit through them', () => {
+  const main = readFileSync(path.join(ROOT, 'src/editor/main.js'), 'utf8');
+  assert.match(main, /addEventListener\('paste'[\s\S]{0,700}holdsBlocks\(el\.tagName\)\) return;[\s\S]{0,400}inlineHtml\([\s\S]{0,120}\{ strict: true \}\)/);
+  assert.match(main, /holdsBlockMarkup\(clone\)\) return DOMPurify\.sanitize\(inlineHtml\(clone\), SANITIZE\)/);
+});

@@ -67,7 +67,7 @@ import { plainName, readableName } from './names.js';
 import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
 import { listAsFile, ListLoss, LIST_NOT_WHOLE, LIST_NOT_WHOLE_DRAFT } from './list-as-file.js';
-import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists } from './one-paragraph.js';
+import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists, holdsBlockMarkup, inlineHtml } from './one-paragraph.js';
 import { askFirst, askWhich, tell, ownDialogCopy } from './own-dialogs.js';
 import { offersWholePage, wholePagePass, wholePageWrite, wholePageCopy, wholePageMessage, servesMarks, wholePageNote, fileIsBehind,
   WHOLE_PAGE_NOTE, WHOLE_PAGE_BUTTON, WHOLE_PAGE_READING, WHOLE_PAGE_SAVING, WHOLE_PAGE_SAVED, WHOLE_PAGE_RELOAD, WHOLE_PAGE_NOT_DONE, WHOLE_PAGE_WHY } from './whole-page.js';
@@ -2585,6 +2585,31 @@ document.addEventListener('keydown', (e) => {
   if (k === 'y' || e.shiftKey) redoEdit(); else undoEdit();
 });
 
+// Text pasted into a part that is one paragraph, heading or line comes in as
+// words, with the formatting the toolbar itself offers and nothing else: no
+// heading, no paragraph of its own, no table, no picture, no class and no
+// style from the page it was copied from (one-paragraph.js). A richer part
+// takes paragraphs, lists and pictures as before, cleaned when the edit is kept.
+document.addEventListener('paste', (e) => {
+  const el = state.active;
+  if (!el || !el.isContentEditable || !e.clipboardData || !(e.target instanceof Node) || !el.contains(e.target)) return;
+  if (el.hasAttribute('data-cms-plain') || holdsBlocks(el.tagName)) return;
+  e.preventDefault();
+  const pasted = e.clipboardData.getData('text/html');
+  const put = pasted
+    ? inlineHtml(new DOMParser().parseFromString(pasted, 'text/html').body, { strict: true })
+    : escapeHtml(e.clipboardData.getData('text/plain')).trim().replace(/\r?\n/g, '<br>');
+  if (put) document.execCommand('insertHTML', false, DOMPurify.sanitize(put, SANITIZE));
+}, true);
+
+/** Does this part, the editor's own controls aside, hold markup a single paragraph or heading cannot? */
+function blocksInside(el) {
+  if (holdsBlocks(el.tagName)) return false;
+  const copy = el.cloneNode(true);
+  copy.querySelectorAll('.kiln-item-ctl, .kiln-ctl-cell, .kiln-repeat-add, #kiln-toolbar').forEach(n => n.remove());
+  return holdsBlockMarkup(copy);
+}
+
 /** The committed value of a field's HTML (sanitized rich text, or escaped plain text). */
 function fieldValue(html, plain) {
   // Editing chrome can sit inside a field's DOM (row controls, the toolbar).
@@ -2610,7 +2635,8 @@ function commitEdit(el, key) {
   const linkKept = linked !== html;
   if (linkKept) html = DOMPurify.sanitize(linked, SANITIZE);
   // The page shows what will be published: what the sanitizer does not keep goes now.
-  if (linkKept || fieldValue(el.innerHTML, plain) !== el.innerHTML) writeInside(el, html);
+  // So does a block put inside one paragraph or heading (each Enter makes one): it is shown as the line breaks it is kept as.
+  if (linkKept || fieldValue(el.innerHTML, plain) !== el.innerHTML || (!plain && blocksInside(el))) writeInside(el, html);
   el.contentEditable = 'false';
   el.classList.remove('kiln-editing');
   el.closest('.kiln-repeat-item')?.classList.remove('kiln-row-editing');
@@ -2685,6 +2711,9 @@ function committedHtml(el, plain = el.hasAttribute('data-cms-plain')) {
     img.setAttribute('src', img.getAttribute('data-kiln-src'));
     img.removeAttribute('data-kiln-src');
   });
+  // One paragraph, heading or line holds words and inline formatting only: a
+  // block inside it would end it early on the site (one-paragraph.js).
+  if (!holdsBlocks(el.tagName) && holdsBlockMarkup(clone)) return DOMPurify.sanitize(inlineHtml(clone), SANITIZE);
   return DOMPurify.sanitize(clone.innerHTML, SANITIZE);
 }
 

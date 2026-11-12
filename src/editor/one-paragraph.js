@@ -115,3 +115,122 @@ export function liftLists(root) {
   }
   return mended;
 }
+
+// ─── What a single paragraph, heading or line may hold ───────────────────────
+//
+// A part that is one paragraph or one heading holds words and inline
+// formatting. A browser reading the page ends a paragraph at the first
+// heading, paragraph, list or table inside it, so anything of that kind put
+// into such a part lands outside it on the site: the part comes out empty,
+// and the rest sits where no tool of the editor can reach it. That is what
+// text pasted from a web page did. Two things keep it out. A paste into such
+// a part is brought in as words with the formatting the toolbar itself offers
+// (`inlineHtml` with `strict`). And when an edit is kept, whatever block
+// markup the part holds all the same (the browser makes a `<div>` for each
+// Enter) is turned into line breaks (`inlineHtml`).
+
+/** Elements that end a paragraph or a heading when they are put inside one. */
+const BLOCKS = new Set(['ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'BODY', 'CAPTION', 'CENTER', 'DD', 'DETAILS',
+  'DIALOG', 'DIR', 'DIV', 'DL', 'DT', 'FIELDSET', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3', 'H4',
+  'H5', 'H6', 'HEADER', 'HGROUP', 'HR', 'HTML', 'LI', 'MAIN', 'MENU', 'NAV', 'OL', 'P', 'PRE', 'SEARCH', 'SECTION',
+  'SUMMARY', 'TABLE', 'TBODY', 'TFOOT', 'THEAD', 'TR', 'UL']);
+const CELLS = new Set(['TD', 'TH']);
+/** Never brought in by a paste: pictures, embeds, code and form controls. */
+const NOT_PASTED = new Set(['IMG', 'PICTURE', 'SOURCE', 'SVG', 'MATH', 'VIDEO', 'AUDIO', 'IFRAME', 'OBJECT', 'EMBED',
+  'CANVAS', 'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'HEAD', 'TITLE', 'META', 'LINK', 'BASE', 'INPUT', 'SELECT',
+  'TEXTAREA', 'BUTTON', 'MAP', 'AREA']);
+/** The formatting the toolbar offers (bold, italic, underline, a link): what a paste may bring with its words. */
+const PASTED = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'A']);
+const VOID = new Set(['AREA', 'BASE', 'BR', 'COL', 'EMBED', 'HR', 'IMG', 'INPUT', 'LINK', 'META', 'SOURCE', 'TRACK', 'WBR']);
+/** An address a pasted link may keep: on this site, or the web, an email, a phone. */
+const LINK_OK = /^(?:https?:|mailto:|tel:|[^a-z]|[a-z0-9+.-]*(?:[^a-z0-9+.:-]|$))/i;
+
+const tagOf = (n) => String(n.tagName || '').toUpperCase();
+const escText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const escAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+const styleOf = (n) => (n.getAttribute && n.getAttribute('style')) || '';
+const wordless = (n) => !String(n.textContent || '').replace(/[\s​]/g, '');
+
+/** Does this part hold markup that a single paragraph or heading cannot? */
+export function holdsBlockMarkup(root) {
+  for (const c of root.childNodes || []) {
+    if (c.nodeType !== 1) continue;
+    if (BLOCKS.has(tagOf(c)) || CELLS.has(tagOf(c)) || holdsBlockMarkup(c)) return true;
+  }
+  return false;
+}
+
+/**
+ * The inside of `root` as a single paragraph or heading can hold it: its
+ * words and inline elements, with a line break where a block began or ended
+ * and a space between the cells of a table.
+ *
+ * As it is, the page's own inline elements are kept exactly (a `<span>` with
+ * the site's class, a picture that was already in the line). With `strict`,
+ * for what is pasted from elsewhere: only bold, italic, underline and links
+ * are kept, with no class and no style; a link keeps its address and nothing
+ * else; pictures, embeds and code are left out.
+ */
+export function inlineHtml(root, { strict = false } = {}) {
+  let out = '';
+  let gap = '';   // what stands before the next words: nothing, a space or a line break
+  const put = (s) => { if (out) out += gap; gap = ''; out += s; };
+  const brk = () => { if (out) gap = '<br>'; };
+  const space = () => { if (out && !gap) gap = ' '; };
+  const walk = (node) => {
+    const kids = Array.from(node.childNodes || []);
+    kids.forEach((c, at) => {
+      if (c.nodeType === 3) {
+        let t = String(c.data ?? c.nodeValue ?? '');
+        if (strict) t = t.replace(/[ \t\r\n\f]+/g, ' ');
+        if (!/[^ \t\r\n\f]/.test(t)) { if (t) space(); return; }
+        if (!out || gap) t = t.replace(/^[ \t\r\n\f]+/, '');
+        put(escText(t));
+        return;
+      }
+      if (c.nodeType !== 1) return;   // a comment
+      const tag = tagOf(c);
+      if (tag === 'BR') {
+        // the last thing in a block is the browser's own filler, not a line the person made
+        const last = kids.slice(at + 1).every(k => k.nodeType !== 1 && wordless(k));
+        if (last && (BLOCKS.has(tagOf(node)) || CELLS.has(tagOf(node)))) return;
+        if (out) { out += (gap === '<br>' ? gap : '') + '<br>'; gap = ''; }
+        return;
+      }
+      if (strict && NOT_PASTED.has(tag)) return;
+      if (BLOCKS.has(tag)) {
+        brk();
+        const before = out.length;
+        if (tag !== 'HR') walk(c);
+        // an empty line the person made with Enter
+        if (out && out.length === before && wordless(c) && Array.from(c.childNodes || []).some(k => tagOf(k) === 'BR')) out += '<br>';
+        brk();
+        return;
+      }
+      if (CELLS.has(tag)) { space(); walk(c); space(); return; }
+      if (!strict) {
+        let open = `<${tag.toLowerCase()}`;
+        for (const a of Array.from(c.attributes || [])) open += ` ${a.name}="${escAttr(a.value)}"`;
+        put(VOID.has(tag) ? `${open}>` : `${open}>${inlineHtml(c)}</${tag.toLowerCase()}>`);
+        return;
+      }
+      // Pasted. What a word processor writes as a style is read as the formatting it stands for.
+      const style = styleOf(c);
+      const bold = /font-weight\s*:\s*(bold|[6-9]00)/i.test(style), plainWeight = /font-weight\s*:\s*(normal|[1-4]00)/i.test(style);
+      const slanted = /font-style\s*:\s*italic/i.test(style);
+      let wrap = null;
+      if (tag === 'A') {
+        const href = (c.getAttribute('href') || '').trim();
+        if (href && LINK_OK.test(href) && !/^\s*javascript:/i.test(href)) wrap = [`<a href="${escAttr(href)}">`, '</a>'];
+      } else if (PASTED.has(tag)) {
+        if (!((tag === 'B' || tag === 'STRONG') && plainWeight)) wrap = [`<${tag.toLowerCase()}>`, `</${tag.toLowerCase()}>`];
+      } else if (bold) wrap = ['<strong>', '</strong>'];
+      else if (slanted) wrap = ['<em>', '</em>'];
+      if (!wrap) { walk(c); return; }
+      const inner = inlineHtml(c, { strict });
+      if (inner) put(wrap[0] + inner + wrap[1]);
+    });
+  };
+  walk(root);
+  return out.replace(/(?:\s|<br>)+$/, '');
+}
