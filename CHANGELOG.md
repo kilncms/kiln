@@ -42,6 +42,24 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Kiln's hosting is brought up to date by itself a day after the service
   first knew of a release, exactly as before: that day is counted from the
   first sight of the release, which reading it more often does not move.
+- **A site already on Kiln's hosting can be given the character-set line
+  for its page templates.** A site is given `<meta charset="utf-8">` on every
+  page that names no character set when it first goes on Kiln's hosting, and
+  since 0.6.1 on its page templates too. A site that went up before that was
+  never looked at again, so its templates went on making new pages that name
+  none. Now the dashboard's button "Add Kiln to this site" (on a site that
+  has Kiln, "Check for pages without Kiln") also looks for pages and page
+  templates without the line, for a site Kiln hosts. Its preview says how
+  many of each would get it, and its one press adds it. The line is a commit
+  of its own in the owner's name, as it is when a site first goes up: the
+  commit says the one thing it does, and if it cannot be made, Kiln is added
+  all the same and the button offers the line again. A page that names a
+  character set already and a file with no head are left as they are. A site
+  Kiln does not host is asked and told exactly what it was before. `GET` and
+  `POST /cloud/sites/prepare` answer with `charset` for a hosted site
+  (`state`, `pages`, `page_names`, `templates`, `template_names`, `no_head`,
+  and a `sentence` to show as it is), and `state` is `ready` while the line
+  is still to add.
 
 ## [0.6.1] - 2026-11-12
 

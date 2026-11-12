@@ -472,3 +472,176 @@ test('prepare: one address cannot ask the dashboard\'s repository routes over an
   assert.equal(gh.head(), before);
 });
 
+
+// ─── A site Kiln hosts: the same button also adds the character-set line ─────
+
+const CHARSET = '<meta charset="utf-8">';
+const HOSTING = { HOSTING_ACCOUNT_ID: 'cf-account', HOSTING_API_TOKEN: 'cf-token', HOSTING_SUBDOMAIN: 'kiln-sites' };
+const TEMPLATE = '<!doctype html>\n<html>\n<head>\n  <title>{{title}}</title>\n</head>\n<body>\n  <h1 data-cms="page_title">{{title}}</h1>\n</body>\n</html>\n';
+const CARD = '<li><a href="{{href}}">{{title}}</a></li>\n';
+/** Put site-1 on Kiln's hosting, as a site that went up some time ago. */
+const hostIt = (env) => env.kiln_cloud.prepare('INSERT INTO hosting (site_id, name, url, state, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+  .bind('site-1', 'club', 'https://club.kiln-sites.workers.dev', 'live', 5, 5).run();
+const lastCommits = (gh, n) => [...gh.commits.values()].slice(-n);
+const SITE_FILES = {
+  'index.html': page('Home'),
+  'about/index.html': page('About'),
+  'named.html': page('Named').replace('<head>', `<head>${CHARSET}`),     // says so already
+  '_templates/page.html': TEMPLATE,
+  '_templates/post-card.html': CARD,                                       // a piece of a page: never touched
+};
+
+test('prepare, hosted: a site that already has Kiln is offered the character-set line for its pages and templates, and one press adds it as one commit', { skip: d1Skip }, async () => {
+  const { gh, env, handler } = world(SITE_FILES, { env: HOSTING });
+  await withFetch(handler, async (calls) => {
+    // The site went on Kiln's hosting with Kiln on every page, before page templates were given the line.
+    assert.equal((await press(env)).status, 200);
+    await hostIt(env);
+    const before = gh.head();
+    const n = calls.length;
+    const seen = await (await look(env)).json();
+    assert.equal(seen.ok, true);
+    assert.equal(seen.state, 'ready', 'there is something for the button to do');
+    assert.equal(seen.pages.add, 0, 'and it is not Kiln that is missing');
+    assert.deepEqual(seen.files.add, []);
+    assert.deepEqual(seen.charset, {
+      state: 'ready', pages: 2, page_names: ['about/index.html', 'index.html'], templates: 1, template_names: ['_templates/page.html'], no_head: [],
+      sentence: `2 pages and 1 page template do not say which character set they are written in. Kiln's hosting does not say it for a page, so letters such as é and curly quotes can show as other letters. Kiln will add the line ${CHARSET} at the top of the head of each.`,
+    });
+    assert.deepEqual(githubWrites(calls.slice(n)), [], 'looking writes nothing');
+    assert.equal(gh.head(), before);
+
+    const res = await press(env);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.state, 'done');
+    assert.equal(body.charset.state, 'done');
+    assert.equal(body.charset.sentence, '2 pages and 1 page template now say which character set they are written in.');
+    assert.equal(body.commit.sha, gh.head());
+    assert.deepEqual(body.charset.commit, body.commit);
+    const [commit] = lastCommits(gh, 1);
+    assert.deepEqual(commit.parents, [before], 'one commit');
+    assert.match(commit.message, /^Say which character set each page is written in\n\n2 pages now say they are written in UTF-8 .* 1 page template now says so too, .* Added for ada from the dashboard \(via Kiln\)$/);
+    assert.equal(commit.author.name, 'ada');
+    assert.match(gh.read('index.html'), /<head><meta charset="utf-8"><title>Home<\/title>/);
+    assert.match(gh.read('about/index.html'), /<head><meta charset="utf-8"><title>About<\/title>/);
+    assert.match(gh.read('_templates/page.html'), /<head>\n  <meta charset="utf-8">\n  <title>\{\{title\}\}<\/title>/, 'on a line of its own, first in the head');
+    assert.equal(gh.read('_templates/post-card.html'), CARD, 'a piece of a page is left as it is');
+    assert.equal(gh.read('named.html').split('charset').length - 1, 1, 'a page that says so already is not given the line twice');
+
+    // Nothing is left to do, and pressing again changes nothing.
+    const after = await (await look(env)).json();
+    assert.equal(after.state, 'prepared');
+    assert.equal(after.charset.state, 'nothing');
+    assert.equal(after.charset.sentence, 'Every page that can say which character set it is written in already says so.');
+    const m = calls.length;
+    assert.equal((await (await press(env)).json()).state, 'prepared');
+    assert.deepEqual(githubWrites(calls.slice(m)), []);
+  });
+});
+
+test('prepare, hosted: only a page template is missing the line, and the preview and the commit say so', { skip: d1Skip }, async () => {
+  const named = (title) => page(title).replace('<head>', `<head>${CHARSET}`);
+  const { gh, env, handler } = world({ 'index.html': named('Home'), '_templates/page.html': TEMPLATE, '_templates/post.html': '<body><h1>{{title}}</h1></body>\n' }, { env: HOSTING });
+  await withFetch(handler, async () => {
+    await press(env);
+    await hostIt(env);
+    const seen = await (await look(env)).json();
+    assert.equal(seen.state, 'ready');
+    assert.equal(seen.charset.pages, 0);
+    assert.equal(seen.charset.templates, 1);
+    assert.deepEqual(seen.charset.no_head, ['_templates/post.html']);
+    assert.match(seen.charset.sentence, /^1 page template does not say which character set it is written in\. .* 1 file has no head for the line to go in, and is left as it is: _templates\/post\.html\.$/);
+    const before = gh.read('_templates/post.html');
+    assert.equal((await (await press(env)).json()).charset.state, 'done');
+    assert.match(lastCommits(gh, 1)[0].message, /\n\n1 page template now says it is written in UTF-8/);
+    assert.equal(gh.read('_templates/post.html'), before);
+    assert.equal((await (await look(env)).json()).state, 'prepared', 'a file with no head does not keep the button offering');
+  });
+});
+
+test('prepare, hosted: a site with neither Kiln nor the line gets both with one press, each as its own commit', { skip: d1Skip }, async () => {
+  const { gh, env, handler } = world(SITE_FILES, { env: HOSTING });
+  await hostIt(env);
+  const before = gh.head();
+  await withFetch(handler, async () => {
+    const seen = await (await look(env)).json();
+    assert.equal(seen.state, 'ready');
+    assert.equal(seen.pages.add, 3);
+    assert.equal(seen.charset.pages, 2);
+    assert.equal(seen.charset.templates, 1);
+    const body = await (await press(env)).json();
+    assert.equal(body.state, 'done');
+    assert.equal(body.charset.state, 'done');
+    const [kiln, line] = lastCommits(gh, 2);
+    assert.deepEqual(kiln.parents, [before]);
+    assert.equal(body.commit.sha, line.parents[0], 'the commit that added Kiln, and the line on top of it');
+    assert.equal(body.charset.commit.sha, gh.head());
+    assert.match(line.message, /^Say which character set each page is written in/);
+    assert.deepEqual([kiln.author.name, line.author.name], ['ada', 'ada']);
+    assert.ok(gh.read('index.html').includes(CHARSET) && gh.read('index.html').includes(KILN_TAGS[1]));
+    assert.ok(gh.read('_templates/page.html').includes(CHARSET));
+    assert.equal(prepared(env).prepared_commit, body.commit.sha);
+    assert.equal((await (await look(env)).json()).state, 'prepared');
+  });
+});
+
+test('prepare, hosted: when the line cannot be added, Kiln is added all the same, the answer says so, and the button offers the line again', { skip: d1Skip }, async () => {
+  const { gh, env, handler } = world(SITE_FILES, { env: HOSTING });
+  await hostIt(env);
+  await withFetch(handler, async () => {
+    let commits = 0;
+    gh.failOn((method, p) => method === 'POST' && p === '/git/commits' && ++commits === 2);   // GitHub breaks at the second commit
+    const res = await press(env);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.state, 'done');
+    assert.equal(body.commit.sha, gh.head(), 'Kiln was added');
+    assert.equal(body.charset.state, 'not_done');
+    assert.equal(body.charset.code, 'github');
+    assert.equal(body.charset.error, 'GitHub did not answer just now, so the pages were left as they are.');
+    assert.equal(gh.read('index.html').includes(CHARSET), false);
+    gh.failOn(() => false);
+    assert.equal((await (await look(env)).json()).state, 'ready');
+    // With Kiln already there, a failure is the button's own answer.
+    gh.failOn((method, p) => method === 'POST' && p === '/git/commits');
+    const again = await press(env);
+    assert.equal(again.status, 502);
+    assert.equal((await again.json()).error, 'GitHub did not answer just now, so the pages were left as they are.');
+    gh.failOn(() => false);
+    assert.equal((await (await press(env)).json()).charset.state, 'done');
+    assert.ok(gh.read('index.html').includes(CHARSET));
+  });
+});
+
+test('prepare, not hosted: a site Kiln does not host is asked and told exactly what it was before', { skip: d1Skip }, async () => {
+  for (const [why, env0, host] of [
+    ['hosting is on, and this site is not on it', HOSTING, false],
+    ['the site has a hosting row, and hosting is switched off', {}, true],
+    ['neither', {}, false],
+  ]) {
+    const plain = world(SITE_FILES);
+    const w = world(SITE_FILES, { env: env0 });
+    if (host) await hostIt(w.env);
+    const run = async (x) => withFetch(x.handler, async (calls) => {
+      const out = [await (await look(x.env)).json(), await (await press(x.env)).json(), await (await look(x.env)).json(), await (await press(x.env)).json()];
+      return { out, asked: calls.filter(c => c.url.startsWith('https://api.github.com/')).map(c => `${c.method} ${c.url.replace(/[0-9a-f]{40}/g, 'SHA')}`) };
+    });
+    const [a, b] = [await run(plain), await run(w)];
+    const still = (o) => JSON.parse(JSON.stringify(o).replace(/[0-9a-f]{40}/g, 'SHA'));
+    assert.deepEqual(still(b.out), still(a.out), why);
+    assert.deepEqual(b.asked, a.asked, `${why}: the same requests to GitHub, no more`);
+    assert.equal(b.out.some(o => 'charset' in o), false, why);
+    assert.equal(b.out[2].state, 'prepared', why);
+    assert.equal(w.gh.read('index.html').includes(CHARSET), false, why);
+    assert.equal(w.gh.read('_templates/page.html').includes(CHARSET), false, why);
+  }
+});
+
+test('prepare, hosted: the pages are read once for both questions', { skip: d1Skip }, async () => {
+  const plain = world(SITE_FILES);
+  const hosted = world(SITE_FILES, { env: HOSTING });
+  await hostIt(hosted.env);
+  const reads = async (x) => withFetch(x.handler, async (calls) => { await look(x.env); return calls.filter(c => c.url.startsWith('https://api.github.com/')).length; });
+  assert.equal(await reads(hosted), await reads(plain));
+});

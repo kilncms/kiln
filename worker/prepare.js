@@ -250,8 +250,9 @@ export async function readPages({ token, repo }) {
   return { ...base, state: 'ok', entries, paths, total: pages.length, files, skipped, templates };
 }
 
-export async function planPrepare({ token, repo, worker }) {
-  const site = await readPages({ token, repo });
+export async function planPrepare({ token, repo, worker, read = null }) {
+  // `read` is what readPages answered, when the caller has read the pages already.
+  const site = read || await readPages({ token, repo });
   if (site.state !== 'ok') return site;
   const { entries, paths } = site;
   const base = { branch: site.branch, head: site.head, treeSha: site.treeSha };

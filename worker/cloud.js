@@ -8,6 +8,9 @@
  *   POST /cloud/sites            → register a site (verify repo install) → checkout URL
  *   GET  /cloud/sites/prepare    → what adding Kiln to the site's repository would change
  *   POST /cloud/sites/prepare    → add Kiln to the repository (prepare.js), in one commit
+ *                                  (for a site Kiln hosts, both also cover the character-set
+ *                                  line on pages and page templates that have none: `charset`
+ *                                  in the answer, and a second commit of its own)
  *   GET  /cloud/sites/firstpass  → what a first pass at what can be edited would mark
  *   POST /cloud/sites/firstpass  → mark it (firstpass.js), in one commit
  *   POST /cloud/sites/remove     → cancel its subscription, then delete a site
@@ -29,13 +32,13 @@
 
 import { RUNBOOK_HTML } from './runbook.js';
 import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
-import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND } from './prepare.js';
+import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine } from './sitecheck.js';
 import { hostingOn, hostingSentence } from './hosting.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
-import { lookAfter, lookedAfter, careOwed } from './lookafter.js';
+import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -893,13 +896,47 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       await env.KILN.put(lock, '1', { expirationTtl: 120 });
     }
     try {
-      const plan = await planPrepare({ token, repo: site.repo, worker: url.origin });
-      const shown = publicPlan(plan, { repo: site.repo });
+      // A site Kiln hosts is also looked at for pages and page templates that
+      // do not say which character set they are written in: Kiln's hosting
+      // does not say it for them (lookafter.js). The pages are read once for
+      // both. A site Kiln does not host is asked nothing more than before.
+      const hosted = hostingOn(env) && !!(await hostingRow(env, site.id));
+      const read = hosted ? await readPages({ token, repo: site.repo }) : null;
+      const plan = await planPrepare({ token, repo: site.repo, worker: url.origin, read });
+      const charset = hosted && (plan.state === 'ready' || plan.state === 'prepared') ? await planCharset({ token, repo: site.repo, read }) : null;
+      const owed = !!charset && charset.state === 'ready';
+      const shown = { ...publicPlan(plan, { repo: site.repo }), ...(charset ? { charset: publicCharset(charset) } : {}) };
+      const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
+      const author = { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` };
+      // The character-set line is its own commit, as it is when a site first
+      // goes on Kiln's hosting: the commit says the one thing it does, a site
+      // made ready either way has the same history, and if one of the two
+      // cannot be made the other still stands. Never throws: { commit } or { code }.
+      const addCharset = async (from) => {
+        try {
+          const done = await applyCharset({ token, repo: site.repo, plan: from, author, asked: 'from the dashboard' });
+          await notifyOwner(env, `Character set named on the pages of ${site.repo}`, [`By: ${sess.login}, from the dashboard`, `Pages: ${done.pages}. Page templates: ${done.templates}`, done.url]);
+          return { commit: { sha: done.sha, url: done.url } };
+        } catch (e) {
+          const code = e instanceof PrepareError ? e.code : 'github';
+          console.warn(JSON.stringify({ evt: 'charset_failed', repo: site.repo, code, detail: e instanceof PrepareError ? e.detail : String(e?.message || e).slice(0, 200) }));
+          return { code };
+        }
+      };
       if (plan.state === 'no_access') return refused('no_access', 409, { install_url: INSTALL_URL });
       if (plan.state === 'github') return refused('github', 502);
       if (plan.state === 'prepared') {
         await markPrepared(env, site.id, null);
-        return json({ ok: true, ...shown });
+        if (!owed) return json({ ok: true, ...shown });
+        // Kiln is on every page, and the character-set line is still to add:
+        // that is what the button's one press does.
+        if (!write) return json({ ok: true, ...shown, state: 'ready' });
+        const out = await addCharset(charset);
+        if (out.code) {
+          return json({ error: charsetSentence(out.code, { repo: site.repo, branch: charset.branch }), code: out.code, ...(out.code === 'protected' ? { branch: charset.branch } : {}) },
+            out.code === 'moved' || out.code === 'protected' ? 409 : 502);
+        }
+        return json({ ok: true, ...shown, state: 'done', commit: out.commit, charset: { ...publicCharset(charset, { done: true }), commit: out.commit } });
       }
       if (plan.state !== 'ready') {
         // A site this cannot take: say why, and what does take it.
@@ -909,12 +946,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       }
       if (!write) return json({ ok: true, ...shown });
 
-      const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
       let done;
       try {
         done = await applyPrepare({
-          token, repo: site.repo, worker: url.origin, plan,
-          author: { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` },
+          token, repo: site.repo, worker: url.origin, plan, author,
           ...(env.KILN_RELEASE_BASE ? { releaseBase: env.KILN_RELEASE_BASE } : {}),
         });
       } catch (e) {
@@ -928,7 +963,21 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         `Pages: ${done.pages}. Page templates: ${done.templates || 0}. Files: ${done.files.join(', ') || 'none'}`,
         done.url,
       ]);
-      return json({ ok: true, ...shown, state: 'done', commit: { sha: done.sha, url: done.url } });
+      // Then the character-set line, on the repository as adding Kiln left it.
+      // If it cannot be added now, Kiln is added all the same: the answer
+      // says so, and the button offers the line again.
+      let line = null;
+      if (owed) {
+        const again = await planCharset({ token, repo: site.repo });
+        if (again.state === 'ready') {
+          const out = await addCharset(again);
+          line = out.code
+            ? { ...publicCharset(again), state: 'not_done', code: out.code, error: charsetSentence(out.code, { repo: site.repo, branch: again.branch }) }
+            : { ...publicCharset(again, { done: true }), commit: out.commit };
+        } else if (again.state === 'nothing') line = publicCharset(again);
+        else line = { ...shown.charset, state: 'not_done', code: again.state, error: charsetSentence(again.state, { repo: site.repo, generator: again.generator, branch: again.branch }) };
+      }
+      return json({ ok: true, ...shown, state: 'done', commit: { sha: done.sha, url: done.url }, ...(line ? { charset: line } : {}) });
     } finally {
       if (write) { try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ } }
     }

@@ -91,9 +91,10 @@ export function withCharset(html) {
  * would be given a character set. Writes nothing. `state` is 'ready' (some
  * page needs one), 'nothing', or one of readPages' reasons the pages were not
  * read. `pages.noHead` names the pages that say none and have no <head>.
+ * `read` is what readPages answered, when the caller has read the pages already.
  */
-export async function planCharset({ token, repo }) {
-  const site = await readPages({ token, repo });
+export async function planCharset({ token, repo, read = null }) {
+  const site = read || await readPages({ token, repo });
   if (site.state !== 'ok') return site;
   const changes = [], noHead = [];
   let already = 0;
@@ -122,15 +123,45 @@ export async function planCharset({ token, repo }) {
   };
 }
 
-/** Give the pages of a `ready` plan their character set: one commit, or a PrepareError and nothing changed. */
-export async function applyCharset({ token, repo, plan, author }) {
+/**
+ * Give the pages of a `ready` plan their character set: one commit, or a
+ * PrepareError and nothing changed. `asked` ends the commit's message: how
+ * the owner came to ask for it.
+ */
+export async function applyCharset({ token, repo, plan, author, asked = "when the site went on Kiln's hosting" }) {
   const templates = plan.templates?.changes || [];
   const n = plan.changes.length, t = templates.length;
   const tplSays = t ? `${count(t, 'page template now says so too', 'page templates now say so too')}, so a new page made from ${t === 1 ? 'it' : 'one'} reads as it should. ` : '';
   const message = `Say which character set each page is written in\n\n${n || !t ? `${count(n, 'page now says it is', 'pages now say they are')} written in UTF-8 (${CHARSET_TAG}, first in the head). ${tplSays}` : `${count(t, 'page template now says it is', 'page templates now say they are')} written in UTF-8 (${CHARSET_TAG}, first in the head), so a new page made from ${t === 1 ? 'it' : 'one'} reads as it should. `}`
-    + `Kiln's hosting does not say this for a page, and without it a browser can show accented letters and curly quotes as other letters. Added for ${author.name} when the site went on Kiln's hosting (via Kiln)`;
+    + `Kiln's hosting does not say this for a page, and without it a browser can show accented letters and curly quotes as other letters. Added for ${author.name} ${asked} (via Kiln)`;
   const commit = await commitChange({ token, repo, branch: plan.branch, head: plan.head, treeSha: plan.treeSha, texts: [...plan.changes, ...templates], message, author });
   return { ...commit, pages: n, templates: t };
+}
+
+/**
+ * What the dashboard is shown of a character-set plan that could be made
+ * ('ready' or 'nothing'): numbers, names and one sentence to show as it is,
+ * never a page's text. For "Add Kiln to this site" on a site Kiln hosts
+ * (cloud.js, /cloud/sites/prepare). `done` says the line has just been added.
+ */
+export function publicCharset(plan, { done = false } = {}) {
+  const pages = plan.changes.length;
+  const templates = plan.templates?.changes.length || 0;
+  const noHead = [...plan.pages.noHead, ...(plan.templates?.noHead || [])];
+  const what = [pages ? count(pages, 'page', 'pages') : '', templates ? count(templates, 'page template', 'page templates') : ''].filter(Boolean).join(' and ');
+  const one = pages + templates === 1;
+  let sentence;
+  if (!what) sentence = 'Every page that can say which character set it is written in already says so.';
+  else if (done) sentence = `${what} now ${one ? 'says' : 'say'} which character set ${one ? 'it is' : 'they are'} written in.`;
+  else sentence = `${what} ${one ? 'does' : 'do'} not say which character set ${one ? 'it is' : 'they are'} written in. Kiln's hosting does not say it for a page, so letters such as é and curly quotes can show as other letters. Kiln will add the line ${CHARSET_TAG} at the top of the head of each.`;
+  if (noHead.length) sentence += ` ${count(noHead.length, 'file has', 'files have')} no head for the line to go in, and ${noHead.length === 1 ? 'is' : 'are'} left as ${noHead.length === 1 ? 'it is' : 'they are'}: ${names(noHead)}.`;
+  return {
+    state: done ? 'done' : plan.state,
+    pages, page_names: plan.changes.slice(0, 12).map(c => c.path),
+    templates, template_names: (plan.templates?.changes || []).slice(0, 12).map(c => c.path),
+    no_head: noHead.slice(0, 20),
+    sentence,
+  };
 }
 
 /** The sentences that differ from adding Kiln; the rest are prepareSentence's. */
