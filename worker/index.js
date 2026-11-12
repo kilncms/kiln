@@ -178,7 +178,7 @@ async function routeRequest(request, env, ctx) {
       // `ownerSessions`: an owner's GitHub sign-in can stay on this worker
       // (/auth/login keep=server, /auth/session, /auth/adopt), and the owner's
       // calls then go through /gh/* with a session, as an invited editor's do.
-      const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ownerSessions: true, ...deployedBuild(env) };
+      const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, aiConfigured: !!env.AI_API_KEY, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ownerSessions: true, ...deployedBuild(env) };
       // ?deep=1 asks the things publishing depends on. A plain GET stays a
       // constant 200 that touches nothing, as every editor and monitor expects.
       if (url.searchParams.get('deep') === '1') {

@@ -33,7 +33,11 @@ test('KLR-09 a plain GET /healthz is still a constant 200 that touches nothing',
       assert.equal(r.status, 200, path);
       assert.equal(r.json.ok, true);
       assert.equal('checks' in r.json, false, path);
+      assert.equal(r.json.aiConfigured, false, 'it says whether it has AI, so the editor can put the AI tools away');
     }
+    const withAi = await get({ ...env, AI_API_KEY: 'k' }, '/healthz');
+    assert.equal(withAi.json.aiConfigured, true);
+    assert.equal(JSON.stringify(withAi.json).includes('"k"'), false, 'and never the key itself');
     assert.equal(touched, 0, 'no KV read, no D1 query');
     assert.equal(calls.length, 0, 'no call to GitHub');
   });

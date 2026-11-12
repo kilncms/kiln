@@ -114,10 +114,10 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the owner opens People & access and the service says it has none, the
   owner's own AI buttons go too. The first time any AI tool is answered "AI
   is not set up", the tools are put away for the rest of the visit, and the
-  line says so and says who can turn them on. The service does not yet say
-  whether it has AI anywhere an invited editor can read before pressing, so
-  on such a site an editor still sees the tools once. The editor already
-  reads the answer for the day the service gives it.
+  line says so and says who can turn them on. The service now also says
+  whether it has AI in its public status answer (`aiConfigured` on
+  `/healthz`), so an editor does not see the tools at all on a site without
+  it, once the service is updated.
 
 ## [0.6.1] - 2026-11-12
 
