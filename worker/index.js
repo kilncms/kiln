@@ -83,7 +83,7 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.6.0';
 
-import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingEndsAt, hostingEndReason, noticeEndingHosting, markPrepared, markFirstPass } from './cloud.js';
+import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
@@ -121,7 +121,8 @@ export default {
     // comes down (cloud.js); that never throws, so it cannot stop the sweep.
     await cronJob('hosting', async () => {
       await noticeEndingHosting(env);
-      return sweepHosting(env, { installationToken, hasAccess: siteHasAccess, endsAt: hostingEndsAt, endReason: hostingEndReason,
+      return sweepHosting(env, { installationToken, hasAccess: siteHasAccess, endReason: hostingEndReason,
+        endsAt: (site) => hostingDownAt(env, site, { deployed: !!site.deployed_at }), ended: (site, reason) => hostingEndedNote(env, site, reason),
         care: { prepared: (id, sha) => markPrepared(env, id, sha), firstPass: (id, sha) => markFirstPass(env, id, sha) } });
     });
   },

@@ -452,8 +452,62 @@ export function hostingEndsAt(site, now = Date.now()) {
 }
 /** Why a hosted site comes down when hostingEndsAt says it does: the word kept on its record (hosting.js has the sentence). */
 export const hostingEndReason = (site) => (site && site.ls_subscription_id ? 'plan_ended' : 'trial_ended');
+/** The key of the last notice for one ending of a paid hosted site (mail.js sendOnce keeps `mail:<key>` with the time it went). */
+const lastNoticeKey = (site) => `hosting-ending:${site.id}:${site.access_until}`;
+
+/**
+ * When a hosted site really comes down: { at, ready }, or null when it is not
+ * on its way down. `at` is the day the dashboard and the last notice name, and
+ * the sweep takes the site down once `ready` is true and `at` has come.
+ *
+ * It is hostingEndsAt's day, with one promise on top for a site that was paid
+ * for and is online: where its owner can be written to (customer mail is on
+ * and the account has an address), the site never comes down sooner than
+ * HOSTING_NOTICE_DAYS after the last notice went. Normally that notice goes a
+ * week ahead and changes nothing. Found late (the job did not run, mail was
+ * off, a day on the row far in the past), the notice goes first and names a
+ * day a week on, and the site waits for it: `ready` is false until it has
+ * gone. With nobody to write to, the day is the day.
+ *
+ * `site` is the site's row (`email`, the account's address, is read when the
+ * row does not carry it); `deployed` says whether the site is up at all.
+ */
+export async function hostingDownAt(env, site, { now = Date.now(), deployed = true } = {}) {
+  const end = hostingEndsAt(site, now);
+  if (!end) return null;
+  const plain = { at: end, ready: true };
+  if (!site.ls_subscription_id || !deployed || !customerMailOn(env)) return plain;
+  let email = site.email;
+  if (email === undefined) {
+    try { email = (await env.kiln_cloud.prepare('SELECT a.email FROM sites s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?').bind(site.id).first())?.email; }
+    catch { email = null; }
+  }
+  if (!mailAddress(email)) return plain;
+  const week = HOSTING_NOTICE_DAYS * 86400 * 1000;
+  let told = 0;
+  try { told = Number(await env.KILN.get(`mail:${lastNoticeKey(site)}`)) || 0; }
+  catch { return { at: Math.max(end, now + week), ready: false }; }   // not known whether it went: not taken down on a guess
+  return told ? { at: Math.max(end, told + week), ready: true } : { at: Math.max(end, now + week), ready: false };
+}
+
+/** The operator hears when a hosted site is taken down (hosted.js calls this from the sweep). Never throws. */
+export async function hostingEndedNote(env, site, reason) {
+  try {
+    await notifyOwner(env, `Kiln took ${site.repo} down from its hosting`, [
+      reason === 'plan_ended'
+        ? `Its plan ended and ${HOSTING_AFTER_PAID_DAYS} days have passed. Where the account has an address, its owner was written to when editing stopped and again a week before today.`
+        : 'Its free days ran out and nobody subscribed for it.',
+      `Repository: ${site.repo}`,
+      'Nothing was deleted from the repository. Its owner can subscribe and put the site up again from the dashboard.',
+    ]);
+  } catch { /* the site is down all the same, and the log says so */ }
+}
+
 /** What the dashboard is shown of a hosted site, with the day it comes down when it is on its way down. `site` is its whole row. */
-const shownHosting = (row, site, now = Date.now()) => publicHosting(row, { repo: site.repo, endsAt: hostingEndsAt(site, now), planEnded: Number(site.access_until) || null });
+async function shownHosting(env, row, site, now = Date.now()) {
+  const down = row && row.state !== 'ended' && row.state !== 'removing' ? await hostingDownAt(env, site, { now, deployed: !!row.deployed_at }) : null;
+  return publicHosting(row, { repo: site.repo, endsAt: down?.at || null, planEnded: Number(site.access_until) || null });
+}
 const MAILS_PER_RUN = 25;   // a run writes to this many people at most; the rest wait five minutes
 
 /**
@@ -464,8 +518,10 @@ const MAILS_PER_RUN = 25;   // a run writes to this many people at most; the res
  * HOSTING_NOTICE_DAYS before that day. Each goes once for one ending: the key
  * holds the site and its `access_until`, so a site that is subscribed again
  * and ends again later is written to again. Only one of the two goes in a
- * run, so a site first seen in its last week gets the second one alone.
- * sweepHosting, which runs after this, takes the site down on the day.
+ * run, so a site first seen in its last week gets the second one alone. A
+ * site first seen on or after its day gets the second one too, naming a day
+ * a week on: it is never taken down before that notice has had its week
+ * (hostingDownAt). sweepHosting, which runs after this, takes the site down.
  *
  * A paid site with no `access_until` has no day to count from. It is left
  * up, and the operator is told, once for that site and subscription: the
@@ -494,12 +550,19 @@ export async function noticeEndingHosting(env, now = Date.now()) {
       if (siteHasAccess(r, now)) continue;
       const end = hostingEndsAt(r, now);
       if (!end) { undated.push(r); continue; }
-      // Not for a site that comes down in this very run, nor for one that never went up.
-      if (!mailOn || out.sent >= MAILS_PER_RUN || now >= end || !r.deployed_at || !mailAddress(r.email)) continue;
+      // Not for a site that never went up: nothing of it is online.
+      if (!mailOn || out.sent >= MAILS_PER_RUN || !r.deployed_at || !mailAddress(r.email)) continue;
       const about = { origin: r.origin, plan: r.plan, repo: r.repo, endsAt: end, pastDue: r.status === 'past_due', dashboard };
-      const res = now >= end - HOSTING_NOTICE_DAYS * 86400 * 1000
-        ? await sendOnce(env, `hosting-ending:${r.id}:${r.access_until}`, r.email, hostingEndingMail(about))
-        : await sendOnce(env, `hosting-stays:${r.id}:${r.access_until}`, r.email, editingStoppedMail(about));
+      let res;
+      if (now >= end - HOSTING_NOTICE_DAYS * 86400 * 1000) {
+        // The last notice names the day the site really comes down: its own
+        // day, or a week from now when this notice is late.
+        const down = await hostingDownAt(env, r, { now });
+        if (!down || down.ready) continue;   // it has gone already
+        res = await sendOnce(env, lastNoticeKey(r), r.email, hostingEndingMail({ ...about, endsAt: down.at }));
+      } else {
+        res = await sendOnce(env, `hosting-stays:${r.id}:${r.access_until}`, r.email, editingStoppedMail(about));
+      }
       if (res.ok) out.sent++;
     }
     out.undated = undated.length;
@@ -746,7 +809,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     for (const r of rows) r.editor_build = editors.builds[r.repo] ?? null;
     // Where each hosted site stands (hosted.js), and whether this service hosts sites at all.
     const hosted = hostingOn(env) ? await hostingForAccount(env, sess.account_id) : {};
-    for (const r of rows) r.hosting = shownHosting(hosted[r.id], whole[r.id], now);
+    for (const r of rows) r.hosting = await shownHosting(env, hosted[r.id], whole[r.id], now);
     // What Kiln did for a hosted site when it was first put up (lookafter.js), while that is kept.
     await Promise.all(rows.filter(r => r.hosting).map(async (r) => { const care = await lookedAfter(env, r.id); if (care) r.looked_after = care; }));
     // `prepare`, `firstpass`: this service can add Kiln to a repository itself, and mark a first pass of what can be edited.
@@ -935,7 +998,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       // A hosted site that may not be edited any more: the rest of its row says when it comes down.
       const rest = row && !asked.access
         ? await env.kiln_cloud.prepare('SELECT created_at, ls_subscription_id FROM sites WHERE id = ?').bind(site.id).first().catch(() => null) : null;
-      return json({ ok: true, available, on_plan: site.plan === 'managed', hosting: shownHosting(row, { ...site, ...(rest || {}) }), ...(care ? { looked_after: care } : {}) });
+      return json({ ok: true, available, on_plan: site.plan === 'managed', hosting: await shownHosting(env, row, { ...site, ...(rest || {}) }), ...(care ? { looked_after: care } : {}) });
     }
     if (!available) return json({ error: hostingSentence('not_set_up'), code: 'not_set_up' }, 503);
     if (site.plan !== 'managed') {

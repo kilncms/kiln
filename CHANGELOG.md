@@ -61,7 +61,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the day the site comes down, what keeps it up, and that everything is
   still in the owner's own GitHub repository in case they would rather move
   to another host; and one seven days before that day. A site first seen in
-  its last week gets the second one alone. A plan that is taken up again in
+  its last week gets the second one alone. Where there is an address to
+  write to, a site never comes down sooner than seven days after that second
+  email went: a site found late (the job was off, or the day on its row is
+  far in the past) is written to first, with a day a week on, and stays up
+  until then. The dashboard is given that same day. The operator is told
+  when a hosted site is taken down. A plan that is taken up again in
   time stops all of it: the site stays up and nothing more is sent. A plan
   that ends again later is a new ending, with its own two emails.
   `GET /cloud/sites/hosting` and `/cloud/me` now give `ends_at`
@@ -76,8 +81,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   subscription expired before this release has no day and is one the
   operator is told about. A free trial nobody subscribed for still comes
   down three days after it ran out, as before (`worker/cloud.js`
-  `hostingEndsAt` and `noticeEndingHosting`, `worker/mail.js`,
-  `worker/hosted.js`).
+  `hostingEndsAt`, `hostingDownAt` and `noticeEndingHosting`,
+  `worker/mail.js`, `worker/hosted.js`).
 
 ## [0.6.0] - 2026-11-12
 

@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import worker from '../worker/index.js';
-import { expireStaleTrials, remindEndingTrials, noticeEndingHosting } from '../worker/cloud.js';
+import { expireStaleTrials, remindEndingTrials, noticeEndingHosting, hostingDownAt, hostingEndsAt } from '../worker/cloud.js';
 import { mailAddress, dayWords, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, sendMail, customerMailOn } from '../worker/mail.js';
 import { fakeKV, withFetch, jsonRes } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
@@ -242,24 +242,69 @@ test('a paid, hosted site whose plan ended: its owner is told once when editing 
   env.kiln_cloud.exec("UPDATE sites SET status = 'past_due', access_until = ? WHERE id = 'club'", again);
   assert.equal((await noticeEndingHosting(env, again - 60e3)).sent, 0, 'not while it may still be edited');
   assert.equal((await noticeEndingHosting(env, again + 60e3)).sent, 1);
-  assert.equal((await noticeEndingHosting(env, again + 24 * DAY)).sent, 1);
+  assert.equal((await noticeEndingHosting(env, again + 23 * DAY + 60e3)).sent, 1);
   assert.equal((await noticeEndingHosting(env, again + 25 * DAY)).sent, 0);
   assert.deepEqual(subjects(mail).slice(2), [
     `Editing is off for club.example, and the site stays online until ${dayWords(again + 30 * DAY)}`,
-    `club.example comes down on ${dayWords(again + 30 * DAY)}`,
+    `club.example comes down on ${dayWords(again + 30 * DAY + 60e3)}`,
   ]);
   assert.match(mail.out[2].text, /open Manage billing in your dashboard and update the card/);
   assert.equal(mail.out.every(m => /club\.example/.test(m.subject)), true, 'nobody else was written to');
 });
 
-test('a paid, hosted site first seen in its last week gets the second message alone', { skip: d1Skip }, async () => {
+test('a paid, hosted site first seen in its last week gets the second message alone, and it names a day a full week on', { skip: d1Skip }, async () => {
   const mail = box();
   const env = cloud(mail, HOSTS);
   const now = Date.now();
   hosted(env, 'late', { until: now - 25 * DAY });
   assert.equal((await noticeEndingHosting(env, now)).sent, 1);
   assert.equal((await noticeEndingHosting(env, now + 5 * 60e3)).sent, 0);
-  assert.deepEqual(subjects(mail), [`late.example comes down on ${dayWords(now + 5 * DAY)}`]);
+  // Its own day is five days off. The notice went today, so the site has a week from today.
+  assert.deepEqual(subjects(mail), [`late.example comes down on ${dayWords(now + 7 * DAY)}`]);
+});
+
+test('a paid site never comes down before its owner has had the last notice for a week, where there is someone to write to', { skip: d1Skip }, async () => {
+  const mail = box();
+  const env = cloud(mail, HOSTS);
+  const now = Date.now();
+  const until = now - 31 * DAY;                       // its own day was yesterday, and nobody was ever written to
+  hosted(env, 'club', { until });
+  const site = () => env.kiln_cloud.row('SELECT * FROM sites WHERE id = ?', 'club');
+  assert.equal(hostingEndsAt(site(), now), until + 30 * DAY, 'the plain day has passed');
+  // Not ready: the notice has to go first, and it will name a day a week on.
+  assert.deepEqual(await hostingDownAt(env, site(), { now }), { at: now + 7 * DAY, ready: false });
+  assert.equal((await noticeEndingHosting(env, now)).sent, 1);
+  assert.deepEqual(subjects(mail), [`club.example comes down on ${dayWords(now + 7 * DAY)}`]);
+  // Told: ready, and the day is a week after the notice went (the marker holds the real time it went).
+  const told = Number(env.KILN.map.get(`mail:hosting-ending:club:${until}`));
+  assert.ok(told >= now && told <= Date.now());
+  assert.deepEqual(await hostingDownAt(env, site(), { now: now + 60e3 }), { at: told + 7 * DAY, ready: true });
+  // Nothing more is written, however often the job runs before that day or after it.
+  for (const later of [5 * 60e3, 3 * DAY, 7 * DAY + 60e3, 9 * DAY]) assert.equal((await noticeEndingHosting(env, now + later)).sent, 0);
+  assert.equal(mail.out.length, 1);
+
+  // A notice that went in good time changes nothing: the day is the plain day.
+  const early = now - 25 * DAY;
+  hosted(env, 'ontime', { until: early });
+  env.KILN.map.set(`mail:hosting-ending:ontime:${early}`, String(early + 23 * DAY));
+  const ontime = env.kiln_cloud.row('SELECT * FROM sites WHERE id = ?', 'ontime');
+  assert.deepEqual(await hostingDownAt(env, ontime, { now }), { at: early + 30 * DAY, ready: true });
+
+  // With nobody to write to, the day is the day: no address, customer mail off, a site that was never up, or a free trial.
+  env.kiln_cloud.exec('UPDATE accounts SET email = NULL');
+  assert.deepEqual(await hostingDownAt(env, site(), { now }), { at: until + 30 * DAY, ready: true });
+  const quiet = cloud(box(), { ...HOSTS, CUSTOMER_MAIL_FROM: '' });
+  hosted(quiet, 'club', { until });
+  assert.deepEqual(await hostingDownAt(quiet, quiet.kiln_cloud.row('SELECT * FROM sites WHERE id = ?', 'club'), { now }), { at: until + 30 * DAY, ready: true });
+  const other = cloud(box(), HOSTS);
+  hosted(other, 'club', { until });
+  assert.deepEqual(await hostingDownAt(other, other.kiln_cloud.row('SELECT * FROM sites WHERE id = ?', 'club'), { now, deployed: false }), { at: until + 30 * DAY, ready: true });
+  hosted(other, 'trial', { sub: null, until: null, created_at: now - 20 * DAY });
+  const trial = other.kiln_cloud.row('SELECT * FROM sites WHERE id = ?', 'trial');
+  assert.deepEqual(await hostingDownAt(other, trial, { now }), { at: hostingEndsAt(trial, now), ready: true });
+  // And a site that is not on its way down has no day at all.
+  hosted(other, 'fine', { status: 'active', until: null });
+  assert.equal(await hostingDownAt(other, other.kiln_cloud.row('SELECT * FROM sites WHERE id = ?', 'fine'), { now }), null);
 });
 
 test('the two messages go only to an address, only from a service that writes to customers, and only where Kiln hosts', { skip: d1Skip }, async () => {

@@ -418,6 +418,48 @@ test('hosting: a site that was paid for comes down thirty days after its plan en
   assert.equal(row(f.env).reason, 'plan_ended');
 });
 
+test('hosting: with an owner to write to, the sweep leaves a paid site up until the last notice has had its week, and the operator hears when it comes down', { skip: d1Skip }, async () => {
+  const day = 86400 * 1000;
+  const sent = [];
+  const w = world(pages, {
+    site: { ls_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day },
+    env: { NOTIFY: { send: async (m) => { sent.push(m); return { messageId: '<1@kilncms.com>' }; } }, NOTIFY_TO: 'ops@example.com', CUSTOMER_MAIL_FROM: 'hello@kilncms.com', LS_API_KEY: '' },
+  });
+  const toOwner = () => sent.filter(m => m.subject).map(m => m.subject);
+  const toOperator = () => sent.filter(m => m.raw && /took ada\/club down/.test(m.raw));
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    sent.length = 0;
+    // Its own day was yesterday, and its owner has never been written to (the job was off, say).
+    const until = Date.now() - 31 * day;
+    w.env.kiln_cloud.exec("UPDATE sites SET status = 'canceled', access_until = ? WHERE id = 'site1'", until);
+    await sweep(w.env);
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 1, 'still up: the notice goes first');
+    assert.equal(row(w.env).state, 'live');
+    assert.deepEqual(toOwner(), [`club.example comes down on ${dayWords(Date.now() + 7 * day)}`], 'written to once, with a day a week on');
+    assert.equal(toOperator().length, 0);
+    const shown = (await standing(w.env)).hosting.ends_at;
+    assert.ok(Math.abs(shown - (Date.now() + 7 * day)) < 60e3, 'the dashboard names the same day');
+    // Six days after the notice: still up. Eight days after: down, and the operator hears.
+    const marker = `mail:hosting-ending:site1:${until}`;
+    w.env.KILN.map.set(marker, String(Date.now() - 6 * day));
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 1);
+    w.env.KILN.map.set(marker, String(Date.now() - 8 * day));
+    await sweep(w.env);
+    assert.equal(w.cf.scripts.size, 0);
+    assert.deepEqual({ state: row(w.env).state, reason: row(w.env).reason }, { state: 'ended', reason: 'plan_ended' });
+    assert.equal(toOperator().length, 1);
+    assert.match(toOperator()[0].raw, /Subject: Kiln took ada\/club down from its hosting/);
+    assert.match(toOperator()[0].raw, /Nothing was deleted from the repository\./);
+    assert.equal(/[—–]/.test(toOperator()[0].raw), false);
+    assert.equal(toOwner().length, 1, 'and nothing more is written to its owner');
+    await sweep(w.env);
+    assert.equal(toOperator().length, 1, 'said once');
+  });
+});
+
 test('hosting: a paid site with no day on record is left up, and the operator is told once', { skip: d1Skip }, async () => {
   const day = 86400 * 1000;
   const notes = [];

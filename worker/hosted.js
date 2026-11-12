@@ -194,15 +194,16 @@ export async function handleGithubWebhook(request, env, ctx, tools) {
  * more are not published again, and come down when `endsAt` says their time
  * is over; `endReason` names why, for the record the dashboard reads.
  */
-export async function sweepHosting(env, { installationToken, hasAccess, endsAt = () => null, endReason = () => 'trial_ended', care = {} }) {
+export async function sweepHosting(env, { installationToken, hasAccess, endsAt = () => null, endReason = () => 'trial_ended', ended = null, care = {} }) {
   if (!hostingOn(env) || !env.kiln_cloud) return { published: 0, looked: 0, editors: 0, cared: 0 };
   const now = Date.now();
   let published = 0, looked = 0, editors = 0, cared = 0;
   let rows = [];
   try {
     rows = (await env.kiln_cloud.prepare(
-      `SELECT s.id, s.repo, s.status, s.access_until, s.plan, s.created_at, s.ls_subscription_id, s.firstpass_at, h.name, h.state, h.branch, h.commit_sha, h.wanted_sha, h.checked_at, h.updated_at
+      `SELECT s.id, s.repo, s.status, s.access_until, s.plan, s.created_at, s.ls_subscription_id, s.firstpass_at, h.name, h.state, h.branch, h.commit_sha, h.wanted_sha, h.checked_at, h.updated_at, h.deployed_at
        FROM hosting h LEFT JOIN sites s ON s.id = h.site_id ORDER BY COALESCE(h.checked_at, 0)`).all())?.results || [];
+    // (`h.deployed_at` is read with the rest: a site that was never up needs no notice before it is cleared away.)
   } catch { return { published, looked, editors, cared }; }   // migration 0005 has not reached this database
 
   for (const r of rows) {
@@ -218,13 +219,17 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
   // switched on again then.
   for (const r of rows) {
     if (r.state === 'removing' || r.state === 'ended' || !r.id || hasAccess(r)) continue;
-    const end = endsAt(r);
-    if (!end || now < end) continue;
+    // `endsAt` answers with a time, or with { at, ready }: a site whose owner
+    // has not yet had the last notice for a week is not ready to come down.
+    const end = await endsAt(r);
+    const at = end && typeof end === 'object' ? end.at : end;
+    if (!at || now < at || (typeof end === 'object' && end.ready === false)) continue;
     try {
       await removeSite(env, r.name);
       const reason = endReason(r) || 'trial_ended';
       await save(env, r.id, { state: 'ended', reason, deployed_at: null, wanted_sha: null });
       console.log(JSON.stringify({ evt: 'hosting_ended', repo: r.repo, name: r.name, reason }));
+      if (typeof ended === 'function') { try { await ended(r, reason); } catch { /* the operator's note is not what takes a site down */ } }
     } catch (e) { console.warn(JSON.stringify({ evt: 'hosting_end_failed', name: r.name, detail: String(e?.detail || e?.message || e).slice(0, 200) })); }
   }
   const live = rows.filter(r => r.state !== 'removing' && r.id && hasAccess(r));
