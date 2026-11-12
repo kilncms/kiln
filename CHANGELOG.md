@@ -86,6 +86,66 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Changing one block of a list no longer removes anything else from the
+  list.** A tester changed the title of one card on a home page, and the
+  small drawing in each of the three cards (an inline `<svg>`) was deleted
+  from the site. The Publish button said "Publish 3 edits" for the one
+  change, and the owner's own screen went on showing the drawings. The cause:
+  when anything in a list of blocks changed, the editor wrote the whole list
+  over what the file held, as its cleaner had left it, and the cleaner keeps
+  only the markup it knows. Now the file's own text is what is written. Each
+  block on the page is traced to the block of the file it came from, and that
+  text is kept exactly, with only what the person changed put into it: the
+  inside of the part they typed in, or an attribute a tool set, such as a
+  picture's address, a link, or a block's tags. A block that was moved is
+  moved as text, a copied block is the file's text of the one it was copied
+  from, and a removed block goes. So a drawing, an embed the owner put there,
+  an attribute a script reads, and the file's own spacing all come back byte
+  for byte, and the commit shows the one change that was made. What a person
+  types or pastes is cleaned as before. Where a block cannot be traced to the
+  file and the cleaner would take something out of it, nothing is published:
+  the editor says "Nothing was published", names the list, and keeps the
+  edits. A list brought back whole from a draft or from History is still
+  written as that file had it. The number on the Publish button is again the
+  number of things the publish sheet lists: one change is one.
+- **Text pasted into a paragraph or a heading can no longer break the page.**
+  Text copied from a web page went into a paragraph with its heading, its
+  own paragraphs, its colours, its classes and its pictures. A browser ends a
+  paragraph at the first heading inside it, so on the site the paragraph came
+  out empty and too small to click, and the pasted pieces sat outside
+  anything the editor could reach. Now a paste into a part that is one
+  paragraph, one heading or one line comes in as words, with bold, italic,
+  underline and links (the formatting the toolbar itself offers) and nothing
+  else. Where a block began or ended there is a line break, the cells of a
+  table have a space between them, and a link keeps its address only. What a
+  word processor writes as a style is read as the bold or italic it stands
+  for. Pressing Enter in such a part is kept as a line break too, where the
+  browser used to leave a block inside the paragraph. A richer part, one that
+  holds paragraphs, lists and pictures, takes them as before.
+- **"Delete draft" works, and a draft that was published is not offered
+  again.** Deleting a saved draft answered "the site could not be reached…
+  check your connection" every time, on a good connection. The service did
+  not tell browsers that they may send it a DELETE request, so the browser
+  never sent one. It does now. Deleting a page from the editor was stopped by
+  the same thing. An invited editor still cannot delete a file: the service
+  refuses that itself, as before. And a draft that is resumed and then
+  published is taken off the drafts branch by that publish, so the page does
+  not offer its old words again later. If you run the service yourself,
+  deploy it again to get this.
+- **After Publish, "live ✓" is said when it is true, and it stays where it
+  can be read.** The line said a change was live after one good answer from
+  the site, and twice a fresh request a few seconds later still got the old
+  page, because the copies of a site around the network do not all change at
+  the same moment. Now the page has to come back holding the change three
+  times in a row, two seconds apart. The line then stays for thirty seconds
+  (ten on a phone, where it covers the page) where it used to go after six,
+  and the line the editor rests on afterwards goes on saying it: "Signed in
+  as … . Your last publish went live at 3:52 PM." Once the line said "Not
+  published" about a change that was published: the commit had been made,
+  and reading the file back afterwards was turned away by a busy service.
+  Nothing that happens after the commit is told as a failed publish any
+  more. When the editor cannot watch a change reach the site, it says that it
+  cannot tell, and to reload the page or open History to check.
 - **A title that is a link stays a link when its words are changed.** On a
   list of posts, each card's title is a heading with one link around all of
   its words, and the heading is the part that can be edited. Selecting the
