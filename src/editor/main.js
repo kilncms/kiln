@@ -2783,8 +2783,12 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     }
     // Repeated drag-resizes supersede each other: drop the previous (uncommitted)
     // intermediate so we don't commit a pile of throwaway sizes on Publish.
+    // Never the file the picture names as its original, though. For a picture
+    // put inside a paragraph, or made smaller with a size button, the first
+    // file queued IS the original: dropping it published data-kiln-master
+    // pointing at a file that was never saved.
     const prev = img.getAttribute('data-kiln-src');
-    if (prev) state.pendingBinaries.delete((cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + prev.replace(/^\//, ''));
+    if (prev && safeUrl(prev) !== master) state.pendingBinaries.delete((cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + prev.replace(/^\//, ''));
     const name = `img-${Date.now().toString(36)}.${scaled.ext}`;
     const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `assets/uploads/${name}`;
     stageBinary(repoPath, base64);   // committed with Publish, not now

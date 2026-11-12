@@ -131,6 +131,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the picture is described as now. The answer is kept with the paragraph,
   like the picture's size. The publish sheet still warns only about a picture
   that is new in that publish (`src/editor/describe-picture.js`).
+- **A picture resized by dragging no longer names an original that was never
+  saved.** Dragging a picture's corner makes a copy at the new size and names
+  the largest version Kiln holds on the picture (`data-kiln-master`), so a
+  later drag to a bigger size starts from it. A drag also drops the upload an
+  earlier drag queued, so that in-between sizes are not published. For a
+  picture put inside a paragraph, or made smaller with a size button, the
+  first file queued is the original itself: the first drag named it as the
+  original and then dropped it from what Publish saves. The page went live
+  pointing at a file that answered 404, and a later drag to a bigger size had
+  only the small copy to stretch. The upload a picture names as its original
+  is now never dropped, so it is saved by the same publish.
 - **A page made with "New post or page" can be edited, and its accents
   read as written, on a site Kiln was added to from the dashboard.** A site
   keeps the templates new pages are made from in `_templates/` (`page.html`,
