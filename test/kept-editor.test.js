@@ -615,3 +615,17 @@ test('when GitHub gives no token for the one repository, the service has no toke
   assert.equal(asks.some(b => b && b.repository_ids), false);
   assert.equal(await w.env.KILN.get(`itok:${REPO}`), null);
 });
+
+// ─── The routes that write content files (found while closing the security review of 0.6.7) ───
+// A kept owner is an owner there too, and the service writes with its own token, so the same
+// rule holds as at /schedule and in the proxy: nothing under .github, whatever the route.
+test('a kept owner cannot write a file under .github through the content-file routes either, and GitHub is not asked', { skip: d1Skip }, async () => {
+  const w = world();
+  const { session } = await open(w);
+  const NOT_CHANGED = 'Kiln does not change this file. It changes the pages and files of your site, and never anything in the .github folder. Choose another page or file.';
+  for (const file of ['.github/notes.md', '.GitHub/workflows/build.md', 'docs/../.github/notes.md']) {
+    const r = await site(w, 'POST', '/source/commit', { session, body: { repo: REPO, branch: 'main', file, adapter: 'markdown', edits: [{ pointer: '/body', value: 'Hello' }] } });
+    assert.deepEqual([r.status, r.json.code, r.json.error], [403, 'kept_file', NOT_CHANGED], file);
+    assert.equal(beyondIdentity(r.calls).length, 0, `${file} never reached GitHub`);
+  }
+});

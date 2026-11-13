@@ -2354,6 +2354,8 @@ async function sourceCommit(request, env) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
   if (!/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
   const actor = await authActor(request, env, repo);
+  const keptNo = keptSourceRefusal(actor, file);
+  if (keptNo) return keptNo;
   // Rules 1–3 (actor mode, adapter, path gauntlet, edit shape) — pure.
   const v = validateSourceRequest({ file, edits, adapter, actor }, { isSensitivePath, pathInScope });
   if (v.error) return json({ error: v.error, ...(v.detail !== undefined && { detail: v.detail }) }, v.status);
@@ -2546,6 +2548,8 @@ async function sourceFields(request, env) {
   const body = await request.json().catch(() => ({}));
   const d = await sourceDoor(request, env, body);
   if (d.refused) return d.refused;
+  const keptNo = keptSourceRefusal(d.actor, body.file);
+  if (keptNo) return keptNo;
   const v = validateSourceRequest({ file: body.file, edits: [{ pointer: '/body', value: '' }], adapter: body.adapter, actor: d.actor }, { isSensitivePath, pathInScope });
   if (v.error) return json({ error: v.error }, v.status);
   if (body.at !== undefined && !/^[a-f0-9]{40}$/.test(String(body.at))) return json({ error: 'bad at' }, 400);
@@ -2575,6 +2579,8 @@ async function sourceHistory(request, env) {
   // A collection's folder (`folder`) instead of one file: what was removed from it is found there.
   const folder = typeof body.folder === 'string' ? body.folder.replace(/\/+$/, '') : null;
   const asked = folder !== null ? `${folder}/entry.md` : body.file;
+  const keptNo = keptSourceRefusal(d.actor, asked);
+  if (keptNo) return keptNo;
   const v = validateSourceRequest({ file: asked, edits: [{ pointer: '/body', value: '' }], adapter: body.adapter, actor: d.actor }, { isSensitivePath, pathInScope });
   if (v.error) return json({ error: v.error }, v.status);
   const path = folder !== null ? v.file.slice(0, -'/entry.md'.length) : v.file;
@@ -2608,6 +2614,8 @@ async function sourceReadField(request, env) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
   if (!/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
   const actor = await authActor(request, env, repo);
+  const keptNo = keptSourceRefusal(actor, file);
+  if (keptNo) return keptNo;
   const v = validateSourceRequest({ file, edits: [{ pointer, value: '' }], adapter, actor }, { isSensitivePath, pathInScope });
   if (v.error) return json({ error: v.error, ...(v.detail !== undefined && { detail: v.detail }) }, v.status);
   const itok = await installationToken(env, repo);
@@ -3742,6 +3750,15 @@ function keptFileWriteAllowed(path) {
   const rest = '/contents/' + path.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/');
   return !proxyPathTraverses(rest) && keptWriteAllowed('PUT', rest, null);
 }
+/**
+ * The same rule for the routes that write a site's content files (/source/...): the owner of a
+ * site Kiln keeps is an owner there too, and the service writes with its own token, so a file
+ * Kiln does not change for them is refused before anything else is looked at. Null when the
+ * file may be written, or when the person is not such an owner.
+ */
+const KEPT_FILE_NOT_CHANGED = 'Kiln does not change this file. It changes the pages and files of your site, and never anything in the .github folder. Choose another page or file.';
+const keptSourceRefusal = (actor, file) => (actor && actor.kept && !keptFileWriteAllowed(file) ? json({ error: KEPT_FILE_NOT_CHANGED, code: 'kept_file' }, 403) : null);
+
 /** Said at /schedule to the owner of a site Kiln keeps, for a file Kiln does not change for them. */
 const KEPT_FILE_NOT_SCHEDULED = 'Kiln does not change this file, so nothing was scheduled. It changes the pages and files of your site, and never anything in the .github folder. Choose another page or file and schedule it again.';
 
