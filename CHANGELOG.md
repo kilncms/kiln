@@ -109,6 +109,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stops counting as asked for. It is never switched on, and its owner is told
   that Kiln cannot confirm that inbox by itself. Two sites of the same account
   that wait for the same inbox are both switched on as before.
+- **An inbox is not taken off Cloudflare's list from under an address that
+  has just started to use it.** Stopping a forwarded address, and setting up
+  an inbox that was left behind on the list, both take the inbox off the list
+  after looking whether any address still uses it. The look and the removal
+  now happen together, one request at a time for an inbox. A stop that meets
+  another request at work on the same inbox still stops the address and
+  leaves the inbox where it is. A set-up that meets one answers "Kiln is
+  already working on the forwarded address for this site. Wait a minute, then
+  look at the site's row again."
 
 ## [0.6.8] - 2026-11-13
 

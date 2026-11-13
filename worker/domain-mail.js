@@ -273,8 +273,9 @@ export async function addInbox(env, { email }) {
  * calls this keeps it to once every ten minutes (canAskAgain).
  * With `afresh` an inbox that has confirmed is removed and added again too, so
  * that it has to press the button once more. That is only for an inbox that
- * was left behind on the list: whoever asks for it has just made sure that no
- * row of any account uses the inbox or waits for it (inboxInUse).
+ * was left behind on the list: whoever asks for it holds the inbox's lock
+ * (takeInboxLock) and has made sure, with the lock held, that no row of any
+ * account uses the inbox or waits for it (inboxInUse).
  */
 export async function askAgain(env, { email, afresh = false }) {
   need(env);
@@ -583,6 +584,36 @@ export async function inboxNamed(env, inbox) {
   catch { return true; }
 }
 
+// One lock for an inbox while it is taken off Cloudflare's list. Both places
+// that take one off (a stop, forgetInboxesOf, and a set-up that asks a
+// left-behind inbox afresh, cloud.js) look first whether any row names the
+// inbox. The lock ties that look to the delete, so the two never work on the
+// same inbox at once: without it a stop could delete the inbox a set-up had
+// put on the list a moment earlier. It is kept under `fwdbox:<inbox>` and
+// believed for 30 seconds. KV keeps nothing for less than a minute, so the
+// entry carries its own time. KV has no way to look and write in one step, so
+// two requests in the very same instant can both take it, as with the lock for
+// a site.
+const BOX_LOCK_MS = 30000;
+/** Take the lock for an inbox. Answers the key to give back to dropInboxLock, or null when the lock is held or cannot be taken. Never throws. */
+export async function takeInboxLock(env, inbox) {
+  const want = String(inbox ?? '').trim().toLowerCase();
+  if (!want) return null;
+  const key = `fwdbox:${want}`;
+  try {
+    const held = await env.KILN.get(key, 'json');
+    const age = held ? Date.now() - Number(held.at) : NaN;
+    if (held && age >= 0 && age < BOX_LOCK_MS) return null;
+    await env.KILN.put(key, JSON.stringify({ at: Date.now() }), { expirationTtl: 60 });
+    return key;
+  } catch { return null; }   // a lock that cannot be read or written is not taken, and the inbox is left alone
+}
+/** Give the lock back. Never throws: a lock that stays is not believed after 30 seconds. */
+export async function dropInboxLock(env, key) {
+  if (!key) return;
+  try { await env.KILN.delete(key); } catch { /* it runs out by itself */ }
+}
+
 /**
  * After a row is gone for good (its owner stopped the forwarding): each inbox
  * the row named, its own and the one of a change that waited, is taken off
@@ -591,13 +622,21 @@ export async function inboxNamed(env, inbox) {
  * Cloudflare write to the inbox afresh. `row` is the row as it was before it
  * was deleted. Best effort, never throws: an inbox Cloudflare did not let go
  * of is logged and left on the list, where a later set-up asks it afresh all
- * the same. Answers how many inboxes it took off the list.
+ * the same. The look at the rows and the delete happen under the inbox's lock
+ * (takeInboxLock); an inbox whose lock is held, because a set-up or another
+ * stop is at work on it, is left on the list in the same way. Answers how
+ * many inboxes it took off the list.
  */
 export async function forgetInboxesOf(env, row, { repo = null } = {}) {
   let gone = 0;
   const named = [['inbox', row?.inbox], ['want_inbox', row?.want_inbox]].map(([which, i]) => [which, String(i ?? '').trim().toLowerCase()]);
   for (const [which, inbox] of named) {
     if (!inbox || (which === 'want_inbox' && inbox === named[0][1])) continue;
+    const lock = await takeInboxLock(env, inbox);
+    if (!lock) {
+      console.warn(JSON.stringify({ evt: 'forward_inbox_left', repo, address: row?.address || null, which, detail: 'busy: a set-up or another stop is at work on this inbox' }));
+      continue;
+    }
     try {
       if (await inboxNamed(env, inbox)) continue;   // another site forwards to it, or waits for it
       await forgetInbox(env, { email: inbox });
@@ -605,6 +644,8 @@ export async function forgetInboxesOf(env, row, { repo = null } = {}) {
     } catch (e) {
       // The inbox itself is not written to the log: which of the row's two it was is enough to find it.
       console.warn(JSON.stringify({ evt: 'forward_inbox_left', repo, address: row?.address || null, which, detail: e instanceof MailError ? `${e.code}: ${e.detail || ''}`.trim() : String(e?.message || e) }));
+    } finally {
+      await dropInboxLock(env, lock);
     }
   }
   return gone;

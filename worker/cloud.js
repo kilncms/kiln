@@ -55,7 +55,7 @@ import {
 } from './domain.js';
 import {
   mailStop, saysNoMail, switchMailOn, inboxState, addInbox, askAgain, canAskAgain, forward, stopForwarding, cleanLocal, cleanInbox, mailSentence,
-  forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, dropOtherAskings, inboxInUse, forgetInboxesOf, whatWaits, NO_CHANGE, MailError, MAIL_LIMITS,
+  forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, dropOtherAskings, inboxInUse, forgetInboxesOf, takeInboxLock, dropInboxLock, whatWaits, NO_CHANGE, MailError, MAIL_LIMITS,
 } from './domain-mail.js';
 
 const GH = 'https://api.github.com';
@@ -2432,6 +2432,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const lock = forwardLock(site.id);
     if (await env.KILN.get(lock)) return refuse('busy', 409, { forward: publicForward(row) });
     await env.KILN.put(lock, '1', { expirationTtl: FORWARD_LOCK_S });
+    let boxLock = null;   // the lock for an inbox a set-up takes off Cloudflare's list and puts on again (domain-mail.js takeInboxLock)
     try {
       row = await forwardRow(env, site.id);
       if (action !== 'setup' && !row) return action === 'stop' ? json({ ok: true, forward: null }) : refuse('no_forward', 404);   // stopping nothing is what was asked for
@@ -2490,6 +2491,14 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         let box;
         try { await switchMailOn(env, { zoneId: domain.zone_id, name }); }
         catch (e) { return failed(e, 'switch', { address, inbox }); }
+        // Taking a left-behind inbox off the list is tied to the look before it: the inbox's lock is held from here until this
+        // request is over (the row is saved by then), and the rows are looked at once more with the lock held. A stop or another
+        // set-up that is at work on the same inbox holds the lock, and this one is asked to try again in a moment.
+        if (left) {
+          boxLock = await takeInboxLock(env, inbox);
+          if (!boxLock) return refuse('busy', 409, { forward: publicForward(row) });
+          if (await inboxInUse(env, inbox)) return notOurs();   // a row was saved for it since the first look
+        }
         try { box = left ? await askAgain(env, { email: inbox, afresh: true }) : await addInbox(env, { email: inbox }); }
         catch (e) { return failed(e, 'inbox', { address, inbox }); }
         // An inbox that is not this account's is taken only when Cloudflare wrote to it at this asking and it has still to press the
@@ -2561,6 +2570,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       console.log(JSON.stringify({ evt: 'forward_stopped', repo: site.repo, address: row.address }));
       return json({ ok: true, forward: null });
     } finally {
+      await dropInboxLock(env, boxLock);
       try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ }
     }
   }

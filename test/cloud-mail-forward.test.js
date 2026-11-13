@@ -910,6 +910,96 @@ test('forwarding: a stop stands when Cloudflare does not take the inbox off its 
   });
 });
 
+// ─── One lock for an inbox while it is taken off Cloudflare's list ─────────────
+
+const BOX_LOCK = `fwdbox:${INBOX}`;
+const boxLocks = (env) => [...env.KILN.map.keys()].filter(k => k.startsWith('fwdbox:'));
+const deletedInboxes = (w, from = 0) => w.cf.calls.slice(from).filter(c => c.method === 'DELETE' && /\/email\/routing\/addresses\//.test(c.url || c.path || '')).length;
+
+test('forwarding: a stop leaves the inbox on Cloudflare\'s list while a set-up or another stop is at work on that inbox, and the stop still succeeds', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await forwarding(w);
+    const id = w.cf.addresses.get(INBOX).id;
+    // Somebody else's request holds the inbox's lock, however the inbox is written there: taken a moment ago.
+    w.env.KILN.map.set(BOX_LOCK, JSON.stringify({ at: Date.now() - 2000 }));
+    const before = w.cf.calls.length;
+    let lines;
+    lines = await hush(async () => { assert.deepEqual(await (await post(w.env, 'stop')).json(), { ok: true, forward: null }); });
+    assert.deepEqual([await rowOf(w.env), rules(w)], [null, []], 'the address is stopped');
+    assert.equal(w.cf.addresses.get(INBOX)?.id, id, 'the inbox is left exactly as it was');
+    assert.equal(deletedInboxes(w, before), 0);
+    assert.deepEqual(boxLocks(w.env), [BOX_LOCK], 'the lock of the request that holds it is not taken away');
+    if (Array.isArray(lines)) assert.ok(lines.some(l => /forward_inbox_left/.test(l) && !l.includes(INBOX)), 'said in the log, without the inbox');
+  });
+});
+
+test('forwarding: a stop takes the inbox off the list under its lock, gives the lock back, and does not believe a lock older than 30 seconds', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await forwarding(w);
+    w.env.KILN.map.set(BOX_LOCK, JSON.stringify({ at: Date.now() - 31000 }));   // left by a request that never finished
+    let held = null;
+    const get = w.env.KILN.get.bind(w.env.KILN);
+    // While Cloudflare is asked to delete the inbox, the lock is held.
+    const inner = w.handler;
+    const handler = async (url, init = {}) => { if (init.method === 'DELETE' && /\/email\/routing\/addresses\//.test(url)) held = await get(BOX_LOCK, 'json'); return inner(url, init); };
+    await withFetch(handler, async () => {
+      await hush(async () => { assert.deepEqual(await (await post(w.env, 'stop')).json(), { ok: true, forward: null }); });
+    });
+    assert.ok(held && Date.now() - held.at < 5000, 'the delete happened with the lock held, taken at this request');
+    assert.ok(w.env.KILN.expires.get(BOX_LOCK) === undefined, 'and the lock is given back');
+    assert.deepEqual([[...w.cf.addresses.keys()], boxLocks(w.env)], [[], []]);
+  });
+});
+
+test('forwarding: a set-up that would take a left-behind inbox off the list is asked to try again while that inbox\'s lock is held', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await withDomain(w);
+    const old = await addInbox(w.env, { email: INBOX });   // left behind: on Cloudflare's list, confirmed, and no row names it
+    w.cf.confirm(INBOX);
+    w.env.KILN.map.set(BOX_LOCK, JSON.stringify({ at: Date.now() }));   // a stop is at work on it
+    const before = w.cf.calls.length;
+    const res = await setup(w.env);
+    const body = await res.json();
+    assert.deepEqual([res.status, body.code], [409, 'busy']);
+    plain(body.error);
+    assert.deepEqual([await rowOf(w.env), w.cf.addresses.get(INBOX).id, w.cf.confirmations, deletedInboxes(w, before)], [null, old.id, [INBOX], 0], 'the inbox is left alone and nothing is saved');
+    assert.deepEqual(boxLocks(w.env), [BOX_LOCK], 'the lock of the request that holds it stays');
+    // The stop is over: the same set-up now goes through, and gives its own lock back.
+    w.env.KILN.map.delete(BOX_LOCK);
+    const second = await setup(w.env);
+    const done = await second.json();
+    assert.deepEqual([second.status, done.sent, done.forward.state], [200, true, 'confirming']);
+    assert.deepEqual([w.cf.confirmations, boxLocks(w.env)], [[INBOX, INBOX], []]);
+    assert.notEqual(w.cf.addresses.get(INBOX).id, old.id, 'taken off the list and put on again');
+  });
+});
+
+test('forwarding: a set-up looks at the rows once more with the inbox\'s lock held, and leaves an inbox that somebody started to use in between', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await withDomain(w);
+    const old = await addInbox(w.env, { email: INBOX });
+    w.cf.confirm(INBOX);
+    w.env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, created_at) VALUES (?,?,?,?)', 'acct-2', 'bea', INBOX, 1);
+    addSite(w.env, { id: 'site9', account_id: 'acct-2', repo: 'bea/shop', origin: 'https://shop.example', plan: 'managed' });
+    // Between this set-up's first look and its taking the lock, another account's address starts forwarding to the inbox.
+    const put = w.env.KILN.put.bind(w.env.KILN);
+    w.env.KILN.put = async (key, value, opts) => {
+      if (key === BOX_LOCK) await saveForward(w.env, 'site9', { account_id: 'acct-2', address: 'hi@beashop.test', inbox: INBOX, inbox_id: old.id, state: 'on', rule_id: 'rule-9', asked_at: Date.now() });
+      return put(key, value, opts);
+    };
+    const before = w.cf.calls.length;
+    const res = await setup(w.env);
+    assert.deepEqual([res.status, (await res.json()).code], [409, 'inbox_elsewhere']);
+    assert.deepEqual([await rowOf(w.env), w.cf.addresses.get(INBOX).id, !!w.cf.addresses.get(INBOX).verified, w.cf.confirmations, deletedInboxes(w, before)], [null, old.id, true, [INBOX], 0],
+      'the inbox the other address forwards to is not taken from under it');
+    assert.deepEqual(boxLocks(w.env), [], 'the lock is given back');
+  });
+});
+
 test('forwarding: with editing switched off nothing new is set up, and what was asked for can still be checked, sent again and stopped', { skip: d1Skip }, async () => {
   const w = world();
   await withFetch(w.handler, async () => {
