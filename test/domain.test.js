@@ -724,3 +724,16 @@ test('domain: the name servers that were replaced are remembered, and a site\'s 
   assert.equal(await domainRow(env, 'site-1'), null);
   assert.equal(await domainForName(env, N), null, 'the name is free again');
 });
+
+test('domain: the registry and the public DNS are told who asks, because the registry answers 403 to a question that does not say', async () => {
+  const dns = fakeLookups(known());
+  const out = await lookUp(N, { fetchImpl: dns.fetchImpl });
+  assert.match(JSON.stringify(out.seller), /GoDaddy/, 'the seller is found');
+  assert.ok(dns.agents.length >= 2, 'the registry and the public DNS were both asked');
+  assert.deepEqual([...new Set(dns.agents)], ['kiln-cms (+https://kilncms.com)']);
+  // Asked the way a Worker asks by itself, naming no user agent, the registry refuses, and nobody can say who sold the domain.
+  const refused = await dns.fetchImpl(`https://rdap.org/domain/${N}`, { headers: { accept: 'application/rdap+json' } });
+  assert.equal(refused.status, 403);
+  const unnamed = (url, init = {}) => { const headers = { ...(init.headers || {}) }; delete headers['user-agent']; return dns.fetchImpl(url, { ...init, headers }); };
+  assert.equal((await lookUp(N, { fetchImpl: unnamed })).seller, null);
+});

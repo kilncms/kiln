@@ -37,6 +37,7 @@
 const CF = 'https://api.cloudflare.com/client/v4';
 const RDAP = 'https://rdap.org/domain/';                   // finds the right registry for any ending and sends the question on
 const DOH = 'https://cloudflare-dns.com/dns-query';        // the public DNS, asked over HTTPS
+const AGENT = 'kiln-cms (+https://kilncms.com)';       // rdap.org answers 403 to a question that names no user agent, and a Worker names none by itself
 const GENERAL_HELP = 'https://developers.cloudflare.com/dns/nameservers/update-nameservers/';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CLOUDFLARE_SELLER = 1910;                              // the number Cloudflare sells domains under (its IANA id)
@@ -129,7 +130,7 @@ export function txtWords(data) {
 /** One question to the public DNS. The answers at that name of that type, or null when it could not be asked. */
 async function ask(fetchImpl, name, type) {
   try {
-    const res = await fetchImpl(`${DOH}?name=${encodeURIComponent(name)}&type=${type}`, { headers: { accept: 'application/dns-json' }, signal: limit(LIMITS.lookMs) });
+    const res = await fetchImpl(`${DOH}?name=${encodeURIComponent(name)}&type=${type}`, { headers: { accept: 'application/dns-json', 'user-agent': AGENT }, signal: limit(LIMITS.lookMs) });
     if (!res.ok) return null;
     const data = await res.json();
     if (data.Status !== 0 && data.Status !== 3) return null;   // 3 is "no such name", which is an answer
@@ -146,7 +147,7 @@ async function ask(fetchImpl, name, type) {
  */
 async function readRegistry(fetchImpl, name) {
   try {
-    const res = await fetchImpl(`${RDAP}${name}`, { headers: { accept: 'application/rdap+json' }, redirect: 'follow', signal: limit(LIMITS.lookMs) });
+    const res = await fetchImpl(`${RDAP}${name}`, { headers: { accept: 'application/rdap+json', 'user-agent': AGENT }, redirect: 'follow', signal: limit(LIMITS.lookMs) });
     if (res.status === 404) return { missing: true };   // "not found" is an answer too
     if (!res.ok) return null;
     const d = await res.json();

@@ -265,10 +265,14 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
 export function fakeLookups(domains = {}, down = {}) {
   const NUMBER = { A: 1, NS: 2, CNAME: 5, MX: 15, TXT: 16, AAAA: 28, DS: 43 };
   const calls = [];
+  const agents = [];   // the user-agent each question came with
   const handler = async (url, init = {}) => {
     if (url.startsWith('https://rdap.org/domain/')) {
       calls.push({ url, accept: init.headers?.accept || '', redirect: init.redirect || '' });
+      agents.push(init.headers?.['user-agent'] || '');
       if (down.rdap) throw new TypeError('fetch failed');
+      // The real rdap.org answers 403 to a question that names no user agent, and a Worker names none by itself.
+      if (!init.headers?.['user-agent']) return new Response('Forbidden', { status: 403 });
       const name = url.slice('https://rdap.org/domain/'.length).toLowerCase();
       const d = domains[name];
       if (d && d.rdap === false) return jsonRes({ errorCode: 503, title: 'Service Unavailable' }, 503);
@@ -284,6 +288,7 @@ export function fakeLookups(domains = {}, down = {}) {
     }
     if (url.startsWith('https://cloudflare-dns.com/dns-query?')) {
       calls.push({ url, accept: init.headers?.accept || '', redirect: init.redirect || '' });
+      agents.push(init.headers?.['user-agent'] || '');
       if (down.dns) return new Response('bad gateway', { status: 502 });
       const q = new URL(url).searchParams;
       const name = String(q.get('name')).toLowerCase(), type = q.get('type');
@@ -297,5 +302,5 @@ export function fakeLookups(domains = {}, down = {}) {
     }
     return undefined;
   };
-  return { calls, handler, fetchImpl: async (url, init) => (await handler(url, init)) || new Response('not found', { status: 404 }) };
+  return { calls, agents, handler, fetchImpl: async (url, init) => (await handler(url, init)) || new Response('not found', { status: 404 }) };
 }
