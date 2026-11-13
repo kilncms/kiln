@@ -89,8 +89,10 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   when the change will be published, and that the page here shows the
   scheduled words until then while visitors still see the old ones.
   The count is read when the page loads, for the site's owner as for an
-  invited editor (a tester found the owner's menu without the item after a
-  reload, before this was released).
+  invited editor, and what this browser scheduled or cancelled in the last
+  two minutes is remembered across a reload, because the service's own list
+  can be a minute behind (a tester found the owner's menu without the item
+  after a reload, before this was released).
 
 - **Leaving the page while a save is being sent asks first.** "Site menu >
   Save to all pages" writes many pages and takes ten seconds or more. Someone

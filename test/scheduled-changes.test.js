@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  scheduleItem, scheduledWhenLong, scheduledWhat, scheduledBy, scheduledRow, mergeScheduled, cancelQuestion, cancelledLine, scheduledLine,
+  scheduleItem, scheduledWhenLong, scheduledWhat, scheduledBy, scheduledRow, mergeScheduled, keepRecent, readRecent, cancelQuestion, cancelledLine, scheduledLine,
   LIST_TITLE, NOTHING_SCHEDULED, PUBLISH_FIRST, CANCEL_YES, CANCEL_NO,
 } from '../src/editor/scheduled-changes.js';
 
@@ -148,4 +148,26 @@ test('scheduled: what is scheduled is counted when the page loads for the owner 
   assert.ok(asked < ownerSentOn, 'asked before the owner is sent on');
   assert.equal(gating.split('fetchScheduled()').length - 1, 1, 'and asked once');
   assert.match(gating, /if \(!cfg\.sandbox && !state\.scheduledAsked && \(mode === 'admin' \|\| \(hasFeature\('schedule'\) && !isSuggestMode\(\)\)\)\) \{/);
+});
+
+test('scheduled: what this browser scheduled or cancelled a moment ago is kept across a reload, for two minutes and no longer', () => {
+  // Found in a real browser on 0.6.5 before its release: schedule, reload within the minute, and the
+  // menu had no "Scheduled changes", because the service's list lags and the reload forgot what the tab knew.
+  const now = 1_000_000_000_000;
+  const made = [{ id: 'sched:a', at: now + 3600000, path: 'index.html', kind: 'page', by: 'admin', madeAt: now - 20000 }, { id: 'sched:old', at: now + 3600000, path: 'a.html', kind: 'page', by: 'Rosa', madeAt: now - 200000 }];
+  const cancelled = new Map([['sched:b', now - 5000], ['sched:c', now - 500000]]);
+  const text = keepRecent({ made, cancelled, now });
+  const back = readRecent(text, { now: now + 30000 });
+  assert.deepEqual(back.made, [made[0]]);
+  assert.deepEqual([...back.cancelled], [['sched:b', now - 5000]]);
+  // after the reload the count is right even though the service lists nothing yet, and a cancelled row stays out
+  assert.equal(mergeScheduled([], { made: back.made, cancelled: back.cancelled, now: now + 30000 }).length, 1);
+  assert.equal(mergeScheduled([{ id: 'sched:b', at: now + 100000 }], { made: back.made, cancelled: back.cancelled, now: now + 30000 }).some(r => r.id === 'sched:b'), false);
+  // two minutes on, nothing of it is believed any more
+  assert.deepEqual(readRecent(text, { now: now + 200000 }), { made: [], cancelled: new Map() });
+  // and whatever else is found in the browser's store is not believed at all
+  for (const junk of ['', 'null', '{', '[]', '{"made":"x","gone":7}', JSON.stringify({ made: [{ id: 5, at: 'soon', madeAt: now }, { id: 'x', at: now, madeAt: now + 99999 }], gone: [['y'], [3, now]] })]) {
+    assert.deepEqual(readRecent(junk, { now }), { made: [], cancelled: new Map() }, junk);
+  }
+  assert.ok(main.includes('rememberRecentSchedules();') && main.includes('recallRecentSchedules();'));
 });

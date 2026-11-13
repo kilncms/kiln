@@ -48,7 +48,7 @@ import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
 import { limitsSaid } from './your-pages.js';
 import { addedSectionLine, scheduleHow, scheduledWhen } from './said-plainly.js';
-import { scheduleItem, scheduledRow, mergeScheduled, cancelQuestion, cancelledLine, scheduledLine, LIST_TITLE, NOTHING_SCHEDULED, PUBLISH_FIRST, CANCEL_YES, CANCEL_NO } from './scheduled-changes.js';
+import { scheduleItem, scheduledRow, mergeScheduled, keepRecent, readRecent, cancelQuestion, cancelledLine, scheduledLine, LIST_TITLE, NOTHING_SCHEDULED, PUBLISH_FIRST, CANCEL_YES, CANCEL_NO } from './scheduled-changes.js';
 import { makeSending, asksBeforeLeaving } from './sending.js';
 import { findEverywhere, replaceEverywhere, changedSinceText, previewText, noMatchText, replacedText } from './find-replace.js';
 import { aiAfter, aiOffered, noAiKey } from './ai-offered.js';
@@ -8095,7 +8095,22 @@ async function checkForDraft() {
  * did a moment ago (scheduled-changes.js mergeScheduled). The menu item's
  * count follows it.
  */
+const RECENT_SCHEDULES = () => `kiln_sched_recent:${cfg.repo || ''}`;
+/** What this browser scheduled and cancelled in the last two minutes is kept across a reload (scheduled-changes.js keepRecent). */
+function rememberRecentSchedules() {
+  try { sessionStorage.setItem(RECENT_SCHEDULES(), keepRecent({ made: state.scheduledMade, cancelled: state.scheduledGone })); } catch { /* the menu is then right a minute later */ }
+}
+function recallRecentSchedules() {
+  if (state.scheduledRecalled) return;
+  state.scheduledRecalled = true;
+  try {
+    const kept = readRecent(sessionStorage.getItem(RECENT_SCHEDULES()));
+    for (const r of kept.made) if (!state.scheduledMade.some(m => m.id === r.id)) { state.scheduledMade.push(r); state.scheduledMine.add(r.id); }
+    for (const [id, t] of kept.cancelled) if (!state.scheduledGone.has(id)) state.scheduledGone.set(id, t);
+  } catch { /* nothing kept */ }
+}
 async function fetchScheduled() {
+  recallRecentSchedules();
   const data = await ask(`/schedules?repo=${encodeURIComponent(cfg.repo)}`);
   const rows = mergeScheduled(data.schedules || [], { made: state.scheduledMade, cancelled: state.scheduledGone });
   state.scheduled = rows.length;
@@ -8175,6 +8190,7 @@ function schedulePanel(at, opts) {
           return;
         }
         state.scheduledGone.set(s.id, Date.now());
+        rememberRecentSchedules();
         // One this tab made: the page still shows its words, which are now neither scheduled nor published.
         status.textContent = cancelledLine({ shownHere: state.scheduledMine.has(s.id) });
         refreshList();
@@ -8221,6 +8237,7 @@ function schedulePanel(at, opts) {
       retireStaged();
       state.scheduledMine.add(data.id);
       state.scheduledMade.push({ id: data.id, at: data.at, path: state.page.path, kind: 'page', by: mode === 'admin' ? 'admin' : state.user, madeAt: Date.now() });
+      rememberRecentSchedules();
       // When it will be published, and that only the page here shows the words
       // until then: in the dialog, and on the status line once it is closed.
       const line = scheduledLine(data.at);

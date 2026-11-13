@@ -125,6 +125,31 @@ export function mergeScheduled(listed = [], { made = [], cancelled = new Map(), 
   return rows.sort((a, b) => a.at - b.at);
 }
 
+/**
+ * What this browser remembers of the changes it scheduled and cancelled a
+ * moment ago, so the menu is right after a reload as well. The service's list
+ * can be a minute behind, and a reload used to forget what the tab knew: the
+ * menu then had no "Scheduled changes" for a change scheduled seconds before.
+ * `keepRecent` gives the text to keep (rows and cancellations younger than
+ * the lag), and `readRecent` reads it back, dropping what has grown old or
+ * does not look right. Nothing here is trusted beyond the two minutes.
+ */
+export function keepRecent({ made = [], cancelled = new Map(), now = Date.now(), lag = 120000 } = {}) {
+  return JSON.stringify({
+    made: made.filter(r => r && r.id && now - r.madeAt < lag).map(r => ({ id: String(r.id), at: Number(r.at), path: String(r.path || ''), kind: String(r.kind || 'page'), by: String(r.by || ''), madeAt: Number(r.madeAt) })),
+    gone: [...cancelled].filter(([, t]) => now - t < lag).map(([id, t]) => [String(id), Number(t)]),
+  });
+}
+export function readRecent(text, { now = Date.now(), lag = 120000 } = {}) {
+  let kept = null;
+  try { kept = JSON.parse(text || 'null'); } catch { kept = null; }
+  const fresh = (t) => Number.isFinite(t) && t <= now && now - t < lag;
+  const made = (Array.isArray(kept?.made) ? kept.made : []).filter(r => r && typeof r.id === 'string' && r.id && Number.isFinite(r.at) && fresh(r.madeAt))
+    .map(r => ({ id: r.id, at: r.at, path: String(r.path || ''), kind: String(r.kind || 'page'), by: String(r.by || ''), madeAt: r.madeAt }));
+  const cancelled = new Map((Array.isArray(kept?.gone) ? kept.gone : []).filter(g => Array.isArray(g) && typeof g[0] === 'string' && fresh(g[1])).map(g => [g[0], g[1]]));
+  return { made, cancelled };
+}
+
 /** The one question Cancel asks before anything is cancelled. */
 export function cancelQuestion(row = {}, { root = '', locale, now } = {}) {
   const what = scheduledWhat(row, root);
