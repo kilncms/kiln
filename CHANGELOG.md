@@ -215,6 +215,24 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its words now say that. A person who may only suggest still sends the
   editable parts, and is told that the rest stays
   (`src/editor/restore-page.js`).
+- **The first pass marks buttons, lists in the main text and the logo, and
+  leaves forms alone.** On a WordPress shop copied into plain HTML, buttons
+  such as "Shop Now" could not be clicked and changed, a list in a post could
+  not be edited, the site's logo was not marked as a picture, and a product
+  page's review form had "Name", "Email" and "Your email address will not be
+  published" marked as if they were the page's own words. The first pass now
+  marks a link or button that is plainly a button, by its class (`button`,
+  `btn`, `wp-block-button__link`, `elementor-button` and the like) or
+  `role="button"`. Its words can be changed, and its address is changed beside
+  them, as with any marked link. A list in the main text of a page or post is
+  marked as one part, so a line can be changed, added or taken out. The
+  pictures in the site's header, the logo among them, are marked like other
+  pictures. Nothing inside a form a visitor fills in is marked: no label, no
+  note, no submit button. What keeps the handling it had: menus, lists of
+  links, sidebars, the footer's lists, the header's words, and every part
+  that is already marked. Three kinds of button are left unmarked: one with
+  an icon drawn inside it (changing its words could lose the icon), one that
+  opens a menu or panel, and one inside a group of repeating blocks.
 - **The editor names the parts of a page in words anyone knows.** On a site
   made with a page builder the editor showed names such as "Elementor widg
   featured products" and "Astra shop picture 2", because a part's name was

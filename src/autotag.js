@@ -14,6 +14,10 @@
  * marked (a heading around a marked link would swallow the link's own mark),
  * and a group of blocks with a mark anywhere inside is not turned into a list
  * (that would change how parts someone marked by hand are published).
+ *
+ * Beyond headings, paragraphs and pictures it marks a button's words, a list
+ * in the main text of a page, and the pictures in the site's header (its
+ * logo). It marks nothing inside a form a visitor fills in.
  */
 
 import { parse } from 'parse5';
@@ -41,7 +45,7 @@ function holdsMarked(node, now) {
  * but never reworded.
  */
 function holdsMarkable(node) {
-  if (SKIP_SUBTREES.has(node.tagName)) return false;
+  if (skipped(node)) return false;
   if (node.tagName && !hasCms(node)) {
     if (/^h[1-6]$/.test(node.tagName) || ['p', 'figcaption', 'blockquote', 'time'].includes(node.tagName)) { if (textOf(node)) return true; }
     else if (node.tagName === 'img' && attrOf(node, 'src')) return true;
@@ -52,6 +56,102 @@ function holdsMarkable(node) {
 function within(root, node) {
   for (let n = node; n; n = n.parentNode) if (n === root) return true;
   return false;
+}
+
+// ── Forms, buttons, lists ────────────────────────────────────────────────────
+// A form a visitor fills in is not the page's words: its labels, notes and
+// submit button are left alone. A form wrapped round a whole page (as ASP.NET
+// pages are) is the page itself, so it is read like any other part.
+const PAGE_PARTS = new Set(['main', 'header', 'footer', 'nav', 'article', 'section', 'aside', 'h1']);
+function holdsTag(node, tags) {
+  return (node.childNodes || []).some(c => c.tagName && (tags.has(c.tagName) || holdsTag(c, tags)));
+}
+const isForm = (node) => node.tagName === 'form' && !holdsTag(node, PAGE_PARTS);
+/** Nothing in here is ever marked: code, drawings, and forms. */
+const skipped = (node) => SKIP_SUBTREES.has(node.tagName) || isForm(node);
+
+// What a button or a line of a list may hold and still be changed as words.
+// An icon drawn inside (svg, img) is not among them: changing the words would
+// put the icon at risk, so such a button or list is left as it is.
+const WORD_TAGS = new Set(['span', 'strong', 'em', 'b', 'i', 'u', 's', 'small', 'mark', 'sub', 'sup', 'br', 'wbr',
+  'abbr', 'code', 'kbd', 'cite', 'q', 'del', 'ins', 'time']);
+const LIST_TAGS = new Set([...WORD_TAGS, 'a', 'ul', 'ol', 'li']);
+/** True when every element under `node` is one of `allowed`. */
+function holdsOnly(node, allowed) {
+  return elementChildren(node).every(c => allowed.has(c.tagName) && holdsOnly(c, allowed));
+}
+
+// button  btn  btn-primary  button-large  wp-block-button__link  wp-element-button
+// elementor-button  et_pb_button  add_to_cart_button
+const BUTTON_CLASS = /^(?:btn|button)(?:[-_].*)?$|[-_](?:btn|button)(?:__link)?$/i;
+// A button that opens or switches something on the page is the page's working part, not its words.
+const SWITCH_ATTRS = ['aria-expanded', 'aria-controls', 'aria-haspopup', 'aria-pressed', 'aria-selected',
+  'data-toggle', 'data-bs-toggle', 'data-target', 'data-bs-target'];
+/**
+ * A link or button that is plainly a button, by its class or role="button",
+ * holding nothing but words. The mark goes on the link itself: the editor
+ * shows a marked link's address beside its words, so both can be changed.
+ */
+function isButton(node) {
+  if (node.tagName !== 'a' && node.tagName !== 'button') return false;
+  const named = (attrOf(node, 'class') || '').split(/\s+/).some(c => BUTTON_CLASS.test(c));
+  if (!named && !(node.tagName === 'a' && attrOf(node, 'role') === 'button')) return false;
+  if (SWITCH_ATTRS.some(a => attrOf(node, a) !== undefined)) return false;
+  if (node.tagName === 'button' && (/^(submit|reset)$/i.test(attrOf(node, 'type') || '') || attrOf(node, 'form') !== undefined)) return false;
+  return /\p{L}{2}/u.test(textOf(node)) && holdsOnly(node, WORD_TAGS);
+}
+
+// A list is in the main text when the nearest part that says where it is, is
+// an article, <main> or the block a theme puts a page's or post's text in, and
+// not a menu, header, footer or sidebar.
+const MAIN_TEXT_CLASSES = new Set(['entry-content', 'post-content', 'page-content', 'article-content', 'wp-block-post-content',
+  'post-body', 'article-body', 'main-content', 'site-content', 'content', 'prose']);
+const MAIN_TEXT_IDS = new Set(['content', 'main', 'main-content', 'primary']);
+const BESIDE_CLASSES = new Set(['sidebar', 'widget', 'widget-area', 'menu', 'nav', 'navigation', 'navbar', 'breadcrumb', 'breadcrumbs', 'pagination']);
+function inMainText(parts) {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const a = parts[i], role = attrOf(a, 'role');
+    const cls = (attrOf(a, 'class') || '').split(/\s+/);
+    if (['nav', 'header', 'footer', 'aside'].includes(a.tagName) || role === 'navigation' || role === 'complementary' || cls.some(c => BESIDE_CLASSES.has(c))) return false;
+    if (a.tagName === 'article' || a.tagName === 'main' || role === 'main' || MAIN_TEXT_IDS.has(attrOf(a, 'id')) || cls.some(c => MAIN_TEXT_CLASSES.has(c))) return true;
+  }
+  return false;
+}
+/** How many letters of `node` are inside links. */
+function linkLetters(node) {
+  let n = 0;
+  (function walk(x, inLink) {
+    if (x.nodeName === '#text' && inLink) n += x.value.replace(/\s/g, '').length;
+    for (const c of x.childNodes || []) walk(c, inLink || x.tagName === 'a');
+  })(node, false);
+  return n;
+}
+/**
+ * A list of words: every child is a line, the lines hold words (and links and
+ * lists of their own) and nothing else, and it is not a list of links. A list
+ * where more than half the lines are only a link is a menu, a row of page
+ * numbers or tabs, and keeps the handling it had.
+ */
+function isWordList(node) {
+  const lines = elementChildren(node);
+  if (!lines.length || lines.some(l => l.tagName !== 'li') || !holdsOnly(node, LIST_TAGS)) return false;
+  const worded = lines.filter(l => textOf(l));
+  if (!worded.length || textOf(node).length < 3) return false;
+  const onlyLinks = worded.filter(l => linkLetters(l) >= textOf(l).replace(/\s/g, '').length).length;
+  return onlyLinks * 2 <= worded.length;
+}
+
+/** A list's words with a space between its lines, for its name: "Shape" and "Score" are two words. */
+function listWords(node) {
+  let out = '';
+  (function walk(n) {
+    const line = ['li', 'ul', 'ol'].includes(n.tagName);
+    if (line) out += ' ';
+    if (n.nodeName === '#text') out += n.value;
+    for (const c of n.childNodes || []) walk(c);
+    if (line) out += ' ';
+  })(node);
+  return out.replace(/\s+/g, ' ').trim();
 }
 
 function textOf(node) {
@@ -255,7 +355,7 @@ export function autotag(raw) {
 
   const scope = main || body || doc;
   (function findRepeats(n, ancestors) {
-    if (SKIP_SUBTREES.has(n.tagName) || (n.tagName && ownsInside(n))) return;
+    if (skipped(n) || (n.tagName && ownsInside(n))) return;
     const kids = elementChildren(n).filter(k => k.tagName !== 'template');
     if (n.tagName && !hasCms(n) && !insideRepeat(ancestors) && !inMenu(ancestors, n) && kids.length >= 3 && !holdsMarked(n, marked)) {
       const sigs = kids.map(signature);
@@ -281,7 +381,7 @@ export function autotag(raw) {
   function tagRepeatItem(item, repKey) {
     let heads = 0, bodies = 0, imgs = 0;
     (function walk(n) {
-      if (SKIP_SUBTREES.has(n.tagName)) return;
+      if (skipped(n)) return;
       if (n.tagName && !hasCms(n)) {
         if (/^h[1-6]$/.test(n.tagName) && textOf(n)) { annotate(n, ` data-cms="${repKey}_title${heads++ ? heads : ''}"`); counts.fields++; return; }
         if ((n.tagName === 'p' || n.tagName === 'figcaption' || n.tagName === 'blockquote') && textOf(n)) { annotate(n, ` data-cms="${repKey}_body${bodies++ ? bodies : ''}"`); counts.fields++; return; }
@@ -294,7 +394,7 @@ export function autotag(raw) {
 
   // ── Plain fields + images everywhere in scope (outside repeats/menu) ──
   (function tagFields(n, ancestors) {
-    if (SKIP_SUBTREES.has(n.tagName) || repeatContainers.has(n)) return;
+    if (skipped(n) || repeatContainers.has(n)) return;
     if (n.tagName && ownsInside(n)) return;   // already marked: its inside is its own
     if (n.tagName && !hasCms(n) && !insideRepeat(ancestors) && !inMenu(ancestors, n)) {
       if (FIELD_TAGS.has(n.tagName)) {
@@ -310,6 +410,20 @@ export function autotag(raw) {
         if (annotate(n, ` data-cms="${key}" data-cms-attr="src"`)) counts.images++;
         return;
       }
+      // A button: its words, marked on the link itself so its address can be
+      // changed beside them. One inside a marked paragraph or heading is never
+      // reached, and one that holds a marked part is passed over.
+      if (isButton(n) && !holdsMarked(n, marked)) {
+        const key = uniq(`${wordsKey(n, ancestors, textOf(n))}_button`);
+        if (annotate(n, ` data-cms="${key}"`)) counts.fields++;
+        return;
+      }
+      // A list in the main text: one part, so a line can be changed, added or taken out.
+      if ((n.tagName === 'ul' || n.tagName === 'ol') && inMainText([...ancestors, n]) && isWordList(n) && !holdsMarked(n, marked)) {
+        const key = uniq(`${wordsKey(n, ancestors, listWords(n))}_list`);
+        if (annotate(n, ` data-cms="${key}"`)) counts.fields++;
+        return;
+      }
     }
     for (const c of n.childNodes || []) if (c.tagName) tagFields(c, [...ancestors, n]);
   })(scope, []);
@@ -321,7 +435,7 @@ export function autotag(raw) {
     (function ff(n) { if (n.tagName === 'footer' && !footer) footer = n; for (const c of n.childNodes || []) ff(c); })(body);
     if (footer && !within(main, footer)) {
       (function tagFields(n, ancestors) {
-        if (SKIP_SUBTREES.has(n.tagName) || repeatContainers.has(n)) return;
+        if (skipped(n) || repeatContainers.has(n)) return;
         if (n.tagName && (ownsInside(n) || marked.has(n) || attrOf(n, 'data-cms-repeat') !== undefined)) return;   // already marked: its inside is its own
         if (n.tagName && !hasCms(n) && !inMenu(ancestors, n) && FIELD_TAGS.has(n.tagName)) {
           const text = textOf(n);
@@ -334,6 +448,28 @@ export function autotag(raw) {
         for (const c of n.childNodes || []) if (c.tagName) tagFields(c, [...ancestors, n]);
       })(footer, []);
     }
+  }
+
+  // The site's header, when it lies outside <main>: its logo and any other
+  // picture in it, marked like the pictures of the page. Nothing in its menu.
+  if (main && body) {
+    const top = (function findTop(n) {
+      if (n === main || n.tagName === 'footer' || skipped(n)) return null;
+      if (n.tagName === 'header' || attrOf(n, 'role') === 'banner') return n;
+      for (const c of n.childNodes || []) { const f = c.tagName ? findTop(c) : null; if (f) return f; }
+      return null;
+    })(body);
+    const isLogo = (n, ancestors) => [n, ...ancestors.slice(-3)].some(a => /logo|brand/i.test(`${attrOf(a, 'class') || ''} ${attrOf(a, 'id') || ''}`));
+    if (top) (function tagTop(n, ancestors) {
+      if (skipped(n) || repeatContainers.has(n) || n.tagName === 'nav') return;
+      if (ownsInside(n) || marked.has(n) || attrOf(n, 'data-cms-repeat') !== undefined) return;   // already marked: its inside is its own
+      if (n.tagName === 'img' && attrOf(n, 'src') && !hasCms(n)) {
+        const key = uniq(isLogo(n, ancestors) ? 'logo_img' : prefixFor(ancestors) === 'page' ? 'header_img' : imgKey(n, ancestors));
+        if (annotate(n, ` data-cms="${key}" data-cms-attr="src"`)) counts.images++;
+        return;
+      }
+      for (const c of n.childNodes || []) if (c.tagName) tagTop(c, [...ancestors, n]);
+    })(top, []);
   }
 
   if (!splices.length) return { html: raw, counts };

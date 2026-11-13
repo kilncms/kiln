@@ -58,7 +58,8 @@ test('autotag: a shop\'s list of products is named for the shop', () => {
 test('autotag: in a builder\'s header and footer the place comes first', () => {
   const html = autotag(page(`<header class="site-header"><div class="ast-builder-layout-element"><p>Free delivery this week</p><img src="logo.png"></div></header>
     <main><div class="elementor-widget-container"><h1>Welcome to the shop</h1></div></main>`)).html;
-  assert.deepStrictEqual(keysOf(html), ['welcome_to_the_heading']);
+  // The header's picture is marked now (its words are not), and its name puts the place first too.
+  assert.deepStrictEqual(keysOf(html), ['header_img', 'welcome_to_the_heading']);
   const all = autotag(page(`<header><div class="ast-builder-layout-element"><p>Free delivery this week</p><img src="logo.png"></div></header><aside><div class="widget"><h3>Recent posts</h3></div></aside>`)).html;
   assert.deepStrictEqual(keysOf(all), ['header_free_delivery_this', 'header_img', 'sidebar_recent_posts_heading']);
 });

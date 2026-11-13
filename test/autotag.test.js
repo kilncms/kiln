@@ -201,3 +201,139 @@ test('autotag: on a page styled with utility classes, names come from the ids an
   assert.match(out, /data-cms="page_the_shows_you"/, 'nothing meaningful around it: the plain "page", never a styling class or the app\'s root element');
   assert.doesNotMatch(out, /data-cms="(mx_auto|gap_10|mt_6|hairline_t|flex|root|text|py_20|md)/);
 });
+
+// ── Buttons, forms, lists in the main text, the header's pictures ────────────
+
+test('autotag: a link or button that is plainly a button has its words marked, on the link itself', () => {
+  const page = `<!DOCTYPE html><html><body><main>
+<section class="hero">
+  <h1>Spring sale</h1>
+  <div class="wp-block-button"><a class="wp-block-button__link wp-element-button" href="/shop">Shop Now</a></div>
+  <a class="elementor-button elementor-size-sm" href="#"><span class="elementor-button-content-wrapper"><span class="elementor-button-text">Find More</span></span></a>
+  <a href="/join" role="button">Join us</a>
+  <button class="btn btn-primary" type="button">Call now</button>
+  <a class="btn" href="/cart"><svg viewBox="0 0 1 1"><path d="M0 0"/></svg> Cart</a>
+  <button class="btn" aria-expanded="false">More</button>
+  <a href="/plain">An ordinary link</a>
+  <p>Read the <a class="btn" href="/story">whole story</a> here.</p>
+</section>
+</main></body></html>`;
+  const { html, counts } = autotag(page);
+  // The mark is on the link, so the editor offers its address beside its words.
+  assert.ok(/<a class="wp-block-button__link wp-element-button" href="\/shop" data-cms="\w*shop_now_button">Shop Now<\/a>/.test(html), html);
+  assert.ok(html.includes('<a class="elementor-button elementor-size-sm" href="#" data-cms="hero_find_more_button"><span class="elementor-button-content-wrapper"><span class="elementor-button-text">Find More</span></span></a>'), html);
+  assert.ok(html.includes('<a href="/join" role="button" data-cms="hero_join_us_button">Join us</a>'));
+  assert.ok(html.includes('<button class="btn btn-primary" type="button" data-cms="hero_call_now_button">Call now</button>'));
+  // Not marked: a button with an icon drawn in it, one that opens something, an ordinary link.
+  assert.ok(html.includes('<a class="btn" href="/cart"><svg'));
+  assert.ok(html.includes('<button class="btn" aria-expanded="false">More</button>'));
+  assert.ok(html.includes('<a href="/plain">An ordinary link</a>'));
+  // A button inside a paragraph stays part of the paragraph, as before.
+  assert.ok(/<p data-cms="hero_read_the_whole">Read the <a class="btn" href="\/story">whole story<\/a> here\.<\/p>/.test(html), html);
+  assert.deepEqual(counts, { fields: 6, images: 0, repeats: 0, menu: 0 });
+  assert.equal(autotag(html).html, html);
+});
+
+test('autotag: nothing inside a form a visitor fills in is marked', () => {
+  const page = `<!DOCTYPE html><html><body><main><article class="jeans">
+<h1>Blue denim jeans</h1>
+<div id="respond"><span id="reply-title">Be the first to review</span>
+<form class="comment-form" action="/comment">
+  <h3>Your review</h3>
+  <p class="comment-notes">Your email address will not be published.</p>
+  <p class="comment-form-author"><label for="author">Name</label><input id="author" placeholder="Your name"></p>
+  <ul><li>Be kind to others</li><li>Stay on the subject</li></ul>
+  <img src="/captcha.png" alt="">
+  <p class="form-submit"><button class="btn" type="submit">Submit</button> <a class="button" href="/jeans">Cancel</a></p>
+</form></div>
+<p>Soft cotton, cut to last.</p>
+</article></main>
+<footer><form class="newsletter"><p>Get our letter every month</p><input type="email"></form><p>Call us: 555-0100</p></footer>
+</body></html>`;
+  const { html, counts } = autotag(page);
+  const forms = html.match(/<form[\s\S]*?<\/form>/g);
+  assert.equal(forms.length, 2);
+  for (const form of forms) assert.ok(!form.includes('data-cms'), form);
+  assert.ok(html.includes('<h1 data-cms="jeans_blue_denim_jeans">'), html);
+  assert.ok(html.includes('<p data-cms="jeans_soft_cotton_cut">'), html);
+  assert.ok(html.includes('<p data-cms="footer_call_us_555">'), html);
+  assert.deepEqual(counts, { fields: 3, images: 0, repeats: 0, menu: 0 });
+});
+
+test('autotag: a form wrapped round a whole page is read as the page', () => {
+  const page = `<!DOCTYPE html><html><body><form id="form1" method="post">
+<header><nav><a href="/">Home</a><a href="/a">About</a><a href="/b">Blog</a></nav></header>
+<section class="hero"><h1>Welcome to the bakery</h1><p>Fresh bread every morning.</p></section>
+</form></body></html>`;
+  const { html, counts } = autotag(page);
+  assert.ok(html.includes('<h1 data-cms="hero_welcome_to_the">'), html);
+  assert.ok(html.includes('<p data-cms="hero_fresh_bread_every">'), html);
+  assert.deepEqual(counts, { fields: 2, images: 0, repeats: 0, menu: 1 });
+});
+
+test('autotag: a list in the main text is marked as one part; menus, link lists and lists beside the text are not', () => {
+  const page = `<!DOCTYPE html><html><body>
+<header><nav><ul><li><a href="/">Home</a></li><li><a href="/a">About</a></li><li><a href="/b">Blog</a></li></ul></nav></header>
+<main><article class="recipe">
+<h1>How we bake</h1>
+<ul><li>Mix the <strong>flour</strong> and water</li><li>Rest the dough<ul><li>overnight, covered</li></ul></li><li>Bake at <a href="/heat">high heat</a></li></ul>
+<ol class="steps"><li>Shape</li><li>Score</li></ol>
+<ul class="share"><li><a href="/x">Share</a></li><li><a href="/y">Print</a></li></ul>
+<ul class="gallery"><li><img src="/1.jpg" alt=""></li><li><img src="/2.jpg" alt=""></li></ul>
+</article>
+<aside><ul><li>Open daily from seven</li><li>Closed on holidays</li></ul></aside>
+</main>
+<footer><ul><li><a href="/p">Privacy</a></li><li>Made in Atlanta</li><li>Since 1982</li></ul><p>Call us</p></footer>
+</body></html>`;
+  const { html, counts } = autotag(page);
+  assert.ok(html.includes('<ul data-cms="recipe_mix_the_flour_list"><li>Mix the'), html);
+  assert.ok(html.includes('<ol class="steps" data-cms="recipe_shape_score_list"><li>Shape</li>'), html);
+  // One part for the whole list: no line, and no list inside a line, has a mark of its own.
+  assert.ok(!/<li[^>]*data-cms/.test(html));
+  assert.ok(html.includes('<li>Rest the dough<ul><li>overnight, covered</li></ul></li>'));
+  // Today's handling is kept for a list of links, a list of pictures, a sidebar, the footer and the menu.
+  assert.ok(html.includes('<ul class="share"><li><a href="/x">Share</a>'));
+  assert.ok(/<ul class="gallery"><li><img src="\/1.jpg" alt="" data-cms="\w+" data-cms-attr="src"><\/li>/.test(html), html);
+  assert.ok(html.includes('<aside><ul><li>Open daily from seven</li>'));
+  assert.ok(html.includes('<footer><ul><li><a href="/p">Privacy</a>'));
+  assert.ok(html.includes('<nav data-cms-menu="main"><ul><li><a href="/">Home</a>'));
+  assert.deepEqual(counts, { fields: 4, images: 2, repeats: 0, menu: 1 });
+  assert.equal(autotag(html).html, html);
+});
+
+test('autotag: the logo and a picture in the site header are marked like other pictures', () => {
+  const page = `<!DOCTYPE html><html><body>
+<header class="site-header">
+  <a class="custom-logo-link" href="/"><img class="custom-logo" src="/logo.png" alt="Bakery"></a>
+  <div class="banner"><img src="/banner.jpg" alt=""></div>
+  <p class="tagline">Bread since 1982</p>
+  <nav><a href="/"><img src="/home.png" alt=""></a><a href="/a">About</a><a href="/b">Blog</a></nav>
+</header>
+<main><h1>Welcome home</h1><p>Fresh bread every morning.</p></main>
+</body></html>`;
+  const { html, counts } = autotag(page);
+  assert.ok(html.includes('<img class="custom-logo" src="/logo.png" alt="Bakery" data-cms="logo_img" data-cms-attr="src">'), html);
+  assert.ok(/<img src="\/banner.jpg" alt="" data-cms="\w+_img" data-cms-attr="src">/.test(html), html);
+  // Nothing in the menu is marked, and the header's words keep the handling they had.
+  assert.ok(html.includes('<img src="/home.png" alt="">'));
+  assert.ok(html.includes('<p class="tagline">Bread since 1982</p>'));
+  assert.deepEqual(counts, { fields: 2, images: 2, repeats: 0, menu: 1 });
+  assert.equal(autotag(html).html, html);
+});
+
+test('autotag: buttons, lists, forms and header pictures on a page that is already marked are left as they are', () => {
+  const page = `<!DOCTYPE html><html><body>
+<header><a class="logo" href="/"><img src="/logo.png" alt="" data-cms="brand" data-cms-attr="src"></a></header>
+<main><article>
+<h1 data-cms="title">Hello there</h1>
+<a class="btn" href="/go"><span data-cms="cta_words">Go now</span></a>
+<a class="btn" href="/shop" data-cms="shop_cta">Shop</a>
+<ul><li data-cms="line_one">First line here</li><li>Second line here</li></ul>
+<ul data-cms="hand_list"><li>Kept as it is</li><li>And this one</li></ul>
+<div data-cms="box"><a class="btn" href="/in">Inside a marked box</a><ul><li>Inside line one</li><li>Inside line two</li></ul></div>
+</article></main>
+</body></html>`;
+  const { html, counts } = autotag(page);
+  assert.equal(html, page);
+  assert.deepEqual(counts, { fields: 0, images: 0, repeats: 0, menu: 0 });
+});
