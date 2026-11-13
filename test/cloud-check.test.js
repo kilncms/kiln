@@ -468,3 +468,131 @@ test('check: looking writes nothing: not to GitHub, not to the site, and not to 
     assert.equal(JSON.stringify(w.env.kiln_cloud.row('SELECT * FROM sites WHERE id = ?', 'site-1')), row, 'the site is not marked as having Kiln by a check');
   }
 });
+
+// ─── A site on Kiln's hosting ────────────────────────────────────────────────
+// Such a site answers at the address the hosting gave it. Its own domain is on
+// record but is not pointed at Kiln, so the check looks at the hosting's
+// address, and no line sends the owner to "your host": Kiln is the host.
+
+const HOSTED = 'https://club-1a2b3c4d.kiln-sites.workers.dev';
+const HOSTING_ON = { HOSTING_ACCOUNT_ID: 'cf-account', HOSTING_API_TOKEN: 'cf-token', HOSTING_SUBDOMAIN: 'kiln-sites' };
+/** The hosting's address serving `served` the way the hosting does. */
+const hostedSite = (served) => Object.fromEntries([['/', 'index.html'], ['/kiln', 'kiln.html'], ['/assets/kiln.js', 'assets/kiln.js']].map(([at, name]) =>
+  [`${HOSTED}${at}`, () => (served[name] == null ? new Response('Not found', { status: 404 }) : new Response(served[name], { status: 200, headers: { 'Content-Type': 'text/html' } }))]));
+/** `world`, with hosting switched on and the site on it in `state`. */
+function hostedWorld(files, { state = 'live', reason = null, deployed = 5, served = files, over = null, site = {}, on = true } = {}) {
+  const w = world(files, { site: { plan: 'managed', ...site }, over: over || hostedSite(served), served: {} });
+  if (on) Object.assign(w.env, HOSTING_ON);
+  w.env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, reason, deployed_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
+    'site-1', 'club-1a2b3c4d', HOSTED, state, reason, deployed, 5, 5);
+  return w;
+}
+const noHostWords = (body) => { for (const c of body.checks) assert.equal(/your host\b/i.test(c.detail), false, `${c.id} sends nobody to "your host": ${c.detail}`); };
+
+test('check, hosted: the address Kiln\'s hosting gave the site is the one looked at, and the address on record is asked for nothing', { skip: d1Skip }, async () => {
+  const w = hostedWorld(withKiln());
+  const { res, body, by } = await check(w);
+  assert.equal(res.status, 200);
+  assert.equal(body.origin, SITE, 'the address on record is still the one named for the site');
+  assert.equal(body.looked_at, HOSTED);
+  assert.deepEqual(body.checks.map(c => c.id), ALL);
+  for (const c of body.checks) assert.equal(c.ok, true, `${c.id}: ${c.detail}`);
+  assert.equal(body.all_ok, true);
+  assert.equal(by.address.detail, `${HOSTED} answers. That is the address Kiln's hosting gave this site.`);
+  assert.equal(by.live.detail, `The home page at ${HOSTED} loads Kiln, and the editor's file (${HOSTED}/assets/kiln.js) answers.`);
+  assert.equal(by.signin.detail, `The sign-in page is at ${HOSTED}/kiln. Open it to sign in and edit.`);
+  assert.deepEqual(urls(w).sort(), [`${HOSTED}/`, `${HOSTED}/assets/kiln.js`, `${HOSTED}/kiln`]);
+  assert.equal(urls(w).some(u => u.startsWith(SITE)), false);
+  noHostWords(body);
+});
+
+test('check, hosted: when the hosting is behind the repository, the lines say Kiln has not published yet and to press Publish again', { skip: d1Skip }, async () => {
+  const before = { 'index.html': page('Home') };                      // what the hosting still serves: no Kiln on it
+  const w = hostedWorld(withKiln(), { served: before });
+  const { body, by } = await check(w);
+  assert.equal(by.files.ok, true);
+  assert.equal(by.address.ok, true);
+  assert.equal(by.live.ok, false);
+  assert.equal(by.live.detail, `Kiln is in your repository, but the home page at ${HOSTED} does not load it yet. Kiln has not published the change yet. Press Publish again on the site's row, wait a few seconds, and check again.`);
+  assert.equal(by.signin.ok, false);
+  assert.match(by.signin.detail, /The page \(kiln\.html\) is in your repository\. Kiln has not published the change yet\. Press Publish again on the site's row, wait a few seconds, and check again\.$/);
+  noHostWords(body);
+  for (const c of body.checks) assert.equal(/—/.test(c.detail), false);
+});
+
+test('check, hosted: with no Kiln in the repository, the next step says Kiln publishes it, and the settings line too', { skip: d1Skip }, async () => {
+  const bare = { 'index.html': page('Home') };
+  let w = hostedWorld(bare);
+  let { body, by } = await check(w);
+  assert.equal(by.files.ok, false);
+  assert.match(by.live.detail, /does not load Kiln\. Add Kiln to the repository first \(see the line about the repository above\)\. Kiln publishes it in a few seconds\. Then check again\.$/);
+  noHostWords(body);
+
+  // A settings file that names another service: saved, then Kiln publishes it.
+  w = hostedWorld(withKiln({ 'assets/kiln-config.js': kilnConfigFile({ repo: 'ada/club', branch: 'main', worker: 'https://other.example' }) }));
+  ({ body, by } = await check(w));
+  assert.equal(by.settings.ok, false);
+  assert.match(by.settings.detail, /Save the file\. Kiln publishes it in a few seconds\. Then check again\.$/);
+  noHostWords(body);
+});
+
+test('check, hosted: an address that does not answer is Kiln\'s to put right, and the owner is told what to press', { skip: d1Skip }, async () => {
+  const w = hostedWorld(withKiln(), { over: { [`${HOSTED}/`]: answer(503) } });
+  const { body, by } = await check(w);
+  assert.equal(by.address.ok, false);
+  assert.match(by.address.detail, /That is the address Kiln's hosting gave this site, so there is nothing for you to change at a host\. Press Publish again on the site's row and check again in a minute\. If it still does not answer, write to info@kilncms\.com\.$/);
+  assert.deepEqual(by.address.fix, { url: HOSTED, label: 'Open your site' });
+  assert.equal(by.live.ok, null);
+  assert.equal(by.signin.ok, null);
+  noHostWords({ checks: body.checks.filter(c => c.id !== 'address') });
+});
+
+test('check, hosted: a site that was taken down says why, and no address is asked for anything', { skip: d1Skip }, async () => {
+  const w = hostedWorld(withKiln(), { state: 'ended', reason: 'trial_ended', deployed: null });
+  const { body, by } = await check(w);
+  assert.equal(body.looked_at, null);
+  assert.equal(by.repository.ok, true);
+  assert.equal(by.files.ok, true);
+  assert.equal(by.address.ok, false);
+  assert.equal(by.address.detail, 'Kiln took this site down from its hosting because the free days ran out. Your repository is untouched. Now that the site is subscribed, put it up again.');
+  for (const id of ['live', 'signin']) { assert.equal(by[id].ok, null); assert.equal(by[id].detail, 'Not checked, because the site is not online.'); }
+  assert.deepEqual(urls(w), []);
+  assert.equal(body.all_ok, false);
+  noHostWords(body);
+});
+
+test('check, hosted: a site that is going up for the first time says so, and one whose last copy failed is still looked at where it serves', { skip: d1Skip }, async () => {
+  let w = hostedWorld(withKiln(), { state: 'starting', deployed: null });
+  let { body, by } = await check(w);
+  assert.equal(by.address.detail, 'Kiln is putting this site up now. Check again in a minute.');
+  assert.deepEqual(urls(w), []);
+
+  w = hostedWorld({ 'about.html': page('About') }, { state: 'waiting', reason: 'no_home', deployed: null });
+  ({ body, by } = await check(w));
+  assert.match(by.address.detail, /^Kiln found no home page \(a file named index\.html\) at the top of ada\/club/);
+  assert.deepEqual(urls(w), []);
+
+  // Was live, and the last copy failed: it still serves what it served.
+  w = hostedWorld(withKiln(), { state: 'failed', reason: 'cloudflare', deployed: 5 });
+  ({ body, by } = await check(w));
+  assert.equal(body.looked_at, HOSTED);
+  assert.equal(by.address.ok, true);
+  assert.equal(body.all_ok, true);
+});
+
+test('check: with hosting switched off for the service, or a site on the hosting plan that was never put up, the address on record is looked at as before', { skip: d1Skip }, async () => {
+  // The service has no hosting: a row left in the table changes nothing.
+  let w = world(withKiln(), { site: { plan: 'managed' } });
+  w.env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, deployed_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'site-1', 'club', HOSTED, 'live', 5, 5, 5);
+  let { body, by } = await check(w);
+  assert.equal(body.looked_at, SITE);
+  assert.equal(by.address.detail, `${SITE} answers.`);
+  assert.equal(urls(w).every(u => u.startsWith(SITE)), true);
+
+  // Hosting is on, the plan includes it, and the owner has not pressed the button: their own host is where the site is.
+  w = world(withKiln(), { site: { plan: 'managed' } });
+  Object.assign(w.env, HOSTING_ON);
+  ({ body, by } = await check(w));
+  assert.equal(body.looked_at, SITE);
+  assert.equal(by.address.detail, `${SITE} answers.`);
+});

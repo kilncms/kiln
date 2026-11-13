@@ -218,7 +218,7 @@ function repositoryLines(plan, { repo, installUrl, canAdd }) {
 }
 
 /** Line `settings`. */
-async function settingsLine(plan, { token, repo, worker }) {
+async function settingsLine(plan, { token, repo, worker, hosted = false }) {
   if (plan.state === 'no_access' || plan.state === 'github') return line('settings', null, 'Not checked, because Kiln could not read the repository.');
   if (!plan.treeSha) return line('settings', null, 'Not checked, because the repository has no files yet.');
   const file = await readSettings(token, repo, plan);
@@ -235,7 +235,7 @@ async function settingsLine(plan, { token, repo, worker }) {
   else if (theirRepo.toLowerCase() !== String(repo).toLowerCase()) wrong.push(`Its repo line names another repository, ${theirRepo}. Change that line to repo: '${repo}'.`);
   if (!wrong.length) return line('settings', true, `${file.path} names this service (${worker}) and this repository (${repo}).`);
   const where = `https://github.com/${repo}/edit/${String(plan.branch).split('/').map(encodeURIComponent).join('/')}/${file.path.split('/').map(encodeURIComponent).join('/')}`;
-  return line('settings', false, `The settings file (${file.path}) needs a change. ${wrong.join(' ')} Save the file, wait for your host to publish it, and check again.`, { fix: { url: where, label: 'Open the settings file on GitHub' } });
+  return line('settings', false, `The settings file (${file.path}) needs a change. ${wrong.join(' ')} ${hosted ? 'Save the file. Kiln publishes it in a few seconds. Then check again.' : 'Save the file, wait for your host to publish it, and check again.'}`, { fix: { url: where, label: 'Open the settings file on GitHub' } });
 }
 
 // ─── The live site ────────────────────────────────────────────────────────────
@@ -253,10 +253,13 @@ function problemSentence(res, what, timeoutMs) {
 }
 
 /** Line `address`, from the answer to the home page. */
-function addressLine(home, base, timeoutMs) {
-  if (home.status === 200) return line('address', true, `${base} answers.`);
+function addressLine(home, base, timeoutMs, hosted = false) {
+  if (home.status === 200) return line('address', true, hosted ? `${base} answers. That is the address Kiln's hosting gave this site.` : `${base} answers.`);
   const open = { fix: { url: base, label: 'Open your site' } };
   const said = problemSentence(home, base, timeoutMs);
+  // The address is Kiln's own and so is the host: there is nothing for the
+  // owner to look at anywhere else, and publishing again is what puts it right.
+  if (hosted) return line('address', false, `${said} That is the address Kiln's hosting gave this site, so there is nothing for you to change at a host. Press Publish again on the site's row and check again in a minute. If it still does not answer, write to ${HELP}.`, open);
   switch (home.problem) {
     case 'not_an_address': return line('address', false, `This site was added with "${base}", which is not a full web address, so Kiln cannot look at it. Write to ${HELP} and we will change the address.`);
     case 'not_https': return line('address', false, `This site was added with the address ${base}. Kiln only looks at addresses that start with https://, so it did not ask this one. If your site answers at an https:// address, write to ${HELP} and we will change it.`);
@@ -271,18 +274,22 @@ function addressLine(home, base, timeoutMs) {
 }
 
 const NOT_PUBLISHED = 'Your host has not published the change yet, or it publishes from another repository or branch. Wait a minute or two and check again. If nothing changes, look at which repository and branch your host publishes from.';
+/** The same for a site on Kiln's hosting, where Kiln is the one that publishes. */
+const NOT_PUBLISHED_BY_KILN = 'Kiln has not published the change yet. Press Publish again on the site\'s row, wait a few seconds, and check again.';
 const KILN_SRC = /<script\b[^>]*\bsrc=["']([^"']*\bkiln\.js(?:\?[^"']*)?)["']/i;
 
 /** Lines `live` and `signin`. */
-async function liveLines(home, base, plan, timeoutMs) {
+async function liveLines(home, base, plan, timeoutMs, hosted = false) {
+  const notPublished = hosted ? NOT_PUBLISHED_BY_KILN : NOT_PUBLISHED;
   if (home.status !== 200) {
     const why = 'Not checked, because the site\'s address did not answer with a page.';
     return [line('live', null, why), line('signin', null, why)];
   }
   const inRepo = plan.state === 'prepared';
   const builtElsewhere = plan.state === 'built' || plan.state === 'too_big';
-  const next = inRepo ? NOT_PUBLISHED
+  const next = inRepo ? notPublished
     : builtElsewhere ? 'Run the setup tool in the site\'s folder, publish the site, and check again.'
+    : hosted ? 'Add Kiln to the repository first (see the line about the repository above). Kiln publishes it in a few seconds. Then check again.'
     : 'Add Kiln to the repository first (see the line about the repository above), wait for your host to publish it, and check again.';
   const loads = withKilnTags(home.text || '').state === 'already';
 
@@ -303,7 +310,7 @@ async function liveLines(home, base, plan, timeoutMs) {
 
   let live;
   if (loads && file.status === 200) live = line('live', true, `The home page at ${base} loads Kiln, and the editor's file (${asset}) answers.`);
-  else if (loads) live = line('live', false, `The home page at ${base} asks for the editor's file, but ${problemSentence(file, asset, timeoutMs)} ${inRepo ? `The file is in your repository. ${NOT_PUBLISHED}` : next}`);
+  else if (loads) live = line('live', false, `The home page at ${base} asks for the editor's file, but ${problemSentence(file, asset, timeoutMs)} ${inRepo ? `The file is in your repository. ${notPublished}` : next}`);
   else if (home.cut) live = line('live', null, `Not checked. The home page at ${base} is larger than ${LIMITS.bodyBytes / 1024} KB. Kiln reads only the first ${LIMITS.bodyBytes / 1024} KB of a page, and the line that loads the editor was not in that part, so it cannot say whether the page loads Kiln.`);
   else live = line('live', false, `${inRepo ? `Kiln is in your repository, but the home page at ${base} does not load it yet.` : `The home page at ${base} does not load Kiln.`} ${next}`);
 
@@ -311,7 +318,7 @@ async function liveLines(home, base, plan, timeoutMs) {
   if (signIn.status === 200) signin = line('signin', true, `The sign-in page is at ${signInAt}. Open it to sign in and edit.`);
   else {
     const has = inRepo || (plan.files && plan.files.kept.includes(SIGN_IN_PAGE));
-    signin = line('signin', false, `${problemSentence(signIn, `The sign-in page at ${signInAt}`, timeoutMs)} ${has ? `The page (${SIGN_IN_PAGE}) is in your repository. ${NOT_PUBLISHED}` : builtElsewhere ? next : `The page (${SIGN_IN_PAGE}) is not in your repository yet. ${next}`}`);
+    signin = line('signin', false, `${problemSentence(signIn, `The sign-in page at ${signInAt}`, timeoutMs)} ${has ? `The page (${SIGN_IN_PAGE}) is in your repository. ${notPublished}` : builtElsewhere ? next : `The page (${SIGN_IN_PAGE}) is not in your repository yet. ${next}`}`);
   }
   return [live, signin];
 }
@@ -325,20 +332,32 @@ async function liveLines(home, base, plan, timeoutMs) {
  * `worker` is this service's own address, which the settings file should
  * name. `canAdd` false means editing is switched off for the site, so the
  * "Add Kiln to this site" action is not offered.
+ *
+ * A site on Kiln's hosting: `origin` is then the address the hosting gave it
+ * and `hosted` is true, so the lines say that Kiln publishes a change and
+ * never send its owner to "your host". When that site is not online (it was
+ * taken down, or has not gone up yet) `down` is the sentence that says why:
+ * no address is asked for anything, and the three lines about the live site
+ * say that instead.
  */
-export async function checkSite({ token, repo, origin, worker, installUrl = INSTALL_URL, canAdd = true, timeoutMs = LIMITS.timeoutMs }) {
+export async function checkSite({ token, repo, origin, worker, installUrl = INSTALL_URL, canAdd = true, timeoutMs = LIMITS.timeoutMs, hosted = false, down = null }) {
   const checks = [];
   try {
     let base = String(origin || '');
     try { base = new URL(base).origin === 'null' ? base : new URL(base).origin; } catch { /* said in the address line */ }
     const [plan, home] = await Promise.all([
       token ? planPrepare({ token, repo, worker }).catch(() => ({ state: 'github' })) : { state: 'no_access' },
-      visit(`${base}/`, { read: true, timeoutMs }),
+      down ? null : visit(`${base}/`, { read: true, timeoutMs }),
     ]);
     checks.push(...repositoryLines(plan, { repo, installUrl, canAdd }));
-    checks.push(await settingsLine(plan, { token, repo, worker }));
-    checks.push(addressLine(home, base, timeoutMs));
-    checks.push(...await liveLines(home, base, plan, timeoutMs));
+    checks.push(await settingsLine(plan, { token, repo, worker, hosted: hosted || !!down }));
+    if (down) {
+      const why = 'Not checked, because the site is not online.';
+      checks.push(line('address', false, String(down)), line('live', null, why), line('signin', null, why));
+    } else {
+      checks.push(addressLine(home, base, timeoutMs, hosted));
+      checks.push(...await liveLines(home, base, plan, timeoutMs, hosted));
+    }
   } catch (e) {
     console.warn(JSON.stringify({ evt: 'site_check_failed', repo, detail: String(e?.message || e).slice(0, 200) }));
     for (const id of ['repository', 'files', 'settings', 'address', 'live', 'signin']) {

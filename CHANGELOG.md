@@ -6,6 +6,22 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Check this site" looks at a hosted site where it really is.** For a site
+  on Kiln's hosting the check asked the address on record, which is the
+  owner's own domain, and that domain is not pointed at Kiln. So the list said
+  the address did not answer, or that Kiln was not on the page, and told the
+  owner to look "at your host". The check now looks at the address the hosting
+  gave the site, and says so. Where a line used to say "wait for your host to
+  publish it", it says that Kiln publishes a change in a few seconds, and what
+  to press when it has not (**Publish again** on the site's row). A hosted
+  site that is not online, because it was taken down or has not gone up yet,
+  gets the sentence that says why, and no address is asked for anything. A
+  site on the hosting plan that its owner never put on Kiln's hosting is
+  checked at its own address, as before. The answer carries `looked_at`, the
+  address that was asked (`worker/sitecheck.js`, `worker/cloud.js`).
+
 ## [0.6.3] - 2026-11-12
 
 ### Fixed

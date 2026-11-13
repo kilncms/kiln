@@ -1172,13 +1172,23 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const asked = await ownedSite(request, env, url, sess, tools, { needToken: false, needAccess: false });
     if (asked.response) return asked.response;
     const { site, token, access } = asked;
-    const checks = await checkSite({ token, repo: site.repo, origin: site.origin, worker: url.origin, installUrl: INSTALL_URL, canAdd: access });
+    // A site on Kiln's hosting answers at the address the hosting gave it, and
+    // its own domain is not pointed there, so that address is the one to look
+    // at. When the site is not online, the list says why and asks no address.
+    const row = hostingOn(env) ? await hostingRow(env, site.id) : null;
+    const hosting = row ? publicHosting(row, { repo: site.repo, planEnded: Number(site.access_until) || null }) : null;
+    const up = !!(hosting && hosting.url && (hosting.state === 'live' || hosting.serving));
+    const down = hosting && !up
+      ? hosting.error || (hosting.state === 'ended' ? 'Kiln took this site down from its hosting.' : 'Kiln is putting this site up now. Check again in a minute.')
+      : null;
+    const lookAt = up ? hosting.url : site.origin;
+    const checks = await checkSite({ token, repo: site.repo, origin: lookAt, hosted: up, down, worker: url.origin, installUrl: INSTALL_URL, canAdd: access });
     if (!access) {
       let sub = null;
       try { sub = await env.kiln_cloud.prepare('SELECT ls_subscription_id FROM sites WHERE id = ?').bind(site.id).first(); } catch { /* worded as a trial that ended */ }
       checks.unshift(editingOffLine({ status: site.status, subscribed: !!(sub && sub.ls_subscription_id) }));
     }
-    return json({ ok: true, repo: site.repo, origin: site.origin, checks, all_ok: checks.every(c => c.ok === true) });
+    return json({ ok: true, repo: site.repo, origin: site.origin, looked_at: down ? null : lookAt, checks, all_ok: checks.every(c => c.ok === true) });
   }
 
   // Fresh checkout link for a site that has no live subscription yet (trial,
