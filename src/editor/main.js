@@ -61,7 +61,7 @@ import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } fro
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
 import { draftRecord, readDraft, draftHolds, TYPED, openBoxEdit, openListEdit } from './saved-edits.js';
-import { onLoadFailure, endedNotice, notStartedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
+import { wayOf, onLoadFailure, endedNotice, notStartedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
 import { noteList, noteCopy, fileTrue, noteInside, noteAs, beginInside, settleInside, insideAsFile, asFileHtml,
@@ -176,6 +176,7 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 const state = {
   gh: null,
   user: null,
+  kept: false,           // the owner has no GitHub account: Kiln keeps the site's files (rememberKept, kept-words.js)
   page: null,            // { path, text, sha }
   fields: null,          // indexHtml() of page.text
   pending: new Map(),    // key → { html?, attrs?: {name: value} }
@@ -332,9 +333,12 @@ async function init() {
     } else {
       state.gh = watched(withAutoRefresh(makeGh({ mode: 'direct', token: () => JSON.parse(localStorage.getItem(ADMIN_KEY)).token }), stored));
     }
+    // An owner without GitHub is remembered with the sign-in: a sign-in that has ended gets no answer that says so.
+    state.kept = !!stored?.session && stored.kept === true;
     try {
       const user = stored?.session ? await ownerWho(stored.session) : await state.gh.request('GET', '/user');
       state.user = user.login || stored.login || '';
+      if (stored?.session) rememberKept(stored, user.kept === true);
     } catch (err) {
       // Only a real auth rejection should sign the owner out. A network or worker
       // blip (no HTTP status) must NOT nuke a valid session — that would log them
@@ -343,7 +347,7 @@ async function init() {
       // a 403 (this address refused, a plan that ended) or a 503 (GitHub out
       // of reach) keeps the session, as for an invited editor's page load.
       // The old way asks GitHub, whose refusal of the token ends the sign-in.
-      const over = onLoadFailure(err, { mode, draft: draftWaits(), asking: stored?.session ? 'page' : 'who' });
+      const over = onLoadFailure(err, { mode, draft: draftWaits(), asking: stored?.session ? 'page' : 'who', kept: state.kept });
       if (over) {
         console.warn(over.drop ? '[kiln] the sign-in has ended' : '[kiln] could not verify session (offline?)', err);
         if (!over.drop && stored?.session && await saidPlanEnded(standing)) return;
@@ -376,7 +380,7 @@ async function init() {
     // shows the sign-in again, and the page says what happened.
     // Trouble (no answer, a 5xx, a 429) and a 403 drop nothing: the page says
     // editing could not start and that the person is still signed in.
-    const over = onLoadFailure(err, { mode, draft: draftWaits() });
+    const over = onLoadFailure(err, { mode, draft: draftWaits(), kept: state.kept });
     if (over) {
       console.warn(over.drop ? '[kiln] the sign-in has ended' : '[kiln] the page could not be read', err);
       // A site whose free trial or plan has ended is refused by the worker in a
@@ -478,7 +482,7 @@ function signInAgain() {
   setTimeout(() => { leavingToSignIn = false; }, 5000);
   try { sessionStorage.setItem(BACK_KEY, '1'); } catch { /* private mode: the edits are offered back instead */ }
   location.href = signInUrl({ worker: cfg.worker, origin: location.origin, path: location.pathname + location.search,
-    repo: cfg.repo, way: mode === 'admin' ? 'github' : 'google' });
+    repo: cfg.repo, way: signInWay() });
 }
 
 /**
@@ -646,7 +650,7 @@ const ask = makeAsk({
   fetchImpl: (url, init) => fetch(url, init),
 });
 
-function signInWay() { return mode === 'admin' ? 'github' : 'google'; }   // a declaration: init() uses it before this line is reached
+function signInWay() { return wayOf({ mode, kept: state.kept }); }   // a declaration: init() uses it before this line is reached
 const stagedCounts = () => ({ edits: state.pending.size, source: state.pendingSource.size, structural: state.pendingStructural.length, files: state.pendingBinaries.size });
 
 /**
@@ -829,6 +833,23 @@ async function ownerWho(session) {
   err.status = res.ok ? 401 : res.status;
   err.data = data && typeof data === 'object' ? data : {};
   throw err;
+}
+
+/**
+ * Whether the owner has no GitHub account: Kiln keeps the site's files, and
+ * the service says so in its /auth/session answer (`kept: true`). It is kept
+ * with the stored sign-in, because a page that finds the sign-in ended gets
+ * no such answer and still has to offer the right way back in. A new sign-in
+ * writes the record afresh, so it never outlives the sign-in it describes.
+ */
+function rememberKept(stored, kept) {
+  state.kept = kept;
+  if ((stored.kept === true) === kept) return;
+  try {
+    const next = { ...stored };
+    if (kept) next.kept = true; else delete next.kept;
+    localStorage.setItem(ADMIN_KEY, JSON.stringify(next));
+  } catch { /* a browser that keeps nothing: known for this page load */ }
 }
 
 /**

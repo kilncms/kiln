@@ -18,9 +18,29 @@
  * Pure: no DOM and no storage, so all of it is tested in node.
  */
 
-/** How this person signs in: an invited editor with Google, the owner with GitHub. */
-const WAYS = { google: 'Google', github: 'GitHub' };
+/**
+ * How this person signs in: an invited editor with Google, the owner with
+ * GitHub. An owner who has no GitHub account ('kept': Kiln keeps the site's
+ * files, and the service's /auth/session answer says `kept: true`) signs in
+ * the Google way, at the same address as an invited editor.
+ */
+const WAYS = { google: 'Google', github: 'GitHub', kept: 'Google' };
 const wayName = (way) => WAYS[way] || WAYS.google;
+
+/** The way for this person: `mode` is 'admin' for the owner, `kept` an owner without GitHub. */
+export function wayOf({ mode = 'editor', kept = false } = {}) {
+  if (mode !== 'admin') return 'google';
+  return kept === true ? 'kept' : 'github';
+}
+
+/** What a kept owner is told where an invited editor is told to ask the site's owner: they are the owner. */
+const KEPT_ASK = 'open the editor again from your Kiln dashboard at app.kilncms.com';
+
+/** What a person the site refused is asked to do. `doing` is what a GitHub owner checks they still can ('read', 'write to'). */
+function whatToDo(way, doing) {
+  if (way === 'github') return `check that you can still ${doing} the repository on GitHub`;
+  return way === 'kept' ? KEPT_ASK : 'ask the site’s owner';
+}
 
 /**
  * What a failed request says about the sign-in.
@@ -92,7 +112,7 @@ export function signInUrl({ worker, origin, path, repo, way }) {
  * What the page says when it loads with a sign-in that has ended: one
  * sentence, and a button when signing in again is what helps.
  *
- *   way        'google' | 'github'
+ *   way        'google' | 'github' | 'kept' (wayOf)
  *   ownerMust  the worker said the owner has something to correct
  *   message    the worker's sentence for the owner
  *   draft      unpublished edits to this page are saved in this browser
@@ -100,7 +120,9 @@ export function signInUrl({ worker, origin, path, repo, way }) {
 export function endedNotice({ way, ownerMust = false, message = '', draft = false } = {}) {
   if (ownerMust) {
     return {
-      text: 'Your sign-in to edit this site has ended, and the site’s owner has something to correct before anyone can sign in again, so please ask them.'
+      text: (way === 'kept'
+        ? `Your sign-in to edit this site has ended, and something has to be corrected before anyone can sign in again, so please ${KEPT_ASK}.`
+        : 'Your sign-in to edit this site has ended, and the site’s owner has something to correct before anyone can sign in again, so please ask them.')
         + (draft ? ' The edits you had not published are saved in this browser for a week.' : ''),
       detail: message ? `For the owner: ${message}` : '',
       button: '',
@@ -122,7 +144,7 @@ export function endedNotice({ way, ownerMust = false, message = '', draft = fals
  */
 export function notStartedNotice({ way, f }) {
   if (f.kind === 'refused') {
-    const ask = way === 'github' ? 'check that you can still read the repository on GitHub' : 'ask the site’s owner';
+    const ask = whatToDo(way, 'read');
     return {
       text: `Editing could not start on this page because the site did not allow it. You are still signed in, so please ${ask}.`,
       detail: f.reason ? `The answer was: ${f.reason}` : '',
@@ -156,9 +178,9 @@ export function notStartedNotice({ way, f }) {
  * token could not be renewed, or GitHub answers 401, or 403 to "who am I"
  * (`asking: 'who'`). Trouble and a 403 on reading the page drop nothing.
  */
-export function onLoadFailure(err, { mode = 'editor', draft = false, asking = 'page' } = {}) {
+export function onLoadFailure(err, { mode = 'editor', draft = false, asking = 'page', kept = false } = {}) {
   const f = readFailure(err);
-  const way = mode === 'admin' ? 'github' : 'google';
+  const way = wayOf({ mode, kept });
   const over = f.kind === 'ended' || (mode === 'admin' && asking === 'who' && f.kind === 'refused');
   if (over) return { drop: true, action: 'signin', notice: endedNotice({ way, ownerMust: f.ownerMust, message: f.message, draft }) };
   if (f.kind === 'trouble') return { drop: false, action: 'reload', notice: notStartedNotice({ way, f }) };
@@ -227,7 +249,9 @@ export function publishEnded({ way, ownerMust = false, message = '', counts, sur
   };
   if (ownerMust) {
     out.detail = message ? `For the owner: ${message}` : '';
-    out.text = `${lead}The site’s owner has something to correct before anyone can sign in again, so please ask them.`;
+    out.text = way === 'kept'
+      ? `${lead}Something has to be corrected before anyone can sign in again, so please ${KEPT_ASK}.`
+      : `${lead}The site’s owner has something to correct before anyone can sign in again, so please ask them.`;
     if (n) {
       out.copy = true;
       out.text += survives.textKept
@@ -280,7 +304,7 @@ const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
  */
 export function publishRefused({ way, reason = '', counts, did = 'published', typed = null }) {
   const n = counts.edits + counts.source;
-  const ask = way === 'github' ? 'check that you can still write to the repository on GitHub' : 'ask the site’s owner';
+  const ask = whatToDo(way, 'write to');
   return {
     title: `This was not ${did}`,
     status: `Not ${did}: your sign-in does not allow this change.`,
@@ -315,7 +339,7 @@ export function publishTrouble(f, counts, did = 'published') {
  * keep and no dialog, and the person is still signed in.
  */
 export function readRefused({ way, reason = '' }) {
-  const ask = way === 'github' ? 'check that you can still read the repository on GitHub' : 'ask the site’s owner';
+  const ask = whatToDo(way, 'read');
   return `The site did not allow this. You are still signed in, so please ${ask}.${reason ? ` The answer was: ${reason}` : ''}`;
 }
 
