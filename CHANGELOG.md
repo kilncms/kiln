@@ -216,6 +216,20 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   editable parts, and is told that the rest stays
   (`src/editor/restore-page.js`).
 
+- **A rescued copy shows the parts the old site showed with a script.** Many
+  sites keep a heading, a picture or a whole section hidden until a script
+  fades it in. The copy has no scripts, so those parts stayed invisible: a
+  home page lost its main heading, and a shop's product pages lost their
+  pictures. Rescue now leaves each of these the way its script would have:
+  Elementor's fade-in parts, "animate on scroll" parts (AOS, sal.js), a
+  WooCommerce product's pictures (the first one large, the others in a row
+  under it), and pictures that load late, whose real address waited in
+  `data-lazy-src`, `data-original` or `data-src` behind a stand-in. Parts that
+  a site's own style sheet hides (WOW.js, animate.css, "reveal" classes,
+  WPBakery, Beaver Builder, Divi) are shown by one small style sheet added to
+  the copy, `assets/rescued/shown-without-scripts.css`, whose first lines say
+  what it is for. The report has a new line, "Parts made visible", with how
+  many there were and on which pages, and asks you to check those pages.
 - **Rescue copies a WordPress site that uses plain addresses.** Many WordPress
   sites never turned on "pretty" addresses, so their pages are `?p=14`,
   `?page_id=2`, `?cat=5`, `?author=1`, `?tag=x`, `?m=202401` and `?paged=2`.

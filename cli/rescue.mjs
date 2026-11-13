@@ -273,8 +273,8 @@ export function extractRefs(html, pageUrl) {
         break;
       }
       case 'img': case 'source':
-        for (const at of ['src', 'data-src', 'data-image']) asset(getAttr(n, at));
-        for (const at of ['srcset', 'data-srcset']) if (getAttr(n, at)) srcset(getAttr(n, at));
+        for (const at of ['src', ...LAZY_SRC, 'data-image']) asset(getAttr(n, at));
+        for (const at of ['srcset', ...LAZY_SRCSET]) if (getAttr(n, at)) srcset(getAttr(n, at));
         break;
       case 'link': {
         const rels = relsOf(n);
@@ -354,6 +354,31 @@ export function cleanPage(html, opts = {}) {
   const offOrigin = new Set(), leftBehind = new Set();
   let scripts = 0, cruft = 0, previews = 0, oldHead = 0;
   const removals = [];
+  // parts the old site kept hidden until a script showed them (see REVEAL)
+  const shownNodes = new Set();
+  let needSheet = false, head = null;
+  const reveal = (n) => {
+    const cls = classesOf(n);
+    let next = cls, did = false;
+    for (const r of REVEAL) {
+      if (r.cls ? !cls.includes(r.cls) : getAttr(n, r.attr) === undefined) continue;
+      next = next.filter(c => !(r.off || []).includes(c));
+      for (const c of r.on || []) if (!next.includes(c)) next.push(c);
+      did = true;
+    }
+    if (did) putAttr(n, 'class', next.join(' '));
+    if (cls.some(c => REVEAL_BY_SHEET.includes(c))) { needSheet = true; did = true; }
+    // WooCommerce writes opacity: 0 on a product's pictures and its script
+    // fades them in: take the hidden start out of the part's own style
+    if (cls.includes('woocommerce-product-gallery')) {
+      const style = getAttr(n, 'style') || '';
+      if (HIDDEN_START_RE.test(style)) {
+        setAttr(n, 'style', style.replace(HIDDEN_START_RE, '$1').replace(/(^|;)\s*transition\s*:\s*opacity[^;]*/i, '$1').replace(/^[\s;]+|[\s;]+$/g, '').replace(/;\s*;+/g, ';'));
+        did = true;
+      }
+    }
+    if (did) shownNodes.add(n);
+  };
   // what each script taken out was: the site's own, written into the page,
   // a visitor counter, or something loaded from another site (a chat box, a
   // cookie notice, a booking widget), so the report can say what was lost
@@ -414,6 +439,8 @@ export function cleanPage(html, opts = {}) {
   };
 
   walkTree(doc, n => {
+    if (n.tagName === 'head' && !head) head = n;
+    if (n.attrs && !opts.keepScripts) reveal(n);
     switch (n.tagName) {
       case 'script': {
         const type = (getAttr(n, 'type') || '').toLowerCase();
@@ -470,10 +497,22 @@ export function cleanPage(html, opts = {}) {
       case 'a': rwAttr(n, 'href', 'page'); break;
       case 'img': case 'source': {
         rwAttr(n, 'src', 'asset'); rwSrcset(n, 'srcset');
-        rwAttr(n, 'data-src', 'asset'); rwAttr(n, 'data-image', 'asset'); rwSrcset(n, 'data-srcset');
-        // the lazy-loader that would promote data-src at runtime is gone — do its job now
-        if (!getAttr(n, 'src') && getAttr(n, 'data-src')) n.attrs.push({ name: 'src', value: getAttr(n, 'data-src') });
-        if (!getAttr(n, 'srcset') && getAttr(n, 'data-srcset')) n.attrs.push({ name: 'srcset', value: getAttr(n, 'data-srcset') });
+        for (const at of LAZY_SRC) rwAttr(n, at, 'asset');
+        rwAttr(n, 'data-image', 'asset');
+        for (const at of LAZY_SRCSET) rwSrcset(n, at);
+        // the lazy-loader that would promote data-src at runtime is gone — do its job now.
+        // A picture with no src, or with a stand-in written into the page
+        // (a data: address) while the real one waits in a data- attribute,
+        // gets the real one. A picture with a real src keeps it: WooCommerce
+        // puts the full-size file in data-src beside a working src.
+        const lazySrc = LAZY_SRC.map(at => getAttr(n, at)).find(Boolean);
+        const lazySet = LAZY_SRCSET.map(at => getAttr(n, at)).find(Boolean);
+        const src = String(getAttr(n, 'src') || '').trim();
+        const standIn = !opts.keepScripts && /^data:/i.test(src);
+        if ((!src || standIn) && lazySrc) { putAttr(n, 'src', lazySrc); if (!opts.keepScripts) shownNodes.add(n); }
+        if (lazySet && (!getAttr(n, 'srcset') || standIn)) { putAttr(n, 'srcset', lazySet); if (!opts.keepScripts) shownNodes.add(n); }
+        const lazySizes = LAZY_SIZES.map(at => getAttr(n, at)).find(Boolean);
+        if (lazySizes && lazySizes !== 'auto' && !getAttr(n, 'sizes') && getAttr(n, 'srcset')) putAttr(n, 'sizes', lazySizes);
         break;
       }
       case 'video': case 'audio': rwAttr(n, 'src', 'asset'); rwAttr(n, 'poster', 'asset'); break;
@@ -492,7 +531,62 @@ export function cleanPage(html, opts = {}) {
     const i = kids ? kids.indexOf(n) : -1;
     if (i >= 0) kids.splice(i, 1);
   }
-  return { html: serialize(doc), scripts, cruft, kinds, previews, oldHead, offOrigin: [...offOrigin], leftBehind: [...leftBehind] };
+  if (needSheet && head) {
+    head.childNodes.push({ nodeName: 'link', tagName: 'link', namespaceURI: 'http://www.w3.org/1999/xhtml', childNodes: [], parentNode: head,
+      attrs: [{ name: 'rel', value: 'stylesheet' }, { name: 'href', value: '/' + SHOWN_SHEET }] });
+  }
+  return { html: serialize(doc), scripts, cruft, kinds, previews, oldHead, offOrigin: [...offOrigin], leftBehind: [...leftBehind],
+    shown: { parts: shownNodes.size, sheet: needSheet } };
+}
+
+// ─── pure: parts the old site showed with a script ──────────────────────────
+
+const classesOf = (node) => (getAttr(node, 'class') || '').split(/\s+/).filter(Boolean);
+// setAttr changes an attribute a part already has: this one also adds it
+const putAttr = (node, name, value) => { const a = node.attrs.find(x => x.name === name); if (a) a.value = value; else node.attrs.push({ name, value }); };
+
+// where a lazy-loading script keeps a picture's real address until it runs
+const LAZY_SRC = ['data-src', 'data-lazy-src', 'data-original'];
+const LAZY_SRCSET = ['data-srcset', 'data-lazy-srcset'];
+const LAZY_SIZES = ['data-sizes', 'data-lazy-sizes'];
+
+// A part that starts hidden and waits for a script to show it. The copy has no
+// scripts, so cleanPage leaves each one the way the script's first run would:
+// cls or attr is how the part is known, off and on are the classes the script
+// takes off and puts on.
+const REVEAL = [
+  { cls: 'elementor-invisible', off: ['elementor-invisible'] },      // Elementor: parts that fade in
+  { attr: 'data-aos', on: ['aos-init', 'aos-animate'] },             // AOS, "animate on scroll"
+  { attr: 'data-sal', on: ['sal-animate'] },                         // sal.js
+  { cls: 'lazyload', off: ['lazyload'], on: ['lazyloaded'] },        // lazysizes: pictures that load late
+];
+// Parts hidden by a rule in the site's own style sheets. That rule differs
+// from site to site, so these are shown by one added style sheet (SHOWN_CSS):
+// WOW.js, animate.css, "reveal on scroll", WPBakery, Beaver Builder, Divi.
+const REVEAL_BY_SHEET = ['wow', 'animate__animated', 'reveal', 'wpb_animate_when_almost_visible', 'fl-animation', 'et-waypoint'];
+const HIDDEN_START_RE = /(^|;)\s*opacity\s*:\s*0(?:\.0+)?\s*(?=;|$)/i;
+
+/** Where the added style sheet goes in the copy, and what it says. */
+export const SHOWN_SHEET = 'assets/rescued/shown-without-scripts.css';
+export const SHOWN_CSS = `/* shown-without-scripts.css
+   Added by "kiln rescue". The old site kept some parts hidden until one of its
+   scripts showed them, such as words and pictures that fade in as the page
+   scrolls. This copy has no scripts, so this sheet shows those parts from the
+   start. Take a class out of the list below if a part shows that should not. */
+${REVEAL_BY_SHEET.map(c => '.' + c).join(',\n')} {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+`;
+
+/** The report's line for parts the old site kept hidden until a script showed
+ *  them. pages: [{ href, parts, sheet }] (cleanPage's shown, per page). '' when there are none. */
+export function shownLine(pages = []) {
+  const on = pages.filter(p => p.parts > 0);
+  if (!on.length) return '';
+  const n = on.reduce((sum, p) => sum + p.parts, 0), one = n === 1;
+  const sheet = on.some(p => p.sheet) ? ` Some are kept visible by one small style sheet added to the copy, ${SHOWN_SHEET}, and its first lines say what it is for.` : '';
+  return `- Parts made visible: ${n}, on ${whereList(on.map(p => p.href))}. The old site kept ${one ? 'this part' : 'these parts'} hidden until one of its scripts showed ${one ? 'it' : 'them'}: words and pictures that fade in as the page scrolls, a product's pictures, pictures that load late. The copy has no scripts, so it shows ${one ? 'it' : 'them'} from the start.${sheet} Open ${on.length === 1 ? 'that page' : 'those pages'} and check that nothing shows that should stay hidden.`;
 }
 
 // ─── pure: sitemap, Kiln wiring, the "what was lost" report ──────────────────
@@ -1377,6 +1471,7 @@ export async function rescueCmd(startUrl, args = {}) {
   hr('Cleaning pages');
   let scripts = 0, cruft = 0, previews = 0, oldHead = 0;
   const kinds = { own: 0, inline: 0, visitors: {}, outside: {} };
+  const shown = [];   // per page: parts the old site showed with a script
   const offOrigin = new Set(skippedAssets.map(s => s.url));
   for (const [id, p] of pages) {
     const cleaned = cleanPage(p.html, { baseUrl: p.url, pageMap, assetMap, keepScripts, folder });
@@ -1384,10 +1479,13 @@ export async function rescueCmd(startUrl, args = {}) {
     cleaned.offOrigin.forEach(u => offOrigin.add(u));
     cleaned.leftBehind.forEach(u => leftBehind.add(u));
     const file = pageMap.get(id);
+    shown.push({ href: fileToHref(file), ...cleaned.shown });
     mkdirSync(path.join(out, path.dirname(file)), { recursive: true });
     writeFileSync(path.join(out, file), cleaned.html);
     console.log(`  ✓ ${file}  (${cleaned.scripts} scripts stripped)`);
   }
+  // the one added style sheet, only when a page needs it
+  if (shown.some(p => p.sheet)) writeFileSync(path.join(out, SHOWN_SHEET), SHOWN_CSS);
 
   // ── auto-tag for Kiln editing ──
   let tally = null;
@@ -1440,7 +1538,7 @@ export async function rescueCmd(startUrl, args = {}) {
     }
   }
 
-  printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry: false, scripts, cruft, kinds, previews,
+  printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry: false, scripts, cruft, kinds, previews, shown,
     localized: [...downloads.keys()], localizedBytes: totalBytes, planned: localize.length,
     offOrigin: [...offOrigin], skippedAssets, tally, rendered: !!args.render, left, wantKiln, tryOut, firstTitle,
     requests: renderer?.requests, sitemapNote, plainLost, blank, elsewhere, ...shared, oldHead,
@@ -1478,6 +1576,8 @@ function printReport(r) {
   if (r.sitemapNote) lines.push(`- Sitemap ${r.sitemapNote.path}: ${r.sitemapNote.found} pages listed (${r.sitemapNote.read} sitemap file${r.sitemapNote.read === 1 ? '' : 's'} read${r.sitemapNote.skipped ? `; ${r.sitemapNote.skipped} more beyond the cap` : ''})`);
   const kindsLine = r.scripts ? scriptKindsLine(r.kinds) : '';
   lines.push(`- Scripts stripped: ${r.scripts}${r.cruft ? ` (+ ${r.cruft} builder cruft tags removed)` : ''}${kindsLine ? `. ${kindsLine}` : ''}`);
+  const shownSays = shownLine(r.shown);
+  if (shownSays) lines.push(shownSays);
   if (r.previews && r.folder) lines.push(`- The picture for link previews (og:image, twitter:image) is in the copy, and the pages name it by its place there, /assets/rescued/…. The services that draw previews need a full address, and the copy has none yet: the old site lived in the folder ${r.folder}/, and this copy is made to be the top of a site. When the copy is live, put its address in front on each page, like https://your-address/assets/rescued/….`);
   else if (r.previews) lines.push(`- The picture for link previews (og:image, twitter:image) is written with this site's full address, ${r.origin}/assets/rescued/…, because the services that draw previews need a full address. If the copy goes live at a different address, change it on each page.`);
   if (r.firstTitle) lines.push(`- Check this first: the first page is titled "${r.firstTitle}". If that is an error page, the address is wrong or the site is not published, and this is a copy of the error.`);

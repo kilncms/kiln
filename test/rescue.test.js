@@ -855,3 +855,97 @@ test('rescue: a WordPress shop with plain addresses, living in a folder, comes o
   assert.match(r3.stdout, /## This site is a shop/);
   assert.ok(!existsSync(path.join(s.dir, 'never')), 'a dry run writes nothing');
 });
+
+// ─── parts the old site showed with a script ────────────────────────────────
+import { shownLine, SHOWN_CSS, SHOWN_SHEET } from '../cli/rescue.mjs';
+
+test('cleanPage: an Elementor part that waits for a script to fade it in is shown', () => {
+  const page = '<html><head></head><body><h1 class="elementor-element elementor-invisible elementor-widget" data-settings="{&quot;_animation&quot;:&quot;fadeIn&quot;}">Raining Offers</h1><p class="elementor-invisible">25% Off</p><script src="/el.js"></script></body></html>';
+  const c = cleanPage(page, { baseUrl: SITE + '/' });
+  assert.ok(!c.html.includes('elementor-invisible'), 'the class that hides the part is gone');
+  assert.ok(c.html.includes('class="elementor-element elementor-widget"'), 'its other classes stay');
+  assert.deepEqual(c.shown, { parts: 2, sheet: false });
+  assert.ok(!c.html.includes('shown-without-scripts'), 'no style sheet is added for a change made in the page itself');
+  // with the scripts kept, the script still does this itself
+  const kept = cleanPage(page, { baseUrl: SITE + '/', keepScripts: true });
+  assert.ok(kept.html.includes('elementor-invisible'));
+  assert.deepEqual(kept.shown, { parts: 0, sheet: false });
+});
+
+test('cleanPage: "animate on scroll" parts are left the way their script leaves them', () => {
+  const c = cleanPage('<html><head></head><body><div data-aos="fade-up" class="card">A</div><div data-aos="zoom-in">B</div><section data-sal="slide-up">C</section><p class="plain">D</p></body></html>', { baseUrl: SITE + '/' });
+  assert.ok(c.html.includes('<div data-aos="fade-up" class="card aos-init aos-animate">'), c.html);
+  assert.ok(/<div data-aos="zoom-in" class="aos-init aos-animate">/.test(c.html), 'a part with no class gets one');
+  assert.ok(/<section data-sal="slide-up" class="sal-animate">/.test(c.html));
+  assert.ok(c.html.includes('<p class="plain">D</p>'), 'an ordinary part is untouched');
+  assert.deepEqual(c.shown, { parts: 3, sheet: false });
+});
+
+test('cleanPage: parts hidden by the site\'s own style sheet get one added style sheet', () => {
+  const c = cleanPage('<html><head><title>t</title></head><body><div class="wow fadeInUp">A</div><div class="animate__animated">B</div><div class="reveal">C</div><div class="wpb_animate_when_almost_visible">D</div><div class="fl-animation">E</div><div class="et-waypoint">F</div><div class="wowza revealed">G</div></body></html>', { baseUrl: SITE + '/' });
+  assert.deepEqual(c.shown, { parts: 6, sheet: true }, 'a class that only looks like one of them does not count');
+  assert.equal(c.html.split(`<link rel="stylesheet" href="/${SHOWN_SHEET}">`).length, 2, 'linked once');
+  assert.ok(/<link rel="stylesheet" href="\/assets\/rescued\/shown-without-scripts\.css"><\/head>/.test(c.html), 'last in the head, after the site\'s own sheets');
+  assert.ok(c.html.includes('class="wow fadeInUp"'), 'the page\'s own classes are left alone');
+  const none = cleanPage('<html><head></head><body><p>Hello</p></body></html>', { baseUrl: SITE + '/' });
+  assert.ok(!none.html.includes('shown-without-scripts'));
+  assert.deepEqual(none.shown, { parts: 0, sheet: false });
+});
+
+test('the added style sheet says what it is for and shows every class it is added for', () => {
+  assert.equal(SHOWN_SHEET, 'assets/rescued/shown-without-scripts.css');
+  assert.ok(SHOWN_CSS.startsWith('/* shown-without-scripts.css'), 'starts with a comment');
+  assert.ok(/This copy has no scripts/.test(SHOWN_CSS.split('*/')[0]));
+  for (const c of ['.wow', '.animate__animated', '.reveal', '.wpb_animate_when_almost_visible', '.fl-animation', '.et-waypoint']) assert.ok(SHOWN_CSS.includes(c), c);
+  assert.ok(/opacity: 1 !important/.test(SHOWN_CSS) && /visibility: visible !important/.test(SHOWN_CSS));
+  assert.ok(!SHOWN_CSS.includes('—'));
+});
+
+test('cleanPage: a WooCommerce product\'s pictures no longer start invisible', () => {
+  const c = cleanPage('<html><head></head><body><div class="woocommerce-product-gallery images" data-columns="4" style="opacity: 0; transition: opacity .25s ease-in-out;"><img src="/shoe.jpg" data-src="/shoe-big.jpg"></div><div class="woocommerce-product-gallery" style="position: relative; opacity:0; transition: opacity .25s">x</div><div class="banner" style="opacity: 0">kept</div></body></html>', { baseUrl: SITE + '/' });
+  assert.ok(/<div class="woocommerce-product-gallery images" data-columns="4" style="">/.test(c.html), c.html);
+  assert.ok(c.html.includes('style="position: relative"'), 'the rest of its style stays');
+  assert.ok(c.html.includes('<div class="banner" style="opacity: 0">'), 'only the gallery is touched: another part may be hidden on purpose');
+  assert.ok(/<img src="[^"]*\/shoe\.jpg" data-src="[^"]*\/shoe-big\.jpg">/.test(c.html), 'a picture with a working src keeps it');
+  assert.deepEqual(c.shown, { parts: 2, sheet: false });
+});
+
+test('cleanPage: a picture that waits for a lazy-loading script gets its real address', () => {
+  const GIF = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+  const page = `<html><head></head><body>
+    <img class="hero" src="${GIF}" data-lazy-src="${SITE}/a.jpg" data-lazy-srcset="${SITE}/a.jpg 1x, ${SITE}/a2.jpg 2x" data-lazy-sizes="(max-width: 600px) 100vw, 600px">
+    <img class="lazyload" src="data:image/svg+xml,%3Csvg%3E%3C/svg%3E" data-src="/b.jpg" data-sizes="auto">
+    <img data-original="/c.jpg">
+    <picture><source data-srcset="/d.webp 1x"><img src="/d.jpg" loading="lazy"></picture>
+    <img src="/e.jpg" data-src="/e-big.jpg">
+  </body></html>`;
+  const assetMap = new Map([[SITE + '/a.jpg', 'assets/rescued/1-a.jpg'], [SITE + '/a2.jpg', 'assets/rescued/2-a2.jpg'], [SITE + '/b.jpg', 'assets/rescued/3-b.jpg'], [SITE + '/c.jpg', 'assets/rescued/4-c.jpg']]);
+  const c = cleanPage(page, { baseUrl: SITE + '/', assetMap });
+  assert.ok(/<img class="hero" src="\/assets\/rescued\/1-a\.jpg"/.test(c.html), 'the stand-in is replaced by the copied picture');
+  assert.ok(c.html.includes(' srcset="/assets/rescued/1-a.jpg 1x, /assets/rescued/2-a2.jpg 2x"'));
+  assert.ok(c.html.includes(' sizes="(max-width: 600px) 100vw, 600px"'));
+  assert.ok(/<img class="lazyloaded" src="\/assets\/rescued\/3-b\.jpg"/.test(c.html), 'lazysizes: the class its script sets, and the picture');
+  assert.ok(!c.html.includes('sizes="auto"') || !/ sizes="auto"/.test(c.html.replace(/data-sizes="auto"/g, '')), '"auto" is the script\'s word, not a size');
+  assert.ok(/<img data-original="\/assets\/rescued\/4-c\.jpg" src="\/assets\/rescued\/4-c\.jpg">/.test(c.html));
+  assert.ok(/<source data-srcset="[^"]*d\.webp 1x" srcset="[^"]*d\.webp 1x">/.test(c.html));
+  assert.ok(/<img src="[^"]*\/e\.jpg" data-src="[^"]*\/e-big\.jpg">/.test(c.html), 'a real src is never swapped for the bigger file beside it');
+  assert.equal(c.shown.parts, 4);
+  // the files those attributes name are fetched like any other picture
+  const refs = extractRefs(page, SITE + '/');
+  for (const f of ['/a.jpg', '/a2.jpg', '/b.jpg', '/c.jpg', '/d.webp']) assert.ok(refs.assets.includes(SITE + f), f);
+  assert.ok(!refs.assets.some(a => a.startsWith('data:')));
+});
+
+test('shownLine: says how many parts were made visible, where, and what to check', () => {
+  assert.equal(shownLine([]), '');
+  assert.equal(shownLine([{ href: '/', parts: 0, sheet: false }]), '');
+  const one = shownLine([{ href: '/', parts: 1, sheet: false }, { href: '/about/', parts: 0, sheet: false }]);
+  assert.ok(one.startsWith('- Parts made visible: 1, on /. The old site kept this part hidden until one of its scripts showed it'), one);
+  assert.ok(/Open that page and check/.test(one));
+  assert.ok(!one.includes('shown-without-scripts'), 'the style sheet is named only when it was added');
+  const many = shownLine([{ href: '/', parts: 2, sheet: false }, { href: '/product/shoes/', parts: 5, sheet: true }]);
+  assert.ok(many.startsWith('- Parts made visible: 7, on /, /product/shoes/. The old site kept these parts hidden'), many);
+  assert.ok(many.includes('assets/rescued/shown-without-scripts.css'));
+  assert.ok(/Open those pages and check/.test(many));
+  assert.ok(!many.includes('—') && !one.includes('—'));
+});
