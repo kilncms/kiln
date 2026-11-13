@@ -6,8 +6,6 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.6.6] - 2026-11-13
-
 ### Added
 
 - **A person with no GitHub account can start a site, and Kiln keeps its
@@ -86,6 +84,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   deployed: it rebuilds the `accounts` table so that a login may be empty,
   keeping every row, and adds `accounts.google_sub`, `accounts.name` and
   `sites.kept`. Signing in with GitHub is unchanged.
+
+## [0.6.6] - 2026-11-13
+
+### Added
+
 - **A hosted site's own domain can have one email address forwarded to an
   inbox its owner already reads.** The service now answers the dashboard for
   it, though no page asks yet. `GET /cloud/sites/mail?site=` says what stands
