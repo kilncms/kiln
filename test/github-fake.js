@@ -194,3 +194,69 @@ export function fakeGitHub({ repo = 'acme/site', files = {}, defaultBranch = 'ma
   };
   return api;
 }
+
+/**
+ * GitHub's answers about a GitHub App on one person's own account: the
+ * account's installation (asked as the App), a token for that installation,
+ * and the repositories the installation can reach.
+ *
+ *   GET  /users/<login>/installation               as the App (a signed JWT)
+ *   POST /app/installations/<id>/access_tokens     as the App
+ *   GET  /installation/repositories                with a token issued above
+ *
+ * `repos` are { full_name, private, homepage }. `state` may be changed between
+ * calls (state.installed = false, state.repos.push(…)), and `tokens` holds the
+ * tokens GitHub still takes (clear it to stand for tokens that have ended).
+ * Any other address is undefined, so a test can put another handler after it.
+ */
+export function fakeInstallation({ login = 'ada', uid = 7, id = 9001, selection = 'selected', repos = [], installed = true } = {}) {
+  const state = { login, uid, id, selection, repos: [...repos], installed };
+  const calls = [];
+  const tokens = new Set();
+  let fail = null;             // (method, path) => a status to answer with, or a Response, or 'throw'
+  let issued = 0;
+  const isJwt = (auth) => /^Bearer [\w-]+\.[\w-]+\.[\w-]+$/.test(auth);
+  return {
+    state, calls, tokens,
+    failOn: (fn) => { fail = fn; },
+    handler: async (url, init = {}) => {
+      const base = 'https://api.github.com';
+      if (!url.startsWith(`${base}/`)) return undefined;
+      const method = (init.method || 'GET').toUpperCase();
+      const [rawPath, query = ''] = url.slice(base.length).split('?');
+      const path = decodeURIComponent(rawPath);
+      const q = new URLSearchParams(query);
+      const ours = path.toLowerCase() === `/users/${state.login}/installation`.toLowerCase()
+        || path === `/app/installations/${state.id}/access_tokens` || path === '/installation/repositories';
+      if (!ours) return undefined;
+      const headers = init.headers || {};
+      const auth = headers.Authorization || headers.authorization || '';
+      const body = typeof init.body === 'string' && init.body ? JSON.parse(init.body) : {};
+      calls.push({ method, path, auth, body });
+      const broken = fail ? fail(method, path) : null;
+      if (broken === 'throw') throw new TypeError('fetch failed');
+      if (broken instanceof Response) return broken;
+      if (broken) return jsonRes({ message: 'Server Error' }, Number(broken) || 500);
+
+      if (path === '/installation/repositories' && method === 'GET') {
+        if (!tokens.has(auth.replace(/^Bearer /, ''))) return jsonRes({ message: 'Bad credentials' }, 401);
+        const per = Math.min(100, Number(q.get('per_page')) || 30);
+        const page = Math.max(1, Number(q.get('page')) || 1);
+        return jsonRes({ total_count: state.repos.length, repository_selection: state.selection,
+          repositories: state.repos.slice((page - 1) * per, page * per).map((r, i) => ({ id: 5000 + (page - 1) * per + i, name: r.full_name.split('/')[1], private: false, homepage: null, ...r })) });
+      }
+      if (!isJwt(auth)) return jsonRes({ message: 'A JSON web token could not be decoded' }, 401);
+      if (!state.installed) return notFound();
+      if (method === 'GET' && path !== `/app/installations/${state.id}/access_tokens`) {
+        return jsonRes({ id: state.id, account: { login: state.login, id: state.uid, type: 'User' }, target_id: state.uid, target_type: 'User',
+          repository_selection: state.selection, html_url: `https://github.com/settings/installations/${state.id}` });
+      }
+      if (method === 'POST' && path === `/app/installations/${state.id}/access_tokens`) {
+        const token = `ghs_list_${++issued}`;
+        tokens.add(token);
+        return jsonRes({ token, expires_at: '2026-11-13T13:00:00Z', permissions: body.permissions || { contents: 'write', metadata: 'read' }, repository_selection: state.selection }, 201);
+      }
+      return notFound();
+    },
+  };
+}

@@ -125,6 +125,137 @@ async function repoInstalled(env, repo) {
   return r.ok;
 }
 
+// ─── Which repositories Kiln can reach for a person (GET /cloud/github) ───────
+
+const REPO_NAME = /^[\w.-]+\/[\w.-]+$/;
+/** A read of GitHub that never throws: the Response, or null when nothing came back. */
+const ghAsk = (url, bearer, init = {}) => fetch(url, { ...init, headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, ...(init.headers || {}) } }).catch(() => null);
+
+/**
+ * Where a person installs Kiln's GitHub App, or changes which repositories it
+ * has. Built from the name of the App this service holds the keys of, so a
+ * service with an App of its own (the test service, a self-hosted one) sends
+ * people to that App and not to the main one.
+ */
+export function installUrl(c) {
+  const slug = c && typeof c.slug === 'string' && /^[a-z0-9][a-z0-9-]*$/i.test(c.slug) ? c.slug : null;
+  return slug ? `https://github.com/apps/${slug}/installations/new` : INSTALL_URL;
+}
+
+/** A repository's own website field, when it is a plain https address of a sensible length. Otherwise null. */
+function httpsAddress(v) {
+  const s = typeof v === 'string' ? v.trim() : '';
+  if (!s || s.length > 200 || !/^https:\/\//i.test(s)) return null;
+  try { return new URL(s).protocol === 'https:' ? s : null; } catch { return null; }
+}
+
+/**
+ * Can Kiln's App reach this one repository? true, false, or null when GitHub
+ * did not answer (signin-trouble.js githubSilent). Asked as the App. Unlike
+ * repoInstalled above it never throws, and a busy GitHub is not read as "no".
+ */
+export async function repoReach(env, repo) {
+  try {
+    const c = await creds(env);
+    if (!c) return null;
+    const r = await ghAsk(`${GH}/repos/${repo}/installation`, await appJwt(c));
+    if (r && r.ok) return true;
+    return githubSilent(r) ? null : false;
+  } catch { return null; }
+}
+
+// The token that reads an account's list of repositories is kept as index.js
+// keeps a repository's (`itok:<repo>`, 50 minutes), under a name of its own.
+const listTokenKey = (installationId) => `itok-acct:${installationId}`;
+async function listToken(env, jwt, installationId, { fresh = false } = {}) {
+  if (!fresh) {
+    const kept = await env.KILN.get(listTokenKey(installationId));
+    if (kept) return { token: kept, kept: true };
+  }
+  const ask = (body) => ghAsk(`${GH}/app/installations/${installationId}/access_tokens`, jwt, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  // Asked for with leave to read what repositories there are and nothing else:
+  // this token never has to read or change a file.
+  let r = await ask({ permissions: { metadata: 'read' } });
+  if (r && r.status === 422) r = await ask({});
+  if (!r || !r.ok) return null;
+  const tok = await r.json().catch(() => null);
+  if (!tok || typeof tok.token !== 'string' || !tok.token) return null;
+  await env.KILN.put(listTokenKey(installationId), tok.token, { expirationTtl: 50 * 60 });
+  return { token: tok.token, kept: false };
+}
+
+/** GitHub's own list for one installation (the first 100), or null when it could not be read. */
+async function installationRepos(env, jwt, installationId) {
+  for (const fresh of [false, true]) {
+    const t = await listToken(env, jwt, installationId, { fresh });
+    if (!t) return null;
+    const r = await ghAsk(`${GH}/installation/repositories?per_page=100`, t.token);
+    if (r && r.ok) return r.json().catch(() => null);
+    // A kept token GitHub no longer takes (it ends one after an hour): ask once more with a new one.
+    if (!(t.kept && r && r.status === 401)) return null;
+    await env.KILN.delete(listTokenKey(installationId));
+  }
+  return null;
+}
+
+/**
+ * Kiln's App on a person's own GitHub account: is it installed, and which
+ * repositories can it reach. GitHub is asked two things, in this order: as the
+ * App, for the account's installation; then, with that installation's token,
+ * for its repositories (the first 100; `more` says there are others).
+ *
+ * `installed` is true, false, or null when GitHub did not answer either
+ * question (so nobody is told the App is missing because GitHub was busy).
+ * Neither the token nor the installation's number is handed back, and the
+ * list holds only what GitHub says the App can reach.
+ */
+export async function accountReach(env, { login, uid = null } = {}) {
+  const unknown = { installed: null, selection: null, repos: [], more: false };
+  const none = { installed: false, selection: null, repos: [], more: false };
+  try {
+    const c = await creds(env);
+    if (!c || !login) return unknown;
+    const jwt = await appJwt(c);
+    const r = await ghAsk(`${GH}/users/${encodeURIComponent(login)}/installation`, jwt);
+    if (!r || !r.ok) return githubSilent(r) ? unknown : none;
+    const inst = await r.json().catch(() => null);
+    if (!inst || !inst.id) return unknown;
+    // A login can be given up and taken by somebody else after the sign-in.
+    // GitHub's number for the person cannot, so an installation that belongs
+    // to another number is not this person's, and its list is not shown.
+    const owner = inst.target_id ?? inst.account?.id ?? null;
+    if (uid != null && owner != null && String(owner) !== String(uid)) return none;
+    const list = await installationRepos(env, jwt, inst.id);
+    if (!list || !Array.isArray(list.repositories)) return unknown;
+    const repos = list.repositories
+      .filter(x => x && typeof x.full_name === 'string' && REPO_NAME.test(x.full_name))
+      .map(x => ({ repo: x.full_name, private: x.private !== false, homepage: httpsAddress(x.homepage) }));
+    const total = Number(list.total_count);
+    return {
+      installed: true,
+      selection: inst.repository_selection === 'all' || inst.repository_selection === 'selected' ? inst.repository_selection : null,
+      repos,
+      more: Number.isFinite(total) ? total > list.repositories.length : list.repositories.length >= 100,
+    };
+  } catch { return unknown; }
+}
+
+// An answer about GitHub is kept for three seconds for the account, so several
+// open tabs of the dashboard cost one ask. KV keeps nothing for less than a
+// minute, so the entry carries its own time and is believed for three seconds.
+// An answer GitHub did not give in full is never kept.
+const REACH_KEPT_MS = 3000;
+async function keptReach(env, key, settled, ask) {
+  try {
+    const kept = await env.KILN.get(key, 'json');
+    const age = kept ? Date.now() - Number(kept.at) : NaN;
+    if (kept && kept.answer && age >= 0 && age < REACH_KEPT_MS) return kept.answer;
+  } catch { /* an entry that cannot be read is asked for again */ }
+  const answer = await ask();
+  if (settled(answer)) { try { await env.KILN.put(key, JSON.stringify({ at: Date.now(), answer }), { expirationTtl: 60 }); } catch { /* the answer still goes out */ } }
+  return answer;
+}
+
 /** Does the signed-in user (via their stored OAuth token) have push on the repo? */
 export async function userCanPush(userToken, repo, opts = {}) {
   return (await userPushAnswer(userToken, repo, opts)) === 'yes';
@@ -1750,6 +1881,57 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const brought = keptHere.size ? await copiesForAccount(env, sess.account_id) : {};
     for (const r of rows) if (brought[r.id]) r.bring = brought[r.id];
     return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env), brings: can && bringOn(env) });
+  }
+
+  // Which repositories Kiln's GitHub App can reach for the person signed in:
+  // what lets the dashboard tick "Kiln can save to your files" by itself and
+  // offer a list to choose from, where the person used to type a name from
+  // memory. It reads and changes nothing. The list is for the person's own
+  // account; `?repo=owner/name` asks about one repository, their own or an
+  // organization's. `installed: null` means GitHub did not answer, so the
+  // dashboard leaves what it shows as it is.
+  if (path === '/cloud/github' && request.method === 'GET') {
+    if (!sess) return json({ error: 'not signed in' }, 401);
+    // A person signed in with Google has no GitHub account for the App to be on.
+    if (withoutGitHub(sess)) return json({ ok: true, installed: false, code: 'needs_github', repos: [] });
+    const one = url.searchParams.get('repo');
+    if (one !== null) {
+      if (!REPO_NAME.test(one)) return json({ error: 'The repository should look like owner/name, for example acme/website.' }, 400);
+      // The same answer adding it would get: a repository Kiln keeps for a site is nobody's to add.
+      if (inKeepOrg(env, one)) return json({ error: keepSentence('in_keep_org'), code: 'in_keep_org' }, 403);
+      // `yours` follows the rule of POST /cloud/sites below: a repository under
+      // the person's own login is theirs, and any other is asked about with
+      // their own GitHub sign-in.
+      const mine = one.split('/')[0].toLowerCase() === String(sess.login || '').toLowerCase();
+      const answer = await keptReach(env, `cgh:${sess.account_id}:${one.toLowerCase()}`, (a) => a.installed !== null && a.yours !== null, async () => {
+        const [installed, push] = await Promise.all([repoReach(env, one), mine ? 'yes' : userPushAnswer(sess.gh, one)]);
+        return { installed, yours: push === 'yes' ? true : push === 'no' ? false : null };
+      });
+      return json({ ok: true, repo: one, installed: answer.installed, yours: answer.yours });
+    }
+    const reach = await keptReach(env, `cgh:${sess.account_id}`, (a) => a.installed !== null, () => accountReach(env, { login: sess.login, uid: sess.uid ?? null }));
+    // `added`: the account already has a site for that repository. Read now and
+    // never kept, so a site added a second ago shows as added.
+    let have = new Set();
+    if (reach.repos.length) {
+      const mineNow = await env.kiln_cloud.prepare('SELECT repo FROM sites WHERE account_id = ?').bind(sess.account_id).all();
+      have = new Set((mineNow.results || []).map(s => String(s.repo || '').toLowerCase()));
+    }
+    let app = null;
+    try { app = await creds(env); } catch { /* no App on record: the fixed address */ }
+    const install_url = installUrl(app);
+    return json({
+      ok: true,
+      installed: reach.installed,
+      selection: reach.selection,
+      install_url,
+      // GitHub opens the App's settings for the account at the same address
+      // once the App is on it. GitHub's own address for that page holds the
+      // installation's number, which stays on the service.
+      manage_url: reach.installed === true ? install_url : null,
+      repos: reach.repos.map(r => ({ ...r, added: have.has(r.repo.toLowerCase()) })),
+      more: reach.more,
+    });
   }
 
   // The address notices about the account's own sites go to (mail.js). The

@@ -8,6 +8,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The service can tell the dashboard which repositories Kiln can reach for
+  the person who is signed in.** On the plan where a site lives in your own
+  GitHub repository, the dashboard had no way to know whether Kiln's GitHub
+  App was on your account or which repositories it could reach, so you typed
+  the repository's name from memory. The service now answers that: whether
+  the App is installed, the repositories it can reach (the first hundred,
+  each with whether it is private, its website, and whether it is already a
+  site of yours), and, for one named repository of yours or of an
+  organization, whether the App can reach it and whether you may change it.
+  When GitHub does not answer, the service says so, and the App is not
+  reported as missing. The link for installing the App is now the one for the
+  App the service runs on, so a test service or a self-hosted one sends
+  people to its own App. The dashboard does not use any of this yet.
 - **A suggestion on a site Kiln hosts gets a preview of its own.** When
   somebody who may only suggest saves a change, or somebody shares a preview
   link, the editor writes it to a branch (`kiln/suggest-<name>` or
