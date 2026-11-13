@@ -44,6 +44,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Where the same person has another suggestion waiting on the same branch, the
   preview stays for that one.
 
+### Fixed
+
+- **A busy GitHub is no longer read as "This site is not yours to sign in
+  to".** When an owner signs in, Kiln asks GitHub whether their account may
+  change the site's repository. If GitHub did not answer (it was down, or it
+  asked everyone to wait a few minutes), Kiln took that for a no and told the
+  owner the site was not theirs. Now the page says "GitHub did not answer just
+  now", that nothing is wrong with the account or the site, and to sign in
+  again in a few minutes. A real no from GitHub is still a no.
+
 ## [0.6.8] - 2026-11-13
 
 ### Added

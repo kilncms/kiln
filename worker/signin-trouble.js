@@ -70,6 +70,29 @@ export function googleTrouble({ status = 0, tok = null } = {}) {
 }
 
 /** The sign-in came back without what it left with, or after its ten minutes. */
+/**
+ * Did GitHub fail to answer a question about a repository? No answer at all,
+ * a fault on its side, a limit it asks everyone to wait out, or a sign-in it
+ * issued a moment ago and does not know yet. That is GitHub's trouble and not
+ * the person's. A plain 403 or 404 is an answer: this person cannot change
+ * that repository. `r` is the Response, or null when the request never came
+ * back.
+ */
+export function githubSilent(r) {
+  if (!r) return true;
+  const status = Number(r.status) || 0;
+  if (status === 401 || status === 429 || status >= 500) return true;
+  if (status === 403) {
+    const head = (name) => { try { return r.headers.get(name); } catch { return null; } };
+    return head('x-ratelimit-remaining') === '0' || head('retry-after') !== null;
+  }
+  return false;
+}
+
+/** GitHub was asked whether this person may change the site's repository and did not answer. Nobody is told the site is not theirs on that. */
+export const GITHUB_DID_NOT_ANSWER = { code: 'silent', status: 503, heading: 'GitHub did not answer just now',
+  words: 'Kiln asked GitHub whether your account may change this site’s repository, and GitHub did not answer. That happens when GitHub is busy, or when it asks everyone to wait a few minutes. Nothing is wrong with your account or with the site. Go back to the site and sign in again in a few minutes.' };
+
 export const STALE_SIGN_IN = { code: 'stale', status: 400, heading: 'That sign-in is no longer good',
   words: 'A sign-in works once and for ten minutes. This one was used already or the time ran out. Go back to the site and sign in again.' };
 /** The address of this page is missing the parts a sign-in comes back with. */

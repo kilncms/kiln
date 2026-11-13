@@ -12,7 +12,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../worker/index.js';
-import { ghWithNewToken, userCanPush } from '../worker/cloud.js';
+import { ghWithNewToken, userCanPush, userPushAnswer } from '../worker/cloud.js';
+import { githubSilent } from '../worker/signin-trouble.js';
 import { fakeKV, withFetch, jsonRes } from './worker-harness.js';
 import { cloudEnv, d1Skip } from './d1-fake.js';
 
@@ -88,4 +89,29 @@ test('an owner signing in to their own site is not turned away because the token
     assert.equal(await userCanPush('ghu_old', 'rosa/bakery'), false);
     assert.equal(calls.length, 1);
   });
+});
+
+test('a busy GitHub is not read as "no": the question has three answers, and only a real answer is a no', async () => {
+  const quick = { fresh: false };
+  const answers = [
+    [() => jsonRes({ permissions: { push: true } }), 'yes'],
+    [() => jsonRes({ permissions: { admin: true } }), 'yes'],
+    [() => jsonRes({ permissions: { pull: true } }), 'no'],
+    [() => jsonRes({ message: 'Not Found' }, 404), 'no'],
+    [() => jsonRes({ message: 'Forbidden' }, 403), 'no'],
+    [() => jsonRes({ message: 'API rate limit exceeded' }, 403, { 'X-RateLimit-Remaining': '0' }), 'unsure'],
+    [() => jsonRes({ message: 'secondary rate limit' }, 403, { 'Retry-After': '30' }), 'unsure'],
+    [() => jsonRes({ message: 'slow down' }, 429), 'unsure'],
+    [() => jsonRes({ message: 'Server Error' }, 502), 'unsure'],
+    [() => { throw new Error('network'); }, 'unsure'],
+  ];
+  for (const [answer, want] of answers) {
+    await withFetch(async () => answer(), async () => {
+      assert.equal(await userPushAnswer('ghu_x', 'rosa/bakery', quick), want);
+      assert.equal(await userCanPush('ghu_x', 'rosa/bakery', quick), want === 'yes', 'everything but a sign-in acts on yes only');
+    });
+  }
+  assert.equal(await userPushAnswer('', 'rosa/bakery'), 'no', 'no sign-in at all is a no');
+  assert.equal(githubSilent(null), true);
+  assert.deepEqual([200, 401, 403, 404, 429, 500].map(status => githubSilent({ status, headers: new Headers() })), [false, true, false, false, true, true]);
 });

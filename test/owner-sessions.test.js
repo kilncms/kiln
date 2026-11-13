@@ -105,6 +105,36 @@ test('without keep=server the sign-in answers the old way, exactly as before', a
   assert.deepEqual(JSON.parse(e.KILN.map.get(`sid:${f.get('kiln-sid')}`)), { refresh_token: 'ghr_new' });
 });
 
+test('when GitHub does not answer whether the person may change the repository, the sign-in says so and nobody is told the site is not theirs', async () => {
+  const silent = {
+    'a fault on GitHub\'s side': () => jsonRes({ message: 'Server Error' }, 503),
+    'a limit GitHub asks everyone to wait out': () => jsonRes({ message: 'API rate limit exceeded' }, 403, { 'X-RateLimit-Remaining': '0' }),
+    'a second limit, with a time to wait': () => jsonRes({ message: 'You have exceeded a secondary rate limit' }, 403, { 'Retry-After': '60' }),
+    'too many requests': () => jsonRes({ message: 'slow down' }, 429),
+  };
+  for (const [how, answer] of Object.entries(silent)) {
+    const e = env();
+    const base = github({ tokenOk: 'ghu_new' });
+    const gh = async (url, init = {}) => (url === `${GH}/repos/${REPO}` ? answer() : base(url, init));
+    const out = await signIn(e, `origin=${encodeURIComponent(ORIGIN)}&return_to=/&repo=${REPO}&keep=server`, gh);
+    const page = await out.res.text();
+    assert.equal(out.res.status, 503, how);
+    assert.match(page, /GitHub did not answer just now/, how);
+    assert.match(page, /Nothing is wrong with your account or with the site/, how);
+    assert.doesNotMatch(page, /not yours to sign in to/, how);
+    assert.equal(sessionsIn(e).length, 0, `${how}: and no session is made`);
+  }
+  // A plain "no" from GitHub is still an answer: this person cannot change that repository.
+  const e = env();
+  const base = github({ tokenOk: 'ghu_new' });
+  for (const status of [403, 404]) {
+    const gh = async (url, init = {}) => (url === `${GH}/repos/${REPO}` ? jsonRes({ message: 'Not Found' }, status) : base(url, init));
+    const out = await signIn(e, `origin=${encodeURIComponent(ORIGIN)}&return_to=/&repo=${REPO}&keep=server`, gh);
+    assert.equal(out.res.status, 403, String(status));
+    assert.match(await out.res.text(), /not yours to sign in to/, String(status));
+  }
+});
+
 test('keep=server is refused for a repository the person cannot change, an address that belongs to another repository, and a repository name that is not one', async () => {
   const e = env();
   const cant = await signIn(e, `origin=${encodeURIComponent(ORIGIN)}&return_to=/&repo=${REPO}&keep=server`, github({ push: false, tokenOk: 'ghu_new' }));

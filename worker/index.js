@@ -84,12 +84,12 @@ const UA = 'kiln-auth-worker';
 const WORKER_VERSION = '0.6.8';
 
 import { startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
-import { handleCloud, googleDashboardSignIn, keptOwnerAtSite, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
+import { handleCloud, googleDashboardSignIn, keptOwnerAtSite, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, userPushAnswer, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
 import { keepsReady, keptStands } from './keeps.js';
 import { bringOn } from './bring.js';
 import { sweepBrings } from './cloud.js';
-import { githubTrouble, googleTrouble, troubleBody, troubleLog, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
+import { githubTrouble, googleTrouble, troubleBody, troubleLog, githubSilent, GITHUB_DID_NOT_ANSWER, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkNewPageWrite, templatePathsFor, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
 import { keyInScope, hasSectionLimit, checkSectionWrite, strictUtf8FromB64, scheduledKeyRefusal, SECTION_REFUSALS } from './section-scope.js';
@@ -672,7 +672,10 @@ async function authCallback(url, env) {
   // address whose repository this person may change; otherwise a stranger's
   // trial address could collect a site owner's GitHub access.
   const bound = await repoForOrigin(env, state.origin);
-  if (bound !== null && !(await userCanPush(tok.access_token, bound, { fresh: true }))) {
+  const may = bound === null ? 'yes' : await userPushAnswer(tok.access_token, bound, { fresh: true });
+  // GitHub did not say (it is busy, or asks everyone to wait): that is said, and nobody is told the site is not theirs.
+  if (may === 'unsure') return githubDidNotAnswerPage(state.origin, bound);
+  if (may !== 'yes') {
     return html(`<h1>This site is not yours to sign in to</h1>
       <p>You signed in with GitHub, but your account cannot change the repository behind
       <strong>${esc(state.origin)}</strong>, so Kiln did not sign you in there. If you
@@ -801,6 +804,11 @@ function badRepoPage() {
     <p>Kiln needs the site's repository, written as <code>owner/name</code>, to sign you in to it.
     Check <code>repo</code> in the site's <code>kiln-config.js</code>, then try again.</p>`, 400);
 }
+// GitHub was asked whether this person may change the site's repository and did not answer: a page that says so and sends them back to try again.
+function githubDidNotAnswerPage(origin, repo) {
+  console.warn(JSON.stringify({ evt: 'signin_github_silent', origin, repo }));
+  return html(troubleBody(GITHUB_DID_NOT_ANSWER, { origin }), GITHUB_DID_NOT_ANSWER.status);
+}
 function notYoursPage(origin) {
   return html(`<h1>This site is not yours to sign in to</h1>
       <p>You signed in with GitHub, but your account cannot change the repository behind
@@ -818,11 +826,12 @@ async function repoAccess(token, repo, { fresh = false } = {}) {
     const r = fresh
       ? await ghWithNewToken(`${GH}/repos/${repo}`, token)
       : await fetch(`${GH}/repos/${repo}`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
-    if (!r || !r.ok) return null;
+    // `unsure`: GitHub did not answer (signin-trouble.js githubSilent). It may not push all the same, and a sign-in says why.
+    if (!r || !r.ok) return githubSilent(r) ? { push: false, id: null, unsure: true } : null;
     const j = await r.json();
     const p = j.permissions || {};
     return { push: !!(p.push || p.admin || p.maintain), id: Number.isInteger(j.id) ? j.id : null };
-  } catch { return null; }
+  } catch { return { push: false, id: null, unsure: true }; }
 }
 
 async function githubUser(token) {
@@ -1044,6 +1053,7 @@ async function ownerSignedIn(env, state, tok) {
   if (!REPO_RE.test(repo)) return badRepoPage();
   if (!(await originServesRepo(env, state.origin, repo))) return notYoursPage(state.origin);
   const access = await repoAccess(tok.access_token, repo, { fresh: true });
+  if (access?.unsure) return githubDidNotAnswerPage(state.origin, repo);
   if (!access || !access.push) return notYoursPage(state.origin);
   // As requirePush does: the name is put on record as this repository, and a
   // name on record as a different one, with a site's things under it, is refused.
@@ -1087,6 +1097,7 @@ async function authAdopt(request, env) {
   const user = await githubUser(token);
   if (!user) return signinEnded();
   const access = await repoAccess(token, repo);
+  if (access?.unsure) return json({ error: 'GitHub did not answer just now, so Kiln could not keep the sign-in. Nothing is wrong with your account or the site. Try again in a few minutes.', code: 'github_silent' }, 503);
   if (!access || !access.push) return json({ error: 'Your GitHub account cannot change this site’s repository, so Kiln did not keep the sign-in.', code: 'forbidden' }, 403);
   if (access.id !== null && !(await admitRepo(env, repo, { id: access.id, name: repo }))) return json({ error: REPO_CHANGED, code: 'repo_changed' }, 403);
   let refreshToken = null;

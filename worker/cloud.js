@@ -36,7 +36,7 @@
  */
 
 import { RUNBOOK_HTML } from './runbook.js';
-import { troubleBody, forDashboard, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN } from './signin-trouble.js';
+import { troubleBody, forDashboard, githubSilent, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN } from './signin-trouble.js';
 import { startSignIn, startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { customerMailOn, mailAddress, addressSql, accountAddress, sendOnce, siteAddedMail, siteStartedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages } from './prepare.js';
@@ -126,17 +126,27 @@ async function repoInstalled(env, repo) {
 }
 
 /** Does the signed-in user (via their stored OAuth token) have push on the repo? */
-export async function userCanPush(userToken, repo, { fresh = false } = {}) {
-  if (!userToken) return false;
+export async function userCanPush(userToken, repo, opts = {}) {
+  return (await userPushAnswer(userToken, repo, opts)) === 'yes';
+}
+
+/**
+ * The same question with three answers: 'yes', 'no', or 'unsure' when GitHub
+ * did not answer (signin-trouble.js githubSilent). A sign-in uses it so that
+ * a busy GitHub is never read as "this site is not yours". Everything else
+ * only acts on 'yes' (userCanPush).
+ */
+export async function userPushAnswer(userToken, repo, { fresh = false } = {}) {
+  if (!userToken) return 'no';
   try {
     // `fresh`: the token was issued in this very request (a sign-in callback), see ghWithNewToken.
     const r = fresh
       ? await ghWithNewToken(`${GH}/repos/${repo}`, userToken)
       : await fetch(`${GH}/repos/${repo}`, { headers: { Authorization: `Bearer ${userToken}`, Accept: 'application/vnd.github+json', 'User-Agent': UA } });
-    if (!r || !r.ok) return false;
+    if (!r || !r.ok) return githubSilent(r) ? 'unsure' : 'no';
     const j = await r.json();
-    return !!(j.permissions && (j.permissions.push || j.permissions.admin || j.permissions.maintain));
-  } catch { return false; }
+    return j.permissions && (j.permissions.push || j.permissions.admin || j.permissions.maintain) ? 'yes' : 'no';
+  } catch { return 'unsure'; }
 }
 
 // ─── Dashboard sessions (KV) ──────────────────────────────────────────────────
