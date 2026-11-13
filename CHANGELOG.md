@@ -99,6 +99,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   site on the hosting plan that its owner never put on Kiln's hosting is
   checked at its own address, as before. The answer carries `looked_at`, the
   address that was asked (`worker/sitecheck.js`, `worker/cloud.js`).
+- **Sign out says that you are signed out, and where to sign in again.** After
+  Kiln menu > Sign out the page came back with no Kiln button and not a word.
+  For eight seconds it now reads "You are signed out. To edit again, sign in
+  at example.com/kiln.", where the address is the site's own sign-in page and
+  is a link. The sentence goes away by itself and is not said again on the
+  next page. A site that has turned its sign-in page off (`entry: false`)
+  reads "You are signed out." It is not said on the sign-in page itself, nor
+  on the demo, which signs every visitor in again. The sentence is shown by
+  the small script every visitor loads, with styles of its own so that it
+  looks the same on any site.
+
 - **An editor on a page they may not change is told so, and told which pages
   they can change.** An invited editor can be given only some pages (say,
   those under `blog/`) or only some parts of pages. On a page outside their
