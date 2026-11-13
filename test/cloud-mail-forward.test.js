@@ -295,6 +295,28 @@ test('forwarding: an inbox another customer still waits for is refused, and one 
   });
 });
 
+test('forwarding: a confirmed inbox that was left on Cloudflare\'s list with no address forwarding to it is written to afresh, not refused', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await withDomain(w);
+    // What a stop left behind before Kiln took inboxes off the list: confirmed at Cloudflare, and no row of anybody's names it.
+    const old = await addInbox(w.env, { email: INBOX });
+    w.cf.confirm(INBOX);
+    const res = await setup(w.env);
+    const body = await res.json();
+    assert.deepEqual([res.status, body.ok, body.sent, body.forward.state], [200, true, true, 'confirming']);
+    assert.deepEqual(w.cf.confirmations, [INBOX, INBOX], 'Cloudflare writes to the inbox at this asking');
+    const now = w.cf.addresses.get(INBOX);
+    assert.ok(now.id !== old.id && !now.verified, 'the inbox has to press the button again');
+    const row = await rowOf(w.env);
+    assert.ok(row.inbox_id === now.id && Date.now() - row.asked_at < 5000 && !row.rule_id);
+    assert.deepEqual([rules(w), w.mails().length], [[], 0], 'no rule and no "now reaches" until it does');
+    w.cf.confirm(INBOX);
+    await hush(async () => { assert.equal((await post(w.env, 'check')).status, 200); });
+    assert.deepEqual([(await rowOf(w.env)).state, rules(w)], ['on', [`${HELLO} > ${INBOX}`]]);
+  });
+});
+
 test('forwarding: an address typed on the Kiln account is no proof of an inbox, and the address Google confirmed for the account is', { skip: d1Skip }, async () => {
   const w = world();
   await withFetch(w.handler, async () => {
@@ -477,7 +499,7 @@ test('forwarding: "Send it again" writes to the inbox of a change that waits, an
     await hush(async () => { res = await post(w.env, 'stop'); });
     assert.deepEqual(await res.json(), { ok: true, forward: null });
     assert.deepEqual([await rowOf(w.env), rules(w)], [null, []]);
-    w.cf.confirm(OTHER);
+    assert.deepEqual([...w.cf.addresses.keys()], [], 'the inbox that worked and the one the change waited for are both off Cloudflare\'s list');
     assert.deepEqual(await sweepForwards(w.env), NONE, 'the change went with the address: nothing is switched on later');
   });
 });
@@ -589,6 +611,69 @@ test('forwarding: a stop that Cloudflare does not take keeps the address as it w
     assert.equal((await rowOf(w.env)).state, 'on');
     assert.equal(rules(w).length, 1);
     assert.equal(await w.env.KILN.get('forwardlock:site1'), null);
+  });
+});
+
+test('forwarding: a stop takes the inbox off Cloudflare\'s list, and the same address set up again has Cloudflare write to the inbox afresh', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await forwarding(w);
+    await hush(async () => { assert.deepEqual(await (await post(w.env, 'stop')).json(), { ok: true, forward: null }); });
+    assert.deepEqual([...w.cf.addresses.keys()], [], 'nothing of the stopped address stays at Cloudflare');
+    // "You can set it up again any time."
+    const res = await setup(w.env);
+    const body = await res.json();
+    assert.deepEqual([res.status, body.ok, body.sent, body.forward.state, body.forward.inbox], [200, true, true, 'confirming', INBOX]);
+    assert.deepEqual(w.cf.confirmations, [INBOX, INBOX], 'Cloudflare writes to the inbox a second time');
+    const row = await rowOf(w.env);
+    assert.ok(row.inbox_id === w.cf.addresses.get(INBOX).id && Date.now() - row.asked_at < 5000 && !row.rule_id);
+    assert.deepEqual(rules(w), [], 'no rule until the inbox confirms again');
+    w.cf.confirm(INBOX);
+    await hush(async () => { assert.equal((await post(w.env, 'check')).status, 200); });
+    assert.deepEqual([(await rowOf(w.env)).state, rules(w)], ['on', [`${HELLO} > ${INBOX}`]]);
+  });
+});
+
+test('forwarding: a stop leaves the inbox on Cloudflare\'s list while another site forwards to it, and that site\'s address goes on working', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await withDomain(w);
+    await otherSite(w, { account: 'acct-1' });   // a second site of this account forwards to the same inbox
+    await hush(async () => { assert.equal((await setup(w.env, 'hello', OTHER)).status, 200); });
+    assert.equal((await rowOf(w.env)).state, 'on');
+    const was = { ...w.cf.addresses.get(OTHER) };
+    const before = w.cf.calls.length;
+    await hush(async () => { assert.deepEqual(await (await post(w.env, 'stop')).json(), { ok: true, forward: null }); });
+    assert.deepEqual([await rowOf(w.env), rules(w)], [null, []]);
+    assert.deepEqual(w.cf.addresses.get(OTHER), was, 'the inbox is on the list as it was, confirmed');
+    assert.deepEqual(w.cf.calls.slice(before).filter(c => /\/email\/routing\/addresses/.test(c.path)), [], 'the list was not even asked about');
+    const other = await forwardRow(w.env, 'site9');
+    assert.deepEqual([other.state, other.inbox, other.inbox_id, other.rule_id], ['on', OTHER, was.id, 'rule-9']);
+    assert.deepEqual(w.cf.confirmations, [OTHER]);
+  });
+});
+
+test('forwarding: a stop stands when Cloudflare does not take the inbox off its list, and the set-up after it still asks the inbox afresh', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await forwarding(w);
+    w.cf.failOn((method, path) => method === 'DELETE' && /\/email\/routing\/addresses\//.test(path));
+    const log = console.log, warn = console.warn, lines = [];
+    console.log = console.warn = (l) => lines.push(String(l));
+    let res;
+    try { res = await post(w.env, 'stop'); } finally { console.log = log; console.warn = warn; }
+    assert.deepEqual([res.status, await res.json()], [200, { ok: true, forward: null }]);
+    assert.deepEqual([await rowOf(w.env), rules(w)], [null, []], 'the rule and the row are gone all the same');
+    assert.equal(await w.env.KILN.get('forwardlock:site1'), null);
+    assert.ok(w.cf.addresses.get(INBOX)?.verified, 'the inbox is still on the list');
+    const left = lines.map(l => JSON.parse(l)).filter(l => l.evt === 'forward_inbox_left');
+    assert.deepEqual(left.map(l => [l.repo, l.address, l.which]), [['ada/club', HELLO, 'inbox']]);
+    assert.ok(!JSON.stringify(left).includes(INBOX), 'the inbox itself is not written to the log');
+    w.cf.failOn(null);
+    const body = await (await setup(w.env)).json();
+    assert.deepEqual([body.sent, body.forward.state], [true, 'confirming']);
+    assert.deepEqual(w.cf.confirmations, [INBOX, INBOX]);
+    assert.ok(!w.cf.addresses.get(INBOX).verified, 'the inbox has to press the button again');
   });
 });
 

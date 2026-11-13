@@ -55,7 +55,7 @@ import {
 } from './domain.js';
 import {
   mailStop, saysNoMail, switchMailOn, inboxState, addInbox, askAgain, canAskAgain, forward, stopForwarding, cleanLocal, cleanInbox, mailSentence,
-  forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, inboxAwaited, whatWaits, NO_CHANGE, MailError, MAIL_LIMITS,
+  forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, inboxInUse, forgetInboxesOf, whatWaits, NO_CHANGE, MailError, MAIL_LIMITS,
 } from './domain-mail.js';
 
 const GH = 'https://api.github.com';
@@ -2242,22 +2242,24 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         const waits = whatWaits(row);        // what the row waits for now: a first set-up, or a change beside an address that works
         if (same && works && waits) await saveForward(env, site.id, NO_CHANGE);   // what works was asked for again: the change that waited is dropped
         if (same && works) return standing({ sent: false });   // it stands as asked
-        // An inbox this account has not shown to be its own is taken only when Cloudflare writes to it at this asking. One that has
-        // confirmed already (at somebody else's asking), or that somebody else still waits for, is refused before anything is made.
+        // An inbox this account has not shown to be its own is taken only when Cloudflare writes to it at this asking. One that a row
+        // of any account forwards to or waits for (inboxInUse) is somebody's, and is refused before anything is made.
         const ours = await mine(inbox);
         const notOurs = () => refuse('inbox_elsewhere', 409, { address, inbox, name, forward: publicForward(row) });
-        let left = false;   // on Cloudflare's list, not confirmed, and nobody waits for it any more: the email is sent afresh
+        // On Cloudflare's list, confirmed or not, and no row of any account uses it or waits for it: it was left behind (by a
+        // stop, or by an asking nobody finished). It is taken off the list and put on again, so Cloudflare writes to it afresh.
+        let left = false;
         if (!ours) {
           let there;
           try { there = await inboxState(env, { email: inbox }); }
           catch (e) { return failed(e, 'inbox', { address, inbox }); }
-          if (there && (there.verified || await inboxAwaited(env, inbox))) return notOurs();
+          if (there && await inboxInUse(env, inbox)) return notOurs();
           left = !!there;
         }
         let box;
         try { await switchMailOn(env, { zoneId: domain.zone_id, name }); }
         catch (e) { return failed(e, 'switch', { address, inbox }); }
-        try { box = left ? await askAgain(env, { email: inbox }) : await addInbox(env, { email: inbox }); }
+        try { box = left ? await askAgain(env, { email: inbox, afresh: true }) : await addInbox(env, { email: inbox }); }
         catch (e) { return failed(e, 'inbox', { address, inbox }); }
         if (!ours && !box.sent) return notOurs();   // somebody else asked for it in the same moment
         // Asking for the same again while it waits keeps its clock: the reminder and the day Kiln stops waiting count from the first asking.
@@ -2313,7 +2315,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         try { await stopForwarding(env, { zoneId: domain.zone_id, ruleId: row.rule_id || null }); }
         catch (e) { return failed(e, 'stop'); }
       }
-      await forgetForward(env, site.id);
+      // With the rule and the row gone, an inbox no other site forwards to or waits for is taken off Cloudflare's list, so that
+      // setting the address up again has Cloudflare write to it afresh. Best effort: what Cloudflare does not take is logged, and the stop stands.
+      if (await forgetForward(env, site.id)) await forgetInboxesOf(env, row, { repo: site.repo });
       console.log(JSON.stringify({ evt: 'forward_stopped', repo: site.repo, address: row.address }));
       return json({ ok: true, forward: null });
     } finally {

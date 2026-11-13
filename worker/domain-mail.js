@@ -271,17 +271,39 @@ export async function addInbox(env, { email }) {
  * is left exactly as it is, since other sites may forward to it. Answers
  * { id, verified, sent }; the id is a new one when the email was sent. Whoever
  * calls this keeps it to once every ten minutes (canAskAgain).
+ * With `afresh` an inbox that has confirmed is removed and added again too, so
+ * that it has to press the button once more. That is only for an inbox that
+ * was left behind on the list: whoever asks for it has just made sure that no
+ * row of any account uses the inbox or waits for it (inboxInUse).
  */
-export async function askAgain(env, { email }) {
+export async function askAgain(env, { email, afresh = false }) {
   need(env);
   const inbox = cleanInbox(email);
   const there = await inboxState(env, { email: inbox });
-  if (there?.verified) return { ...there, sent: false };
+  if (there?.verified && !afresh) return { ...there, sent: false };
   if (there) {
     try { await cloudflare(env, 'DELETE', `${account(env)}/email/routing/addresses/${encodeURIComponent(there.id)}`); }
     catch (e) { if (!isGone(e)) throw e; }
   }
   return { ...seen((await cloudflare(env, 'POST', `${account(env)}/email/routing/addresses`, { email: inbox })).result || {}), sent: true };
+}
+
+/**
+ * Take an inbox off the account's list, confirmed or not. True when it is not
+ * on the list afterwards: one that was not there, or that went in the same
+ * moment, counts as done. Throws what Cloudflare answers otherwise. Only for
+ * an inbox that no row of any account names any more (inboxNamed): a rule
+ * that still forwards to it would stop delivering.
+ */
+export async function forgetInbox(env, { email }) {
+  need(env);
+  const inbox = String(email ?? '').trim().toLowerCase();
+  if (!inbox) return true;
+  const there = await inboxState(env, { email: inbox });
+  if (!there) return true;
+  try { await cloudflare(env, 'DELETE', `${account(env)}/email/routing/addresses/${encodeURIComponent(there.id)}`); }
+  catch (e) { if (!isGone(e)) throw e; }
+  return true;
 }
 
 /** True when a row's inbox may be sent the email again: ten minutes after the last one. */
@@ -487,6 +509,60 @@ export async function inboxAwaited(env, inbox) {
   const want = String(inbox ?? '').trim().toLowerCase();
   try { return !!(await env.kiln_cloud.prepare("SELECT site_id FROM forwards WHERE (inbox = ? AND state = 'confirming') OR (want_inbox = ? AND state = 'on') LIMIT 1").bind(want, want).first()); }
   catch { return true; }
+}
+
+/**
+ * True when a row of any account uses this inbox or waits for it: a row that
+ * is `on` or `confirming` has it as its inbox, or a row has it as the inbox of
+ * a change that waits. An inbox on Cloudflare's list that no such row has was
+ * left behind (by a stop before Kiln took inboxes off the list, or by an
+ * asking that was given up on), and a set-up asks it afresh. Never throws:
+ * what cannot be read counts as in use.
+ */
+export async function inboxInUse(env, inbox) {
+  const want = String(inbox ?? '').trim().toLowerCase();
+  try { return !!(await env.kiln_cloud.prepare("SELECT site_id FROM forwards WHERE (inbox = ? AND state IN ('on', 'confirming')) OR want_inbox = ? LIMIT 1").bind(want, want).first()); }
+  catch { return true; }
+}
+
+/**
+ * True when a row of any account still names this inbox, as its inbox or as
+ * the inbox of a change that waits, in any state other than `failed`. Asked
+ * after a row is gone for good, before its inbox is taken off Cloudflare's
+ * list (forgetInbox). Never throws: what cannot be read counts as named, so
+ * the inbox stays on the list.
+ */
+export async function inboxNamed(env, inbox) {
+  const want = String(inbox ?? '').trim().toLowerCase();
+  try { return !!(await env.kiln_cloud.prepare("SELECT site_id FROM forwards WHERE (inbox = ? OR want_inbox = ?) AND state != 'failed' LIMIT 1").bind(want, want).first()); }
+  catch { return true; }
+}
+
+/**
+ * After a row is gone for good (its owner stopped the forwarding): each inbox
+ * the row named, its own and the one of a change that waited, is taken off
+ * Cloudflare's list, unless a row of any account still names it. Nothing of a
+ * stopped address stays behind at Cloudflare, so setting it up again has
+ * Cloudflare write to the inbox afresh. `row` is the row as it was before it
+ * was deleted. Best effort, never throws: an inbox Cloudflare did not let go
+ * of is logged and left on the list, where a later set-up asks it afresh all
+ * the same. Answers how many inboxes it took off the list.
+ */
+export async function forgetInboxesOf(env, row, { repo = null } = {}) {
+  let gone = 0;
+  const named = [['inbox', row?.inbox], ['want_inbox', row?.want_inbox]].map(([which, i]) => [which, String(i ?? '').trim().toLowerCase()]);
+  for (const [which, inbox] of named) {
+    if (!inbox || (which === 'want_inbox' && inbox === named[0][1])) continue;
+    try {
+      if (await inboxNamed(env, inbox)) continue;   // another site forwards to it, or waits for it
+      await forgetInbox(env, { email: inbox });
+      gone++;
+    } catch (e) {
+      // The inbox itself is not written to the log: which of the row's two it was is enough to find it.
+      console.warn(JSON.stringify({ evt: 'forward_inbox_left', repo, address: row?.address || null, which, detail: e instanceof MailError ? `${e.code}: ${e.detail || ''}`.trim() : String(e?.message || e) }));
+    }
+  }
+  return gone;
 }
 
 /**
