@@ -24,6 +24,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   info@kilncms.com. (Before this release such pages went up as plain files
   that anyone could open.)
 
+- **"Check this site" says when the members sign-in page is missing.** A site
+  on Kiln's hosting with pages under `members/` sends whoever is not signed in
+  to `members-login.html` at the top of the site. Where that page is missing,
+  the members line now says so and names the file to copy, so a member is not
+  left on a page that does not exist.
+
 ### Fixed
 
 - **On a phone, the demo's banner no longer covers the guide's "Now publish

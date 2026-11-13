@@ -414,6 +414,14 @@ test('members on hosting: "Check this site" says of a hosted site with members p
   assert.equal(off.line.ok, false);
   assert.equal(off.line.detail, 'This site has pages under members/, but the members area is not switched on for Kiln\'s hosting yet, so Kiln left those pages out of the site rather than show them to everybody. Write to info@kilncms.com and we will switch it on.');
 
+  // The gate sends people to the sign-in page at the top of the site: a site without it is told so.
+  const { 'members-login.html': _signIn, ...noSignIn } = club;
+  const lost = await look(noSignIn, { membersOn: true });
+  assert.equal(lost.line.ok, false);
+  assert.equal(lost.line.detail, 'This site has pages under members/, but the page where members sign in, members-login.html, is not at the top of the site. A member who opens a members page is sent there and finds nothing. Copy templates/members-login.html from Kiln (github.com/kilncms/kiln) to the top of your site, beside index.html, and publish.');
+  assert.equal((await look({ ...noSignIn, 'blog/members-login.html': '<h1>Elsewhere</h1>' }, { membersOn: true })).line.ok, false, 'a page of that name in a folder is not the one members are sent to');
+  assert.equal((await look(noSignIn, { membersOn: false })).line.detail, off.line.detail, 'where the members area is off, that is what is said');
+
   assert.equal((await look(plain, { membersOn: true })).line, null, 'a site with no members pages gets no such line');
   const onPages = await look(club, { hosted: false, membersOn: true });
   assert.equal(onPages.line, null, 'a site on another host guards its members pages itself');

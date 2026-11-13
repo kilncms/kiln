@@ -173,6 +173,9 @@ function treeOf(token, repo, plan) {
   return listings.get(plan);
 }
 
+/** What "Check this site" says of a hosted site whose members pages have no sign-in page to send people to. */
+export const MEMBERS_NO_SIGNIN_SENTENCE = 'This site has pages under members/, but the page where members sign in, members-login.html, is not at the top of the site. A member who opens a members page is sent there and finds nothing. Copy templates/members-login.html from Kiln (github.com/kilncms/kiln) to the top of your site, beside index.html, and publish.';
+
 /**
  * Line `members`, for a site on Kiln's hosting that has pages under members/:
  * whether only members can open them. Kiln's hosting guards them by itself
@@ -183,8 +186,11 @@ function treeOf(token, repo, plan) {
 async function membersLine(plan, { token, repo, on }) {
   if (!token || !plan.treeSha) return null;
   const tree = await treeOf(token, repo, plan);
-  if (!tree || !hasMembersArea(publishedFiles(tree).files)) return null;
+  const files = tree ? publishedFiles(tree).files : null;
+  if (!files || !hasMembersArea(files)) return null;
   if (!on) return line('members', false, MEMBERS_OFF_SENTENCE);
+  // The gate sends whoever is not signed in to the sign-in page at the top of the site. Without that page they land on nothing.
+  if (!files.some(f => String(f.path) === '/members-login.html')) return line('members', false, MEMBERS_NO_SIGNIN_SENTENCE);
   return line('members', true, 'This site has pages under members/. Only the people on the site\'s list of members can open them, after they sign in with Google. Kiln\'s hosting takes care of that, so there is nothing for you to set up.');
 }
 
