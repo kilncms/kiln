@@ -177,7 +177,8 @@ async function routeRequest(request, env, ctx) {
       // ask for it over and over: the same limit as the sign-in routes.
       // The route the copying job answers on takes no sign-in (the answer is signed instead), so a stranger could
       // hammer it: it is counted for the address like the others.
-      if (path.startsWith('/cloud/sites/') || path === '/cloud/convert/done') {
+      // So is the look at which repositories Kiln's app can reach: each look asks GitHub.
+      if (path.startsWith('/cloud/sites/') || path === '/cloud/convert/done' || path === '/cloud/github') {
         const limited = await rateLimited(request, env);
         if (limited) return limited;
       }

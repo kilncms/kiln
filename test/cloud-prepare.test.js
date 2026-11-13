@@ -455,6 +455,10 @@ test('the route the copying job answers on is counted for the address too, since
   const res = await worker.fetch(new Request('https://worker.example/cloud/convert/done', { method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.9', 'Content-Type': 'application/json' }, body: '{}' }), env);
   assert.equal(res.status, 429);
   assert.equal(asked, 1);
+  // And the look at which repositories Kiln's app can reach, which asks GitHub each time.
+  const look = await worker.fetch(new Request('https://worker.example/cloud/github?repo=ada/club', { headers: { 'CF-Connecting-IP': '203.0.113.9', Authorization: 'Bearer tok' } }), env);
+  assert.equal(look.status, 429);
+  assert.equal(asked, 2);
 });
 
 test('prepare: one address cannot ask the dashboard\'s repository routes over and over', { skip: d1Skip }, async () => {
