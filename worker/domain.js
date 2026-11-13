@@ -571,11 +571,12 @@ export async function redirectToOne(env, { zoneId, name, www = false }) {
   need(env);
   const from = www ? name : `www.${name}`;
   const to = www ? `www.${name}` : name;
+  // This is the body Cloudflare took when it was tried against the real service, key for key.
   await cloudflare(env, 'PUT', `/zones/${zoneId}/rulesets/phases/http_request_dynamic_redirect/entrypoint`, { json: { rules: [{
-    description: `Kiln: ${from} goes to ${to}`,
-    expression: `(http.host eq "${from}")`,
     action: 'redirect',
-    action_parameters: { from_value: { status_code: 301, target_url: { expression: `concat("https://${to}", http.request.uri.path)` }, preserve_query_string: true } },
+    description: www ? 'the bare name goes to www' : 'www goes to the bare name',
+    expression: `(http.host eq "${from}")`,
+    action_parameters: { from_value: { status_code: 301, preserve_query_string: true, target_url: { expression: `concat("https://${to}", http.request.uri.path)` } } },
   }] } });
   return { from, to };
 }

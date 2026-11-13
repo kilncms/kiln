@@ -63,8 +63,10 @@ function world({ domains = known(), down = {}, env: extra = {}, hosted = true } 
     cf.addScript(WORKER);
     env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, deployed_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'site1', WORKER, `https://${WORKER}.kiln-sites.workers.dev`, 'live', 1, 1, 1);
   }
-  const handler = async (url, init) => (await cf.handler(url, init)) || (await dns.handler(url, init)) || gh.handler(url, init);
-  return { cf, dns, env, handler, sent, mails: () => sent.filter(m => m.subject), notes: () => sent.filter(m => m.raw) };
+  const up = new Set();   // the names the site answers at: `answers(...names)` says which, and nothing else answers
+  const handler = async (url, init) => (up.has(new URL(url).host) ? new Response('<!doctype html><h1>Home</h1>', { status: 200 })
+    : (await cf.handler(url, init)) || (await dns.handler(url, init)) || gh.handler(url, init));
+  return { cf, dns, env, handler, sent, answers: (...names) => { up.clear(); for (const n of names) up.add(n); }, mails: () => sent.filter(m => m.subject), notes: () => sent.filter(m => m.raw) };
 }
 const ask = (env, method, pathname, body, token = 'tok') => worker.fetch(new Request(`https://worker.example${pathname}`, {
   method, headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined,
@@ -79,6 +81,7 @@ const editingOff = (env) => env.kiln_cloud.exec("UPDATE sites SET status = 'expi
 const aMinuteAgo = (env) => env.kiln_cloud.exec("UPDATE domains SET checked_at = ? WHERE site_id = 'site1'", Date.now() - 61 * 1000);
 const toCloudflare = (calls) => calls.filter(c => c.url.startsWith('https://api.cloudflare.com/'));
 const quiet = async (fn) => { const real = console.warn; const lines = []; console.warn = (l) => lines.push(String(l)); try { await fn(); } finally { console.warn = real; } return lines; };
+const hush = async (fn) => { const log = console.log, warn = console.warn; const lines = []; console.log = console.warn = (l) => lines.push(String(l)); try { await fn(); } finally { console.log = log; console.warn = warn; } return lines; };
 const plain = (s) => { assert.doesNotMatch(s, /[—–]/); assert.doesNotMatch(s, /undefined|null|\[object/); assert.match(s, /^[A-Z].*\.$/); };
 
 // ─── Looking, and changing nothing ────────────────────────────────────────────
@@ -418,9 +421,17 @@ test('own domain: "check now" asks Cloudflare to look again, once a minute at mo
     const after = await res.json();
     assert.equal(zone.checks, 2);
     assert.equal(after.changed, true, 'Cloudflare has seen the new name servers');
-    // NOT BUILT YET: with the step that makes a domain live (cloud.js domainTookHold), this answer is to say `live`.
+    // The site does not answer at the domain yet (its certificate takes a few minutes), so the domain still waits.
     assert.equal(after.domain.state, 'waiting');
-    assert.deepEqual(await domainTookHold(w.env, { site: { id: 'site1' }, row: await domainRow(w.env, 'site1') }), { live: false });
+    // A minute later it answers there, and the answer says `live`.
+    aMinuteAgo(w.env);
+    w.answers(N);
+    let live;
+    await hush(async () => { live = await (await check(w.env)).json(); });
+    assert.deepEqual({ state: live.domain.state, changed: live.changed, at: live.domain.live_at > 0 }, { state: 'live', changed: undefined, at: true });
+    // What follows is about a domain that waits.
+    w.answers();
+    await saveDomain(w.env, 'site1', { state: 'waiting' });
 
     // Cloudflare cannot be asked: nothing changes, and the answer says to try again.
     aMinuteAgo(w.env);
@@ -715,4 +726,93 @@ test('own domain: the "moved away" email says the site is back at its temporary 
   const nowhere = domainMovedMail({ name: N, tempUrl: null, dashboard: 'https://app.example' });
   assert.doesNotMatch(nowhere.text, /temporary address|\/kiln/);
   clean(mail, nowhere);
+});
+
+// ─── The step that makes a domain live ────────────────────────────────────────
+
+const originOf = async (env) => (await env.kiln_cloud.prepare("SELECT origin FROM sites WHERE id = 'site1'").first()).origin;
+/** The domain is set up and its name servers have been changed: the row that waits. Call it inside withFetch. */
+async function changed(w) { await setup(w.env); w.cf.setStatus(N, 'active'); return domainRow(w.env, 'site1'); }
+const took = (env, row, now) => domainTookHold(env, { site: { id: 'site1' }, row, ...(now ? { now } : {}) });
+
+test('own domain: once the name servers have changed and the site answers there, the domain is live, the site has that address, www is sent on, HTTPS is always on, and the owner is written to once', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    const row = await changed(w);
+    const before = await originOf(w.env);
+    // The certificate is not ready: nothing changes, and a line says so.
+    const lines = await hush(async () => assert.deepEqual(await took(w.env, row, 5000), { live: false }));
+    assert.match(lines.join('\n'), /domain_not_answering_yet/);
+    assert.equal((await domainRow(w.env, 'site1')).state, 'waiting');
+    assert.equal(await originOf(w.env), before);
+    assert.equal(w.mails().length, 1, 'only the email with the two name servers has gone');
+    assert.equal((w.cf.zoneOf(N).redirects || []).length, 0);
+
+    // It answers there: the domain is live.
+    w.answers(N);
+    await hush(async () => assert.deepEqual(await took(w.env, row, 5000), { live: true }));
+    const live = await domainRow(w.env, 'site1');
+    assert.deepEqual({ state: live.state, live_at: live.live_at, checked_at: live.checked_at }, { state: 'live', live_at: 5000, checked_at: 5000 });
+    assert.equal(await originOf(w.env), `https://${N}`);
+    const zone = w.cf.zoneOf(N);
+    assert.equal(zone.redirects[0].expression, `(http.host eq "www.${N}")`);
+    assert.equal(zone.settings.always_use_https, 'on');
+    assert.equal(w.mails().length, 2);
+    const mail = w.mails().at(-1);
+    assert.equal(mail.subject, `Your site is live at ${N}`);
+    assert.equal(mail.text, domainLiveMail({ name: N, address: `https://${N}`, tempUrl: TEMP, oneAddress: true, dashboard: 'https://app.example' }).text);
+
+    // The button and the five-minute job can both see it: it is live, nothing is done twice, and nobody is written to twice.
+    await hush(async () => {
+      assert.deepEqual(await took(w.env, live), { live: true });
+      assert.deepEqual(await took(w.env, row), { live: true });
+    });
+    assert.equal((await domainRow(w.env, 'site1')).live_at, 5000);
+    assert.equal(w.mails().length, 2);
+    assert.equal(await originOf(w.env), `https://${N}`);
+  });
+});
+
+test('own domain: a site whose address on record was the www one keeps it, and a redirect or an HTTPS switch that fails does not stop the domain going live', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    const row = await changed(w);
+    w.env.kiln_cloud.exec("UPDATE sites SET origin = ? WHERE id = 'site1'", `https://www.${N}`);
+    w.answers(N, `www.${N}`);
+    await hush(async () => assert.deepEqual(await took(w.env, row), { live: true }));
+    assert.equal(await originOf(w.env), `https://www.${N}`);
+    assert.equal(w.cf.zoneOf(N).redirects[0].expression, `(http.host eq "${N}")`);
+    assert.ok(w.mails().at(-1).text.includes(`\n\nhttps://www.${N}\n\nA visitor who types ${N} is sent on to that address`));
+  });
+  // Cloudflare refuses the rule and the switch: live all the same, each failure leaves a line, and the email does not say what was not done.
+  const v = world();
+  await withFetch(v.handler, async () => {
+    const row = await changed(v);
+    v.answers(N);
+    v.cf.failOn((method, path) => /rulesets|always_use_https/.test(path));
+    const lines = await hush(async () => assert.deepEqual(await took(v.env, row), { live: true }));
+    assert.equal(lines.filter(l => /domain_one_address_failed/.test(l)).length, 2);
+    assert.equal((await domainRow(v.env, 'site1')).state, 'live');
+    assert.equal(await originOf(v.env), `https://${N}`);
+    const mail = v.mails().at(-1);
+    assert.equal(mail.subject, `Your site is live at ${N}`);
+    assert.doesNotMatch(mail.text, /is sent on/);
+  });
+});
+
+test('own domain: going live writes to nobody where the service sends no customer mail, and a row it cannot use changes nothing and throws nothing', { skip: d1Skip }, async () => {
+  const w = world({ env: { CUSTOMER_MAIL_FROM: '' } });
+  await withFetch(w.handler, async () => {
+    const row = await changed(w);
+    assert.deepEqual(await domainTookHold(w.env), { live: false });
+    assert.deepEqual(await took(w.env, { ...row, state: 'put_away' }), { live: false });
+    assert.deepEqual(await took(w.env, { ...row, zone_id: null }), { live: false });
+    assert.deepEqual(await domainTookHold(w.env, { site: { id: 'nobody' }, row }), { live: false });
+    const lines = await hush(async () => assert.deepEqual(await took({}, row), { live: false }));
+    assert.match(lines.join('\n'), /domain_took_hold_failed/);
+    assert.equal((await domainRow(w.env, 'site1')).state, 'waiting');
+    w.answers(N);
+    await hush(async () => assert.deepEqual(await took(w.env, row), { live: true }));
+    assert.equal(w.mails().length, 0);
+  });
 });

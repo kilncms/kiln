@@ -34,7 +34,7 @@
  */
 
 import { RUNBOOK_HTML } from './runbook.js';
-import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
+import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
@@ -44,6 +44,7 @@ import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHostin
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
 import {
   domainsOn, domainsReady, cleanDomain, lookUp, whatStops, sellerHelp, prepareDomain, domainStatus, removeWaitingDomain, exportRecords,
+  siteAnswers, redirectToOne, alwaysHttps, LIMITS as DOMAIN_LIMITS,
   domainSentence, publicDomain, publicLook, domainRow, domainForName, domainsForAccount, saveDomain, forgetDomain, DomainError,
 } from './domain.js';
 
@@ -574,33 +575,91 @@ async function tellNameServers(env, accountId, site, row) {
   } catch { /* the set-up is made all the same, and the dashboard shows the two name servers */ }
 }
 
+const hostName = (address) => { try { return new URL(address).host; } catch { return ''; } };
+const why = (e) => (e instanceof DomainError ? e.detail || e.code : String(e?.message || e)).slice(0, 300);
+
 /**
- * NOT BUILT YET (piece 6, the part after the routes): the step that makes a
- * domain live. POST /cloud/sites/domain with action "check" calls it the
- * moment Cloudflare says the domain's name servers point at Kiln, and the
- * five-minute job is to call it for every waiting domain whose zone has
- * become active. Until it is built it changes nothing, so a domain stays
- * `waiting` after its name servers have changed.
- *
- * What it must do, in this order (the design's "The five-minute job"):
- *   1. confirm the site answers at https://<name>/ (domain.js siteAnswers).
- *      When it does not yet (a certificate takes a few minutes), change
- *      nothing and answer { live: false }: the next run looks again;
- *   2. mark the row `live` with `live_at` (saveDomain);
- *   3. set the site's address on record (`sites.origin`) to https://<name>,
- *      or to https://www.<name> when the address on record already was the
- *      `www` one;
- *   4. send the other of the two names on to that one (domain.js
- *      redirectToOne, with `www: true` in the www case) and switch HTTPS on
- *      for every visitor (alwaysHttps);
- *   5. write to the owner that the site is live at the domain (a mail in
- *      mail.js, sent once, where the account has an address).
- * It must never throw: what goes wrong is logged, and the answer says
- * whether the domain is live now. `row` is the site's row in `domains`, and
- * `site` its row in `sites` (id, repo and origin at least).
+ * What the domain steps need to know of a site, read afresh: its repository,
+ * its address on record, its owner's address, and the temporary address
+ * Kiln's hosting gave it. Null when the site is not there.
  */
-export async function domainTookHold(env, { site, row, now = Date.now() } = {}) {   // eslint-disable-line no-unused-vars
-  return { live: false };
+async function siteForDomain(env, siteId) {
+  return env.kiln_cloud.prepare(
+    `SELECT s.id, s.repo, s.origin, a.email, h.url AS temp_url FROM sites s
+       LEFT JOIN accounts a ON a.id = s.account_id LEFT JOIN hosting h ON h.site_id = s.id WHERE s.id = ?`).bind(siteId).first();
+}
+
+/**
+ * One of the emails about a domain (mail.js), where this service writes to
+ * customers and the owner has an address. Once for one set-up: the key holds
+ * the kind and the zone. Never throws; the answer is sendOnce's.
+ */
+async function tellAboutDomain(env, kind, s, row, mail) {
+  try {
+    if (!customerMailOn(env) || !mailAddress(s?.email)) return { ok: false, reason: 'not sent' };
+    return await sendOnce(env, `domain-${kind}:${s.id}:${row.zone_id}`, s.email, mail);
+  } catch { return { ok: false, reason: 'send failed' }; }
+}
+
+/** Set a site's address on record. A failure is logged and stops nothing; the answer says whether it was written. */
+async function setAddressOnRecord(env, s, address, name) {
+  try { await env.kiln_cloud.prepare('UPDATE sites SET origin = ? WHERE id = ?').bind(address, s.id).run(); return true; }
+  catch (e) { console.warn(JSON.stringify({ evt: 'domain_address_not_set', repo: s.repo, name, address, detail: why(e) })); return false; }
+}
+
+/**
+ * The step that makes a domain live. POST /cloud/sites/domain with action
+ * "check" calls it the moment Cloudflare says the domain's name servers point
+ * at Kiln, and the five-minute job (sweepDomains) calls it for every waiting
+ * domain whose zone has become active. In this order:
+ *   1. the site must answer at https://<name>/ (domain.js siteAnswers). When
+ *      it does not yet (a certificate takes a few minutes), nothing is
+ *      changed, a line says so, and the answer is { live: false }: the next
+ *      run looks again;
+ *   2. the row becomes `live`, with `live_at`;
+ *   3. the site's address on record (`sites.origin`) becomes https://<name>,
+ *      or https://www.<name> when the address on record already was the
+ *      `www` one;
+ *   4. the other of the two names is sent on to that one (redirectToOne) and
+ *      HTTPS is switched on for every visitor (alwaysHttps). A failure of
+ *      either is logged and does not stop the domain going live;
+ *   5. the owner is written to, once, that the site is live at the domain.
+ * It never throws: what goes wrong is logged, and the answer says whether the
+ * domain is live now. `row` is the site's row in `domains`; of `site` only
+ * the id is used, and the rest is read afresh.
+ */
+export async function domainTookHold(env, { site, row, now = Date.now() } = {}) {
+  let live = false;
+  try {
+    if (!site?.id || !row?.name || !row.zone_id) return { live };
+    if (row.state === 'live') return { live: true };
+    if (row.state !== 'waiting') return { live };
+    const name = row.name;
+    const s = await siteForDomain(env, site.id);
+    if (!s) return { live };
+    // The button and the five-minute job can both get here: what the other one finished is not done twice.
+    const fresh = await domainRow(env, s.id);
+    if (fresh && fresh.state === 'live' && fresh.zone_id === row.zone_id) return { live: true };
+    if (!(await siteAnswers(name))) {
+      console.log(JSON.stringify({ evt: 'domain_not_answering_yet', repo: s.repo, name }));
+      return { live };
+    }
+    if (!(await saveDomain(env, s.id, { state: 'live', reason: null, live_at: now, checked_at: now }))) return { live };
+    live = true;
+    const www = hostName(s.origin) === `www.${name}`;
+    const address = `https://${www ? 'www.' : ''}${name}`;
+    await setAddressOnRecord(env, s, address, name);
+    let oneAddress = true;
+    for (const [step, run] of [['redirect', () => redirectToOne(env, { zoneId: row.zone_id, name, www })], ['https', () => alwaysHttps(env, { zoneId: row.zone_id })]]) {
+      try { await run(); }
+      catch (e) { oneAddress = false; console.warn(JSON.stringify({ evt: 'domain_one_address_failed', step, repo: s.repo, name, detail: why(e) })); }
+    }
+    await tellAboutDomain(env, 'live', s, row, domainLiveMail({ name, address, tempUrl: s.temp_url, oneAddress, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' }));
+    console.log(JSON.stringify({ evt: 'domain_live', repo: s.repo, name, address }));
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'domain_took_hold_failed', site: site?.id, name: row?.name, detail: why(e) }));
+  }
+  return { live };
 }
 
 const MAILS_PER_RUN = 25;   // a run writes to this many people at most; the rest wait five minutes

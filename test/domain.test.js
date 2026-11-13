@@ -448,16 +448,19 @@ test('domain: the site gets one address, with www sent on to the bare name or th
     assert.deepEqual(await redirectToOne(w.env, { zoneId, name: N }), { from: `www.${N}`, to: N });
     let rules = w.cf.zoneOf(N).redirects;
     assert.equal(rules.length, 1);
-    assert.equal(rules[0].expression, `(http.host eq "www.${N}")`);
-    assert.equal(rules[0].action, 'redirect');
-    assert.deepEqual(rules[0].action_parameters.from_value, { status_code: 301, target_url: { expression: `concat("https://${N}", http.request.uri.path)` }, preserve_query_string: true });
-    assert.doesNotMatch(rules[0].description, /[—–]/);
+    // The body that was tried against the real Cloudflare and taken, key for key and in its order.
+    assert.equal(JSON.stringify({ rules }), JSON.stringify({ rules: [{
+      action: 'redirect', description: 'www goes to the bare name', expression: `(http.host eq "www.${N}")`,
+      action_parameters: { from_value: { status_code: 301, preserve_query_string: true, target_url: { expression: `concat("https://${N}", http.request.uri.path)` } } },
+    }] }));
     // A site whose address on record is the www one keeps it.
     assert.deepEqual(await redirectToOne(w.env, { zoneId, name: N, www: true }), { from: N, to: `www.${N}` });
     rules = w.cf.zoneOf(N).redirects;
     assert.equal(rules.length, 1, 'written again, it replaces the rule');
-    assert.equal(rules[0].expression, `(http.host eq "${N}")`);
-    assert.match(rules[0].action_parameters.from_value.target_url.expression, new RegExp(`https://www\\.${N.replace('.', '\\.')}`));
+    assert.equal(JSON.stringify({ rules }), JSON.stringify({ rules: [{
+      action: 'redirect', description: 'the bare name goes to www', expression: `(http.host eq "${N}")`,
+      action_parameters: { from_value: { status_code: 301, preserve_query_string: true, target_url: { expression: `concat("https://www.${N}", http.request.uri.path)` } } },
+    }] }));
     assert.equal(w.cf.zoneOf(N).settings.always_use_https, undefined);
     assert.equal(await alwaysHttps(w.env, { zoneId }), true);
     assert.equal(w.cf.zoneOf(N).settings.always_use_https, 'on');
