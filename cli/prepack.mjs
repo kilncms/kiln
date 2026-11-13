@@ -33,6 +33,7 @@ const items = [
   ['worker/section-scope.js', 'worker/section-scope.js'],   // ditto — section limits on page writes
   ['worker/source.js', 'worker/source.js'],                 // ditto — source-mode endpoints
   ['worker/lookafter.js', 'worker/lookafter.js'],           // imported by worker/cloud.js and worker/hosted.js: a hosted site gets Kiln, a character set, a first pass and a current editor by itself
+  ['worker/signin-trouble.js', 'worker/signin-trouble.js'],     // imported by worker/index.js: the page a person sees when the last step of a sign-in fails
   ['worker/update.js', 'worker/update.js'],                 // imported by worker/cloud.js: updating the editor in a repository from the dashboard
   ['LICENSE', 'LICENSE'],
 ];

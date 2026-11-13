@@ -8,6 +8,20 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A sign-in that fails at its last step says so in plain words.** When
+  GitHub or Google did not hand the sign-in over, the person was left on a
+  page that read "GitHub OAuth error" above whatever the company had answered,
+  such as the raw text of a "429, wait a few minutes" reply (seen for real on
+  12 November). Each way that step can fail now has its own page: the company
+  is asking everyone to wait; the sign-in was already used or took too long;
+  the company did not answer; the service's own details were not accepted
+  (which is for whoever runs the service); and Google could not confirm the
+  address. Every page says whether anything is wrong with the person's account
+  (it almost never is), what to do next, and links back to the sign-in page of
+  the site they came from. What the company really answered goes to the
+  service's log for whoever runs it, never with a token in it
+  (`worker/signin-trouble.js`).
+
 - **"Check this site" looks at a hosted site where it really is.** For a site
   on Kiln's hosting the check asked the address on record, which is the
   owner's own domain, and that domain is not pointed at Kiln. So the list said

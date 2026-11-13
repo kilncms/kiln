@@ -85,6 +85,7 @@ const WORKER_VERSION = '0.6.3';
 
 import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
+import { githubTrouble, googleTrouble, troubleBody, troubleLog, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkNewPageWrite, templatePathsFor, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
 import { keyInScope, hasSectionLimit, checkSectionWrite, strictUtf8FromB64, scheduledKeyRefusal, SECTION_REFUSALS } from './section-scope.js';
@@ -612,11 +613,11 @@ async function authLogin(url, env) {
 async function authCallback(url, env) {
   const code = url.searchParams.get('code');
   const nonce = url.searchParams.get('state');
-  if (!code || !nonce) return html('<h1>Missing code/state</h1>', 400);
+  if (!code || !nonce) return html(troubleBody(HALF_A_SIGN_IN), HALF_A_SIGN_IN.status);
 
   const stateKey = `state:${nonce}`;
   const state = await env.KILN.get(stateKey, 'json');
-  if (!state) return html('<h1>Login expired or replayed</h1><p>Go back to your site and try again.</p>', 400);
+  if (!state) return html(troubleBody(STALE_SIGN_IN), STALE_SIGN_IN.status);
   await env.KILN.delete(stateKey); // single use
 
   const creds = await env.KILN.get('app:creds', 'json');
@@ -625,9 +626,14 @@ async function authCallback(url, env) {
     headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': UA },
     body: JSON.stringify({ client_id: creds.client_id, client_secret: creds.client_secret, code }),
   });
-  const tok = await res.json();
-  if (tok.error || !tok.access_token) {
-    return html(`<h1>GitHub OAuth error</h1><pre>${esc(tok.error_description || JSON.stringify(tok))}</pre>`, 400);
+  // What GitHub answered is for the log. The person gets a page in plain words
+  // that says what to do (signin-trouble.js): GitHub's own answer, such as the
+  // JSON of a 429, means nothing to someone who only pressed "Sign in".
+  const tok = await res.json().catch(() => null);
+  if (!tok || tok.error || !tok.access_token) {
+    const trouble = githubTrouble({ status: res.status, tok });
+    console.warn(troubleLog('github', trouble, { status: res.status, tok }));
+    return html(troubleBody(trouble, { origin: state.origin }), trouble.status);
   }
 
   if (state.keep === 'server') return ownerSignedIn(env, state, tok);
@@ -2755,9 +2761,9 @@ async function googleLogin(url, env) {
 async function googleCallback(url, env) {
   const code = url.searchParams.get('code');
   const nonce = url.searchParams.get('state');
-  if (!code || !nonce) return html('<h1>Missing code/state</h1>', 400);
+  if (!code || !nonce) return html(troubleBody(HALF_A_SIGN_IN), HALF_A_SIGN_IN.status);
   const state = await env.KILN.get(`gstate:${nonce}`, 'json');
-  if (!state) return html('<h1>Sign-in expired</h1><p>Go back to the site and try again.</p>', 400);
+  if (!state) return html(troubleBody(STALE_SIGN_IN), STALE_SIGN_IN.status);
   await env.KILN.delete(`gstate:${nonce}`);
 
   const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
@@ -2771,14 +2777,18 @@ async function googleCallback(url, env) {
       grant_type: 'authorization_code',
     }),
   });
-  const tok = await tokenRes.json();
-  if (!tok.id_token) return html(`<h1>Google sign-in failed</h1><pre>${esc(tok.error_description || tok.error || '?')}</pre>`, 400);
+  const tok = await tokenRes.json().catch(() => null);
+  if (!tok || !tok.id_token) {
+    const trouble = googleTrouble({ status: tokenRes.status, tok });
+    console.warn(troubleLog('google', trouble, { status: tokenRes.status, tok }));
+    return html(troubleBody(trouble, { origin: state.origin }), trouble.status);
+  }
 
   // Google validates the token's signature for us; we check it's OUR token.
   const infoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(tok.id_token)}`);
-  const info = await infoRes.json();
+  const info = await infoRes.json().catch(() => ({}));
   if (!infoRes.ok || info.aud !== env.GOOGLE_CLIENT_ID || info.email_verified !== 'true') {
-    return html('<h1>Could not verify your Google account</h1>', 403);
+    return html(troubleBody(UNCONFIRMED_GOOGLE, { origin: state.origin }), UNCONFIRMED_GOOGLE.status);
   }
 
   // Checked again here: the site's address may have changed hands in the ten
