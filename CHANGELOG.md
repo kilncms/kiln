@@ -16,7 +16,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for; before that the answer says "You can download this site's files once
   the site has been paid for. Subscribe on the site's row first." Where
   billing is not set up on a service at all, the download is open. The
-  operator gets one line each time, and the link itself is never logged.
+  operator gets one line about a site's download, at most once an hour, and
+  the link itself is never logged.
 - **The dashboard is told when the file of a domain's records can be
   downloaded.** What the service says about a site's domain now carries
   `has_records: true` whenever Kiln still holds the domain's zone, also for a

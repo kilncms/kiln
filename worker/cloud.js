@@ -471,7 +471,7 @@ const EDITOR_PLAN_ENDED = "Editing is switched off for this site, so its editor 
 const FILES_NOT_KEPT = "This site's files are in a GitHub repository of your own, so there is nothing to download here. Open the repository on GitHub to get them.";
 const FILES_PAID_FIRST = "You can download this site's files once the site has been paid for. Subscribe on the site's row first.";
 const FILES_NOT_NOW = 'GitHub did not answer just now, so Kiln could not get your files ready. Nothing was changed. Try again in a few minutes.';
-const EDITOR_NOT_KEPT ="This site's files are in a GitHub repository of your own, so its editor opens at the site. Go to your site's address with /kiln at the end, and sign in with GitHub there.";
+const EDITOR_NOT_KEPT = "This site's files are in a GitHub repository of your own, so its editor opens at the site. Go to your site's address with /kiln at the end, and sign in with GitHub there.";
 const EDITOR_NOT_OPENED = 'Kiln could not open the editor just now. Please try again in a few minutes.';
 // GET /cloud/sites/check: a site Kiln keeps the files of has no other host, so until it is on Kiln's hosting there is no address to look at.
 const CHECK_KEPT_NOT_UP = "Your site is not up yet. Press Put it on Kiln's hosting on the site's row, then check again.";
@@ -2729,10 +2729,15 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       console.warn(JSON.stringify({ evt: 'kept_files_failed', repo: site.repo, detail: String(link.error || '').slice(0, 300) }));
       return json({ error: FILES_NOT_NOW, code: 'github' }, 502);
     }
-    await notifyOwner(env, `Kiln: the files of ${site.repo} were downloaded`, [
-      `By: ${signedInAs(sess)}`, `Site: ${more?.name ? `${more.name}, ` : ''}${site.origin}`,
-      'They asked for the zip of the repository from the dashboard. Nothing was changed.',
-    ]);
+    // The operator hears of a site's download once an hour at most, however often the button is pressed.
+    const toldKey = `filesnote:${site.id}`;
+    if (!(await env.KILN.get(toldKey).catch(() => null))) {
+      await env.KILN.put(toldKey, '1', { expirationTtl: 3600 }).catch(() => {});
+      await notifyOwner(env, `Kiln: the files of ${site.repo} were downloaded`, [
+        `By: ${signedInAs(sess)}`, `Site: ${more?.name ? `${more.name}, ` : ''}${site.origin}`,
+        'They asked for the zip of the repository from the dashboard. Nothing was changed.',
+      ]);
+    }
     return json({ ok: true, url: link.url, name: keptFilesName({ name: more?.name, repo: site.repo }) }, 200, { 'Cache-Control': 'no-store' });
   }
 

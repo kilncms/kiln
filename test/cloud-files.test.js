@@ -91,6 +91,10 @@ test('files: the owner of a kept site that was paid for gets GitHub\'s link to o
   assert.match(w.notes[0], /oak-bakery-1a2b3c4d/);
   assert.match(w.notes[0], /rosa@example\.com/);
   for (const text of [...w.notes, ...out.logged]) assert.doesNotMatch(text, /SECRET-LINK-TOKEN|codeload/);
+  // A second press within the hour gets a link again, and the operator is not written to a second time.
+  const again = await files(w);
+  assert.equal(again.status, 200);
+  assert.equal(w.notes.length, 1);
 });
 
 test('files: a site with another default branch is asked for at that branch, and a site with no name is named after its repository', { skip: d1Skip }, async () => {
