@@ -49,6 +49,31 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   asks Kiln whether each signed-in member is still on the list. The dialog, the
   README and the members guide now say so.
 
+- **A forwarded email address that was stopped can be set up again with the
+  same inbox.** Before, the second set-up was refused with "Kiln cannot confirm
+  that inbox by itself", although the question before a stop says "You can set
+  it up again any time." A stop now also takes the inbox off Cloudflare's list
+  of inboxes, unless another site still forwards to it or waits for it, so
+  nothing of a stopped address stays behind. Setting the address up again has
+  Cloudflare write to the inbox once more, and the address is on as soon as
+  the button in that email is pressed. An inbox that an earlier stop left on
+  the list is treated the same way: it is asked afresh, not refused. If
+  Cloudflare does not take the inbox off its list, the stop still stands.
+
+### Security
+
+- **An address typed on a Kiln account is no longer proof that an inbox
+  belongs to that account.** The address on the account is whatever its owner
+  typed in the dashboard, and nobody checks it. Before, someone could type
+  another person's address there and have mail forwarded to an inbox that
+  person had confirmed for a different site, with no word to them. Now an
+  inbox counts as the account's own only when the account signs in with Google
+  and the inbox is the address Google confirmed, or when the inbox pressed the
+  button in an email that this account had Cloudflare send. An inbox that
+  another customer forwards to or waits for is refused as before, and the
+  sentence now reads: "Kiln cannot confirm that inbox by itself. Write to
+  info@kilncms.com and we will set it up with you."
+
 ## [0.6.7] - 2026-11-13
 
 ### Added
