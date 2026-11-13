@@ -17,7 +17,8 @@ import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare } from './cloudflare-fake.js';
 import { previewPattern, previewAlias, previewName, isPreviewBranch, siteName, PREVIEW_HEADERS } from '../worker/hosting.js';
-import { previewNotice } from '../worker/hosted.js';
+import { previewNotice, previewDecided } from '../worker/hosted.js';
+import { readFileSync } from 'node:fs';
 import { previewUrl } from '../src/editor/suggest.js';
 
 const SECRET = 'whsec-github';
@@ -388,6 +389,43 @@ test('previews: on a database the migration has not reached there are none, and 
     assert.equal((await ask(w.env, 'POST', '/cloud/sites/remove', { id: 'site1' })).status, 200);
   });
   assert.equal(w.cf.scripts.size, 0);
+});
+
+test('previews: when a suggestion is approved or declined its preview comes down, and the branch and the next suggestion on it are untouched', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    assert.equal((await switchOn(w.env)).status, 200);
+    await push(w, SUGGEST);
+    await push(w, 'kiln/suggest-Bea');
+    assert.deepEqual(previewsUp(w), ['pv-site1-kiln-suggest-ana', 'pv-site1-kiln-suggest-bea']);
+    // Another repository's suggestion, another branch, a branch that is no preview branch: nothing comes down.
+    assert.equal(await previewDecided(w.env, { repo: 'bob/other', branch: SUGGEST }), 0);
+    assert.equal(await previewDecided(w.env, { repo: 'ada/club', branch: 'kiln/suggest-Cy' }), 0);
+    assert.equal(await previewDecided(w.env, { repo: 'ada/club', branch: 'main' }), 0);
+    assert.equal(previewsUp(w).length, 2);
+    // Ana's suggestion is decided: her preview comes down, Bea's stays, and the branch is still in the repository.
+    assert.equal(await previewDecided(w.env, { repo: 'ada/club', branch: SUGGEST }), 1);
+    assert.deepEqual(previewsUp(w), ['pv-site1-kiln-suggest-bea']);
+    assert.deepEqual(rows(w.env).map(r => r.alias), ['kiln-suggest-bea']);
+    assert.ok(w.gh.refs.has(`heads/${SUGGEST}`), 'the branch is left for her next suggestion');
+    assert.equal(await previewDecided(w.env, { repo: 'ada/club', branch: SUGGEST }), 0, 'asked twice, nothing more to do');
+    // Her next suggestion goes to the same branch, and its preview goes up again at the same address.
+    await push(w, SUGGEST, { 'index.html': '<!doctype html><h1>Her next idea</h1>' });
+    assert.deepEqual(previewsUp(w), ['pv-site1-kiln-suggest-ana', 'pv-site1-kiln-suggest-bea']);
+    assert.match(served(w, '/index.html'), /Her next idea/);
+  });
+  // A service that hosts nothing, or a database without the table, is asked and answers 0 without throwing.
+  assert.equal(await previewDecided({}, { repo: 'ada/club', branch: SUGGEST }), 0);
+});
+
+test('previews: the route that records an owner\'s decision takes the preview down on both answers, and only when no other suggestion waits on the branch', () => {
+  const src = readFileSync(new URL('../worker/index.js', import.meta.url), 'utf8');
+  const route = src.slice(src.indexOf('async function suggestionDecide('), src.indexOf('// ─── AI assist'));
+  assert.equal(route.split('await previewSettled(env, repo, sug);').length - 1, 2, 'after a decline and after an approval');
+  for (const part of route.split('await previewSettled(env, repo, sug);').slice(0, 2)) assert.match(part.slice(-80), /await found\.save\(sug\);\s*$/, 'only once the decision is written down');
+  const settled = src.slice(src.indexOf('async function previewSettled('), src.indexOf('async function suggestionDecide('));
+  assert.match(settled, /other\.id !== sug\.id && other\.status === 'open' && other\.branch === sug\.branch\) return;/, 'another suggestion waiting on the same branch keeps the preview');
+  assert.match(settled, /try \{[\s\S]*await previewDecided\(env, \{ repo, branch: sug\.branch \}\);[\s\S]*\} catch/, 'and it never fails the decision');
 });
 
 test('previews: the pattern for a site\'s settings file gives the address the editor\'s link rule makes', () => {

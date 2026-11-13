@@ -38,6 +38,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   again once a day. "Check this site" has one more line for a hosted site that
   is online, "Suggestions get a preview".
 
+- **A preview comes down as soon as its suggestion is approved or declined.**
+  It used to stay up until the suggestion's branch was deleted, which nobody
+  does, so a declined suggestion could still be opened for up to thirty days.
+  Where the same person has another suggestion waiting on the same branch, the
+  preview stays for that one.
+
 ## [0.6.8] - 2026-11-13
 
 ### Added

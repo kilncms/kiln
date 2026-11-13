@@ -85,7 +85,7 @@ const WORKER_VERSION = '0.6.8';
 
 import { startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { handleCloud, googleDashboardSignIn, keptOwnerAtSite, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
-import { handleGithubWebhook, sweepHosting } from './hosted.js';
+import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
 import { keepsReady, keptStands } from './keeps.js';
 import { bringOn } from './bring.js';
 import { sweepBrings } from './cloud.js';
@@ -1880,6 +1880,27 @@ async function suggestionList(request, env, url) {
   return json(truncated ? { suggestions, counts, truncated: true } : { suggestions, counts });
 }
 
+// On a site Kiln hosts, a suggestion's branch has a preview of its own
+// (hosted.js). Once the suggestion is approved or declined that preview comes
+// down, unless another suggestion on the same branch still waits (one person's
+// suggestions share a branch). It never fails or delays the decision's answer
+// by more than the look itself: whatever goes wrong, the preview goes with its
+// branch or after thirty days all the same.
+async function previewSettled(env, repo, sug) {
+  try {
+    if (!sug?.branch) return;
+    const { names } = await shelf(env, repo);
+    const { entries } = await shelfEntries(env, names, name => `sug:${name}:`, Infinity);
+    let looked = 0;
+    for (const entry of entries) {
+      if (++looked > 300) return;   // too many to be sure nothing else waits: the preview stays
+      const other = await shelfRead(env, entry);
+      if (other && other.id !== sug.id && other.status === 'open' && other.branch === sug.branch) return;
+    }
+    await previewDecided(env, { repo, branch: sug.branch });
+  } catch { /* said above */ }
+}
+
 async function suggestionDecide(request, env) {
   const { repo, id, approve, note } = await request.json().catch(() => ({}));
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
@@ -1899,6 +1920,7 @@ async function suggestionDecide(request, env) {
     sug.status = 'declined';
     sug.decided = decided;
     await found.save(sug);
+    await previewSettled(env, repo, sug);
     return json({ suggestion: sug });
   }
 
@@ -1955,6 +1977,7 @@ async function suggestionDecide(request, env) {
         sug.decided = decided;
         sug.commit = { sha: out.commit?.sha, url: out.commit?.html_url };
         await found.save(sug);
+        await previewSettled(env, repo, sug);
         return json({ suggestion: sug, applied, skipped });
       }
       const err = await put.json().catch(() => ({}));

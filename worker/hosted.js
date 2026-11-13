@@ -266,6 +266,26 @@ async function putPreview(env, { site, token, branch, sha = null }) {
 }
 
 /**
+ * A suggestion was approved or declined, so what its branch's preview showed
+ * is settled: the preview comes down. The branch is left where it is (the
+ * editor writes that person's next suggestion to it, and a preview goes up
+ * again then). Whoever calls this has made sure that no other suggestion on
+ * the same branch still waits. Answers how many previews came down. Never
+ * throws.
+ */
+export async function previewDecided(env, { repo, branch }) {
+  let gone = 0;
+  try {
+    if (!hostingOn(env) || !env.kiln_cloud || !isPreviewBranch(branch) || !previewAlias(branch)) return 0;
+    const rows = await previewRows(env, 'SELECT p.* FROM previews p JOIN sites s ON s.id = p.site_id WHERE lower(s.repo) = lower(?) AND p.alias = ? AND p.branch = ?', String(repo), previewAlias(branch), branch);
+    for (const row of rows) if (await removePreview(env, row, 'decided')) gone++;
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'preview_decided_failed', repo, branch, detail: String(e?.message || e).slice(0, 300) }));
+  }
+  return gone;
+}
+
+/**
  * GitHub says a branch the editor writes suggestions or shared drafts to moved
  * (to `sha`) or was deleted. A branch that moved goes up as the preview of
  * every hosted site of that repository whose hosting is up and that may be
