@@ -561,7 +561,10 @@ export function publicForward(row) {
     on_at: row.state === 'on' ? (row.on_at || null) : null,
   };
   if (row.state !== 'on' && row.reason) out.error = mailSentence(row.reason, { address: row.address, inbox: row.inbox });
+  // The day Kiln stops waiting for an inbox that has not confirmed: the row's own, or a waiting change's.
   const waits = whatWaits(row);
-  if (waits?.change) out.changing_to = { address: waits.address, inbox: waits.inbox, since: waits.since };
+  const givesUpAt = waits?.since ? Number(waits.since) + MAIL_LIMITS.giveUpDays * 86400000 : null;
+  if (waits?.change) out.changing_to = { address: waits.address, inbox: waits.inbox, since: waits.since, gives_up_at: givesUpAt };
+  else if (waits) out.gives_up_at = givesUpAt;
   return out;
 }

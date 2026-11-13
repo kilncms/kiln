@@ -1340,6 +1340,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const forwarding = !!domains && await forwardsReady(env);
     const forwards = forwarding ? await forwardsForAccount(env, sess.account_id) : {};
     for (const r of rows) r.forward = publicForward(forwards[r.id] || null);
+    // A domain that came with email of its own is never forwarded for, and the site's row says so instead of offering it.
+    if (forwarding) for (const r of rows) if (r.domain && mailStop(owned[r.id]) === 'has_own_mail') r.domain.own_mail = true;
     return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding });
   }
 

@@ -436,7 +436,7 @@ test('mail: a site has one forwarded address, and its row follows it from confir
   let row = await forwardRow(env, 'site-1');
   assert.deepEqual({ address: row.address, inbox: row.inbox, inbox_id: row.inbox_id, rule_id: row.rule_id, state: row.state, asked_at: row.asked_at, on_at: row.on_at },
     { address: HELLO, inbox: INBOX, inbox_id: 'addr-1', rule_id: null, state: 'confirming', asked_at: 5, on_at: null });
-  assert.deepEqual(publicForward(row), { address: HELLO, inbox: INBOX, state: 'confirming', since: row.created_at, on_at: null });
+  assert.deepEqual(publicForward(row), { address: HELLO, inbox: INBOX, state: 'confirming', since: row.created_at, on_at: null, gives_up_at: row.created_at + 30 * 86400000 });
 
   await saveForward(env, 'site-1', { state: 'failed', reason: 'cloudflare' });
   assert.equal(publicForward(await forwardRow(env, 'site-1')).error, mailSentence('cloudflare', { address: HELLO, inbox: INBOX }));

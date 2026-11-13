@@ -6,7 +6,6 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.6.5] - 2026-11-13
 ### Added
 
 - **A hosted site's own domain can have one email address forwarded to an
@@ -48,6 +47,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   keeps arriving for as long as the domain's name servers point at Kiln.
   `/cloud/me` carries `forwarding` and each site's `forward`. The setup tool
   now copies `worker/domain-mail.js` for a service somebody hosts themselves.
+
+## [0.6.5] - 2026-11-13
 
 ### Fixed
 

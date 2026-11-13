@@ -137,6 +137,9 @@ test('forwarding: a domain with email of its own is never touched, and the row s
     const body = await res.json();
     assert.deepEqual([res.status, body.code, body.error], [409, 'has_own_mail', shown.why]);
     assert.equal(mailCalls(calls).length, 0);
+    // The account's own list says so on the site's domain, so the dashboard shows that sentence and no button.
+    const me = await (await ask(w.env, 'GET', '/cloud/me')).json();
+    assert.deepEqual([me.forwarding, me.sites[0].domain.own_mail, me.sites[0].forward], [true, true, null]);
     assert.deepEqual(routed(w), before);
     assert.equal(await rowOf(w.env), null);
   });
@@ -198,7 +201,7 @@ test('forwarding: a set-up switches mail on for the domain, has Cloudflare write
     const res = await setup(w.env, ' Hello ', ' Ada@Example.com ');
     const body = await res.json();
     assert.equal(res.status, 200);
-    assert.deepEqual({ ...body, forward: { ...body.forward, since: 0 } }, { ok: true, sent: true, forward: { address: HELLO, inbox: INBOX, state: 'confirming', since: 0, on_at: null } });
+    assert.deepEqual({ ...body, forward: { ...body.forward, since: 0, gives_up_at: 0 } }, { ok: true, sent: true, forward: { address: HELLO, inbox: INBOX, state: 'confirming', since: 0, on_at: null, gives_up_at: 0 } });
     assert.deepEqual(routed(w), ['route1.mx.cloudflare.net', 'route2.mx.cloudflare.net', 'route3.mx.cloudflare.net']);
     assert.deepEqual(w.cf.confirmations, [INBOX]);
     assert.deepEqual(rules(w), []);
@@ -214,6 +217,8 @@ test('forwarding: a set-up switches mail on for the domain, has Cloudflare write
     const me = await (await ask(w.env, 'GET', '/cloud/me')).json();
     assert.equal(me.forwarding, true);
     assert.deepEqual(me.sites[0].forward, publicForward(row));
+    // A waiting set-up says the day Kiln stops waiting, and a domain with no email of its own is not marked as having one.
+    assert.deepEqual([me.sites[0].forward.gives_up_at, 'own_mail' in me.sites[0].domain], [row.created_at + 30 * 86400000, false]);
   });
 });
 
@@ -345,6 +350,8 @@ test('forwarding: a change to a new inbox waits beside the address that works, w
     const body = await (await setup(w.env, 'post', OTHER)).json();
     assert.deepEqual([body.forward.address, body.forward.inbox, body.forward.state, body.forward.on_at, body.sent], [HELLO, INBOX, 'on', was.on_at, true], 'the address that works stays on');
     assert.deepEqual([body.forward.changing_to.address, body.forward.changing_to.inbox, Date.now() - body.forward.changing_to.since < 5000], [`post@${N}`, OTHER, true]);
+    // The day Kiln stops waiting belongs to the change, 30 days after it was asked for. The address that works has no such day.
+    assert.deepEqual([body.forward.changing_to.gives_up_at, 'gives_up_at' in body.forward], [body.forward.changing_to.since + 30 * 86400000, false]);
     const kept = await rowOf(w.env);
     assert.deepEqual([kept.address, kept.inbox, kept.state, kept.rule_id, kept.created_at, kept.on_at], [HELLO, INBOX, 'on', was.rule_id, was.created_at, was.on_at], 'the row that works is as it was');
     assert.ok(kept.want_inbox_id && kept.want_asked_at && kept.want_since);
