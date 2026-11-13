@@ -8,6 +8,29 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The owner of a site whose files Kiln keeps can take the files along
+  without writing to anyone (the service's part).** The service has a new
+  answer for the dashboard, `GET /cloud/sites/files?site=`: GitHub's own
+  short-lived link to one zip of the site's files, and a name for the file.
+  It works with editing switched off. It is there once the site has been paid
+  for; before that the answer says "You can download this site's files once
+  the site has been paid for. Subscribe on the site's row first." Where
+  billing is not set up on a service at all, the download is open. The
+  operator gets one line each time, and the link itself is never logged.
+- **The dashboard is told when the file of a domain's records can be
+  downloaded.** What the service says about a site's domain now carries
+  `has_records: true` whenever Kiln still holds the domain's zone, also for a
+  domain that was put away when hosting ended, so the download can be offered
+  at the moment a person moving away needs it.
+- **The emails about a site coming down fit a site whose files Kiln keeps,
+  and say what becomes of a domain of the site's own.** Both emails, the line
+  about hosting in the two free-trial emails, and the sentence on a site that
+  was taken down used to speak of "your own GitHub repository" to people who
+  have never seen one. They now say "Kiln keeps your site's files", and the
+  two emails add that the files can be downloaded from the site's row. For a
+  site that is live at its own domain, the emails add that the domain stops
+  showing the site, that email at the domain keeps working, and that the
+  three steps for moving are under Moving away on the site's row.
 - **The service can tell the dashboard which repositories Kiln can reach for
   the person who is signed in.** On the plan where a site lives in your own
   GitHub repository, the dashboard had no way to know whether Kiln's GitHub

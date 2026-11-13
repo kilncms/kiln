@@ -375,3 +375,70 @@ test('a paid, hosted site with no day on record: its owner is not written to, an
   assert.deepEqual(await noticeEndingHosting(env2, now), { sent: 0, undated: 1 });
   assert.equal(mail2.out.length, 0);
 });
+
+// ─── Leaving: where the files are, and what becomes of a domain of the site's own ───
+import { saveDomain as saveDomainRow } from '../worker/domain.js';
+
+const KEPT_FILES_LINE = "Kiln keeps your site's files. You can download them from the site's row in your dashboard at any time.";
+const atDomain = (d) => `Your site is at ${d}. When the site comes down, ${d} stops showing it, and email at ${d} keeps working. If you would rather move, press Moving away on the site's row in your dashboard for the three steps.`;
+
+test('leaving: both emails about a site coming down say where a kept site\'s files are, and what becomes of a domain of its own', () => {
+  const about = { origin: 'https://oakbakery.test', plan: 'managed', repo: 'kiln-sites/oak-bakery-1a2b3c4d', endsAt: Date.UTC(2026, 11, 1), dashboard: DASH };
+  for (const make of [editingStoppedMail, hostingEndingMail]) {
+    const own = make(about).text;   // a site in its owner's own repository, with no domain of its own: as it was
+    assert.match(own, /your own GitHub repository \(kiln-sites\/oak-bakery-1a2b3c4d\)/);
+    assert.ok(!own.includes(KEPT_FILES_LINE) && !own.includes('Your site is at'));
+    const kept = make({ ...about, kept: true }).text;
+    assert.ok(kept.includes(KEPT_FILES_LINE));
+    assert.doesNotMatch(kept, /GitHub|kiln-sites|Your site is at/);
+    const both = make({ ...about, kept: true, domain: 'oakbakery.test' });
+    assert.ok(both.text.includes(KEPT_FILES_LINE) && both.text.includes(atDomain('oakbakery.test')));
+    assert.ok(both.html.includes('press Moving away on the site'));
+    assert.doesNotMatch(both.text, /\u2014|\brepo\b|five steps/);
+    assert.ok(make({ ...about, domain: 'oakbakery.test' }).text.includes(atDomain('oakbakery.test')), 'a site in its own repository at its own domain');
+  }
+  assert.ok(editingStoppedMail(about).text.includes('If you would rather move the site to another host, you can do that at any time.'));
+  assert.ok(!editingStoppedMail({ ...about, domain: 'oakbakery.test' }).text.includes('If you would rather move the site to another host'), 'moving is said once, with the steps');
+  assert.ok(hostingEndingMail({ ...about, kept: true }).text.includes(`Nothing is lost. ${KEPT_FILES_LINE} You can subscribe later and put the site back up, or move it to another host.`));
+});
+
+test('leaving: the free-trial emails say of a hosted site Kiln keeps the files of that Kiln keeps them, not "your repository"', () => {
+  const about = { origin: 'https://oak.example', plan: 'managed', endsAt: Date.UTC(2026, 11, 1), dashboard: DASH };
+  const KEPT = "comes down. Kiln keeps your site's files, and subscribing puts the site back up.";
+  const OWN = 'comes down. Your repository keeps every file, and subscribing puts the site back up.';
+  for (const make of [trialEndingMail, trialEndedMail]) {
+    assert.ok(make(about).text.includes(OWN));
+    const kept = make({ ...about, kept: true }).text;
+    assert.ok(kept.includes(KEPT) && !kept.includes('Your repository'));
+    assert.ok(make({ ...about, kept: true, domain: 'oakbakery.test' }).text.includes(atDomain('oakbakery.test')));
+    assert.ok(!make({ ...about, plan: 'cloud', kept: true, domain: 'oakbakery.test' }).text.includes('Your site is at'), 'only where Kiln hosts the site');
+  }
+});
+
+test('leaving: the email when editing stops is worded for a kept site that is live at its own domain, and other sites read as before', { skip: d1Skip }, async () => {
+  const mail = box();
+  const env = cloud(mail, HOSTS);
+  const now = Date.now();
+  hosted(env, 'oak', { until: now - 60e3, origin: 'https://oakbakery.test', repo: 'kiln-sites/oak-1a2b3c4d' });
+  env.kiln_cloud.exec("UPDATE sites SET kept = 1 WHERE id = 'oak'");
+  await saveDomainRow(env, 'oak', { name: 'oakbakery.test', zone_id: 'zone-1', state: 'live', ns1: 'ada.ns.cloudflare.com', ns2: 'bob.ns.cloudflare.com' });
+  hosted(env, 'club', { until: now - 60e3 });
+  hosted(env, 'waits', { until: now - 60e3 });   // its domain is not live yet: nothing is said of it
+  await saveDomainRow(env, 'waits', { name: 'waits.test', zone_id: 'zone-2', state: 'waiting', ns1: 'ada.ns.cloudflare.com', ns2: 'bob.ns.cloudflare.com' });
+  assert.deepEqual(await noticeEndingHosting(env, now), { sent: 3, undated: 0 });
+  const of = (host) => JSON.stringify(mail.out.find(m => m && m.subject && m.subject.includes(host)));
+  assert.ok(of('oakbakery.test').includes(KEPT_FILES_LINE));
+  assert.ok(of('oakbakery.test').includes(atDomain('oakbakery.test')));
+  assert.doesNotMatch(of('oakbakery.test'), /kiln-sites|GitHub repository/);
+  assert.match(of('club.example'), /your own GitHub repository \(ada\/club\)/);
+  assert.doesNotMatch(of('club.example'), /Your site is at|Kiln keeps your site/);
+  assert.doesNotMatch(of('waits.example'), /Your site is at/);
+});
+
+test('leaving: a site Kiln took down says "Kiln keeps your site\'s files" to an owner who has never seen a repository', async () => {
+  const { hostingSentence } = await import('../worker/hosting.js');
+  assert.match(hostingSentence('trial_ended', { kept: true }), /ran out\. Kiln keeps your site's files\. Now that the site is subscribed, put it up again\.$/);
+  assert.match(hostingSentence('plan_ended', { kept: true }), /its plan ended\. Kiln keeps your site's files\. To put the site back, subscribe again/);
+  assert.match(hostingSentence('trial_ended'), /Your repository is untouched\./);
+  assert.match(hostingSentence('plan_ended'), /Your repository still has everything\./);
+});

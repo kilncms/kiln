@@ -101,7 +101,13 @@ function message(subject, paragraphs, why) {
 }
 
 // What a trial that ends means for a site Kiln hosts (cloud.js: HOSTING_AFTER_TRIAL_DAYS).
-const HOSTED_AFTER_TRIAL = 'If Kiln hosts the site, it stays up at its temporary address for three more days and then comes down. Your repository keeps every file, and subscribing puts the site back up.';
+// `kept`: Kiln keeps the site's files (keeps.js), and its owner has never seen a repository.
+const hostedAfterTrial = (kept) => `If Kiln hosts the site, it stays up at its temporary address for three more days and then comes down. ${kept ? "Kiln keeps your site's files" : 'Your repository keeps every file'}, and subscribing puts the site back up.`;
+
+// Where the files of a site are that Kiln keeps the files of, in an email about a site that was paid for.
+const KEPT_FILES = "Kiln keeps your site's files. You can download them from the site's row in your dashboard at any time.";
+// One more paragraph for a site that is live at a domain of its own: what becomes of the domain, and where the steps for moving are.
+const liveAtDomain = (domain) => `Your site is at ${domain}. When the site comes down, ${domain} stops showing it, and email at ${domain} keeps working. If you would rather move, press Moving away on the site's row in your dashboard for the three steps.`;
 
 const whyLine = (host) => `You are getting this because ${host} was added to Kiln Cloud with this email address. Reply to this email to reach a person.`;
 
@@ -205,7 +211,7 @@ export function copyFailedMail({ address, why, next, again = true, dashboard }) 
   ], `You are getting this because a copy of ${shown} was asked for on Kiln Cloud with this email address. Reply to this email to reach a person.`);
 }
 
-export function trialEndingMail({ origin, plan, endsAt, dashboard }) {
+export function trialEndingMail({ origin, plan, endsAt, dashboard, kept = false, domain = null }) {
   const host = hostOf(origin), day = dayWords(endsAt);
   return message(`The Kiln free trial for ${host} ends on ${day}`, [
     'Hello,',
@@ -213,18 +219,18 @@ export function trialEndingMail({ origin, plan, endsAt, dashboard }) {
     `To keep editing after that, press Subscribe on the site's row in your dashboard before then. ${planOf(plan)} is ${priceOf(plan)} a month for the site, and you can cancel any time.`,
     dashboard,
     `If you do nothing, editing switches off on ${day}. Your site, its files and everything already published stay exactly as they are, and subscribing later turns editing back on.`,
-    ...(plan === 'managed' ? [HOSTED_AFTER_TRIAL] : []),
+    ...(plan === 'managed' ? [hostedAfterTrial(kept), ...(domain ? [liveAtDomain(domain)] : [])] : []),
   ], whyLine(host));
 }
 
 /** Sent once, when a free trial has run out and nobody subscribed. */
-export function trialEndedMail({ origin, plan, dashboard }) {
+export function trialEndedMail({ origin, plan, dashboard, kept = false, domain = null }) {
   const host = hostOf(origin);
   return message(`The Kiln free trial for ${host} has ended`, [
     'Hello,',
     `The free trial for ${host} has ended, so editing through Kiln is switched off for now.`,
     'Your site, its files and everything already published are untouched. Nothing was charged, and nothing will be.',
-    ...(plan === 'managed' ? [HOSTED_AFTER_TRIAL] : []),
+    ...(plan === 'managed' ? [hostedAfterTrial(kept), ...(domain ? [liveAtDomain(domain)] : [])] : []),
     `To turn editing back on, press Subscribe on the site's row in your dashboard. ${planOf(plan)} is ${priceOf(plan)} a month for the site. Editing comes back as soon as the payment is confirmed.`,
     dashboard,
     'If Kiln was not right for the site, there is nothing to cancel and nothing to remove. We would be glad to hear what was missing: reply to this email.',
@@ -241,9 +247,11 @@ const takeUpAgain = (plan, pastDue, before = '') => (pastDue
 /**
  * Sent once when a site Kiln hosts, and that was paid for, may not be edited
  * any more. `endsAt`: when the site comes down (ms). `pastDue`: a payment
- * failed, as against a plan that was cancelled and has run out.
+ * failed, as against a plan that was cancelled and has run out. `kept`:
+ * Kiln keeps the site's files. `domain`: the domain of its own the site is
+ * live at, if it is.
  */
-export function editingStoppedMail({ origin, plan, repo, endsAt, pastDue = false, dashboard }) {
+export function editingStoppedMail({ origin, plan, repo, endsAt, pastDue = false, dashboard, kept = false, domain = null }) {
   const host = hostOf(origin), day = dayWords(endsAt);
   return message(`Editing is off for ${host}, and the site stays online until ${day}`, [
     'Hello,',
@@ -253,12 +261,14 @@ export function editingStoppedMail({ origin, plan, repo, endsAt, pastDue = false
     `Kiln still hosts the site. It stays online at its address until ${day}, and then it comes down.`,
     `To turn editing back on and keep the site up, ${takeUpAgain(plan, pastDue)} Editing comes back as soon as the payment is confirmed.`,
     dashboard,
-    `Everything on the site is still in your own GitHub repository${repo ? ` (${repo})` : ''}. If you would rather move the site to another host, you can do that at any time.`,
+    // With a domain of its own, the last paragraph says how to move, so this one does not say it a second time.
+    `${kept ? KEPT_FILES : `Everything on the site is still in your own GitHub repository${repo ? ` (${repo})` : ''}.`}${domain ? '' : ' If you would rather move the site to another host, you can do that at any time.'}`,
+    ...(domain ? [liveAtDomain(domain)] : []),
   ], whyLine(host));
 }
 
 /** Sent once, seven days before a site Kiln hosts comes down because its paid plan has ended. */
-export function hostingEndingMail({ origin, plan, repo, endsAt, pastDue = false, dashboard }) {
+export function hostingEndingMail({ origin, plan, repo, endsAt, pastDue = false, dashboard, kept = false, domain = null }) {
   const host = hostOf(origin), day = dayWords(endsAt);
   return message(`${host} comes down on ${day}`, [
     'Hello,',
@@ -267,7 +277,10 @@ export function hostingEndingMail({ origin, plan, repo, endsAt, pastDue = false,
       : `Kiln hosts ${host}, and its plan has ended. The site comes down on ${day}.`,
     `To keep it up, ${takeUpAgain(plan, pastDue, ' before then')} Editing comes back too, as soon as the payment is confirmed.`,
     dashboard,
-    `If you do nothing, the site goes offline on ${day}. Nothing is lost. Every file stays in your own GitHub repository${repo ? ` (${repo})` : ''}, so you can subscribe later and put the site back up, or move it to another host.`,
+    kept
+      ? `If you do nothing, the site goes offline on ${day}. Nothing is lost. ${KEPT_FILES} You can subscribe later and put the site back up, or move it to another host.`
+      : `If you do nothing, the site goes offline on ${day}. Nothing is lost. Every file stays in your own GitHub repository${repo ? ` (${repo})` : ''}, so you can subscribe later and put the site back up, or move it to another host.`,
+    ...(domain ? [liveAtDomain(domain)] : []),
   ], whyLine(host));
 }
 

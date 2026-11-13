@@ -393,16 +393,21 @@ export async function removeSite(env, name) {
   catch (e) { if (e instanceof HostingError && e.code === 'cloudflare_missing') return true; throw e; }
 }
 
-/** The sentence a person reads for each way hosting can stop without the site going up. */
-export function hostingSentence(code, { repo = 'the repository', planEnded = null } = {}) {
+/**
+ * The sentence a person reads for each way hosting can stop without the site
+ * going up. `kept`: Kiln keeps the site's files (keeps.js), and its owner has
+ * never seen a repository, so a site that was taken down is told where its
+ * files are in those words.
+ */
+export function hostingSentence(code, { repo = 'the repository', planEnded = null, kept = false } = {}) {
   switch (code) {
     case 'no_home': return `Kiln found no home page (a file named index.html) at the top of ${repo}, so there is nothing to show at the site's address yet. Add one, and Kiln puts the site up by itself.`;
     case 'empty': return `${repo} has no files yet. Put the site's pages in it, and Kiln puts the site up by itself.`;
     case 'too_big': return `This site has more files than Kiln's hosting takes on by itself. Write to info@kilncms.com and we will look at it with you.`;
     case 'no_access': return 'The Kiln app is not installed on that repository yet, or it was removed, so Kiln cannot read the site\'s files.';
     case 'not_set_up': return 'Hosting is not switched on for this service yet.';
-    case 'trial_ended': return 'Kiln took this site down from its hosting because the free days ran out. Your repository is untouched. Now that the site is subscribed, put it up again.';
-    case 'plan_ended': return `Kiln took this site down from its hosting because its plan ended${Number(planEnded) ? ` on ${dayWords(Number(planEnded))}` : ''}. Your repository still has everything. To put the site back, subscribe again and then press the button to put it up.`;
+    case 'trial_ended': return `Kiln took this site down from its hosting because the free days ran out. ${kept ? "Kiln keeps your site's files." : 'Your repository is untouched.'} Now that the site is subscribed, put it up again.`;
+    case 'plan_ended': return `Kiln took this site down from its hosting because its plan ended${Number(planEnded) ? ` on ${dayWords(Number(planEnded))}` : ''}. ${kept ? "Kiln keeps your site's files." : 'Your repository still has everything.'} To put the site back, subscribe again and then press the button to put it up.`;
     case 'github': return 'GitHub did not answer just now. The site is as it was. Kiln tries again by itself in a few minutes.';
     default: return 'Kiln could not put the new files up just now. The site is as it was. Kiln tries again by itself in a few minutes.';
   }

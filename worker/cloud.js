@@ -956,7 +956,9 @@ export const liveDomainLeftNote = (name) => `The site was live at ${name}, so Ki
 /** What the dashboard is shown of a hosted site, with the day it comes down when it is on its way down. `site` is its whole row. */
 async function shownHosting(env, row, site, now = Date.now()) {
   const down = row && row.state !== 'ended' && row.state !== 'removing' ? await hostingDownAt(env, site, { now, deployed: !!row.deployed_at }) : null;
-  return publicHosting(row, { repo: site.repo, endsAt: down?.at || null, planEnded: Number(site.access_until) || null });
+  // The sentence for a site that was taken down says where its files are, so only such a site is asked about.
+  const kept = !!row && (row.reason === 'trial_ended' || row.reason === 'plan_ended') && !!(await keptSite(env, site.id));
+  return publicHosting(row, { repo: site.repo, endsAt: down?.at || null, planEnded: Number(site.access_until) || null, kept });
 }
 // ─── A hosted site on its owner's own domain (domain.js) ─────────────────────
 
@@ -1446,16 +1448,24 @@ const MAILS_PER_RUN = 25;   // a run writes to this many people at most; the res
  *
  * Never throws: a failure leaves a line, and the sweep goes on.
  */
+// What an email about a site that comes down says of its files and of its own
+// domain: whether Kiln keeps the files (migration 0008) and the domain the
+// site is live at (0006). A database those have not reached is asked without.
+const LEAVING_COLUMNS = ', s.kept, d.name AS domain';
+const LEAVING_JOIN = " LEFT JOIN domains d ON d.site_id = s.id AND d.state = 'live'";
+
 export async function noticeEndingHosting(env, now = Date.now()) {
   const out = { sent: 0, undated: 0 };
   if (!env.kiln_cloud || !hostingOn(env)) return out;
   let rows = [];
   try {
-    rows = (await env.kiln_cloud.prepare(
-      `SELECT s.id, s.repo, s.origin, s.plan, s.status, s.access_until, s.created_at, s.ls_subscription_id, h.deployed_at, ${await addressSql(env)}
-       FROM hosting h JOIN sites s ON s.id = h.site_id LEFT JOIN accounts a ON a.id = s.account_id
+    const address = await addressSql(env);
+    const ask = async (more, join) => env.kiln_cloud.prepare(
+      `SELECT s.id, s.repo, s.origin, s.plan, s.status, s.access_until, s.created_at, s.ls_subscription_id, h.deployed_at, ${address}${more}
+       FROM hosting h JOIN sites s ON s.id = h.site_id LEFT JOIN accounts a ON a.id = s.account_id${join}
        WHERE s.ls_subscription_id IS NOT NULL AND s.status IN ('canceled','past_due') AND h.state NOT IN ('removing','ended')
-       ORDER BY s.access_until`).all())?.results || [];
+       ORDER BY s.access_until`).all();
+    rows = (await ask(LEAVING_COLUMNS, LEAVING_JOIN).catch(() => ask('', '')))?.results || [];
   } catch { return out; }   // a database migration 0005 (or 0002) has not reached: nothing to say
   try {
     const mailOn = customerMailOn(env);
@@ -1467,7 +1477,7 @@ export async function noticeEndingHosting(env, now = Date.now()) {
       if (!end) { undated.push(r); continue; }
       // Not for a site that never went up: nothing of it is online.
       if (!mailOn || out.sent >= MAILS_PER_RUN || !r.deployed_at || !mailAddress(r.email)) continue;
-      const about = { origin: r.origin, plan: r.plan, repo: r.repo, endsAt: end, pastDue: r.status === 'past_due', dashboard };
+      const about = { origin: r.origin, plan: r.plan, repo: r.repo, endsAt: end, pastDue: r.status === 'past_due', dashboard, kept: !!r.kept, domain: r.domain || null };
       let res;
       if (now >= end - HOSTING_NOTICE_DAYS * 86400 * 1000) {
         // The last notice names the day the site really comes down: its own
@@ -1516,14 +1526,16 @@ export async function remindEndingTrials(env, now = Date.now()) {
   const day = 86400 * 1000;
   let sent = 0;
   try {
-    const rows = await env.kiln_cloud.prepare(
-      `SELECT s.id, s.origin, s.plan, s.created_at, ${await addressSql(env)} FROM sites s JOIN accounts a ON a.id = s.account_id
+    const address = await addressSql(env);
+    const ask = async (more, join) => env.kiln_cloud.prepare(
+      `SELECT s.id, s.origin, s.plan, s.created_at, ${address}${more} FROM sites s JOIN accounts a ON a.id = s.account_id${join}
        WHERE s.status = 'trialing' AND s.ls_subscription_id IS NULL AND s.created_at <= ? AND s.created_at > ?
        ORDER BY s.created_at LIMIT ${MAILS_PER_RUN}`
     ).bind(now - (TRIAL_GRACE_DAYS - TRIAL_NOTICE_DAYS) * day, now - TRIAL_GRACE_DAYS * day).all();
+    const rows = await ask(LEAVING_COLUMNS, LEAVING_JOIN).catch(() => ask('', ''));
     for (const r of rows?.results || []) {
       if (!mailAddress(r.email)) continue;
-      const res = await sendOnce(env, `trial-soon:${r.id}`, r.email, trialEndingMail({ origin: r.origin, plan: r.plan, endsAt: trialEndsAt(r.created_at, TRIAL_GRACE_DAYS), dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' }));
+      const res = await sendOnce(env, `trial-soon:${r.id}`, r.email, trialEndingMail({ origin: r.origin, plan: r.plan, kept: !!r.kept, domain: r.domain || null, endsAt: trialEndsAt(r.created_at, TRIAL_GRACE_DAYS), dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' }));
       if (res.ok) sent++;
     }
   } catch (e) {
@@ -1541,10 +1553,12 @@ export async function expireStaleTrials(env) {
   // transition, so the gap between the read and the write cannot double-report.
   let expiring = null;
   try {
-    expiring = await env.kiln_cloud.prepare(
-      `SELECT s.id, s.repo, s.origin, s.plan, ${await addressSql(env)} FROM sites s LEFT JOIN accounts a ON a.id = s.account_id
+    const address = await addressSql(env);
+    const ask = async (more, join) => env.kiln_cloud.prepare(
+      `SELECT s.id, s.repo, s.origin, s.plan, ${address}${more} FROM sites s LEFT JOIN accounts a ON a.id = s.account_id${join}
        WHERE s.status = 'trialing' AND s.ls_subscription_id IS NULL AND s.created_at < ?`
     ).bind(cutoff).all();
+    expiring = await ask(LEAVING_COLUMNS, LEAVING_JOIN).catch(() => ask('', ''));
   } catch { /* a reduced D1 stand-in has no .all(): expiry still proceeds, just unannounced */ }
   await env.kiln_cloud.prepare(
     "UPDATE sites SET status = 'canceled' WHERE status = 'trialing' AND ls_subscription_id IS NULL AND created_at < ?"
@@ -1554,7 +1568,7 @@ export async function expireStaleTrials(env) {
     await notifyOwner(env, `Kiln: ${rows.length} trial${rows.length === 1 ? '' : 's'} expired unpaid`, rows.map(r => `${r.repo} (${r.origin})`));
     // The owner of each is told too, once: the trial used to end in silence.
     for (const r of rows.slice(0, MAILS_PER_RUN)) {
-      if (r.id && mailAddress(r.email)) await sendOnce(env, `trial-ended:${r.id}`, r.email, trialEndedMail({ origin: r.origin, plan: r.plan, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' }));
+      if (r.id && mailAddress(r.email)) await sendOnce(env, `trial-ended:${r.id}`, r.email, trialEndedMail({ origin: r.origin, plan: r.plan, kept: !!r.kept, domain: r.domain || null, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' }));
     }
   }
 }
@@ -1752,7 +1766,7 @@ async function hostCopied(env, tools, { id, accountId, worker }) {
 async function openKeptEditor(env, tools, { site, accountId, who, at = null, returnTo = '/kiln' }) {
   if (!siteHasAccess(site)) return { error: EDITOR_PLAN_ENDED, code: 'plan_ended', status: 403 };
   const row = hostingOn(env) ? await hostingRow(env, site.id) : null;
-  const hosting = row ? publicHosting(row, { repo: site.repo }) : null;
+  const hosting = row ? publicHosting(row, { repo: site.repo, kept: true }) : null;
   const up = !!(hosting && hosting.url && (hosting.state === 'live' || hosting.serving));
   // The session goes only to an address that is this site for certain: the
   // one on record, or the temporary one while a domain of its own still
@@ -2695,20 +2709,6 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     } });
   }
 
-  // Open the editor of a site whose files Kiln keeps. Its owner has no GitHub
-  // account to sign in with at the site, so the dashboard asks here, and the
-  // answer is the site's address with an owner session in its fragment: the
-  // very address a GitHub sign-in sends an owner to (index.js makes both).
-  // The session carries no GitHub token and reaches that one repository only.
-  if (path === '/cloud/sites/editor' && request.method === 'POST') {
-    const asked = await ownedSite(request, env, url, sess, {}, { needToken: false, needAccess: false });
-    if (asked.response) return asked.response;
-    const { site } = asked;
-    const kept = await keptSite(env, site.id);
-    if (!kept || kept.account_id !== sess.account_id) return json({ error: EDITOR_NOT_KEPT, code: 'not_kept' }, 403);
-    const opened = await openKeptEditor(env, tools, { site, accountId: sess.account_id, who: () => editorPerson(env, sess) });
-    if (!opened.url) return json({ error: opened.error, code: opened.code }, opened.status);
-    return json({ ok: true, url: opened.url });
   // The files of a site Kiln keeps, for an owner who takes the site
   // elsewhere: the answer is GitHub's own short-lived link to one zip of the
   // repository, and a name for the file. With editing switched off too. Only
@@ -2736,6 +2736,20 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     return json({ ok: true, url: link.url, name: keptFilesName({ name: more?.name, repo: site.repo }) }, 200, { 'Cache-Control': 'no-store' });
   }
 
+  // Open the editor of a site whose files Kiln keeps. Its owner has no GitHub
+  // account to sign in with at the site, so the dashboard asks here, and the
+  // answer is the site's address with an owner session in its fragment: the
+  // very address a GitHub sign-in sends an owner to (index.js makes both).
+  // The session carries no GitHub token and reaches that one repository only.
+  if (path === '/cloud/sites/editor' && request.method === 'POST') {
+    const asked = await ownedSite(request, env, url, sess, {}, { needToken: false, needAccess: false });
+    if (asked.response) return asked.response;
+    const { site } = asked;
+    const kept = await keptSite(env, site.id);
+    if (!kept || kept.account_id !== sess.account_id) return json({ error: EDITOR_NOT_KEPT, code: 'not_kept' }, 403);
+    const opened = await openKeptEditor(env, tools, { site, accountId: sess.account_id, who: () => editorPerson(env, sess) });
+    if (!opened.url) return json({ error: opened.error, code: opened.code }, opened.status);
+    return json({ ok: true, url: opened.url });
   }
 
   if (path === '/cloud/sites/remove' && request.method === 'POST') {
@@ -2834,10 +2848,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // its own domain is not pointed there, so that address is the one to look
     // at. When the site is not online, the list says why and asks no address.
     const row = hostingOn(env) ? await hostingRow(env, site.id) : null;
-    const hosting = row ? publicHosting(row, { repo: site.repo, planEnded: Number(site.access_until) || null }) : null;
-    const up = !!(hosting && hosting.url && (hosting.state === 'live' || hosting.serving));
     // A site whose files Kiln keeps: its owner has never seen a repository, and the list is worded for them (sitecheck.js).
     const isKept = !!(await keptSite(env, site.id));
+    const hosting = row ? publicHosting(row, { repo: site.repo, planEnded: Number(site.access_until) || null, kept: isKept }) : null;
+    const up = !!(hosting && hosting.url && (hosting.state === 'live' || hosting.serving));
     const down = hosting && !up
       ? hosting.error || (hosting.state === 'ended' ? 'Kiln took this site down from its hosting.' : 'Kiln is putting this site up now. Check again in a minute.')
       : isKept && !up ? CHECK_KEPT_NOT_UP : null;
