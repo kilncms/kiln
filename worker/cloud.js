@@ -45,7 +45,7 @@ import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSen
 import {
   domainsOn, domainsReady, cleanDomain, lookUp, whatStops, sellerHelp, prepareDomain, domainStatus, removeWaitingDomain, exportRecords,
   siteAnswers, certificateReady, redirectToOne, alwaysHttps, LIMITS as DOMAIN_LIMITS,
-  domainSentence, publicDomain, publicLook, domainRow, domainForName, domainsForAccount, saveDomain, forgetDomain, DomainError,
+  domainSentence, publicDomain, publicLook, domainRow, domainForName, domainsForAccount, saveDomain, forgetDomain, DomainError, TAKING_HOLD,
 } from './domain.js';
 
 const GH = 'https://api.github.com';
@@ -667,6 +667,11 @@ async function setAddressOnRecord(env, s, address, name) {
  * It never throws: what goes wrong is logged, and the answer says whether the
  * domain is live now. `row` is the site's row in `domains`; of `site` only
  * the id is used, and the rest is read afresh.
+ *
+ * While the certificate or the site is waited for, the answer also says which
+ * (`waitingFor`: 'certificate' or 'site_answering'), and the row's `reason`
+ * becomes TAKING_HOLD, so that nobody is promised a day on which the set-up
+ * is put away (domain.js publicDomain): the zone answers for the domain now.
  */
 export async function domainTookHold(env, { site, row, now = Date.now() } = {}) {
   let live = false;
@@ -680,6 +685,11 @@ export async function domainTookHold(env, { site, row, now = Date.now() } = {}) 
     // The button and the five-minute job can both get here: what the other one finished is not done twice.
     const fresh = await domainRow(env, s.id);
     if (fresh && fresh.state === 'live' && fresh.zone_id === row.zone_id) return { live: true };
+    const holding = async (waitingFor) => {
+      try { if ((fresh || row).reason !== TAKING_HOLD) await saveDomain(env, s.id, { reason: TAKING_HOLD }); }
+      catch (e) { console.warn(JSON.stringify({ evt: 'domain_taking_hold_not_written', repo: s.repo, name, detail: why(e) })); }
+      return { live, waitingFor };
+    };
     // The certificate first: this service can reach the site inside
     // Cloudflare's network before a browser can (domain.js certificateReady),
     // so the site answering here does not mean it answers a visitor.
@@ -688,11 +698,11 @@ export async function domainTookHold(env, { site, row, now = Date.now() } = {}) 
     catch (e) { console.warn(JSON.stringify({ evt: 'domain_certificate_not_asked', repo: s.repo, name, detail: String(e?.detail || e?.message || e).slice(0, 200) })); }
     if (!secure) {
       console.log(JSON.stringify({ evt: 'domain_certificate_not_ready', repo: s.repo, name }));
-      return { live };
+      return await holding('certificate');
     }
     if (!(await siteAnswers(name))) {
       console.log(JSON.stringify({ evt: 'domain_not_answering_yet', repo: s.repo, name }));
-      return { live };
+      return await holding('site_answering');
     }
     if (!(await saveDomain(env, s.id, { state: 'live', reason: null, live_at: now, checked_at: now }))) return { live };
     live = true;
@@ -715,6 +725,41 @@ export async function domainTookHold(env, { site, row, now = Date.now() } = {}) 
 const DOMAINS_PER_RUN = 10;                         // the five-minute job looks at this many domains at most; the rest wait their turn
 const DOMAIN_REMIND_AFTER_DAYS = 14;                // a set-up that has waited this long gets one reminder
 const DOMAIN_LIVE_LOOK_EVERY_MS = 60 * 60 * 1000;   // a live domain is looked at this often at most
+const DOMAIN_STUCK_AFTER_MS = 24 * 60 * 60 * 1000;  // name servers that changed this long ago, with the domain still not live: somebody must look
+
+/**
+ * A domain whose name servers changed more than a day ago and which is still
+ * not live. A certificate takes minutes, so by now something is wrong that
+ * waiting will not mend. One line for the operator's alerting and one note
+ * to the operator, once for one set-up: the marker `domainstuck:<site id>:
+ * <zone id>:<when the set-up began>` is written to KV before either goes and
+ * never runs out, so a domain that could not be marked is not told about (it
+ * would be told every five minutes otherwise). The owner is not written to,
+ * and nothing is removed: the zone answers for the domain. Returns true when
+ * the line was written. Never throws.
+ */
+async function domainStuck(env, s, row, { waitingFor, since, now }) {
+  try {
+    const marker = `domainstuck:${s.id}:${oneSetUp(row)}`;
+    if (await env.KILN.get(marker)) return false;
+    await env.KILN.put(marker, String(now));
+    const name = row.name;
+    const hours = Math.floor((now - since) / (60 * 60 * 1000));
+    console.warn(JSON.stringify({ evt: 'domain_stuck', repo: s.repo, name, waiting_for: waitingFor, hours }));
+    await notifyOwner(env, `Kiln: ${name} is still not live ${hours} hours after its name servers changed`, [
+      `Repository: ${s.repo}`,
+      `Domain: ${name}`,
+      waitingFor === 'certificate'
+        ? `The name servers of ${name} have pointed at Kiln's hosting for ${hours} hours, and Cloudflare still has no working certificate for ${name} and www.${name}.`
+        : `The name servers of ${name} have pointed at Kiln's hosting for ${hours} hours and the certificate is ready, but https://${name}/ does not answer with the site.`,
+      waitingFor === 'certificate'
+        ? `Please open ${name} in the hosting account at Cloudflare, look at the edge certificates under SSL/TLS, and see why none has been issued.`
+        : `Please open https://${name}/ in a browser, and check in the hosting account at Cloudflare that ${name} and www.${name} are attached to the site's Worker.`,
+      'Kiln keeps trying every five minutes and makes the domain live by itself once this is mended. Nothing was removed, and the owner has not been written to. You are told once for this domain.',
+    ]);
+    return true;
+  } catch { return false; }   // not marked, so not told: the next run tries again
+}
 
 /**
  * The five-minute job for domains. At most DOMAINS_PER_RUN a run, the one
@@ -724,6 +769,10 @@ const DOMAIN_LIVE_LOOK_EVERY_MS = 60 * 60 * 1000;   // a live domain is looked a
  * next is tried. Cloudflare is asked where each zone stands (domainStatus).
  *
  * A domain that waits:
+ *   - the zone has been active for more than DOMAIN_STUCK_AFTER_MS (by the
+ *     zone's own `activated_on`, or since the set-up began where that is
+ *     later) and the domain is still not live: the operator is told, once
+ *     (domainStuck). The row goes on waiting and nothing is removed;
  *   - the zone is active: domainTookHold makes it live, or leaves it waiting
  *     while the site does not answer there yet;
  *   - the zone is gone, or its name servers were changed and changed away
@@ -745,10 +794,10 @@ const DOMAIN_LIVE_LOOK_EVERY_MS = 60 * 60 * 1000;   // a live domain is looked a
  * goes back to the temporary address Kiln's hosting gave it, and the owner
  * is written to. Nothing is deleted: the zone may still answer for email.
  *
- * Returns { looked, live, reminded, putAway, moved, failed }.
+ * Returns { looked, live, reminded, putAway, moved, stuck, failed }.
  */
 export async function sweepDomains(env, { now = Date.now() } = {}) {
-  const out = { looked: 0, live: 0, reminded: 0, putAway: 0, moved: 0, failed: 0 };
+  const out = { looked: 0, live: 0, reminded: 0, putAway: 0, moved: 0, stuck: 0, failed: 0 };
   let rows = [];
   try {
     if (!env.kiln_cloud || !(await domainsAvailable(env))) return out;
@@ -783,8 +832,12 @@ export async function sweepDomains(env, { now = Date.now() } = {}) {
       }
 
       if (status === 'active') {
-        if ((await domainTookHold(env, { site: s, row: r, now })).live) out.live++;
-        else await looked();
+        const took = await domainTookHold(env, { site: s, row: r, now });
+        if (took.live) { out.live++; continue; }
+        await looked();
+        // Counted from the later of the two: a set-up that took up a zone which was active already has had only its own time.
+        const since = Math.max(activatedOn || 0, Number(r.created_at) || 0);
+        if (took.waitingFor && activatedOn && now - since > DOMAIN_STUCK_AFTER_MS && await domainStuck(env, s, r, { waitingFor: took.waitingFor, since, now })) out.stuck++;
         continue;
       }
       const putAway = async (reason) => {
@@ -798,6 +851,8 @@ export async function sweepDomains(env, { now = Date.now() } = {}) {
       // was changed away again. Cloudflare drops such a zone after about a week, and then it is put away as gone.
       if (status === 'moved' && activatedOn && activatedOn < Number(r.created_at || 0)) { await looked(); continue; }
       if (status === 'gone' || status === 'moved') { await putAway(status); continue; }
+      // Cloudflare says the zone waits after all: the day the set-up is put away is promised again.
+      if (r.reason === TAKING_HOLD) await saveDomain(env, s.id, { reason: null });
 
       const waited = now - Number(r.created_at || now);
       if (waited >= DOMAIN_LIMITS.waitDays * day) {

@@ -42,6 +42,11 @@ const GENERAL_HELP = 'https://developers.cloudflare.com/dns/nameservers/update-n
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CLOUDFLARE_SELLER = 1910;                              // the number Cloudflare sells domains under (its IANA id)
 
+// What a waiting row's `reason` holds once Cloudflare has seen the name servers
+// change and the site is not live at the domain yet (cloud.js domainTookHold
+// writes it). It is not a fault and has no sentence: see publicDomain.
+export const TAKING_HOLD = 'taking_hold';
+
 export const LIMITS = {
   waitDays: 25,        // a set-up nobody finished is put away after this (Cloudflare drops a waiting domain at 28)
   lookMs: 8000,        // one question to the registry or the public DNS
@@ -833,13 +838,19 @@ function publicSeller(seller) {
  * What the dashboard is told about a site's domain: { name, state,
  * name_servers, old_name_servers, seller, records, since, checked_at,
  * live_at, gives_up_at } and `error`, the sentence for a set-up that stopped
- * short. `gives_up_at` is the moment a set-up that waits is put away. With
+ * short. `gives_up_at` is the moment a set-up that waits is put away. A
+ * set-up whose name servers have changed, and which is not live yet, is
+ * never put away: the zone answers for the domain. Such a row (it waits, and
+ * its `reason` is TAKING_HOLD) has `gives_up_at` null and `taking_hold: true`,
+ * so that a page can say the name servers have changed and Kiln is finishing
+ * the set-up, in place of a day that may be past. With
  * `records: false` the kept records are left out, for the list of sites.
  * Never the zone's id: it is the handle the whole domain is moved by, and no
  * page needs it.
  */
 export function publicDomain(row, { records = true } = {}) {
   if (!row) return null;
+  const takingHold = row.state === 'waiting' && row.reason === TAKING_HOLD;
   // A list that cannot be read is shown as empty.
   const list = (text) => { try { const parsed = JSON.parse(text || '[]'); return Array.isArray(parsed) ? parsed : []; } catch { return []; } };
   const seller = publicSeller({ name: row.seller, id: row.seller_id });
@@ -853,9 +864,10 @@ export function publicDomain(row, { records = true } = {}) {
     since: row.created_at || null,
     checked_at: row.checked_at || null,
     live_at: row.live_at || null,
-    gives_up_at: row.state === 'waiting' && row.created_at ? Number(row.created_at) + LIMITS.waitDays * DAY_MS : null,
+    gives_up_at: row.state === 'waiting' && !takingHold && row.created_at ? Number(row.created_at) + LIMITS.waitDays * DAY_MS : null,
+    ...(takingHold ? { taking_hold: true } : {}),
   };
-  if (row.state !== 'live' && row.reason) out.error = domainSentence(row.reason, { name: row.name, seller: seller?.name });
+  if (row.state !== 'live' && row.reason && !takingHold) out.error = domainSentence(row.reason, { name: row.name, seller: seller?.name });
   return out;
 }
 

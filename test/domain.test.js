@@ -13,7 +13,7 @@ import { fakeCloudflare, fakeLookups } from './cloudflare-fake.js';
 import { fakeD1, d1Skip } from './d1-fake.js';
 import {
   cleanDomain, lookUp, whatStops, sellerHelp, prepareDomain, domainStatus, siteAnswers, certificateReady, detachDomain, removeWaitingDomain, exportRecords,
-  domainSentence, publicDomain, domainRow, domainForName, saveDomain, recordKind, kindWords, txtWords, domainsOn, DomainError, LIMITS,
+  domainSentence, publicDomain, domainRow, domainForName, saveDomain, recordKind, kindWords, txtWords, domainsOn, DomainError, LIMITS, TAKING_HOLD,
   redirectToOne, alwaysHttps, publicLook, forgetDomain, domainsForAccount, domainsReady,
 } from '../worker/domain.js';
 
@@ -878,4 +878,16 @@ test('domain: an earlier zone that is gone gives way to a new one, a zone that i
     await assert.rejects(() => prepareDomain(f.env, { name: N, worker: WORKER, earlier: first.zoneId }), code('cloudflare'));
     assert.equal(f.cf.zones.size, 1);
   });
+});
+
+test('domain: a set-up whose name servers have changed is promised no day on which it is put away, and says that it is taking hold', () => {
+  const row = { site_id: 'site1', name: N, zone_id: 'zone-secret', state: 'waiting', reason: null, ns1: 'ada.ns.cloudflare.com', ns2: 'bob.ns.cloudflare.com', created_at: 1000, checked_at: 2000 };
+  const waits = publicDomain(row);
+  assert.equal(waits.gives_up_at, 1000 + LIMITS.waitDays * 86400000, 'a set-up that still waits for its name servers has its day');
+  assert.ok(!('taking_hold' in waits));
+  const holds = publicDomain({ ...row, reason: TAKING_HOLD });
+  assert.deepEqual({ ...waits, gives_up_at: null, taking_hold: true }, holds, 'everything else is told as before');
+  assert.ok(!('error' in holds), 'it is not a fault, and has no sentence');
+  assert.ok(!JSON.stringify(holds).includes('zone-secret'));
+  for (const state of ['live', 'put_away', 'failed']) assert.ok(!('taking_hold' in publicDomain({ ...row, state, reason: TAKING_HOLD })), `only a set-up that waits can be taking hold, not one that is ${state}`);
 });

@@ -743,7 +743,7 @@ test('own domain: once the name servers have changed and the site answers there,
     const row = await changed(w);
     const before = await originOf(w.env);
     // The certificate is not ready: nothing changes, and a line says so.
-    const lines = await hush(async () => assert.deepEqual(await took(w.env, row, 5000), { live: false }));
+    const lines = await hush(async () => assert.deepEqual(await took(w.env, row, 5000), { live: false, waitingFor: 'site_answering' }));
     assert.match(lines.join('\n'), /domain_not_answering_yet/);
     assert.equal((await domainRow(w.env, 'site1')).state, 'waiting');
     assert.equal(await originOf(w.env), before);
@@ -754,7 +754,7 @@ test('own domain: once the name servers have changed and the site answers there,
     // browser would get a failed secure connection, so it is not live yet.
     w.answers(N);
     w.cf.zoneOf(N).certificate = 'pending_validation';
-    const waiting = await hush(async () => assert.deepEqual(await took(w.env, row, 5000), { live: false }));
+    const waiting = await hush(async () => assert.deepEqual(await took(w.env, row, 5000), { live: false, waitingFor: 'certificate' }));
     assert.match(waiting.join('\n'), /domain_certificate_not_ready/);
     assert.equal((await domainRow(w.env, 'site1')).state, 'waiting');
     assert.equal(await originOf(w.env), before);
@@ -833,7 +833,7 @@ test('own domain: going live writes to nobody where the service sends no custome
 // ─── The five-minute job ──────────────────────────────────────────────────────
 
 const DAY = 86400 * 1000;
-const tally = (over = {}) => ({ looked: 0, live: 0, reminded: 0, putAway: 0, moved: 0, failed: 0, ...over });
+const tally = (over = {}) => ({ looked: 0, live: 0, reminded: 0, putAway: 0, moved: 0, stuck: 0, failed: 0, ...over });
 const sweep = async (env, now) => { let out; const lines = await hush(async () => { out = await sweepDomains(env, now ? { now } : {}); }); return { out, lines: lines.join('\n') }; };
 const where = async (env, id = 'site1') => { const r = await domainRow(env, id); return { state: r.state, reason: r.reason, checked_at: r.checked_at }; };
 
@@ -855,7 +855,7 @@ test('own domain: the five-minute job makes a domain live once its name servers 
     let run = await sweep(w.env, t + 5 * 60000);
     assert.deepEqual(run.out, tally({ looked: 1 }));
     assert.match(run.lines, /domain_not_answering_yet/);
-    assert.deepEqual(await where(w.env), { state: 'waiting', reason: null, checked_at: t + 5 * 60000 });
+    assert.deepEqual(await where(w.env), { state: 'waiting', reason: 'taking_hold', checked_at: t + 5 * 60000 }, 'it waits, and the row says the name servers have changed');
 
     // The site answers at the domain: live, at that address, and the owner is written to.
     w.answers(N);
@@ -1312,5 +1312,157 @@ test('own domain: a zone that is there and is not this site\'s own earlier one i
     assert.ok(taken);
     assert.ok(!cfAsked(v).some(c => c.startsWith('DELETE ')), 'nothing is deleted');
     assert.deepEqual([v.cf.zoneOf(N).id, v.cf.zoneOf(N).status, v.cf.workerDomains.size], [zone.id, 'pending', 2]);
+  });
+});
+
+// ─── Name servers that changed, and a domain that never goes live ─────────────
+
+const HOUR = 60 * 60 * 1000;
+const stuckLines = (run) => run.lines.split('\n').map(l => { try { return JSON.parse(l); } catch { return {}; } }).filter(l => l.evt === 'domain_stuck');
+const shownTo = async (env) => (await (await standing(env)).json()).domain;
+/** A set-up whose name servers Cloudflare saw change at `t`. Nothing answers at the domain unless the test says so. */
+async function tookHoldAt(w) {
+  await setup(w.env);
+  const zone = w.cf.zoneOf(N);
+  const t = Date.now();
+  w.cf.setStatus(N, 'active');
+  zone.activated_on = new Date(t).toISOString();
+  return { zone, t };
+}
+
+test('own domain: a domain whose name servers changed more than a day ago and whose certificate never arrives stays waiting, the operator is told once, and nobody is promised a day in the past', { skip: d1Skip }, async () => {
+  const w = world({ env: { NOTIFY_TO: 'ops@example.com' } });
+  await withFetch(w.handler, async () => {
+    const { zone, t } = await tookHoldAt(w);
+    zone.certificate = 'pending_validation';
+    w.answers(N);
+    const notes = w.notes().length;
+
+    // Twenty-three hours on: it waits, the dashboard is told the name servers have changed, and nobody is alerted.
+    let run = await sweep(w.env, t + 23 * HOUR);
+    assert.deepEqual([run.out, stuckLines(run)], [tally({ looked: 1 }), []]);
+    assert.deepEqual(await where(w.env), { state: 'waiting', reason: 'taking_hold', checked_at: t + 23 * HOUR });
+    let shown = await shownTo(w.env);
+    assert.deepEqual([shown.state, shown.gives_up_at, shown.taking_hold, shown.error], ['waiting', null, true, undefined]);
+    assert.equal(w.notes().length, notes);
+
+    // More than a day on: one line for the alerting, and one note to the operator that says what to do.
+    run = await sweep(w.env, t + 25 * HOUR);
+    assert.deepEqual(run.out, tally({ looked: 1, stuck: 1 }));
+    assert.deepEqual(stuckLines(run), [{ evt: 'domain_stuck', repo: 'ada/club', name: N, waiting_for: 'certificate', hours: 25 }]);
+    assert.equal(w.notes().length, notes + 1);
+    const note = w.notes().at(-1).raw;
+    assert.ok(note.includes(`Subject: Kiln: ${N} is still not live 25 hours after its name servers changed\r\n`));
+    for (const sentence of [
+      'Repository: ada/club', `Domain: ${N}`,
+      `The name servers of ${N} have pointed at Kiln's hosting for 25 hours, and Cloudflare still has no working certificate for ${N} and www.${N}.`,
+      `Please open ${N} in the hosting account at Cloudflare, look at the edge certificates under SSL/TLS, and see why none has been issued.`,
+      'Kiln keeps trying every five minutes and makes the domain live by itself once this is mended. Nothing was removed, and the owner has not been written to. You are told once for this domain.',
+    ]) assert.ok(note.includes(`\r\n${sentence}\r\n`), sentence);
+    assert.doesNotMatch(note.split('\r\n\r\n').slice(1).join(' '), /[—–]|undefined|null|\[object/);
+    assert.deepEqual([(await where(w.env)).state, w.cf.zoneOf(N).id, w.cf.workerDomains.size, w.mails().length], ['waiting', zone.id, 2, 1], 'the row waits, nothing is removed, and the owner is not written to');
+
+    // Once: however long it goes on, past the day a waiting set-up is put away, nothing more is said and nothing is removed.
+    for (const days of [2, 14, 26, 40]) {
+      run = await sweep(w.env, t + days * DAY);
+      assert.deepEqual([run.out, stuckLines(run)], [tally({ looked: 1 }), []], `day ${days}`);
+    }
+    assert.deepEqual([w.notes().length, (await where(w.env)).state, w.cf.zones.size, w.cf.workerDomains.size, w.mails().length], [notes + 1, 'waiting', 1, 2, 1]);
+    shown = await shownTo(w.env);
+    assert.deepEqual([shown.gives_up_at, shown.taking_hold], [null, true], 'no day in the past is promised');
+
+    // The certificate arrives: the job makes the domain live as usual, and the mark is gone.
+    zone.certificate = 'active';
+    assert.deepEqual((await sweep(w.env, t + 41 * DAY)).out, tally({ looked: 1, live: 1 }));
+    shown = await shownTo(w.env);
+    assert.deepEqual([shown.state, 'taking_hold' in shown, (await where(w.env)).reason], ['live', false, null]);
+  });
+});
+
+test('own domain: a domain whose certificate is ready and whose site never answers is told about as well, the line is written where no note can be sent, and nothing is said that could not be marked as said', { skip: d1Skip }, async () => {
+  // The certificate is there, and the site does not answer at the domain.
+  const w = world({ env: { NOTIFY_TO: 'ops@example.com' } });
+  await withFetch(w.handler, async () => {
+    const { t } = await tookHoldAt(w);
+    const notes = w.notes().length;
+    const run = await sweep(w.env, t + 30 * HOUR);
+    assert.deepEqual(run.out, tally({ looked: 1, stuck: 1 }));
+    assert.deepEqual(stuckLines(run), [{ evt: 'domain_stuck', repo: 'ada/club', name: N, waiting_for: 'site_answering', hours: 30 }]);
+    const note = w.notes().at(-1).raw;
+    assert.equal(w.notes().length, notes + 1);
+    assert.ok(note.includes(`\r\nThe name servers of ${N} have pointed at Kiln's hosting for 30 hours and the certificate is ready, but https://${N}/ does not answer with the site.\r\n`));
+    assert.ok(note.includes(`\r\nPlease open https://${N}/ in a browser, and check in the hosting account at Cloudflare that ${N} and www.${N} are attached to the site's Worker.\r\n`));
+    assert.doesNotMatch(note.split('\r\n\r\n').slice(1).join(' '), /[—–]|undefined|null|\[object/);
+    assert.deepEqual((await sweep(w.env, t + 31 * HOUR)).out, tally({ looked: 1 }));
+    assert.equal(w.notes().length, notes + 1);
+  });
+
+  // A service with nobody to send a note to still writes the line, once.
+  const v = world();
+  await withFetch(v.handler, async () => {
+    const { t } = await tookHoldAt(v);
+    let run = await sweep(v.env, t + 25 * HOUR);
+    assert.deepEqual([run.out, stuckLines(run).length, v.notes().length], [tally({ looked: 1, stuck: 1 }), 1, 0]);
+    run = await sweep(v.env, t + 26 * HOUR);
+    assert.deepEqual([run.out, stuckLines(run).length], [tally({ looked: 1 }), 0]);
+  });
+
+  // The mark cannot be written: nothing is said (it would be said every five minutes), and the next run tries again.
+  const u = world({ env: { NOTIFY_TO: 'ops@example.com' } });
+  await withFetch(u.handler, async () => {
+    const { t } = await tookHoldAt(u);
+    const notes = u.notes().length;
+    const put = u.env.KILN.put.bind(u.env.KILN);
+    let down = true;
+    u.env.KILN.put = async (key, ...rest) => { if (down && String(key).startsWith('domainstuck:')) throw new Error('KV is down'); return put(key, ...rest); };
+    let run = await sweep(u.env, t + 25 * HOUR);
+    assert.deepEqual([run.out, stuckLines(run).length, u.notes().length], [tally({ looked: 1 }), 0, notes]);
+    down = false;
+    run = await sweep(u.env, t + 26 * HOUR);
+    assert.deepEqual([run.out, stuckLines(run).length, u.notes().length], [tally({ looked: 1, stuck: 1 }), 1, notes + 1]);
+  });
+});
+
+test('own domain: the day counts from when Cloudflare saw the name servers change, or from when the set-up began where that is later, and never from a guess', { skip: d1Skip }, async () => {
+  // Cloudflare does not say when the zone took hold: nobody is alerted on a guess, and the row is still marked.
+  const w = world();
+  await withFetch(w.handler, async () => {
+    const { zone, t } = await tookHoldAt(w);
+    zone.activated_on = undefined;
+    const run = await sweep(w.env, t + 30 * DAY);
+    assert.deepEqual([run.out, stuckLines(run).length, (await where(w.env)).reason], [tally({ looked: 1 }), 0, 'taking_hold']);
+  });
+
+  // A set-up that took up a zone which was active for days already has had only its own time.
+  const v = world();
+  await withFetch(v.handler, async () => {
+    const zone = await movedAway(v);
+    v.cf.setStatus(N, 'active');
+    zone.activated_on = new Date(Date.now() - 3 * DAY).toISOString();
+    assert.equal((await setup(v.env)).status, 200);
+    const began = Date.now();
+    let run = await sweep(v.env, began + HOUR);
+    assert.deepEqual([run.out, stuckLines(run).length], [tally({ looked: 1 }), 0], 'an hour after the set-up began nobody is alerted, though the zone took hold days ago');
+    run = await sweep(v.env, began + 25 * HOUR);
+    assert.deepEqual([run.out, stuckLines(run).map(l => l.waiting_for)], [tally({ looked: 1, stuck: 1 }), ['site_answering']]);
+  });
+});
+
+test('own domain: "check now" marks a set-up whose name servers have changed, and a zone that waits after all gets its day back', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await setup(w.env);
+    assert.ok((await shownTo(w.env)).gives_up_at > Date.now(), 'while the name servers have not changed, the day is promised');
+    w.cf.setStatus(N, 'active');
+    aMinuteAgo(w.env);
+    let body;
+    await hush(async () => { body = await (await check(w.env)).json(); });
+    assert.deepEqual([body.changed, body.domain.state, body.domain.gives_up_at, body.domain.taking_hold, body.domain.error], [true, 'waiting', null, true, undefined]);
+    assert.equal((await where(w.env)).reason, 'taking_hold');
+    // Cloudflare says the zone waits again: the mark goes, and the day is promised again.
+    w.cf.setStatus(N, 'pending');
+    assert.deepEqual((await sweep(w.env, Date.now() + 5 * 60000)).out, tally({ looked: 1 }));
+    const shown = await shownTo(w.env);
+    assert.deepEqual([(await where(w.env)).reason, 'taking_hold' in shown, shown.gives_up_at > Date.now()], [null, false, true]);
   });
 });

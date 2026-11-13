@@ -24,6 +24,21 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   back, the job makes the domain live as usual, and the owner is written to
   that it is live. A zone that is not this site's own earlier one is refused
   as before, and a zone taken up again is never deleted, whatever fails.
+- **A domain whose name servers changed and which never goes live is no longer
+  left waiting unseen.** The five-minute job put a set-up away after 25 days
+  only while its zone still waited at Cloudflare. A zone that took hold, and
+  whose certificate never arrived or whose site never answered, stayed
+  "waiting" with a give-up day in the past, and nobody heard of it. Now, once
+  the name servers have pointed at Kiln's hosting for more than 24 hours and
+  the domain is still not live, the job writes one log line (`domain_stuck`,
+  with the repository, the domain, and whether it waits for the certificate
+  or for the site to answer) and sends the operator one note that says where
+  to look. Both go once for a domain. The set-up stays as it is and nothing
+  is removed, because the zone answers for the domain. The service also stops
+  promising a day on which such a set-up is put away. From the moment
+  Cloudflare has seen the name servers change, what the dashboard is told has
+  no `gives_up_at` and carries `taking_hold: true`, so the dashboard can say
+  that the name servers have changed and Kiln is finishing the set-up.
 
 ## [0.6.4] - 2026-11-12
 
