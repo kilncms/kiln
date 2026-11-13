@@ -317,6 +317,20 @@ test('forwarding: a confirmed inbox that was left on Cloudflare\'s list with no 
   });
 });
 
+test('forwarding: if Cloudflare took a left-behind inbox as confirmed the moment it was put back, no rule is made for it and the asker is refused', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await withDomain(w);
+    await addInbox(w.env, { email: INBOX });
+    w.cf.confirm(INBOX);
+    w.cf.remembers = new Set([INBOX]);   // not how Cloudflare behaved when it was tried, and the service must not rest on that
+    const res = await setup(w.env);
+    const body = await res.json();
+    assert.deepEqual([res.status, body.code, body.forward], [409, 'inbox_elsewhere', null]);
+    assert.deepEqual([await rowOf(w.env), rules(w), w.mails().length], [null, [], 0], 'no row, no rule, no mail');
+  });
+});
+
 test('forwarding: an address typed on the Kiln account is no proof of an inbox, and the address Google confirmed for the account is', { skip: d1Skip }, async () => {
   const w = world();
   await withFetch(w.handler, async () => {

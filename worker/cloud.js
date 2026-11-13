@@ -2261,7 +2261,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         catch (e) { return failed(e, 'switch', { address, inbox }); }
         try { box = left ? await askAgain(env, { email: inbox, afresh: true }) : await addInbox(env, { email: inbox }); }
         catch (e) { return failed(e, 'inbox', { address, inbox }); }
-        if (!ours && !box.sent) return notOurs();   // somebody else asked for it in the same moment
+        // An inbox that is not this account's is taken only when Cloudflare wrote to it at this asking and it has still to press the
+        // button. Somebody else asked for it in the same moment (nothing was sent), or Cloudflare took an inbox that was put back on
+        // its list as confirmed already (no button to press): either way no rule is made for it.
+        if (!ours && (!box.sent || box.verified)) return notOurs();
         // Asking for the same again while it waits keeps its clock: the reminder and the day Kiln stops waiting count from the first asking.
         // A row that waits for the same inbox keeps the time Cloudflare last wrote there, which is also the mark that it wrote at this row's asking.
         const again = !!waits && waits.address === address && waits.inbox === inbox;

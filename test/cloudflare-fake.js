@@ -344,10 +344,12 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
           const { email } = JSON.parse(init.body);
           if (addresses.has(email)) return no(409, 2000, 'Destination address already exists');
           const at = new Date().toISOString();
-          const a = { id: `addr-${++n}`, email, verified: null, created: at, modified: at };
+          // `remembers`: a Cloudflare that takes an inbox it once confirmed as confirmed again, and writes it no email.
+          const known = api.remembers && api.remembers.has(email);
+          const a = { id: `addr-${++n}`, email, verified: known ? at : null, created: at, modified: at };
           a.tag = a.id;
           addresses.set(email, a);
-          confirmations.push(email);
+          if (!known) confirmations.push(email);
           return ok(a);
         }
         const a = [...addresses.values()].find(x => x.id === m[1]);
