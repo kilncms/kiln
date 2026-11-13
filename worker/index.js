@@ -1377,7 +1377,7 @@ async function noteEditorBuild(env, repo, build, now = Date.now()) {
 }
 
 async function presencePing(request, env) {
-  const { repo, path: pagePath, name, build } = await request.json().catch(() => ({}));
+  const { repo, path: pagePath, name, build, leave } = await request.json().catch(() => ({}));
   if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo) || typeof pagePath !== 'string' || !pagePath.startsWith('/')) {
     return json({ error: 'bad request' }, 400);
   }
@@ -1407,6 +1407,15 @@ async function presencePing(request, env) {
   // overwrites the last, so the entry follows them as they navigate instead of
   // leaving a stale "editing /about" row behind for every page they visited.
   const myKey = `pres:${repo}:${nameKey}`;
+  // Signing out says so (`leave: true`): the entry is removed, so the person
+  // stops counting as online at once and not when the entry runs out. It is
+  // the entry under the name this sign-in answers to, nobody else's. A removal
+  // that fails is not an error to the person signing out: the entry runs out.
+  if (leave === true) {
+    let left = true;
+    try { await env.KILN.delete(myKey); } catch { left = false; }
+    return json({ ok: true, left });
+  }
   // The editor pings every 30 seconds. Writing each ping would spend a free
   // account's whole day of KV writes (1,000) in one person's working day, and
   // then nobody can sign in. So the entry is written when the person arrives

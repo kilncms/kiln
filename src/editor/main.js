@@ -958,8 +958,9 @@ const EDITOR_BUILD = (typeof __KILN_VERSION__ !== 'undefined') ? String(__KILN_V
 let presenceTimer = null;
 let presenceTickN = 0;
 let presenceRefused = false;   // signed in, and the worker will not list this person: not asked again
+let leaving = false;           // signing out: the service is told this person has left, and no ping follows it
 async function presencePing() {
-  if (signInOver) return;   // nobody is signed in to be shown
+  if (signInOver || leaving) return;   // nobody is signed in to be shown
   if (!presenceRefused) try {
     // An ended sign-in is answered 403 here; `ask` finds out which it is, and the status line says so.
     // `build`: this editor's build, so the operator can see which editor each site runs (KLR-18).
@@ -970,10 +971,9 @@ async function presencePing() {
     // idempotent and null-guarded before the bar renders.
     refreshPublishButton();
     applyFeatureGating();
-    // One row per person (an older worker sent one row per page they'd visited).
-    const seen = new Map();
-    for (const o of data.online || []) if (!seen.has(o.name)) seen.set(o.name, o);
-    state.online = [...seen.values()];
+    // One row per person, however many tabs they have open, and never this person (online.js).
+    if (leaving) return;   // answered after this person signed out
+    state.online = peopleOnline(data.online, state.user);
     updatePresenceUI(data.others || []);
     updateOnlineChip();
     // Open-suggestions badge (admins): piggyback on the presence heartbeat, but
@@ -1003,7 +1003,7 @@ function updateOnlineChip() {
     host.appendChild(chip);
     chip.onclick = (e) => { e.stopPropagation(); whoIsOnlinePanel(); };
   }
-  chip.innerHTML = `<span class="kiln-online-dot"></span>${others.length} online`;
+  chip.innerHTML = `<span class="kiln-online-dot"></span>${onlineLabel(others)}`;
   chip.title = 'See who else is editing the site';
 }
 
@@ -8929,6 +8929,15 @@ async function signOut() {
   const edits = state.pending.size + state.pendingSource.size + state.pendingStructural.length + state.pendingBinaries.size;
   if (edits && !(await askFirst(modal, ownDialogCopy('sign-out', { edits })))) return;
   clearSavedPending();
+  // The service is told this person has left, so they stop counting as online
+  // at once and not six minutes later. It is told while the sign-in is still
+  // good, no ping follows it, and the sign-out goes ahead whatever the answer
+  // and after a second and a half at the latest (online.js).
+  leaving = true;
+  clearInterval(presenceTimer);
+  if (!cfg.sandbox && !signInOver) {
+    await tellLeft(() => ask('/presence', { method: 'POST', body: leaveBody({ repo: cfg.repo, path: location.pathname, name: state.user }) }));
+  }
   window.Kiln.logout();
 }
 
