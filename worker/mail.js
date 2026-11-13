@@ -222,12 +222,15 @@ export function forwardOnMail({ address, inbox, dashboard }) {
 /**
  * Sent once, 7 days after an address was asked for whose inbox has still not
  * confirmed: whose inbox must press the button, where "Send it again" is, and
- * the day Kiln stops waiting (`givesUpAt`).
+ * the day Kiln stops waiting (`givesUpAt`). When it is a change that waits
+ * beside an address that works, `keeps` is { address, inbox } of the one that
+ * works, and the mail says that it keeps working.
  */
-export function forwardWaitingMail({ address, inbox, givesUpAt = null, dashboard }) {
+export function forwardWaitingMail({ address, inbox, givesUpAt = null, dashboard, keeps = null }) {
   return message(`${address} is waiting for ${inbox} to confirm`, [
     'Hello,',
     `You asked Kiln to forward ${address} to the inbox ${inbox}. That has not started yet, because the inbox has not confirmed.`,
+    ...(keeps ? [`Until it does, mail sent to ${keeps.address} keeps arriving in the inbox ${keeps.inbox}, as it does today.`] : []),
     `Cloudflare, the company that carries the mail, sent an email to ${inbox}. Whoever reads that inbox needs to open that email and press the button in it. That is the only step. Kiln then switches the forwarding on by itself and writes to you when it has.`,
     'If the email is not there, look in the spam folder. To have it sent again, open your dashboard and press "Send it again" on the site\'s row.',
     dashboard,

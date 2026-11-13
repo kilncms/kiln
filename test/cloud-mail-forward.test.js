@@ -336,19 +336,157 @@ test('forwarding: "check now" after the inbox confirmed makes the one rule, mark
   });
 });
 
-test('forwarding: a change of inbox keeps the old inbox reached until the new one confirms, and then one rule reaches the new one', { skip: d1Skip }, async () => {
+test('forwarding: a change to a new inbox waits beside the address that works, which stays on until the new inbox confirms, and then one rule reaches the new one', { skip: d1Skip }, async () => {
   const w = world();
   await withFetch(w.handler, async () => {
     await forwarding(w);
-    w.env.kiln_cloud.exec("UPDATE forwards SET created_at = created_at - 5000 WHERE site_id = 'site1'");
+    await tick();
+    const was = await rowOf(w.env);
     const body = await (await setup(w.env, 'post', OTHER)).json();
-    assert.deepEqual([body.forward.address, body.forward.inbox, body.forward.state, body.forward.on_at, body.sent], [`post@${N}`, OTHER, 'confirming', null, true]);
+    assert.deepEqual([body.forward.address, body.forward.inbox, body.forward.state, body.forward.on_at, body.sent], [HELLO, INBOX, 'on', was.on_at, true], 'the address that works stays on');
+    assert.deepEqual([body.forward.changing_to.address, body.forward.changing_to.inbox, Date.now() - body.forward.changing_to.since < 5000], [`post@${N}`, OTHER, true]);
+    const kept = await rowOf(w.env);
+    assert.deepEqual([kept.address, kept.inbox, kept.state, kept.rule_id, kept.created_at, kept.on_at], [HELLO, INBOX, 'on', was.rule_id, was.created_at, was.on_at], 'the row that works is as it was');
+    assert.ok(kept.want_inbox_id && kept.want_asked_at && kept.want_since);
+    assert.deepEqual((await standing(w.env)).forward, body.forward, 'the look says the same');
+    const me = await (await ask(w.env, 'GET', '/cloud/me')).json();
+    assert.deepEqual(me.sites.find(s => s.id === 'site1').forward, body.forward, 'and so does the account page');
+    assert.deepEqual((await (await post(w.env, 'check')).json()).forward, body.forward, 'a check before the new inbox confirmed changes nothing');
     assert.deepEqual(rules(w), [`${HELLO} > ${INBOX}`], 'the old address still reaches the old inbox');
     w.cf.confirm(OTHER);
     await hush(async () => { await post(w.env, 'check'); });
     assert.deepEqual(rules(w), [`post@${N} > ${OTHER}`], 'one address for a site: the old one stopped as the new one began');
     assert.deepEqual(w.mails().map(m => m.subject), [`${HELLO} now reaches ${INBOX}`, `post@${N} now reaches ${OTHER}`]);
     assert.equal(w.mails()[1].to, INBOX, 'the account is written to at its own address');
+    const row = await rowOf(w.env);
+    assert.deepEqual([row.address, row.inbox, row.state, row.want_address, row.want_inbox, row.want_inbox_id, row.want_asked_at, row.want_since], [POST, OTHER, 'on', null, null, null, null, null]);
+    assert.deepEqual(Object.keys((await standing(w.env)).forward), ['address', 'inbox', 'state', 'since', 'on_at'], 'no change waits any more');
+  });
+});
+
+const POST = `post@${N}`;
+/** A change is asked for later than the address it changes. The mail about each is sent once for the millisecond it was asked for in, so a test lets one pass. */
+const tick = () => new Promise(done => setTimeout(done, 3));
+/** hello@ reaches the account's inbox, and a change to post@ and another inbox waits beside it. */
+async function changing(w) {
+  await forwarding(w);
+  await tick();
+  assert.equal((await setup(w.env, 'post', OTHER)).status, 200);
+}
+
+test('five-minute job: a change that waits is reminded about after 7 days and dropped after 30, and the address that works is never switched off', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await changing(w);
+    const was = await rowOf(w.env);
+    const wantSince = (days) => w.env.kiln_cloud.exec("UPDATE forwards SET want_since = ? WHERE site_id = 'site1'", Date.now() - days * DAY - 1000);
+    assert.deepEqual(await sweepForwards(w.env), { ...NONE, looked: 1 });
+    wantSince(7);
+    const since = (await rowOf(w.env)).want_since;
+    assert.deepEqual(await sweepForwards(w.env), { ...NONE, looked: 1, reminded: 1 });
+    assert.deepEqual(await sweepForwards(w.env), { ...NONE, looked: 1 }, 'the reminder goes once');
+    const remind = w.mails().at(-1);
+    assert.deepEqual([remind.to, remind.subject], [INBOX, `${POST} is waiting for ${OTHER} to confirm`]);
+    assert.equal(remind.text, forwardWaitingMail({ address: POST, inbox: OTHER, givesUpAt: since + 30 * DAY, dashboard: 'https://app.example', keeps: { address: HELLO, inbox: INBOX } }).text);
+    const keeps = `Until it does, mail sent to ${HELLO} keeps arriving in the inbox ${INBOX}, as it does today.`;
+    assert.ok(remind.text.includes(keeps));
+    plain(keeps);
+    wantSince(30);
+    const lines = await hush(async () => assert.deepEqual(await sweepForwards(w.env), { ...NONE, looked: 1, gaveUp: 1 }));
+    assert.ok(lines.some(l => /forward_change_dropped/.test(l)));
+    const row = await rowOf(w.env);
+    assert.deepEqual([row.address, row.inbox, row.state, row.reason, row.rule_id, row.on_at, row.created_at], [HELLO, INBOX, 'on', null, was.rule_id, was.on_at, was.created_at], 'the row that works is untouched');
+    assert.deepEqual([row.want_address, row.want_inbox, row.want_inbox_id, row.want_asked_at, row.want_since], [null, null, null, null, null]);
+    assert.deepEqual(rules(w), [`${HELLO} > ${INBOX}`], 'mail still reaches the inbox it reached');
+    const f = (await standing(w.env)).forward;
+    assert.deepEqual([f.state, f.address, f.inbox, 'changing_to' in f, 'error' in f], ['on', HELLO, INBOX, false, false]);
+    assert.deepEqual(await sweepForwards(w.env), NONE, 'and nothing more is asked');
+  });
+});
+
+test('five-minute job: a change whose new inbox has confirmed replaces the rule, and the row takes the new address and inbox', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await changing(w);
+    const was = await rowOf(w.env);
+    w.cf.confirm(OTHER);
+    await hush(async () => assert.deepEqual(await sweepForwards(w.env), { ...NONE, looked: 1, on: 1 }));
+    const row = await rowOf(w.env);
+    assert.deepEqual([row.address, row.inbox, row.state, row.want_address, row.want_inbox, row.created_at], [POST, OTHER, 'on', null, null, was.want_since]);
+    assert.ok(row.on_at >= was.on_at);
+    assert.deepEqual(rules(w), [`${POST} > ${OTHER}`], 'one address for a site: the old one stopped as the new one began');
+    assert.deepEqual(w.mails().map(m => m.subject), [`${HELLO} now reaches ${INBOX}`, `${POST} now reaches ${OTHER}`]);
+    assert.deepEqual(await sweepForwards(w.env), NONE);
+  });
+});
+
+test('forwarding: "Send it again" writes to the inbox of a change that waits, and a stop drops the change with the address', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await changing(w);
+    const soon = await post(w.env, 'again');
+    const told = await soon.json();
+    assert.deepEqual([soon.status, told.code, told.error, told.forward.state, told.forward.changing_to.inbox], [429, 'too_soon', mailSentence('too_soon', { address: POST, inbox: OTHER }), 'on', OTHER]);
+    w.env.kiln_cloud.exec("UPDATE forwards SET want_asked_at = ? WHERE site_id = 'site1'", Date.now() - MAIL_LIMITS.againMs - 1000);
+    const before = await rowOf(w.env);
+    const again = await (await post(w.env, 'again')).json();
+    assert.deepEqual([again.sent, again.forward.state, again.forward.inbox, again.forward.changing_to.inbox], [true, 'on', INBOX, OTHER]);
+    assert.deepEqual(w.cf.confirmations, [INBOX, OTHER, OTHER], 'the new inbox is written to again, and the one that works is not');
+    const row = await rowOf(w.env);
+    assert.ok(Date.now() - row.want_asked_at < 5000 && row.want_inbox_id);
+    assert.deepEqual([row.inbox_id, row.asked_at, row.want_since], [before.inbox_id, before.asked_at, before.want_since], 'the address that works, and the day the change was asked for, are as they were');
+    assert.deepEqual(rules(w), [`${HELLO} > ${INBOX}`]);
+    let res;
+    await hush(async () => { res = await post(w.env, 'stop'); });
+    assert.deepEqual(await res.json(), { ok: true, forward: null });
+    assert.deepEqual([await rowOf(w.env), rules(w)], [null, []]);
+    w.cf.confirm(OTHER);
+    assert.deepEqual(await sweepForwards(w.env), NONE, 'the change went with the address: nothing is switched on later');
+  });
+});
+
+test('forwarding: a change of the address alone happens at once, and asking again for what works drops a change that waits', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await forwarding(w);
+    await tick();
+    let body;
+    await hush(async () => { body = await (await setup(w.env, 'post', INBOX)).json(); });
+    assert.deepEqual([body.forward.address, body.forward.inbox, body.forward.state, 'changing_to' in body.forward, body.sent], [POST, INBOX, 'on', false, false]);
+    assert.deepEqual([rules(w), w.cf.confirmations], [[`${POST} > ${INBOX}`], [INBOX]], 'one rule, and no second email to the inbox');
+    assert.deepEqual(w.mails().map(m => m.subject), [`${HELLO} now reaches ${INBOX}`, `${POST} now reaches ${INBOX}`]);
+    // A change waits, a different one takes its place, and then the owner asks for what works.
+    const first = await (await setup(w.env, 'hello', OTHER)).json();
+    assert.deepEqual([first.forward.address, first.forward.changing_to.address, first.forward.changing_to.inbox, first.sent], [POST, HELLO, OTHER, true]);
+    const second = await (await setup(w.env, 'mail', OTHER)).json();
+    assert.deepEqual([second.forward.changing_to.address, second.sent, w.cf.confirmations.length], [`mail@${N}`, false, 2], 'the same inbox is not written to twice');
+    assert.ok((await rowOf(w.env)).want_asked_at, 'and the row still knows that Cloudflare wrote to it');
+    const back = await (await setup(w.env, 'post', INBOX)).json();
+    assert.deepEqual([back.ok, back.sent, back.forward.address, back.forward.state, 'changing_to' in back.forward], [true, false, POST, 'on', false]);
+    const row = await rowOf(w.env);
+    assert.deepEqual([row.want_address, row.want_inbox, row.want_since], [null, null, null]);
+    assert.deepEqual([rules(w), await sweepForwards(w.env)], [[`${POST} > ${INBOX}`], NONE]);
+  });
+});
+
+test('forwarding: a change to an inbox that confirmed for another customer is refused or dropped, and the address that works is left as it is', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await forwarding(w);
+    await otherSite(w);
+    const res = await setup(w.env, 'post', OTHER);
+    const body = await res.json();
+    assert.deepEqual([res.status, body.code, body.error, body.forward.state, body.forward.address, 'changing_to' in body.forward], [409, 'inbox_elsewhere', mailSentence('inbox_elsewhere'), 'on', HELLO, false]);
+    assert.deepEqual([rules(w), w.cf.confirmations, (await rowOf(w.env)).want_inbox], [[`${HELLO} > ${INBOX}`], [INBOX, OTHER], null]);
+    // A change that was left waiting for such an inbox is dropped at the moment a rule would be made.
+    for (const how of ['check', 'job']) {
+      await saveForward(w.env, 'site1', { want_address: POST, want_inbox: OTHER, want_since: Date.now() });
+      let out;
+      await hush(async () => { out = how === 'job' ? await sweepForwards(w.env) : (await post(w.env, 'check')).status; });
+      assert.deepEqual(out, how === 'job' ? { ...NONE, looked: 1, gaveUp: 1 } : 409, how);
+      const row = await rowOf(w.env);
+      assert.deepEqual([row.state, row.address, row.inbox, row.reason, row.want_inbox, rules(w)], ['on', HELLO, INBOX, null, null, [`${HELLO} > ${INBOX}`]], how);
+    }
   });
 });
 

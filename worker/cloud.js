@@ -49,7 +49,7 @@ import {
 } from './domain.js';
 import {
   mailStop, saysNoMail, switchMailOn, inboxState, addInbox, askAgain, canAskAgain, forward, stopForwarding, cleanLocal, cleanInbox, mailSentence,
-  forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, inboxAwaited, MailError, MAIL_LIMITS,
+  forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, inboxAwaited, whatWaits, NO_CHANGE, MailError, MAIL_LIMITS,
 } from './domain-mail.js';
 
 const GH = 'https://api.github.com';
@@ -925,12 +925,19 @@ async function tellAboutForward(env, kind, s, row, mail) {
  * earlier one replaced, so an earlier address stops at this moment), the row
  * becomes `on`, and the owner is written to, once. `s` is { id, repo, email }.
  * It throws what domain-mail.js forward throws, and the row is then as it was.
+ * For a row that is `on` with a change waiting beside it (domain-mail.js
+ * whatWaits), the rule is replaced with the wanted address and inbox, the row
+ * takes them and holds no change any more, and the owner is written to about
+ * the new address.
  */
 async function forwardingOn(env, { s, row, zoneId, inboxId = null, now = Date.now() }) {
-  const made = await forward(env, { zoneId, address: row.address, inbox: row.inbox, ruleId: row.rule_id || null });
-  await saveForward(env, s.id, { state: 'on', rule_id: made.ruleId, on_at: now, ...(inboxId ? { inbox_id: inboxId } : {}) });
-  console.log(JSON.stringify({ evt: 'forward_on', repo: s.repo, address: row.address }));
-  await tellAboutForward(env, 'on', s, row, forwardOnMail({ address: row.address, inbox: row.inbox, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' }));
+  const w = whatWaits(row) || { address: row.address, inbox: row.inbox, since: row.created_at, change: false };
+  const made = await forward(env, { zoneId, address: w.address, inbox: w.inbox, ruleId: row.rule_id || null });
+  await saveForward(env, s.id, w.change
+    ? { address: w.address, inbox: w.inbox, inbox_id: inboxId || w.inbox_id, rule_id: made.ruleId, on_at: now, created_at: w.since || now, asked_at: w.asked_at, ...NO_CHANGE }
+    : { state: 'on', rule_id: made.ruleId, on_at: now, ...(inboxId ? { inbox_id: inboxId } : {}) });
+  console.log(JSON.stringify({ evt: 'forward_on', repo: s.repo, address: w.address, ...(w.change ? { was: row.address } : {}) }));
+  await tellAboutForward(env, 'on', s, { created_at: w.since }, forwardOnMail({ address: w.address, inbox: w.inbox, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' }));
 }
 
 /**
@@ -943,6 +950,11 @@ async function forwardingOn(env, { s, row, zoneId, inboxId = null, now = Date.no
  *   - not after 30 days: the row becomes `off` with the reason
  *     `never_confirmed`, and nothing more is asked. Nothing at Cloudflare is
  *     changed by that.
+ * A change that waits beside an address that works (domain-mail.js whatWaits)
+ * is looked at in the same way. When its inbox confirms, the rule is replaced
+ * and the row takes the new address and inbox. The reminder is about the
+ * change. After 30 days only the change is dropped: the address that works is
+ * left exactly as it is, and nothing is switched off.
  * An inbox that has confirmed, though not at this account's asking
  * (domain-mail.js ownsInbox), gets no rule: its row becomes `failed` with the
  * reason `inbox_elsewhere`, and is counted with the ones given up on.
@@ -972,31 +984,32 @@ export async function sweepForwards(env, { now = Date.now() } = {}) {
       const s = await env.kiln_cloud.prepare(
         `SELECT s.id, s.repo, s.account_id, a.email, d.name, d.zone_id, d.state AS domain_state FROM sites s
            LEFT JOIN accounts a ON a.id = s.account_id LEFT JOIN domains d ON d.site_id = s.id WHERE s.id = ?`).bind(r.site_id).first();
-      const waited = now - Number(r.created_at || now);
+      const w = whatWaits(r);
+      if (!w) continue;   // it was settled between the reading and this look
+      // Giving up on a first set-up marks the row. Giving up on a change only drops the change: the address that works stays on.
+      const giveUp = async (state, reason) => {
+        await saveForward(env, r.site_id, w.change ? NO_CHANGE : { state, reason });
+        console.log(JSON.stringify({ evt: w.change ? 'forward_change_dropped' : 'forward_gave_up', repo: s?.repo || null, address: w.address, reason }));
+        out.gaveUp++;
+      };
+      const waited = now - Number(w.since || now);
       const live = !!s && s.domain_state === 'live' && !!s.zone_id;
       if (live) {
-        const box = await inboxState(env, { email: r.inbox, id: r.inbox_id });
+        const box = await inboxState(env, { email: w.inbox, id: w.inbox_id });
         if (box?.verified) {
           // Confirmed at Cloudflare is confirmed for every customer at once: the rule is made only for an inbox this account has shown to be its own.
-          if (!(await ownsInbox(env, { accountId: s.account_id, inbox: r.inbox }))) {
-            await saveForward(env, r.site_id, { state: 'failed', reason: 'inbox_elsewhere' });
-            console.log(JSON.stringify({ evt: 'forward_gave_up', repo: s.repo, address: r.address, reason: 'inbox_elsewhere' }));
-            out.gaveUp++;
-            continue;
-          }
+          if (!(await ownsInbox(env, { accountId: s.account_id, inbox: w.inbox }))) { await giveUp('failed', 'inbox_elsewhere'); continue; }
           await forwardingOn(env, { s, row: r, zoneId: s.zone_id, inboxId: box.id, now }); out.on++; continue;
         }
       }
       if (!s || waited >= MAIL_LIMITS.giveUpDays * day) {
-        const reason = s ? 'never_confirmed' : 'site_removed';
-        await saveForward(env, r.site_id, { state: 'off', reason });
-        console.log(JSON.stringify({ evt: 'forward_gave_up', repo: s?.repo || null, address: r.address, reason }));
-        out.gaveUp++;
+        await giveUp('off', s ? 'never_confirmed' : 'site_removed');
         continue;
       }
       if (live && waited >= MAIL_LIMITS.remindDays * day) {
-        const sent = await tellAboutForward(env, 'remind', s, r, forwardWaitingMail({
-          address: r.address, inbox: r.inbox, givesUpAt: Number(r.created_at) + MAIL_LIMITS.giveUpDays * day, dashboard,
+        const sent = await tellAboutForward(env, 'remind', s, { created_at: w.since }, forwardWaitingMail({
+          address: w.address, inbox: w.inbox, givesUpAt: Number(w.since) + MAIL_LIMITS.giveUpDays * day, dashboard,
+          ...(w.change ? { keeps: { address: r.address, inbox: r.inbox } } : {}),
         }));
         if (sent.ok) out.reminded++;
       }
@@ -1765,7 +1778,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       // A rule is made only for an inbox this Kiln account has shown to be its own (domain-mail.js ownsInbox). A waiting row that fails that stops here.
       const mine = (inbox) => ownsInbox(env, { accountId: sess.account_id, inbox });
       const elsewhere = async () => {
-        await saveForward(env, site.id, { state: 'failed', reason: 'inbox_elsewhere' });
+        // A first set-up stops here. A change that waited is dropped, and the address that works beside it stays on.
+        await saveForward(env, site.id, whatWaits(row)?.change ? NO_CHANGE : { state: 'failed', reason: 'inbox_elsewhere' });
         console.warn(JSON.stringify({ evt: 'forward_failed', repo: site.repo, action, stage: 'inbox', reason: 'inbox_elsewhere' }));
         return refuse('inbox_elsewhere', 409, { name, forward: publicForward(await forwardRow(env, site.id)) });
       };
@@ -1778,7 +1792,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         try { address = `${cleanLocal(body.local, name)}@${name}`; inbox = cleanInbox(body.inbox, name); }
         catch (e) { return refuse(e instanceof MailError && e.code === 'same_domain' ? 'same_domain' : 'not_an_address', 400, { address: null, inbox: null, name }); }
         const same = !!row && row.address === address && row.inbox === inbox;
-        if (same && row.state === 'on') return json({ ok: true, forward: publicForward(row), sent: false });   // it stands as asked
+        const works = row?.state === 'on';   // an address that works stays exactly as it is while a change to it waits
+        const waits = whatWaits(row);        // what the row waits for now: a first set-up, or a change beside an address that works
+        if (same && works && waits) await saveForward(env, site.id, NO_CHANGE);   // what works was asked for again: the change that waited is dropped
+        if (same && works) return standing({ sent: false });   // it stands as asked
         // An inbox this account has not shown to be its own is taken only when Cloudflare writes to it at this asking. One that has
         // confirmed already (at somebody else's asking), or that somebody else still waits for, is refused before anything is made.
         const ours = await mine(inbox);
@@ -1798,43 +1815,46 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         catch (e) { return failed(e, 'inbox', { address, inbox }); }
         if (!ours && !box.sent) return notOurs();   // somebody else asked for it in the same moment
         // Asking for the same again while it waits keeps its clock: the reminder and the day Kiln stops waiting count from the first asking.
-        const again = same && row.state === 'confirming';
-        const saved = await saveForward(env, site.id, {
-          address, inbox, inbox_id: box.id, state: 'confirming', reason: null,
-          // A row that waits for the same inbox keeps the time Cloudflare last wrote there, which is also the mark that it wrote at this row's asking.
-          ...(again ? {} : { created_at: now }), ...(box.sent ? { asked_at: now } : row?.state === 'confirming' && row.inbox === inbox ? {} : { asked_at: null }),
-        });
+        // A row that waits for the same inbox keeps the time Cloudflare last wrote there, which is also the mark that it wrote at this row's asking.
+        const again = !!waits && waits.address === address && waits.inbox === inbox;
+        const sameInbox = !!waits && waits.inbox === inbox;
+        // An address that works is not rewritten: the change is kept beside it until the new inbox confirms, and the old rule goes on forwarding.
+        const saved = await saveForward(env, site.id, works
+          ? { want_address: address, want_inbox: inbox, want_inbox_id: box.id, ...(again ? {} : { want_since: now }), ...(box.sent ? { want_asked_at: now } : sameInbox ? {} : { want_asked_at: null }) }
+          : { address, inbox, inbox_id: box.id, state: 'confirming', reason: null, ...(again ? {} : { created_at: now }), ...(box.sent ? { asked_at: now } : sameInbox ? {} : { asked_at: null }) });
         if (!saved) return refuse('not_set_up', 503);
         // An inbox of this account's that confirmed earlier gets no second email: the rule is made at once.
         if (box.verified) {
           try { await switchOn(await forwardRow(env, site.id), box.id); }
-          catch (e) { return failed(e, 'rule'); }   // the row waits, and the five-minute job tries the rule again
+          catch (e) { return failed(e, 'rule', { address, inbox }); }   // the row waits, and the five-minute job tries the rule again
         }
         return standing({ sent: !!box.sent });
       }
 
       if (action === 'check') {
         // Only an address that waits, at a domain that is live, has anything to ask about.
-        if (row.state !== 'confirming' || !live) return json({ ok: true, forward: publicForward(row) });
+        const waits = whatWaits(row);
+        if (!waits || !live) return json({ ok: true, forward: publicForward(row) });
         let box;
-        try { box = await inboxState(env, { email: row.inbox, id: row.inbox_id }); }
+        try { box = await inboxState(env, { email: waits.inbox, id: waits.inbox_id }); }
         catch (e) { return failed(e, 'inbox'); }
         if (box?.verified) {
-          if (!(await mine(row.inbox))) return elsewhere();
+          if (!(await mine(waits.inbox))) return elsewhere();
           try { await switchOn(row, box.id); }
-          catch (e) { return failed(e, 'rule'); }
+          catch (e) { return failed(e, 'rule', { address: waits.address, inbox: waits.inbox }); }
         }
         return standing();
       }
 
       if (action === 'again') {
-        if (row.state !== 'confirming') return json({ ok: true, forward: publicForward(row), sent: false });
-        if (!canAskAgain(row, now)) return refuse('too_soon', 429, { forward: publicForward(row) });
-        if (!(await mine(row.inbox))) return elsewhere();   // nobody is written to at the asking of an account the inbox never agreed to
+        const waits = whatWaits(row);
+        if (!waits) return json({ ok: true, forward: publicForward(row), sent: false });
+        if (!canAskAgain(waits, now)) return refuse('too_soon', 429, { address: waits.address, inbox: waits.inbox, forward: publicForward(row) });
+        if (!(await mine(waits.inbox))) return elsewhere();   // nobody is written to at the asking of an account the inbox never agreed to
         let box;
-        try { box = await askAgain(env, { email: row.inbox }); }
+        try { box = await askAgain(env, { email: waits.inbox }); }
         catch (e) { return failed(e, 'inbox'); }
-        await saveForward(env, site.id, { inbox_id: box.id, ...(box.sent ? { asked_at: now } : {}) });   // the inbox has a new id after this
+        await saveForward(env, site.id, waits.change ? { want_inbox_id: box.id, ...(box.sent ? { want_asked_at: now } : {}) } : { inbox_id: box.id, ...(box.sent ? { asked_at: now } : {}) });   // the inbox has a new id after this
         if (box.verified && live) {
           try { await switchOn(row, box.id); }
           catch (e) { return failed(e, 'rule'); }

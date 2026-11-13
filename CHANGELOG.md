@@ -34,8 +34,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   an inbox has not confirmed after 7 days its owner gets one reminder, and
   after 30 days Kiln stops waiting and says so on the site's row. A domain
   with email of its own is never touched, and a parked domain that says "no
-  mail here" is told first that those two records are replaced. A change of
-  inbox keeps the old inbox reached until the new one confirms. When hosting
+  mail here" is told first that those two records are replaced. A change to a
+  new inbox waits beside the address that works: the row stays on with the
+  address and inbox that work, and carries `changing_to` (the address, the
+  inbox and when it was asked for) until the new inbox confirms. Then the rule
+  is replaced, the row takes the new address and inbox, and the owner is
+  written to. "Send it again" and the reminder after 7 days are about the
+  waiting change, and after 30 days only the change is dropped: an address
+  that works is never switched off by waiting. A change of the address alone,
+  to the same inbox, happens at once, and stopping drops a waiting change with
+  the address. When hosting
   ends or a site is removed, the forwarded address is left as it is, so mail
   keeps arriving for as long as the domain's name servers point at Kiln.
   `/cloud/me` carries `forwarding` and each site's `forward`. The setup tool

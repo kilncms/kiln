@@ -433,13 +433,14 @@ export async function forwardsForAccount(env, accountId) {
 }
 
 /**
- * The rows whose inbox has not confirmed yet, the one written longest ago
+ * The rows that wait for an inbox to confirm (a first set-up, or a change
+ * beside an address that works: whatWaits), the one written longest ago
  * first, for the five-minute look. A look that writes each row it reads, even
  * with nothing to change (saveForward(env, id, {})), reaches every row in
  * turn however many there are. Never throws.
  */
 export async function forwardsConfirming(env, limit = 10) {
-  try { return (await env.kiln_cloud.prepare("SELECT * FROM forwards WHERE state = 'confirming' ORDER BY updated_at ASC LIMIT ?").bind(limit).all())?.results || []; }
+  try { return (await env.kiln_cloud.prepare("SELECT * FROM forwards WHERE state = 'confirming' OR (state = 'on' AND want_inbox IS NOT NULL) ORDER BY updated_at ASC LIMIT ?").bind(limit).all())?.results || []; }
   catch { return []; }
 }
 
@@ -456,7 +457,8 @@ export async function forwardsReady(env) {
  * itself whose asking the inbox agreed to. An inbox is the account's own when
  *   - it is the address on the Kiln account, or
  *   - a site of the account forwards to it with a row that is `on`, or
- *   - a site of the account waits for it and Cloudflare wrote to the inbox at
+ *   - a site of the account waits for it (as a first set-up, or as a change
+ *     beside an address that works) and Cloudflare wrote to the inbox at
  *     that row's asking (the row has its `asked_at`), so the button was
  *     pressed in an email this account had sent.
  * Never throws: what cannot be read is not shown.
@@ -469,18 +471,36 @@ export async function ownsInbox(env, { accountId, inbox }) {
     if (String(account?.email || '').trim().toLowerCase() === want) return true;
     return !!(await env.kiln_cloud.prepare(
       `SELECT f.site_id FROM forwards f JOIN sites s ON s.id = f.site_id
-        WHERE s.account_id = ? AND f.inbox = ? AND (f.state = 'on' OR (f.state = 'confirming' AND f.asked_at IS NOT NULL)) LIMIT 1`).bind(accountId, want).first());
+        WHERE s.account_id = ? AND ((f.inbox = ? AND (f.state = 'on' OR (f.state = 'confirming' AND f.asked_at IS NOT NULL)))
+           OR (f.state = 'on' AND f.want_inbox = ? AND f.want_asked_at IS NOT NULL)) LIMIT 1`).bind(accountId, want, want).first());
   } catch { return false; }
 }
 
 /** True when a row of any account still waits for this inbox to confirm. Never throws: what cannot be read counts as waited for. */
 export async function inboxAwaited(env, inbox) {
   const want = String(inbox ?? '').trim().toLowerCase();
-  try { return !!(await env.kiln_cloud.prepare("SELECT site_id FROM forwards WHERE inbox = ? AND state = 'confirming' LIMIT 1").bind(want).first()); }
+  try { return !!(await env.kiln_cloud.prepare("SELECT site_id FROM forwards WHERE (inbox = ? AND state = 'confirming') OR (want_inbox = ? AND state = 'on') LIMIT 1").bind(want, want).first()); }
   catch { return true; }
 }
 
-const COLUMNS = ['address', 'inbox', 'inbox_id', 'rule_id', 'state', 'reason', 'asked_at', 'on_at', 'created_at'];
+/**
+ * What a row waits for an inbox to confirm, or null when it waits for
+ * nothing: a first set-up (the row is `confirming`), or a change beside an
+ * address that works (the row is `on` and holds the wanted address and inbox;
+ * `change` is then true). { address, inbox, inbox_id, asked_at, since, change }:
+ * `asked_at` is when Cloudflare last wrote to that inbox at this row's asking,
+ * and `since` is when it was asked for, which the 7 and 30 days count from.
+ */
+export function whatWaits(row) {
+  if (row?.state === 'confirming') return { address: row.address, inbox: row.inbox, inbox_id: row.inbox_id || null, asked_at: row.asked_at || null, since: row.created_at || null, change: false };
+  if (row?.state === 'on' && row.want_address && row.want_inbox) return { address: row.want_address, inbox: row.want_inbox, inbox_id: row.want_inbox_id || null, asked_at: row.want_asked_at || null, since: row.want_since || null, change: true };
+  return null;
+}
+
+/** What is written to a row to empty its waiting change. The address that works is not touched by it. */
+export const NO_CHANGE = Object.freeze({ want_address: null, want_inbox: null, want_inbox_id: null, want_asked_at: null, want_since: null });
+
+const COLUMNS = ['address', 'inbox', 'inbox_id', 'rule_id', 'state', 'reason', 'asked_at', 'on_at', 'created_at', 'want_address', 'want_inbox', 'want_inbox_id', 'want_asked_at', 'want_since'];
 
 /**
  * Write a site's row: made when the site has none (it needs an address and an
@@ -493,7 +513,7 @@ export async function saveForward(env, siteId, fields = {}) {
   const now = Date.now();
   let f = {};
   for (const c of COLUMNS) if (fields[c] !== undefined) f[c] = fields[c];
-  for (const c of ['address', 'inbox']) if (typeof f[c] === 'string') f[c] = f[c].trim().toLowerCase();
+  for (const c of ['address', 'inbox', 'want_address', 'want_inbox']) if (typeof f[c] === 'string') f[c] = f[c].trim().toLowerCase();
   try {
     const db = env.kiln_cloud;
     const was = await db.prepare('SELECT state FROM forwards WHERE site_id = ?').bind(siteId).first();
@@ -526,7 +546,10 @@ export async function forgetForward(env, siteId) {
  * What the dashboard is told about a site's forwarded address: { address,
  * inbox, state, since, on_at } and `error`, the sentence for a row that
  * stopped short. `on_at` is only given while it is on. Never an id: the
- * inbox's and the rule's are handles nobody outside needs.
+ * inbox's and the rule's are handles nobody outside needs. While a change
+ * waits beside an address that works, `changing_to` is { address, inbox,
+ * since }: what the address will become when the new inbox confirms, and
+ * when that was asked for. Without a waiting change the key is not there.
  */
 export function publicForward(row) {
   if (!row) return null;
@@ -538,5 +561,7 @@ export function publicForward(row) {
     on_at: row.state === 'on' ? (row.on_at || null) : null,
   };
   if (row.state !== 'on' && row.reason) out.error = mailSentence(row.reason, { address: row.address, inbox: row.inbox });
+  const waits = whatWaits(row);
+  if (waits?.change) out.changing_to = { address: waits.address, inbox: waits.inbox, since: waits.since };
   return out;
 }
