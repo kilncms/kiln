@@ -411,7 +411,7 @@ export function mailSentence(code, { address = null, inbox = null, name = null }
     case 'no_forward': return 'No address is forwarded for this site yet. To set one up, press "Forward an address" on the site\'s row.';
     case 'bad_action': return 'Kiln did not understand that request. Reload the dashboard and try again.';
     case 'never_confirmed': return `${theInbox} did not confirm within ${MAIL_LIMITS.giveUpDays} days, so Kiln stopped waiting. Nothing of yours was changed. To try again, press "Forward an address" on the site's row.`;
-    case 'inbox_elsewhere': return 'Kiln cannot confirm that inbox by itself. Use the address on your Kiln account, or write to info@kilncms.com and we will set it up with you.';
+    case 'inbox_elsewhere': return 'Kiln cannot confirm that inbox by itself. Write to info@kilncms.com and we will set it up with you.';
     default: return `Kiln could not finish this with Cloudflare just now. Your site and any email you already have are as they were. Try again in a few minutes.`;
   }
 }
@@ -455,20 +455,26 @@ export async function forwardsReady(env) {
  * domains are in one Cloudflare account, so "this inbox has confirmed" there
  * is true for every customer at once, whoever asked. Kiln has to know for
  * itself whose asking the inbox agreed to. An inbox is the account's own when
- *   - it is the address on the Kiln account, or
+ *   - the account signs in with Google and the inbox is the address Google
+ *     confirmed for it (`google_sub` and `google_email`, migrations 0008 and
+ *     0009), or
  *   - a site of the account forwards to it with a row that is `on`, or
  *   - a site of the account waits for it (as a first set-up, or as a change
  *     beside an address that works) and Cloudflare wrote to the inbox at
  *     that row's asking (the row has its `asked_at`), so the button was
  *     pressed in an email this account had sent.
+ * The address typed on the Kiln account (`accounts.email`) is no proof: it is
+ * whatever its owner typed in the dashboard, and nobody checked it.
  * Never throws: what cannot be read is not shown.
  */
 export async function ownsInbox(env, { accountId, inbox }) {
   const want = String(inbox ?? '').trim().toLowerCase();
   if (!accountId || !want) return false;
   try {
-    const account = await env.kiln_cloud.prepare('SELECT email FROM accounts WHERE id = ?').bind(accountId).first();
-    if (String(account?.email || '').trim().toLowerCase() === want) return true;
+    const account = await env.kiln_cloud.prepare('SELECT google_sub, google_email FROM accounts WHERE id = ?').bind(accountId).first();
+    if (account?.google_sub && String(account.google_email || '').trim().toLowerCase() === want) return true;
+  } catch { /* a database the two columns have not reached: no account signs in with Google there */ }
+  try {
     return !!(await env.kiln_cloud.prepare(
       `SELECT f.site_id FROM forwards f JOIN sites s ON s.id = f.site_id
         WHERE s.account_id = ? AND ((f.inbox = ? AND (f.state = 'on' OR (f.state = 'confirming' AND f.asked_at IS NOT NULL)))

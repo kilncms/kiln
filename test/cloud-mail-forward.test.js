@@ -222,10 +222,12 @@ test('forwarding: a set-up switches mail on for the domain, has Cloudflare write
   });
 });
 
-test('forwarding: the account\'s own address, confirmed before, gets no second email, and the address is on at once', { skip: d1Skip }, async () => {
+test('forwarding: the address the account signs in with at Google, confirmed before, gets no second email, and the address is on at once', { skip: d1Skip }, async () => {
   const w = world();
   await withFetch(w.handler, async () => {
     await withDomain(w);
+    // The address typed on the account proves nothing. The one Google confirmed for the account does.
+    w.env.kiln_cloud.exec("UPDATE accounts SET google_sub = 'g-ada', google_email = ? WHERE id = 'acct-1'", INBOX);
     await addInbox(w.env, { email: INBOX });
     w.cf.confirm(INBOX);
     let body;
@@ -250,7 +252,7 @@ test('forwarding: an inbox that confirmed for another customer is refused in one
     const res = await setup(w.env, 'hello', OTHER);
     const body = await res.json();
     assert.deepEqual([res.status, body.code, body.forward], [409, 'inbox_elsewhere', null]);
-    assert.equal(body.error, 'Kiln cannot confirm that inbox by itself. Use the address on your Kiln account, or write to info@kilncms.com and we will set it up with you.');
+    assert.equal(body.error, 'Kiln cannot confirm that inbox by itself. Write to info@kilncms.com and we will set it up with you.');
     assert.equal(body.error, mailSentence('inbox_elsewhere', { address: HELLO, inbox: OTHER, name: N }), 'the sentence names nobody and nothing');
     for (const s of sentences(body.error)) plain(s);
     assert.equal(await rowOf(w.env), null);
@@ -290,6 +292,34 @@ test('forwarding: an inbox another customer still waits for is refused, and one 
     w.cf.confirm(OTHER);
     await hush(async () => { await post(w.env, 'check'); });
     assert.deepEqual([(await rowOf(w.env)).state, rules(w)], ['on', [`${HELLO} > ${OTHER}`]]);
+  });
+});
+
+test('forwarding: an address typed on the Kiln account is no proof of an inbox, and the address Google confirmed for the account is', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await withDomain(w);
+    await otherSite(w);   // another customer's site forwards to the inbox, which has confirmed
+    const refused = async (why) => {
+      const before = w.cf.calls.length;
+      const res = await setup(w.env, 'hello', OTHER);
+      assert.deepEqual([res.status, (await res.json()).code], [409, 'inbox_elsewhere'], why);
+      assert.deepEqual([await rowOf(w.env), rules(w), w.cf.confirmations], [null, [], [OTHER]], why);
+      assert.deepEqual(w.cf.calls.slice(before).filter(c => c.method !== 'GET').map(c => `${c.method} ${c.path}`), [], 'Cloudflare was only read');
+    };
+    // Anybody can type any address on their account in the dashboard, and nobody checks it.
+    w.env.kiln_cloud.exec("UPDATE accounts SET email = ? WHERE id = 'acct-1'", OTHER);
+    await refused('the typed address is no proof');
+    // An address in the Google column proves nothing either while the account does not sign in with Google.
+    w.env.kiln_cloud.exec("UPDATE accounts SET google_email = ? WHERE id = 'acct-1'", OTHER);
+    await refused('no Google sign-in, no proof');
+    // The account signs in with Google, and Google confirmed this address for it (however it is written).
+    w.env.kiln_cloud.exec("UPDATE accounts SET google_sub = 'g-ada', google_email = ? WHERE id = 'acct-1'", ' Bea@Example.NET ');
+    let body;
+    await hush(async () => { body = await (await setup(w.env, 'hello', OTHER)).json(); });
+    assert.deepEqual([body.ok, body.sent, body.forward.state, body.forward.inbox], [true, false, 'on', OTHER]);
+    assert.deepEqual(w.cf.confirmations, [OTHER], 'no email to the inbox');
+    assert.deepEqual(rules(w), [`${HELLO} > ${OTHER}`]);
   });
 });
 
