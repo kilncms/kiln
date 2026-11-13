@@ -1824,9 +1824,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const out = await copyAnswered(env, {
       body: new Uint8Array(await request.arrayBuffer()), signature: request.headers.get('X-Kiln-Signature'), worker: url.origin, dashboard: dash,
       trialDays: TRIAL_GRACE_DAYS, sign: appJwt, pkcs1: tools.pkcs1 || null, note: (subject, lines) => notifyOwner(env, subject, lines),
-      // A copy that worked goes up on Kiln's hosting by itself, after the job has its answer where the request can wait (index.js: `later`).
+      // A copy that worked goes up on Kiln's hosting by itself, before the job has its answer.
       host: (site) => hostCopied(env, tools, { id: site.id, accountId: site.account_id, worker: url.origin }),
-      later: typeof tools.later === 'function' ? tools.later : null,
+      // The job waits for its answer while the site is put up, which takes about half a minute. Work handed on to
+      // run after the answer (`tools.later`) is cut off by Cloudflare about 30 seconds in, which could stop the
+      // publishing half way and send the owner a mail that says the site is not up while it is going up.
+      later: null,
     });
     return json(out.body, out.status);
   }

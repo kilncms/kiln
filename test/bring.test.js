@@ -477,7 +477,7 @@ test('a copy that worked goes up on Kiln\'s hosting by itself: Kiln is added in 
   assert.deepEqual([w.sent.length, w.hub.unsafe.length], [1, 0]);
 });
 
-test('where a request can go on after its answer, the job has its answer before the site is up, and the mail follows when it is', { skip: d1Skip }, async () => {
+test('the job waits for its answer while the site is put up, so nothing is handed on to run after the answer and the mail tells the truth', { skip: d1Skip }, async () => {
   const w = world({ mail: true });
   await bring(w);
   const repo = w.hub.made[0], job = copies(w.env)[0].id;
@@ -485,8 +485,8 @@ test('where a request can go on after its answer, the job has its answer before 
   await withFetch(up.handler, async () => {
     const res = await worker.fetch(new Request('https://worker.example/cloud/convert/done', { method: 'POST', headers: { 'X-Kiln-Signature': sig(raw) }, body: raw }), w.env, { waitUntil: (work) => waits.push(work) });
     assert.deepEqual([res.status, await res.json()], [200, { ok: true, state: 'done' }]);
-    assert.deepEqual([copies(w.env)[0].state, w.sent.length, waits.length], ['done', 0, 1], 'done at once, and the rest goes on');
-    await Promise.all(waits);
+    // Work handed on to run after the answer is cut off by Cloudflare about 30 seconds in, which could stop the publishing half way.
+    assert.deepEqual([copies(w.env)[0].state, w.sent.length, waits.length], ['done', 1, 0], 'done, up and written to before the answer; nothing goes on afterwards');
   });
   assert.equal(w.env.kiln_cloud.row('SELECT state FROM hosting WHERE site_id = ?', sites(w.env)[0].id).state, 'live');
   assert.equal(w.sent.length, 1);
