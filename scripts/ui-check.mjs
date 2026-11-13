@@ -1132,7 +1132,7 @@ async function runSafetyNet(browser, size) {
   await page.waitForTimeout(500);
   said = await words(dialog.locator('p').first());
   const settings = await page.locator('.kiln-th-name').allTextContents();
-  check(scope, 'Theme is said in an editor\'s words, and names its settings without the stylesheet\'s dashes', /^The site’s colours and type sizes\./.test(said) && !/CSS|:root/.test(said)
+  check(scope, 'Theme is said in an editor\'s words, and names its settings without the stylesheet\'s dashes', /^The site’s colors and type sizes\./.test(said) && !/CSS|:root/.test(said)
     && settings.length > 0 && !settings.some(n => /--/.test(n)), `${said.slice(0, 60)} / ${settings.slice(0, 4).join(', ')}`);
   await putAway();
   await item('kiln-palette-btn');
@@ -2950,6 +2950,8 @@ async function runSignInEverywhere(browser, size) {
     await page.locator('#kiln-sc-list .kiln-inv-row button').first().waitFor({ state: 'visible', timeout: 5000 });
     end();
     await press(page.locator('#kiln-sc-list .kiln-inv-row button').first());
+    // Cancel asks first now ("Yes, cancel it"): the ended sign-in is found when the answer is yes.
+    await press(page.locator('#kiln-sc-list [data-yes]').first());
     await ended(name, `Nothing was cancelled. Your edit is saved in this browser and will be back on this page ${BACK}.`);
     await notNow();
     check(scope, `${name}: nothing was cancelled, and the list is as it was`, worker.cancelled.length === 0 && (await page.locator('#kiln-modal #kiln-sc-list .kiln-inv-row').count()) === 1);
