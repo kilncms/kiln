@@ -226,6 +226,16 @@ test('/cloud/github: the install address is for the App this service holds the k
   assert.equal(installUrl({ slug: 'x/../y?z' }), 'https://github.com/apps/kiln-cms/installations/new');
 });
 
+test('adding a repository the App is not on yet sends the person to the App this service runs on', { skip: d1Skip }, async () => {
+  const e = env();
+  await withFetch(async () => undefined, async () => {   // GitHub: the App is on nothing
+    const res = await worker.fetch(new Request('https://worker.example/cloud/sites', { method: 'POST',
+      headers: { Authorization: 'Bearer tok', 'Content-Type': 'application/json' }, body: JSON.stringify({ repo: 'ada/club', origin: 'https://club.example' }) }), e);
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).install_url, STAGING);
+  });
+});
+
 // ─── One repository: /cloud/github?repo=owner/name ────────────────────────────
 
 test('/cloud/github?repo=: a repository of the person\'s own that the App can reach', { skip: d1Skip }, async () => {

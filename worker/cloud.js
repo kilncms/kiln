@@ -141,6 +141,10 @@ export function installUrl(c) {
   const slug = c && typeof c.slug === 'string' && /^[a-z0-9][a-z0-9-]*$/i.test(c.slug) ? c.slug : null;
   return slug ? `https://github.com/apps/${slug}/installations/new` : INSTALL_URL;
 }
+/** The same address, for whichever App this service holds the keys of. Never throws. */
+async function installUrlFor(env) {
+  try { return installUrl(await creds(env)); } catch { return INSTALL_URL; }
+}
 
 /** A repository's own website field, when it is a plain https address of a sensible length. Otherwise null. */
 function httpsAddress(v) {
@@ -1526,7 +1530,7 @@ async function ownedSite(request, env, url, sess, tools = {}, { needToken = true
   // The owner of a site whose files Kiln keeps has no GitHub account and nothing to install: when the
   // service cannot reach those files, that is Kiln's to put right, and the person is told so.
   if (!token && needToken && mine) { console.warn(JSON.stringify({ evt: 'kept_not_reached', repo: site.repo })); return { response: keptNotReached() }; }
-  if (!token && needToken) return { response: json({ error: prepareSentence('no_access', { repo: site.repo }), code: 'no_access', install_url: INSTALL_URL }, 409) };
+  if (!token && needToken) return { response: json({ error: prepareSentence('no_access', { repo: site.repo }), code: 'no_access', install_url: await installUrlFor(env) }, 409) };
   return { site: mine ? { ...site, kept: 1 } : site, token, write, body, access };
 }
 
@@ -1917,9 +1921,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const mineNow = await env.kiln_cloud.prepare('SELECT repo FROM sites WHERE account_id = ?').bind(sess.account_id).all();
       have = new Set((mineNow.results || []).map(s => String(s.repo || '').toLowerCase()));
     }
-    let app = null;
-    try { app = await creds(env); } catch { /* no App on record: the fixed address */ }
-    const install_url = installUrl(app);
+    const install_url = await installUrlFor(env);
     return json({
       ok: true,
       installed: reach.installed,
@@ -1970,7 +1972,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       return json({ error: NOT_YOUR_REPO }, 403);
     }
     if (!(await repoInstalled(env, repo))) {
-      return json({ error: 'The Kiln app is not installed on that repository yet.', install_url: INSTALL_URL }, 409);
+      return json({ error: 'The Kiln app is not installed on that repository yet.', install_url: await installUrlFor(env) }, 409);
     }
     const dupe = await env.kiln_cloud.prepare('SELECT id FROM sites WHERE origin = ?').bind(o).first();
     if (dupe) return json({ error: 'That site address is already on Kiln Cloud. If it is yours and you cannot see it here, write to info@kilncms.com.' }, 409);
@@ -2116,7 +2118,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
           return { code };
         }
       };
-      if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: INSTALL_URL });
+      if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: await installUrlFor(env) });
       if (plan.state === 'github') return refused('github', 502);
       if (plan.state === 'prepared') {
         await markPrepared(env, site.id, null);
@@ -2193,7 +2195,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     try {
       const plan = await planFirstPass({ token, repo: site.repo });
       const shown = publicFirstPass(plan, { repo: site.repo });
-      if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: INSTALL_URL });
+      if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: await installUrlFor(env) });
       if (plan.state === 'github') return refused('github', 502);
       if (plan.state === 'nothing') {
         await markFirstPass(env, site.id, null);
@@ -2602,7 +2604,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     try {
       const plan = await planUpdate({ token, repo: site.repo, worker: url.origin, releaseBase: env.KILN_RELEASE_BASE });
       const shown = publicUpdate(plan, { repo: site.repo });
-      if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: INSTALL_URL });
+      if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: await installUrlFor(env) });
       if (plan.state === 'github' || plan.state === 'release') return refused(plan.state, 502);
       if (plan.state !== 'behind' && plan.state !== 'current') {
         // Nothing here to update: say why, and what to do.
@@ -2674,7 +2676,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const lookAt = !up ? site.origin
       : !onDomain ? hosting.url
         : [dom.name, `www.${dom.name}`].includes(hostName(site.origin)) ? site.origin : `https://${dom.name}`;
-    const checks = await checkSite({ token, repo: site.repo, origin: lookAt, hosted: up, ownDomain: onDomain, down, worker: url.origin, installUrl: INSTALL_URL, canAdd: access, kept: isKept, membersOn: membersGateOn(env), preview: up ? previewPattern(env, site) : null });
+    const checks = await checkSite({ token, repo: site.repo, origin: lookAt, hosted: up, ownDomain: onDomain, down, worker: url.origin, installUrl: await installUrlFor(env), canAdd: access, kept: isKept, membersOn: membersGateOn(env), preview: up ? previewPattern(env, site) : null });
     if (dom && dom.state === 'waiting' && dom.name) checks.push(domainWaitingLine({ name: dom.name, seller: publicDomain(dom, { records: false })?.seller?.name }));
     if (!access) {
       let sub = null;
