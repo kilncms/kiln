@@ -65,6 +65,31 @@ const HEADERS_FILE = ['_headers', 'templates/_headers'];
 const CONFIG_FILE = 'assets/kiln-config.js';
 const SIGN_IN_PAGE = 'kiln.html';
 
+// A site Astro builds, done the way the setup tool does it (cli/index.mjs:
+// ASTRO_TAGS, astroShells, generatorPublicDir). Astro bundles any script it
+// can read; `is:inline` tells it these two are files served as they are.
+// Kiln's files go in the folder Astro copies into the built site as it is, and
+// the helper a developer marks each value with goes beside the site's code.
+export const ASTRO_TAGS = KILN_TAGS.map(t => t.replace('<script ', '<script is:inline '));
+export const ASTRO_HELPER = ['src/lib/kiln-astro.mjs', 'integrations/astro/index.mjs'];
+export const ASTRO_GUIDE = 'https://kilncms.com/docs';
+export const MAX_ASTRO_FILES = 400;           // more .astro files than this is the setup tool's job
+const ASTRO_SETTINGS = /^astro\.config\.(mjs|js|cjs|ts|mts)$/i;
+
+/**
+ * Kiln's own files in a site, each with the place it goes. `astro` is an
+ * Astro plan's `astro` ({ publicDir }); with none, the places of a plain site.
+ */
+function ownFiles(astro) {
+  const at = astro ? `${astro.publicDir}/` : '';
+  return {
+    release: [...EDITOR_FILES.map(([to, from]) => [at + to, from]), [at + HEADERS_FILE[0], HEADERS_FILE[1]], ...(astro ? [ASTRO_HELPER] : [])],
+    config: at + CONFIG_FILE,
+    signIn: at + SIGN_IN_PAGE,
+    headers: at + HEADERS_FILE[0],
+  };
+}
+
 export const KILN_PAGE = `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -85,13 +110,15 @@ const quoted = (s) => `'${String(s).replace(/[\\']/g, '\\$&').replace(/[\r\n]/g,
  * of the site's preview addresses on Kiln's hosting (hosting.js:
  * previewPattern), written only for a site that has one: with it the editor
  * writes a suggestion to a branch of its own and shows "Open preview".
+ * `mode` and `adapter` are written for a site a generator builds ('source' and
+ * 'astro'): the editor then changes the files the site is built from.
  */
-export function kilnConfigFile({ repo, branch, worker, siteName = '', preview = '' }) {
+export function kilnConfigFile({ repo, branch, worker, siteName = '', preview = '', mode = '', adapter = '' }) {
   return `window.KILN = {
   repo:   ${quoted(repo)},
   branch: ${quoted(branch)},
   worker: ${quoted(worker)},
-${preview ? `  preview: ${quoted(preview)},\n` : ''}${siteName ? `  siteName: ${quoted(siteName)},\n` : ''}  styles: [],
+${mode ? `  mode:   ${quoted(mode)},\n` : ''}${adapter ? `  adapter: ${quoted(adapter)},\n` : ''}${preview ? `  preview: ${quoted(preview)},\n` : ''}${siteName ? `  siteName: ${quoted(siteName)},\n` : ''}  styles: [],
 };
 `;
 }
@@ -381,7 +408,8 @@ export async function readPages({ token, repo }) {
   const base = { branch, head, treeSha };
 
   const generator = detectGenerators(paths).find(g => g.confidence >= 0.5);
-  if (generator) return { ...base, state: 'built', generator: generator.displayName };
+  // `kind`, `entries` and `cut` are for adding Kiln to a site Astro builds (planPrepareAstro).
+  if (generator) return { ...base, state: 'built', generator: generator.displayName, kind: generator.id, entries, paths, cut: !!tree.truncated };
   const pages = entries.filter(e => isSitePage(e.path)).sort((a, b) => (a.path < b.path ? -1 : 1));
   if (!pages.length) return { ...base, state: 'no_pages' };
   if (tree.truncated || pages.length > MAX_PAGES) return { ...base, state: 'too_big', pageCount: pages.length };
@@ -414,9 +442,13 @@ export async function readPages({ token, repo }) {
   return { ...base, state: 'ok', entries, paths, total: pages.length, files, skipped, templates };
 }
 
-export async function planPrepare({ token, repo, worker, read = null }) {
+export async function planPrepare({ token, repo, worker, read = null, astro = true }) {
   // `read` is what readPages answered, when the caller has read the pages already.
   const site = read || await readPages({ token, repo });
+  // A site Astro builds is added to in its own way. Any other generator is the
+  // setup tool's job. `astro: false` is for a caller that only asks about a
+  // site's own pages (sitecheck.js): it is told 'built', as it always was.
+  if (astro && site.state === 'built' && site.kind === 'astro' && site.entries) return planPrepareAstro({ token, repo, worker, site });
   if (site.state !== 'ok') return site;
   const { entries, paths } = site;
   const base = { branch: site.branch, head: site.head, treeSha: site.treeSha };
@@ -472,11 +504,124 @@ export async function planPrepare({ token, repo, worker, read = null }) {
   };
 }
 
+/**
+ * What adding Kiln would change in a repository Astro builds, from what
+ * readPages answered about it. Writes nothing. Kiln's files go in the public
+ * folder, the helper in src/lib, and the two lines in every .astro file under
+ * src/ that closes <body> (a layout, as a rule). Astro's own settings file is
+ * read and never written. `state` is 'ready' or 'prepared' as for a plain
+ * site, or why nothing can be added from here:
+ *
+ *   astro_no_layout  no .astro file under src/ closes <body>
+ *   astro_unusual    the settings name a base, a source folder, a build folder
+ *                    or a public folder that is not a plain name; or there are
+ *                    more .astro files than this reads
+ *   github           GitHub did not answer
+ */
+export async function planPrepareAstro({ token, repo, worker, site }) {
+  const { entries } = site;
+  const base = { branch: site.branch, head: site.head, treeSha: site.treeSha, generator: site.generator };
+  const stop = (state) => ({ ...base, state });
+
+  let publicDir = 'public';
+  const settings = entries.find(e => ASTRO_SETTINGS.test(e.path));
+  if (settings) {
+    const file = Number(settings.size) > MAX_PAGE_BYTES ? { notText: true } : await readText(token, repo, settings.sha);
+    if (file.failed) return { state: 'github' };
+    if (typeof file.text !== 'string') return stop('astro_unusual');
+    // Comments are left out, so a setting that is only talked about does not count.
+    const src = file.text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    if (/\b(?:base|srcDir|outDir)\s*:/.test(src)) return stop('astro_unusual');
+    if (/\bpublicDir\s*:/.test(src)) {
+      const named = src.match(/\bpublicDir\s*:\s*['"`](?:\.\/)?([^'"`]+?)\/?['"`]/)?.[1];
+      if (!named || !/^[\w.-]+(\/[\w.-]+)*$/.test(named) || named.split('/').some(d => d === '.' || d === '..')) return stop('astro_unusual');
+      publicDir = named;
+    }
+  }
+
+  const astro = entries
+    .filter(e => e.path.startsWith('src/') && e.path.endsWith('.astro') && !e.path.split('/').some(d => d.startsWith('.') || d === 'node_modules'))
+    .sort((a, b) => (a.path < b.path ? -1 : 1));
+  if (site.cut || astro.length > MAX_ASTRO_FILES) return stop('astro_unusual');
+  const read = await inTurn(astro, (e) => (Number(e.size) > MAX_PAGE_BYTES ? { tooLarge: true } : readText(token, repo, e.sha)));
+  // A file GitHub would not hand over might be the layout.
+  if (read.some(r => r.failed)) return { state: 'github' };
+  const changes = [];
+  let already = 0;
+  astro.forEach((e, i) => {
+    const text = read[i].text;
+    if (typeof text !== 'string' || !/<\/body>/i.test(text)) return;
+    const done = withKilnTags(text, ASTRO_TAGS);
+    if (done.state === 'already') already++;
+    else if (done.state === 'added') changes.push({ path: e.path, mode: e.mode || '100644', text: done.html });
+  });
+  if (!changes.length && !already) return stop('astro_no_layout');
+
+  // Kiln's own files: only what is missing, and never in place of a file that is there.
+  const own = ownFiles({ publicDir });
+  const have = new Set(site.paths);
+  const ours = [...EDITOR_FILES.map(([to]) => `${publicDir}/${to}`), own.config, own.signIn, own.headers, ASTRO_HELPER[0]];
+  let add = ours.filter(p => !have.has(p));
+  const kept = ours.filter(p => have.has(p));
+  const ready = changes.length > 0 || add.some(p => p !== own.headers);
+  if (!ready) add = [];
+
+  let otherWorker = null;
+  if (have.has(own.config)) {
+    const cfg = await readText(token, repo, entries.find(e => e.path === own.config).sha);
+    const named = cfg.text ? cfg.text.match(/\bworker\s*:\s*['"`]([^'"`]+)['"`]/)?.[1] : null;
+    const same = (a, b) => { try { return new URL(a).origin === new URL(b).origin; } catch { return a === b; } };
+    if (named && worker && !same(named, worker)) otherWorker = named;
+  }
+  return { ...base, state: ready ? 'ready' : 'prepared', astro: { publicDir, already }, changes, files: { add, kept }, otherWorker };
+}
+
+const listed = (names) => {
+  const shown = names.slice(0, 12), more = names.length - shown.length;
+  if (more) return `${shown.join(', ')} and ${more} more`;
+  return shown.length < 3 ? shown.join(' and ') : `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
+};
+
+/** What a person reads before Kiln is added to a site Astro builds: what the one change will be. */
+export function astroBefore(plan) {
+  const names = plan.changes.map(c => c.path), add = plan.files.add;
+  const files = !add.length ? '' : add.every(p => p === ASTRO_HELPER[0]) ? 'one file of its own to the src folder' : `its own files to the ${plan.astro.publicDir} folder`;
+  const lines = !names.length ? '' : names.length === 1 ? `two lines to your layout file, ${names[0]}` : `two lines to each of your ${names.length} layout files, ${listed(names)}`;
+  return `Astro builds this site. Kiln will add ${[files, lines].filter(Boolean).join(' and ')}. Your pages and your words stay as they are. Press Add Kiln to make this change.`;
+}
+
+/**
+ * What a person reads once Kiln is in a repository Astro builds. On a host of
+ * their own the push starts a build; on Kiln's hosting nothing builds an Astro
+ * site yet, so nothing is said of one. Marking what can be edited is by hand
+ * for now, and the guide at ASTRO_GUIDE shows it.
+ */
+export function astroAfter({ hosted = false } = {}) {
+  return [
+    hosted ? 'Kiln is in your repository.' : 'Kiln is in your repository. Your host is building the site again, which usually takes a minute or two. Then open your site\'s address with /kiln at the end and sign in.',
+    'Nothing on your pages can be edited yet. The person who built the site adds one line for each part you want to edit, and the setup guide shows how.',
+  ];
+}
+
 /** What the dashboard is shown of a plan: counts and names, never a page's text. */
 export function publicPlan(plan, { repo } = {}) {
   const out = { state: plan.state, repo, branch: plan.branch || null };
   if (plan.generator) out.generator = plan.generator;
   if (plan.pageCount) out.page_count = plan.pageCount;
+  if (plan.astro) {
+    // A site Astro builds: the layout files by name, and the sentence that says
+    // what the change will be. `pages` is there, empty, for a dashboard that
+    // was loaded before it knew of `astro`.
+    out.astro = {
+      public_dir: plan.astro.publicDir,
+      layouts: { already: plan.astro.already, add: plan.changes.length, add_names: plan.changes.slice(0, 12).map(c => c.path) },
+      ...(plan.state === 'ready' ? { before: astroBefore(plan) } : {}),
+    };
+    out.pages = { total: 0, already: 0, add: 0, add_names: [], skipped: [], skipped_count: 0 };
+    out.files = plan.files;
+    if (plan.otherWorker) out.other_worker = plan.otherWorker;
+    return out;
+  }
   if (plan.pages) {
     out.pages = {
       total: plan.pages.total,
@@ -531,7 +676,8 @@ export async function applyPrepare({ token, repo, worker, plan, author, releaseB
   const entries = [];
 
   // Kiln's own files, byte for byte as released.
-  const fromRelease = [...EDITOR_FILES, HEADERS_FILE].filter(([to]) => wanted.has(to));
+  const own = ownFiles(plan.astro);
+  const fromRelease = own.release.filter(([to]) => wanted.has(to));
   const fetched = await inTurn(fromRelease, async ([to, from]) => {
     let r;
     try { r = await fetch(`${String(releaseBase).replace(/\/+$/, '')}/${from}`, { headers: { 'User-Agent': UA } }); } catch (e) { throw new PrepareError('release', `${from}: ${e?.message || e}`); }
@@ -547,16 +693,19 @@ export async function applyPrepare({ token, repo, worker, plan, author, releaseB
 
   // The site's own settings, the sign-in page, and each page with its two lines.
   const texts = [];
-  if (wanted.has(CONFIG_FILE)) texts.push({ path: CONFIG_FILE, mode: '100644', text: kilnConfigFile({ repo, branch: plan.branch, worker }) });
-  if (wanted.has(SIGN_IN_PAGE)) texts.push({ path: SIGN_IN_PAGE, mode: '100644', text: KILN_PAGE });
+  if (wanted.has(own.config)) texts.push({ path: own.config, mode: '100644', text: kilnConfigFile({ repo, branch: plan.branch, worker, ...(plan.astro ? { mode: 'source', adapter: 'astro' } : {}) }) });
+  if (wanted.has(own.signIn)) texts.push({ path: own.signIn, mode: '100644', text: KILN_PAGE });
   const templates = plan.templates?.changes || [];
   texts.push(...plan.changes, ...templates);
 
   const n = plan.changes.length, t = templates.length;
-  const message = `Add Kiln to this site\n\n${n ? `${n} page${n === 1 ? ' now loads' : 's now load'} the editor. ` : ''}`
+  const message = plan.astro
+    ? `Add Kiln to this site\n\n${n ? `${n} layout file${n === 1 ? ' now loads' : 's now load'} the editor, so every page built from ${n === 1 ? 'it' : 'them'} does too. ` : ''}Added from the Kiln dashboard by ${author.name}.`
+    : `Add Kiln to this site\n\n${n ? `${n} page${n === 1 ? ' now loads' : 's now load'} the editor. ` : ''}`
     + `${t ? `${t} page template${t === 1 ? ' now loads' : 's now load'} the editor too, so a new page made from ${t === 1 ? 'it' : 'one'} can be edited. ` : ''}Added from the Kiln dashboard by ${author.name}.`;
   const commit = await commitChange({ token, repo, branch: plan.branch, head: plan.head, treeSha: plan.treeSha, entries, texts, message, author });
-  return { ...commit, pages: n, templates: t, files: [...wanted] };
+  // On a site Astro builds the two lines went into layout files, not pages.
+  return { ...commit, pages: plan.astro ? 0 : n, templates: t, files: [...wanted], ...(plan.astro ? { layouts: n } : {}) };
 }
 
 /**
@@ -600,6 +749,8 @@ export async function commitChange({ token, repo, branch, head, treeSha, entries
 export function prepareSentence(code, { repo = 'the repository', generator = '', branch = 'main' } = {}) {
   switch (code) {
     case 'built': return `This site is built by ${generator || 'a site generator'} before it is published, so its pages are made from other files, and Kiln cannot add itself from here yet. Run the setup tool in the site's folder instead.`;
+    case 'astro_no_layout': return 'Kiln could not find the file that ends your pages (a layout with a closing body tag) in the src folder. Nothing was changed. Ask the person who built the site to run the setup tool in the site\'s folder.';
+    case 'astro_unusual': return 'This site is set up in a way Kiln does not add itself to from here yet. Nothing was changed. Ask the person who built the site to run the setup tool in the site\'s folder.';
     case 'no_pages': return `Kiln found no web pages (files ending in .html) in ${repo}. It looks at the top of the repository and in its folders, apart from build folders such as public and dist. If the site's pages are in another repository, add that one instead.`;
     case 'too_big': return `This site has more than ${MAX_PAGES} pages, which is more than Kiln adds itself to from here. Run the setup tool in the site's folder instead.`;
     case 'empty': return `${repo} has no files yet. Put the site's pages in it first, then come back.`;

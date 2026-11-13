@@ -8,14 +8,14 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import worker from '../worker/index.js';
 import { fakeKV, withFetch, githubWrites } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
-import { withKilnTags, isSitePage, KILN_TAGS, KILN_PAGE, kilnConfigFile, MAX_PAGES } from '../worker/prepare.js';
+import { withKilnTags, isSitePage, KILN_TAGS, KILN_PAGE, kilnConfigFile, MAX_PAGES, ASTRO_TAGS, ASTRO_HELPER, MAX_ASTRO_FILES } from '../worker/prepare.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const RELEASE = 'https://raw.githubusercontent.com/kilncms/kiln/release';
@@ -219,7 +219,7 @@ test('prepare: a page keeps its line endings and its byte-order mark, and a page
 
 test('prepare: a site that a generator builds, or that has no pages, is refused with the reason and what to do, and nothing is written', { skip: d1Skip }, async () => {
   const cases = {
-    built: [{ 'astro.config.mjs': 'export default {}', 'src/pages/index.astro': '---\n---\n<h1>Hi</h1>', 'public/robots.txt': '' }, /built by Astro/, true],
+    built: [{ '.eleventy.js': 'module.exports = {}', 'src/index.njk': '<h1>Hi</h1>', 'public/robots.txt': '' }, /built by Eleventy/, true],
     no_pages: [{ 'README.md': '# club', 'public/index.html': page('In a build folder') }, /found no web pages/, false],
   };
   for (const [state, [files, sentence, command]] of Object.entries(cases)) {
@@ -656,4 +656,187 @@ test('prepare, hosted: the pages are read once for both questions', { skip: d1Sk
   await hostIt(hosted.env);
   const reads = async (x) => withFetch(x.handler, async (calls) => { await look(x.env); return calls.filter(c => c.url.startsWith('https://api.github.com/')).length; });
   assert.equal(await reads(hosted), await reads(plain));
+});
+
+// ─── A site Astro builds ──────────────────────────────────────────────────────
+//
+// test/fixtures/astro-site is the test repository erikkwilder/kiln-e2e-astro
+// without Kiln's files and without the two lines in its one template. (Its
+// package-lock.json and its empty .kiln-e2e marker are left out: they play no
+// part.) test/fixtures/astro-site-with-kiln holds the three text files that
+// repository has for Kiln, as they stand there.
+
+const folder = (dir) => {
+  const out = {};
+  (function walk(d) {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) walk(f); else out[path.relative(dir, f).split(path.sep).join('/')] = readFileSync(f, 'utf8');
+    }
+  })(dir);
+  return out;
+};
+const ASTRO_SITE = folder(path.join(ROOT, 'test', 'fixtures', 'astro-site'));
+const WITH_KILN = folder(path.join(ROOT, 'test', 'fixtures', 'astro-site-with-kiln'));
+const HELPER = readFileSync(path.join(ROOT, 'integrations', 'astro', 'index.mjs'));
+const astroRelease = { ...released, 'integrations/astro/index.mjs': HELPER };
+const ASTRO_ADDS = ['public/assets/kiln.js', 'public/assets/kiln-editor.js', 'public/assets/kiln-features.js', 'public/assets/kiln-config.js', 'public/kiln.html', 'public/_headers', 'src/lib/kiln-astro.mjs'];
+const NO_LAYOUT = "Kiln could not find the file that ends your pages (a layout with a closing body tag) in the src folder. Nothing was changed. Ask the person who built the site to run the setup tool in the site's folder.";
+const UNUSUAL = "This site is set up in a way Kiln does not add itself to from here yet. Nothing was changed. Ask the person who built the site to run the setup tool in the site's folder.";
+const AFTER_OWN_HOST = "Kiln is in your repository. Your host is building the site again, which usually takes a minute or two. Then open your site's address with /kiln at the end and sign in.";
+const AFTER_ALWAYS = 'Nothing on your pages can be edited yet. The person who built the site adds one line for each part you want to edit, and the setup guide shows how.';
+
+test('prepare, Astro: looking names the files and the layout file and writes nothing, one press gives the test repository its own tree, file for file, and a second press changes nothing', { skip: d1Skip }, async () => {
+  const { gh, env, handler } = world(ASTRO_SITE, { release: astroRelease });
+  const before = gh.head(), commitsBefore = gh.commits.size;
+  await withFetch(handler, async (calls) => {
+    const seen = await (await look(env)).json();
+    assert.equal(seen.ok, true);
+    assert.equal(seen.state, 'ready');
+    assert.equal(seen.generator, 'Astro');
+    assert.deepEqual(seen.astro, {
+      public_dir: 'public',
+      layouts: { already: 0, add: 1, add_names: ['src/pages/index.astro'] },
+      before: 'Astro builds this site. Kiln will add its own files to the public folder and two lines to your layout file, src/pages/index.astro. Your pages and your words stay as they are. Press Add Kiln to make this change.',
+    });
+    assert.deepEqual(seen.files, { add: ASTRO_ADDS, kept: [] });
+    assert.equal(seen.pages.add, 0, 'a layout file is not counted as a page');
+    assert.deepEqual(githubWrites(calls), []);
+    assert.equal(gh.head(), before);
+
+    const pressed = await press(env);
+    assert.equal(pressed.status, 200);
+    const done = await pressed.json();
+    assert.equal(done.state, 'done');
+    assert.deepEqual(done.astro.after, [AFTER_OWN_HOST, AFTER_ALWAYS]);
+    assert.equal(done.astro.guide, 'https://kilncms.com/docs');
+    assert.equal(done.charset, undefined);
+    assert.equal(done.commit.sha, gh.head());
+  });
+  // One commit, and the tree is the test repository's own.
+  assert.equal(gh.commits.size, commitsBefore + 1);
+  assert.match(lastCommits(gh, 1)[0].message, /^Add Kiln to this site\n\n1 layout file now loads the editor, so every page built from it does too\. Added from the Kiln dashboard by /);
+  assert.deepEqual(gh.paths(), [...Object.keys(ASTRO_SITE), ...ASTRO_ADDS].sort());
+  for (const [p, text] of Object.entries(ASTRO_SITE)) if (p !== 'src/pages/index.astro') assert.equal(gh.read(p), text, `${p} is as it was`);
+  assert.equal(gh.read('public/kiln.html'), WITH_KILN['public/kiln.html']);
+  assert.equal(gh.read('public/assets/kiln-config.js'),
+    WITH_KILN['public/assets/kiln-config.js'].replace('erikkwilder/kiln-e2e-astro', 'ada/club').replace('https://kiln-auth-staging.erikkwilder.workers.dev', 'https://worker.example'),
+    'the settings are the test repository\'s, but for the repository and the service they name');
+  // The two lines are the tool's, at the place and the indentation the tool
+  // gives them. In the test repository they were indented by hand, and that
+  // is the only difference.
+  assert.equal(gh.read('src/pages/index.astro'), ASTRO_SITE['src/pages/index.astro'].replace('</body>', `${ASTRO_TAGS.join('\n')}\n</body>`));
+  assert.equal(gh.read('src/pages/index.astro'), WITH_KILN['src/pages/index.astro'].replace(/^[ \t]+(<script is:inline )/gm, '$1'));
+  assert.equal(gh.read('src/lib/kiln-astro.mjs'), HELPER.toString('utf8'));
+  assert.equal(gh.read('public/_headers'), released['templates/_headers'].toString('utf8'));
+  assert.equal(gh.read('public/assets/kiln.js'), released['dist/kiln.js'].toString('utf8'));
+  assert.ok(prepared(env).prepared_at);
+
+  const after = gh.head();
+  await withFetch(handler, async (calls) => {
+    const again = await press(env);
+    assert.equal(again.status, 200);
+    const body = await again.json();
+    assert.equal(body.state, 'prepared');
+    assert.deepEqual(body.astro, { public_dir: 'public', layouts: { already: 1, add: 0, add_names: [] } });
+    assert.deepEqual(githubWrites(calls), []);
+  });
+  assert.equal(gh.head(), after);
+});
+
+test('prepare, Astro: a site with no layout, or one set up in a way Kiln does not take on from here, is told so and what to do, and nothing is written', { skip: d1Skip }, async () => {
+  const settings = (inner) => ({ ...ASTRO_SITE, 'astro.config.mjs': `import { defineConfig } from 'astro/config';\nexport default defineConfig({ ${inner} });\n` });
+  const many = Object.fromEntries(Array.from({ length: MAX_ASTRO_FILES + 1 }, (_, i) => [`src/components/C${i}.astro`, '<p>x</p>']));
+  const cases = {
+    'no file closes the body': [{ ...ASTRO_SITE, 'src/pages/index.astro': '---\n---\n<h1>Hi</h1>\n' }, 'astro_no_layout', NO_LAYOUT],
+    'no .astro file at all': [{ 'astro.config.mjs': 'export default {}', 'src/pages/index.md': '# Hi', 'public/robots.txt': 'x' }, 'astro_no_layout', NO_LAYOUT],
+    'a base is set': [settings("base: '/docs'"), 'astro_unusual', UNUSUAL],
+    'the source folder is moved': [settings("srcDir: './app'"), 'astro_unusual', UNUSUAL],
+    'the build folder is moved': [settings("outDir: './build'"), 'astro_unusual', UNUSUAL],
+    'the public folder is outside the site': [settings("publicDir: '../shared'"), 'astro_unusual', UNUSUAL],
+    'the public folder is not a plain name': [settings('publicDir: folder'), 'astro_unusual', UNUSUAL],
+    'more .astro files than this reads': [{ ...ASTRO_SITE, ...many }, 'astro_unusual', UNUSUAL],
+  };
+  for (const [name, [files, state, sentence]] of Object.entries(cases)) {
+    const { gh, env, handler } = world(files, { release: astroRelease });
+    const before = gh.head();
+    await withFetch(handler, async (calls) => {
+      const seen = await look(env);
+      assert.equal(seen.status, 200, name);
+      const body = await seen.json();
+      assert.equal(body.ok, false, name);
+      assert.equal(body.state, state, name);
+      assert.equal(body.error, sentence, name);
+      assert.equal(body.command, 'npx github:kilncms/kiln#release', name);
+      const pressed = await press(env);
+      assert.equal(pressed.status, 409, name);
+      const said = await pressed.json();
+      assert.equal(said.code, state, name);
+      assert.equal(said.error, sentence, name);
+      assert.deepEqual(githubWrites(calls), [], name);
+    });
+    assert.equal(gh.head(), before, name);
+    assert.equal(prepared(env).prepared_at, null, name);
+  }
+});
+
+test('prepare, Astro: a public folder named in the settings is used, every layout gets the two lines, and a file that is already there is never replaced', { skip: d1Skip }, async () => {
+  const layout = '---\n---\n<html>\n  <body>\n    <slot />\n  </body>\n</html>\n';
+  const mine = '/*\n  X-Mine: yes\n';
+  const theirs = "window.KILN = { repo: 'ada/club', branch: 'main', worker: 'https://other.example', mode: 'source', adapter: 'astro' };\n";
+  const page = "---\nimport Base from '../layouts/Base.astro';\n---\n<Base><h1>Hi</h1></Base>\n";
+  const { gh, env, handler } = world({
+    ...ASTRO_SITE,
+    // a setting that is only talked about in a comment does not count
+    'astro.config.mjs': "import { defineConfig } from 'astro/config';\n// base: '/x' is how a sub-folder would be named, see https://docs.astro.build\nexport default defineConfig({ publicDir: './static' });\n",
+    'src/layouts/Base.astro': layout, 'src/layouts/Wide.astro': layout, 'src/pages/index.astro': page,
+    'static/_headers': mine, 'static/assets/kiln-config.js': theirs,
+  }, { release: astroRelease });
+  await withFetch(handler, async () => {
+    const seen = await (await look(env)).json();
+    assert.equal(seen.state, 'ready');
+    assert.equal(seen.astro.public_dir, 'static');
+    assert.deepEqual(seen.astro.layouts, { already: 0, add: 2, add_names: ['src/layouts/Base.astro', 'src/layouts/Wide.astro'] });
+    assert.equal(seen.astro.before, 'Astro builds this site. Kiln will add its own files to the static folder and two lines to each of your 2 layout files, src/layouts/Base.astro and src/layouts/Wide.astro. Your pages and your words stay as they are. Press Add Kiln to make this change.');
+    assert.deepEqual(seen.files, { add: ['static/assets/kiln.js', 'static/assets/kiln-editor.js', 'static/assets/kiln-features.js', 'static/kiln.html', 'src/lib/kiln-astro.mjs'], kept: ['static/assets/kiln-config.js', 'static/_headers'] });
+    assert.equal(seen.other_worker, 'https://other.example');
+    assert.equal((await press(env)).status, 200);
+  });
+  const withLines = `---\n---\n<html>\n  <body>\n    <slot />\n  ${ASTRO_TAGS[0]}\n  ${ASTRO_TAGS[1]}\n  </body>\n</html>\n`;
+  assert.equal(gh.read('src/layouts/Base.astro'), withLines);
+  assert.equal(gh.read('src/layouts/Wide.astro'), withLines);
+  assert.equal(gh.read('src/pages/index.astro'), page, 'a page that closes no body is left as it is');
+  assert.equal(gh.read('static/_headers'), mine);
+  assert.equal(gh.read('static/assets/kiln-config.js'), theirs);
+  assert.equal(gh.read('static/kiln.html'), KILN_PAGE);
+  assert.equal(gh.paths().some(p => p.startsWith('public/')), false, 'nothing goes to a folder Astro does not copy');
+  assert.match(lastCommits(gh, 1)[0].message, /2 layout files now load the editor, so every page built from them does too\./);
+});
+
+test('prepare, Astro: the service writes what the setup tool writes (the same two lines, the same settings, the same helper in the same place)', () => {
+  const cli = readFileSync(path.join(ROOT, 'cli', 'index.mjs'), 'utf8');
+  assert.deepEqual(Function('KILN_TAGS', `return ${cli.match(/const ASTRO_TAGS = (.+?);\n/)[1]}`)(KILN_TAGS), ASTRO_TAGS);
+  const config = cli.match(/writeFileSync\(cfgFile, `([\s\S]+?)`\);/)[1];
+  const fromCli = config.replace("'${repo}'", "'ada/club'").replace("'${workerUrl}'", "'https://auth.kilncms.com'")
+    .replace(/\$\{isSource \? `([^`]+)` : ''\}/, (_, lines) => lines.replace('${siteMode.adapter}', 'astro').replace(/\\n/g, '\n'));
+  assert.equal(kilnConfigFile({ repo: 'ada/club', branch: 'main', worker: 'https://auth.kilncms.com', mode: 'source', adapter: 'astro' }), fromCli);
+  assert.ok(cli.includes("path.join('src', 'lib', 'kiln-astro.mjs')") && cli.includes(ASTRO_HELPER[1]));
+  assert.equal(ASTRO_HELPER[0], 'src/lib/kiln-astro.mjs');
+  // A plain site's settings say nothing of a mode.
+  assert.doesNotMatch(kilnConfigFile({ repo: 'ada/club', branch: 'main', worker: 'https://auth.kilncms.com' }), /mode|adapter/);
+});
+
+test('prepare, Astro on Kiln\'s hosting: Kiln is added the same way, nothing is said of a host building the site, and no character-set line is asked for', { skip: d1Skip }, async () => {
+  const { gh, env, handler } = world(ASTRO_SITE, { env: HOSTING, release: astroRelease });
+  await hostIt(env);
+  await withFetch(handler, async () => {
+    const seen = await (await look(env)).json();
+    assert.equal(seen.state, 'ready');
+    assert.equal(seen.charset, undefined);
+    const done = await (await press(env)).json();
+    assert.equal(done.state, 'done');
+    assert.deepEqual(done.astro.after, ['Kiln is in your repository.', AFTER_ALWAYS]);
+    assert.equal(done.charset, undefined);
+  });
+  assert.deepEqual(gh.paths(), [...Object.keys(ASTRO_SITE), ...ASTRO_ADDS].sort());
 });

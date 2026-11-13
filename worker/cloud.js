@@ -40,7 +40,7 @@ import { RUNBOOK_HTML } from './runbook.js';
 import { troubleBody, forDashboard, githubSilent, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN } from './signin-trouble.js';
 import { startSignIn, startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { customerMailOn, mailAddress, addressSql, accountAddress, sendOnce, siteAddedMail, siteStartedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
-import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages, VIA_KILN } from './prepare.js';
+import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages, VIA_KILN, astroAfter, ASTRO_GUIDE } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
@@ -2367,7 +2367,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const hosted = hostingOn(env) && !!(await hostingRow(env, site.id));
       const read = hosted ? await readPages({ token, repo: site.repo }) : null;
       const plan = await planPrepare({ token, repo: site.repo, worker: url.origin, read });
-      const charset = hosted && (plan.state === 'ready' || plan.state === 'prepared') ? await planCharset({ token, repo: site.repo, read }) : null;
+      // A site Astro builds has no pages of its own in the repository to add that line to.
+      const charset = hosted && !plan.astro && (plan.state === 'ready' || plan.state === 'prepared') ? await planCharset({ token, repo: site.repo, read }) : null;
       const owed = !!charset && charset.state === 'ready';
       const shown = { ...publicPlan(plan, { repo: site.repo }), ...(charset ? { charset: publicCharset(charset) } : {}) };
       const author = await commitAuthor(env, sess);
@@ -2404,7 +2405,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       if (plan.state !== 'ready') {
         // A site this cannot take: say why, and what does take it.
         const body = { ok: false, ...shown, error: prepareSentence(plan.state, { repo: site.repo, generator: plan.generator }), code: plan.state,
-          ...(plan.state === 'built' || plan.state === 'too_big' ? { command: SETUP_COMMAND } : {}) };
+          ...(['built', 'too_big', 'astro_no_layout', 'astro_unusual'].includes(plan.state) ? { command: SETUP_COMMAND } : {}) };
         return json(body, write ? 409 : 200);
       }
       if (!write) return json({ ok: true, ...shown });
@@ -2423,7 +2424,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       await markPrepared(env, site.id, done.sha);
       await notifyOwner(env, `Kiln added to ${site.repo}`, [
         `By: ${signedInAs(sess)}, from the dashboard`,
-        `Pages: ${done.pages}. Page templates: ${done.templates || 0}. Files: ${done.files.join(', ') || 'none'}`,
+        `Pages: ${done.pages}. Page templates: ${done.templates || 0}.${done.layouts ? ` Layout files: ${done.layouts}.` : ''} Files: ${done.files.join(', ') || 'none'}`,
         done.url,
       ]);
       // Then the character-set line, on the repository as adding Kiln left it.
@@ -2440,7 +2441,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         } else if (again.state === 'nothing') line = publicCharset(again);
         else line = { ...shown.charset, state: 'not_done', code: again.state, error: charsetSentence(again.state, { repo: site.repo, generator: again.generator, branch: again.branch }) };
       }
-      return json({ ok: true, ...shown, state: 'done', commit: { sha: done.sha, url: done.url }, ...(line ? { charset: line } : {}) });
+      // For a site Astro builds: what happens next, and where the guide is.
+      const next = plan.astro ? { astro: { ...shown.astro, after: astroAfter({ hosted }), guide: ASTRO_GUIDE } } : {};
+      return json({ ok: true, ...shown, ...next, state: 'done', commit: { sha: done.sha, url: done.url }, ...(line ? { charset: line } : {}) });
     } finally {
       if (write) { try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ } }
     }

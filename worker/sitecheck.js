@@ -463,7 +463,7 @@ export async function checkSite({ token, repo, origin, worker, installUrl = INST
     let base = String(origin || '');
     try { base = new URL(base).origin === 'null' ? base : new URL(base).origin; } catch { /* said in the address line */ }
     const [plan, home] = await Promise.all([
-      token ? planPrepare({ token, repo, worker }).catch(() => ({ state: 'github' })) : { state: 'no_access' },
+      token ? planPrepare({ token, repo, worker, astro: false }).catch(() => ({ state: 'github' })) : { state: 'no_access' },
       down ? null : visit(`${base}/`, { read: true, timeoutMs }),
     ]);
     unread = plan.state === 'no_access' || plan.state === 'github';

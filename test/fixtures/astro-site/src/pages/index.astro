@@ -1,0 +1,42 @@
+---
+// The home page. Text that should be editable lives in content files
+// (src/content/…) and is rendered here with one helper call per field, which
+// adds data-kiln-source="<file>#<pointer>" so Kiln knows where each value came
+// from. Text written directly in this file is template code: Kiln never edits it.
+import { getCollection, getEntry, render } from 'astro:content';
+import { kilnSource, kilnBody } from '../lib/kiln-astro.mjs';
+
+const home = await getEntry('site', 'home');
+const iso = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d ?? ''));
+const events = (await getCollection('events')).sort((a, b) => iso(a.data.date).localeCompare(iso(b.data.date)));
+const cards = await Promise.all(events.map(async (entry) => ({ entry, Content: (await render(entry)).Content })));
+---
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kiln e2e (Astro, source mode)</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; }
+    article { border-top: 1px solid #ddd; padding: 1rem 0; }
+    time { color: #555; margin-right: .75rem; }
+    .fixed { color: #777; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 {...kilnSource(home, 'heading')}>{home.data.heading}</h1>
+    <p {...kilnSource(home, 'intro')}>{home.data.intro}</p>
+    <p class="fixed">This sentence is written in src/pages/index.astro itself. It is part of the template, so it cannot be edited on the page.</p>
+    {cards.map(({ entry, Content }) => (
+      <article>
+        <h3 {...kilnSource(entry, 'title')}>{entry.data.title}</h3>
+        <time {...kilnSource(entry, 'date', { type: 'date' })}>{iso(entry.data.date)}</time>
+        <time {...kilnSource(entry, 'start', { type: 'time' })}>{entry.data.start}</time>
+        <p {...kilnSource(entry, 'venue')}>{entry.data.venue}</p>
+        <div {...kilnBody(entry)}><Content /></div>
+      </article>
+    ))}
+  </main>
+</body>
+</html>

@@ -33,6 +33,27 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   showing the site, that email at the domain keeps working, and that the
   three steps for moving are under Moving away on the site's row.
 - **The operator's playbook covers the service as it runs today.** The page at `/admin/cloud/runbook` now has the hosting account, the switches and secrets by name, the timers, every note Kiln sends the operator, each case where a customer is told to write in, free days, hosting, previews, own domains and email forwarding, leaving, accounts, releasing, rolling back, the logs, and a daily and a weekly look.
+- **"Add Kiln to this site" now works for a site that Astro builds.** Until
+  now the button sent the owner of an Astro site to a terminal. It now reads
+  the repository and, with one press, adds Kiln's files to the site's public
+  folder (`public`, or the plain folder named after `publicDir:` in the Astro
+  settings), the helper file `src/lib/kiln-astro.mjs`, and the two lines,
+  written with `is:inline`, to every `.astro` file under `src/` that closes
+  `<body>`. It is one change in the owner's name, it adds only what is
+  missing, it never replaces a file, and it never touches `astro.config.*`.
+  Before the press the owner is told which files and which layout file will
+  change. Afterwards they are told that their host is building the site
+  again, and that nothing can be edited until the person who built the site
+  adds one line for each part, with the address of the guide. When no file
+  under `src/` closes `<body>`, or the Astro settings name a `base`, a
+  `srcDir`, an `outDir` or a public folder that is not a plain name, or there
+  are more than 400 `.astro` files, nothing is changed and the owner is told
+  to ask the person who built the site to run the setup tool. A site Astro
+  builds that is put on Kiln's hosting gets Kiln added the same way; Kiln's
+  hosting still does not build such a site. The first pass at what can be
+  edited, and "Check this site", say what they said before for an Astro site.
+  Sites of plain pages, and sites built by another generator, are not
+  affected.
 - **The service can tell the dashboard which repositories Kiln can reach for
   the person who is signed in.** On the plan where a site lives in your own
   GitHub repository, the dashboard had no way to know whether Kiln's GitHub
