@@ -357,7 +357,36 @@ export async function bringAgain(env, { accountId, id, worker, sign, pkcs1 = nul
 export function cutReport(report) {
   if (typeof report !== 'string') return '';
   const at = report.search(/^## Next steps/m);
-  return (at >= 0 ? report.slice(0, at) : report).trimEnd().slice(0, MOST_REPORT);
+  return withoutCommands(at >= 0 ? report.slice(0, at) : report).trimEnd().slice(0, MOST_REPORT);
+}
+
+/**
+ * The report is written by a tool for a person at a terminal, and some of its
+ * sentences tell the reader to run a command. A customer reading it in the
+ * dashboard has no terminal, and the job has already made those choices for
+ * them, so those sentences are left out: a block of commands, a sentence that
+ * names an option of the tool (--render, --max-pages) or a command, and the
+ * option's name in brackets after a sentence that is otherwise plain.
+ */
+const COMMAND = /--[a-z][a-z-]+|\bnpx\b|\bnpm install\b|\bgit (init|add|commit|push)\b|\bgh repo\b/;
+export function withoutCommands(text) {
+  const out = [];
+  let code = false;
+  for (const raw of String(text || '').split('\n')) {
+    if (/^\s*```/.test(raw)) { code = !code; continue; }
+    if (code) continue;
+    let line = raw.replace(/\s*\((?:`?--[a-z][a-z-]+`?(?:,\s*)?)+\)/g, '');
+    if (COMMAND.test(line)) {
+      const lead = (line.match(/^\s*(?:[-*]|\d+\.)\s+/) || [''])[0];
+      const kept = line.slice(lead.length).split(/(?<=[.!?:])\s+/).filter(part => !COMMAND.test(part));
+      // A sentence that only led up to a command ("Run this instead:") goes with it.
+      while (kept.length && /:$/.test(kept[kept.length - 1])) kept.pop();
+      if (!kept.length) continue;
+      line = lead + kept.join(' ');
+    }
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
 /** Writes the site's own settings file into its repository, over the one the copy may have brought. */

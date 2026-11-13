@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createHmac } from 'node:crypto';
 import worker from '../worker/index.js';
-import { copyAnswered, bringOn, convertRepo, convertWorkflow, cleanAddress, bringSentence, copySentence, copyTrouble, cutReport, signAnswer, signedRight, sweepCopies, MOST_TRIES, COPY_MINUTES } from '../worker/bring.js';
+import { copyAnswered, bringOn, convertRepo, convertWorkflow, cleanAddress, bringSentence, copySentence, copyTrouble, cutReport, signAnswer, signedRight, sweepCopies, MOST_TRIES, COPY_MINUTES, withoutCommands } from '../worker/bring.js';
 import { sweepBrings, accountAuthor } from '../worker/cloud.js';
 import { keepSentence } from '../worker/keeps.js';
 import { kilnConfigFile } from '../worker/prepare.js';
@@ -753,4 +753,44 @@ test('the mail for a copy that did not work: the reason, what to try, that nothi
     'Nothing was charged for this, and your old site was not changed.',
   ]);
   for (const m of [mail, last]) assert.equal(/GitHub|repositor|—|–|undefined/.test(m.text + m.html), false);
+});
+
+test('the report a customer reads leaves out what only a person at a terminal could do', () => {
+  const report = [
+    '# What was copied from https://oakbakery.example',
+    '',
+    '- Pages copied: 12. 30 more addresses were found and not tried, because the run was set to stop after 200 pages (--max-pages). To copy them too, run again with a bigger --max-pages.',
+    '- Marked so you can edit them: 240 pieces of text, 31 pictures, 4 lists of blocks, 12 menus',
+    '',
+    '## What to check',
+    '',
+    '- Phone menu: the button does not open the menu on a phone. Run again with --menu-shim to add a small script that opens it.',
+    'To copy the pages as they look once they are drawn, run the rescue again with `--render`, from the same folder you ran it in:',
+    '',
+    '```',
+    'npx github:kilncms/kiln#release rescue https://oakbakery.example --render --out=site',
+    '```',
+    '',
+    '- Forms that posted into the old site: 1, on /contact. It no longer sends anything.',
+    '',
+    '## Next steps',
+    '',
+    '1. Create a GitHub repo and push (`gh repo create my-site --private --source . --push`).',
+  ].join('\n');
+  const said = cutReport(report);
+  assert.equal(said, [
+    '# What was copied from https://oakbakery.example',
+    '',
+    '- Pages copied: 12. 30 more addresses were found and not tried, because the run was set to stop after 200 pages.',
+    '- Marked so you can edit them: 240 pieces of text, 31 pictures, 4 lists of blocks, 12 menus',
+    '',
+    '## What to check',
+    '',
+    '- Phone menu: the button does not open the menu on a phone.',
+    '',
+    '- Forms that posted into the old site: 1, on /contact. It no longer sends anything.',
+  ].join('\n'));
+  assert.equal(/--|npx|```|Next steps/.test(said), false);
+  // a report with nothing of the kind is as it was
+  assert.equal(withoutCommands('- Pages copied: 3.\n- Scripts taken out: 2.'), '- Pages copied: 3.\n- Scripts taken out: 2.');
 });
