@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-11-13
+
 ### Added
 
 - **A hosted site's own domain can have one email address forwarded to an
