@@ -10,6 +10,25 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A person with no GitHub account can have a Kiln account, and sign in to
+  the dashboard with Google.** The service now answers for it, though the
+  dashboard has no button yet. `GET /cloud/login/google` sends the person to
+  Google with the client the service already has, and Google returns them to
+  `/google/callback`, the address it already knows, so nothing new has to be
+  registered with Google. Only an address Google has confirmed is taken. The
+  account is found again by Google's own id for the person and is never joined
+  to another account, even one with the same address. The dashboard gets its
+  session exactly as after a GitHub sign-in, and `/cloud/me` now says for every
+  account its `name`, its `github_login` (empty for a Google account) and
+  `google: true` or `false`. A sign-in that does not finish is a plain page
+  with a link back to the dashboard. Until Kiln can keep a site's files for
+  such a person, a Google account can add no repository ("Adding a repository
+  of your own needs a GitHub sign-in. Sign out, then sign in with GitHub.")
+  and reach none, and is never the operator. Migration
+  `0008_accounts_without_github.sql` must be applied before the worker is
+  deployed: it rebuilds the `accounts` table so that a login may be empty,
+  keeping every row, and adds `accounts.google_sub`, `accounts.name` and
+  `sites.kept`. Signing in with GitHub is unchanged.
 - **A hosted site's own domain can have one email address forwarded to an
   inbox its owner already reads.** The service now answers the dashboard for
   it, though no page asks yet. `GET /cloud/sites/mail?site=` says what stands

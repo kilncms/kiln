@@ -489,7 +489,7 @@ and are never in a file. A self-hosted worker needs only the rows marked
 | `NOTIFY` | send_email binding | mails operator notes (new signup, billing change, expired trials) to `NOTIFY_TO` | declared in the config; no value | production only; silent everywhere else |
 | `CF_VERSION_METADATA` | version-metadata binding | lets `/healthz` show Cloudflare's record of the upload | declared in the config | staging, production |
 | `ALLOWED_ORIGINS` | variable | the site addresses allowed to sign in (comma-separated). Kiln Cloud sites are allowed from the database instead | you write it | everywhere (self-host too) |
-| `CLOUD_DASHBOARD` | variable | where `/cloud/callback` sends a customer after sign-in | the dashboard's address | staging, production |
+| `CLOUD_DASHBOARD` | variable | where a customer is sent after signing in to the dashboard (`/cloud/callback` for GitHub, `/google/callback` for Google) | the dashboard's address | staging, production |
 | `CLOUD_ADMIN` | variable | GitHub login of the operator, compared only when `CLOUD_ADMIN_ID` is not set | the owner's login | staging, production |
 | `CLOUD_ADMIN_ID` | variable | numeric GitHub id of the operator; when set, it alone decides | `gh api user --jq .id` | staging, production |
 | `AI_MODEL` | variable | overrides the model AI assist uses | optional | where AI assist is on |

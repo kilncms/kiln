@@ -84,8 +84,40 @@ export function backTo(origin) {
   try { const u = new URL(String(origin)); return u.protocol === 'https:' || u.hostname === 'localhost' || u.hostname === '127.0.0.1' ? `${u.origin}/kiln` : null; } catch { return null; }
 }
 
-/** The body of the page (the caller wraps it in the service's page): a heading, the words, and the way back. */
-export function troubleBody(trouble, { origin = null } = {}) {
+/**
+ * The same trouble for a person who was signing in to Kiln's dashboard, not to
+ * a site: the way back is the dashboard, and the words say so.
+ */
+export function forDashboard(trouble) {
+  const words = String(trouble.words)
+    .replace(/o back to the site and sign in again/g, 'o back to the Kiln dashboard and sign in again')
+    .replace('sign-ins through to this site just now', 'sign-ins through to Kiln just now')
+    .replace('your account or with the site.', 'your account.');
+  return { ...trouble, words };
+}
+/** Google sent a person who was signing in to the dashboard back without a sign-in (they pressed Cancel, or Google refused). */
+export const DASHBOARD_SIGN_IN_STOPPED = { code: 'stopped', status: 400, heading: 'The sign-in did not finish',
+  words: 'Google sent you back without signing you in. Nothing is wrong with your account. Go back to the Kiln dashboard and sign in again.' };
+/** Google signed the person in, and Kiln could not find or make their account. */
+export const ACCOUNT_NOT_READY = { code: 'account', status: 503, heading: 'Kiln could not open your account just now',
+  words: 'Google signed you in, but Kiln could not open your account this time. Nothing is wrong with your Google account. Go back to the Kiln dashboard and sign in again in a few minutes. If it keeps happening, write to info@kilncms.com.' };
+/** This service has no Google sign-in. */
+export const NO_GOOGLE_SIGN_IN = { code: 'no_google', status: 503, heading: 'Google sign-in is not set up here yet',
+  words: 'This Kiln service cannot sign anybody in with Google yet. That is for whoever runs the service to put right. Go back to the Kiln dashboard and sign in with GitHub, or write to info@kilncms.com.' };
+
+/** The dashboard's address, when it is a real web address a person can be sent back to. */
+function dashboardLink(address) {
+  try { const u = new URL(String(address)); return u.protocol === 'https:' || u.hostname === 'localhost' || u.hostname === '127.0.0.1' ? u.toString() : null; } catch { return null; }
+}
+
+/**
+ * The body of the page (the caller wraps it in the service's page): a heading,
+ * the words, and the way back. `origin` is the site the person came from;
+ * `dashboard` is the dashboard's address, for a person who came from there.
+ */
+export function troubleBody(trouble, { origin = null, dashboard = null } = {}) {
+  const dash = dashboard ? dashboardLink(dashboard) : null;
+  if (dash) return `<h1>${esc(trouble.heading)}</h1><p>${esc(trouble.words)}</p><p><a href="${esc(dash)}">Back to the Kiln dashboard</a></p>`;
   const back = backTo(origin);
   return `<h1>${esc(trouble.heading)}</h1><p>${esc(trouble.words)}</p>${back ? `<p><a href="${esc(back)}">Back to the sign-in page</a></p>` : ''}`;
 }

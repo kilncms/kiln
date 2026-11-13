@@ -83,7 +83,7 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.6.6';
 
-import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
+import { handleCloud, googleDashboardSignIn, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
 import { githubTrouble, googleTrouble, troubleBody, troubleLog, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
@@ -160,7 +160,7 @@ async function routeRequest(request, env, ctx) {
         if (limited) return limited;
       }
       // The dashboard's routes get the App's token for a repository from here (cloud.js cannot import this file).
-      const r = await handleCloud(request, env, url, path, { installationToken });
+      const r = await handleCloud(request, env, url, path, { installationToken, page: html });
       if (r) return await cors(env, request, r);
     }
 
@@ -2785,14 +2785,14 @@ async function googleLogin(url, env) {
   return Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`, 302);
 }
 
-async function googleCallback(url, env) {
-  const code = url.searchParams.get('code');
-  const nonce = url.searchParams.get('state');
-  if (!code || !nonce) return html(troubleBody(HALF_A_SIGN_IN), HALF_A_SIGN_IN.status);
-  const state = await env.KILN.get(`gstate:${nonce}`, 'json');
-  if (!state) return html(troubleBody(STALE_SIGN_IN), STALE_SIGN_IN.status);
-  await env.KILN.delete(`gstate:${nonce}`);
-
+/**
+ * Google's last step, for both ways in (a site's editors and members below,
+ * and Kiln's dashboard in cloud.js): the code Google sent the person back
+ * with is swapped for who they are. Answers { info } for a token made for
+ * this service whose address Google has confirmed, or { trouble }, the page
+ * to show (signin-trouble.js), already logged.
+ */
+async function googleIdentity(url, env, code) {
   const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -2808,15 +2808,40 @@ async function googleCallback(url, env) {
   if (!tok || !tok.id_token) {
     const trouble = googleTrouble({ status: tokenRes.status, tok });
     console.warn(troubleLog('google', trouble, { status: tokenRes.status, tok }));
-    return html(troubleBody(trouble, { origin: state.origin }), trouble.status);
+    return { trouble };
   }
 
   // Google validates the token's signature for us; we check it's OUR token.
   const infoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(tok.id_token)}`);
   const info = await infoRes.json().catch(() => ({}));
-  if (!infoRes.ok || info.aud !== env.GOOGLE_CLIENT_ID || info.email_verified !== 'true') {
-    return html(troubleBody(UNCONFIRMED_GOOGLE, { origin: state.origin }), UNCONFIRMED_GOOGLE.status);
+  if (!infoRes.ok || info.aud !== env.GOOGLE_CLIENT_ID || info.email_verified !== 'true') return { trouble: UNCONFIRMED_GOOGLE };
+  return { info };
+}
+
+async function googleCallback(url, env) {
+  const code = url.searchParams.get('code');
+  const nonce = url.searchParams.get('state');
+  if (!code || !nonce) {
+    // A person who pressed Cancel at Google on the way to the dashboard comes
+    // back with their state and no code: they get the dashboard's page.
+    const waiting = nonce ? await env.KILN.get(`gstate:${nonce}`, 'json') : null;
+    if (waiting && waiting.for === 'dashboard') {
+      await env.KILN.delete(`gstate:${nonce}`);
+      return googleDashboardSignIn(env, waiting, { page: html });
+    }
+    return html(troubleBody(HALF_A_SIGN_IN), HALF_A_SIGN_IN.status);
   }
+  const state = await env.KILN.get(`gstate:${nonce}`, 'json');
+  if (!state) return html(troubleBody(STALE_SIGN_IN), STALE_SIGN_IN.status);
+  await env.KILN.delete(`gstate:${nonce}`);
+
+  // A sign-in to Kiln's dashboard (cloud.js, /cloud/login/google) comes back
+  // to this same address, so that Google needs no second one on its list.
+  if (state.for === 'dashboard') return googleDashboardSignIn(env, state, { page: html, identity: () => googleIdentity(url, env, code) });
+
+  const who = await googleIdentity(url, env, code);
+  if (who.trouble) return html(troubleBody(who.trouble, { origin: state.origin }), who.trouble.status);
+  const info = who.info;
 
   // Checked again here: the site's address may have changed hands in the ten
   // minutes since googleLogin.

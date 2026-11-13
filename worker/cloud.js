@@ -3,6 +3,8 @@
  *
  * Routes (all behind handleCloud):
  *   GET  /cloud/login            → GitHub OAuth (identity only)
+ *   GET  /cloud/login/google     → Google sign-in for a person with no GitHub account; Google returns to
+ *                                  /google/callback (index.js), which hands a dashboard sign-in to googleDashboardSignIn
  *   GET  /cloud/callback         → upsert account, set session cookie, → dashboard
  *   GET  /cloud/me               → { account, sites }
  *   POST /cloud/sites            → register a site (verify repo install) → checkout URL
@@ -34,6 +36,7 @@
  */
 
 import { RUNBOOK_HTML } from './runbook.js';
+import { troubleBody, forDashboard, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN } from './signin-trouble.js';
 import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
@@ -61,6 +64,12 @@ const NOT_YOUR_REPO = 'The GitHub account you signed in with cannot change that 
 const json = (obj, status = 200, headers = {}) =>
   new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json', ...headers } });
 const uuid = () => crypto.randomUUID();
+// What a person signed in with Google is told when they ask for something that takes a GitHub account.
+const NEEDS_GITHUB_TO_ADD = 'Adding a repository of your own needs a GitHub sign-in. Sign out, then sign in with GitHub.';
+const NEEDS_GITHUB_FOR_SITE = 'This site is in a GitHub repository, and you are signed in with Google. Sign out, then sign in with GitHub.';
+// A bare page, for a caller that hands over none of its own (index.js hands its `html`).
+const plainPage = (body, status = 200) => new Response(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kiln</title></head><body>${body}</body></html>`,
+  { status, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
 const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
 // ─── GitHub identity (reuses the GitHub App's OAuth client) ───────────────────
@@ -152,6 +161,51 @@ async function upsertAccount(env, login, email) {
   await env.kiln_cloud.prepare('INSERT INTO accounts (id, github_login, email, created_at) VALUES (?,?,?,?)')
     .bind(id, login, email || null, Date.now()).run();
   return { id, github_login: login, email, ls_customer_id: null };
+}
+
+/**
+ * The account of a person who signed in to the dashboard with Google: found by
+ * Google's own id for them, or made the first time, with the address and name
+ * Google gave and no GitHub login. Nothing else is looked at. An account that
+ * signed in with GitHub is never found or changed here, whatever its address,
+ * and two accounts with the same address stay two accounts.
+ */
+async function googleAccount(env, { sub, email, name }) {
+  const find = () => env.kiln_cloud.prepare('SELECT * FROM accounts WHERE google_sub = ?').bind(sub).first();
+  const existing = await find();
+  if (existing) return existing;
+  const id = uuid();
+  try {
+    await env.kiln_cloud.prepare('INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES (?,?,?,?,?,?)')
+      .bind(id, null, email || null, name || null, sub, Date.now()).run();
+  } catch (e) {
+    const other = await find();   // two sign-ins at the same moment: the other one made the account
+    if (other) return other;
+    throw e;
+  }
+  return { id, github_login: null, email: email || null, name: name || null, google_sub: sub, ls_customer_id: null };
+}
+
+/** A dashboard session with no GitHub person behind it: the person signed in with Google. */
+function withoutGitHub(sess) { return !!sess && !sess.login && !!sess.google; }
+
+/** Who is signed in, for a note to the operator: the GitHub login, or the Google address. */
+export function signedInAs(sess) { return sess.login || sess.google?.email || 'somebody signed in with Google'; }
+
+/**
+ * Whose name a change made from the dashboard carries in the repository's
+ * history. A person signed in with GitHub is the author as GitHub knows them.
+ * A person signed in with Google has no GitHub name: the author is their own
+ * name with "(via Kiln)" after it, and the address on their account.
+ */
+export async function commitAuthor(env, sess) {
+  if (sess.login) {
+    const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
+    return { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` };
+  }
+  const email = (await accountEmail(env, sess.account_id)) || sess.google?.email || null;
+  const name = String(sess.google?.name || '').trim() || String(email || 'Somebody').split('@')[0];
+  return { name: `${name} (via Kiln)`, email };
 }
 
 // ─── Lemon Squeezy ────────────────────────────────────────────────────────────
@@ -1169,6 +1223,7 @@ export async function expireStaleTrials(env) {
  */
 export function isCloudAdmin(sess, env) {
   if (!sess) return false;
+  if (withoutGitHub(sess)) return false;   // the operator is a GitHub person: a Google sign-in is never the operator
   const id = String(env.CLOUD_ADMIN_ID || '').trim();
   if (id) return /^\d+$/.test(id) && sess.uid != null && String(sess.uid) === id;
   return !!env.CLOUD_ADMIN && sess.login === env.CLOUD_ADMIN;
@@ -1216,6 +1271,11 @@ export async function markFirstPass(env, siteId, commit) {
  */
 async function ownedSite(request, env, url, sess, tools = {}, { needToken = true, needAccess = true } = {}) {
   if (!sess) return { response: json({ error: 'not signed in' }, 401) };
+  // A person signed in with Google has no GitHub account, so there is no
+  // repository they could be checked against. Every site is refused for now.
+  // Part B of "Kiln keeps the files" adds the one rule that lets them in: a
+  // site with `kept = 1` whose row carries their account.
+  if (withoutGitHub(sess)) return { response: json({ error: NEEDS_GITHUB_FOR_SITE, code: 'needs_github' }, 403) };
   const write = request.method === 'POST';
   const body = write ? await request.json().catch(() => ({})) : {};
   // A POST names the site `id`. `site` is taken too: it is the word the design of the domain routes uses.
@@ -1240,6 +1300,39 @@ async function ownedSite(request, env, url, sess, tools = {}, { needToken = true
   return { site, token, write, body, access };
 }
 
+/**
+ * The last step of a Google sign-in to the dashboard. index.js's
+ * /google/callback hands it over when the state it kept says
+ * `for: 'dashboard'` (written by /cloud/login/google below), together with
+ * `identity`: its own swap of Google's code for who the person is, so there is
+ * one copy of that. Only an address Google has confirmed is taken. The person
+ * then goes back to the dashboard with `#kc_token=<sid>`, exactly as after a
+ * GitHub sign-in, and the session says there is no GitHub person behind it.
+ * Anything that goes wrong is a plain page with the way back to the dashboard.
+ * Called with no `identity`, Google sent the person back without a sign-in.
+ */
+export async function googleDashboardSignIn(env, state, { identity = null, page = plainPage } = {}) {
+  const dash = (state && state.dash) || env.CLOUD_DASHBOARD || 'https://app.kilncms.com';
+  const refuse = (trouble, detail = '') => {
+    console.warn(JSON.stringify({ evt: 'cloud_signin_not_finished', stage: `google_${trouble.code}`, detail: String(detail || '').slice(0, 160) }));
+    return page(troubleBody(forDashboard(trouble), { dashboard: dash }), trouble.status);
+  };
+  if (typeof identity !== 'function') return refuse(DASHBOARD_SIGN_IN_STOPPED);
+  const who = await identity();
+  if (!who || who.trouble) return refuse((who && who.trouble) || DASHBOARD_SIGN_IN_STOPPED);
+  const info = who.info || {};
+  const sub = String(info.sub || '').trim();
+  const email = mailAddress(String(info.email || '').toLowerCase());
+  if (!sub || !email || String(info.email_verified) !== 'true') return refuse(UNCONFIRMED_GOOGLE);
+  const name = String(info.name || '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 120) || null;
+  let account;
+  try { account = await googleAccount(env, { sub, email, name }); }
+  catch (e) { return refuse(ACCOUNT_NOT_READY, e && e.message); }
+  const sid = uuid();
+  await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: account.id, login: null, uid: null, gh: null, google: { sub, email, name } }), { expirationTtl: 30 * 24 * 3600 });
+  return Response.redirect(`${dash}#kc_token=${sid}`, 302);   // the dashboard reads and keeps this, as after a GitHub sign-in
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 export async function handleCloud(request, env, url, path, tools = {}) {
@@ -1252,6 +1345,24 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     await env.KILN.put(`cstate:${nonce}`, '1', { expirationTtl: 600 });
     const params = new URLSearchParams({ client_id: c.client_id, redirect_uri: `${url.origin}/cloud/callback`, state: nonce });
     return Response.redirect(`https://github.com/login/oauth/authorize?${params}`, 302);
+  }
+
+  // The same for a person with no GitHub account: Google says who they are.
+  // Google sends them back to /google/callback (index.js), the one address it
+  // already has for this service, and the state kept here says the sign-in is
+  // for the dashboard, so that callback hands it to googleDashboardSignIn.
+  // Where the person goes back to is this service's own setting, as it is for
+  // /cloud/login: nothing in the request can name another place.
+  if (path === '/cloud/login/google') {
+    const page = typeof tools.page === 'function' ? tools.page : plainPage;
+    if (!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET)) return page(troubleBody(NO_GOOGLE_SIGN_IN, { dashboard: dash }), NO_GOOGLE_SIGN_IN.status);
+    const nonce = uuid();
+    await env.KILN.put(`gstate:${nonce}`, JSON.stringify({ for: 'dashboard', dash }), { expirationTtl: 600 });
+    const params = new URLSearchParams({
+      client_id: env.GOOGLE_CLIENT_ID, redirect_uri: `${url.origin}/google/callback`, response_type: 'code',
+      scope: 'openid email profile', state: nonce, prompt: 'select_account',
+    });
+    return Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`, 302);
   }
 
   if (path === '/cloud/callback') {
@@ -1297,7 +1408,13 @@ export async function handleCloud(request, env, url, path, tools = {}) {
 
   if (path === '/cloud/me') {
     if (!sess) return json({ error: 'not signed in' }, 401);
-    const account = await env.kiln_cloud.prepare('SELECT id, github_login, email, ls_customer_id FROM accounts WHERE id = ?').bind(sess.account_id).first();
+    // `name` and `google_sub` arrive with migration 0008. A database it has not
+    // reached has neither, and every account there signed in with GitHub.
+    let row;
+    try { row = await env.kiln_cloud.prepare('SELECT id, github_login, email, ls_customer_id, name, google_sub FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
+    catch { row = await env.kiln_cloud.prepare('SELECT id, github_login, email, ls_customer_id FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
+    // `google` says the person signs in with Google. Google's id for them stays here.
+    const account = row ? { id: row.id, github_login: row.github_login || null, email: row.email ?? null, ls_customer_id: row.ls_customer_id ?? null, name: row.name || null, google: !!row.google_sub } : null;
     const sites = await withAccessUntil(
       () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until, created_at, ls_subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
       () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, created_at, ls_subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
@@ -1359,6 +1476,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
 
   if (path === '/cloud/sites' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
+    // A person signed in with Google has no GitHub account to own a repository with.
+    if (withoutGitHub(sess)) return json({ error: NEEDS_GITHUB_TO_ADD, code: 'needs_github' }, 403);
     const { repo, origin, plan, email } = await request.json().catch(() => ({}));
     if (!repo || !origin) return json({ error: 'Enter both the repository and the live site address.' }, 400);
     if (email !== undefined && email !== null && email !== '' && !mailAddress(email)) return json({ error: 'That does not look like an email address. Please check it and try again.' }, 400);
@@ -1399,7 +1518,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     await notifyOwner(env, `New Kiln site: ${site.repo}`, [
       `Plan: ${site.plan} (trialing)`,
       `Origin: ${site.origin}`,
-      `Registered by: ${sess.login}`,
+      `Registered by: ${signedInAs(sess)}`,
       checkout ? 'A checkout link was issued.' : 'No checkout: billing is not configured.',
     ]);
     return json({ ok: true, site, checkout });   // checkout null until LS is configured
@@ -1431,8 +1550,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const charset = hosted && (plan.state === 'ready' || plan.state === 'prepared') ? await planCharset({ token, repo: site.repo, read }) : null;
       const owed = !!charset && charset.state === 'ready';
       const shown = { ...publicPlan(plan, { repo: site.repo }), ...(charset ? { charset: publicCharset(charset) } : {}) };
-      const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
-      const author = { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` };
+      const author = await commitAuthor(env, sess);
       // The character-set line is its own commit, as it is when a site first
       // goes on Kiln's hosting: the commit says the one thing it does, a site
       // made ready either way has the same history, and if one of the two
@@ -1440,7 +1558,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const addCharset = async (from) => {
         try {
           const done = await applyCharset({ token, repo: site.repo, plan: from, author, asked: 'from the dashboard' });
-          await notifyOwner(env, `Character set named on the pages of ${site.repo}`, [`By: ${sess.login}, from the dashboard`, `Pages: ${done.pages}. Page templates: ${done.templates}`, done.url]);
+          await notifyOwner(env, `Character set named on the pages of ${site.repo}`, [`By: ${signedInAs(sess)}, from the dashboard`, `Pages: ${done.pages}. Page templates: ${done.templates}`, done.url]);
           return { commit: { sha: done.sha, url: done.url } };
         } catch (e) {
           const code = e instanceof PrepareError ? e.code : 'github';
@@ -1484,7 +1602,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       }
       await markPrepared(env, site.id, done.sha);
       await notifyOwner(env, `Kiln added to ${site.repo}`, [
-        `By: ${sess.login}, from the dashboard`,
+        `By: ${signedInAs(sess)}, from the dashboard`,
         `Pages: ${done.pages}. Page templates: ${done.templates || 0}. Files: ${done.files.join(', ') || 'none'}`,
         done.url,
       ]);
@@ -1536,10 +1654,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       }
       if (!write) return json({ ok: true, ...shown });
 
-      const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
+      const author = await commitAuthor(env, sess);
       let done;
       try {
-        done = await applyFirstPass({ token, repo: site.repo, plan, author: { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` } });
+        done = await applyFirstPass({ token, repo: site.repo, plan, author });
       } catch (e) {
         const code = e instanceof PrepareError ? e.code : 'github';
         console.warn(JSON.stringify({ evt: 'firstpass_failed', repo: site.repo, code, detail: e instanceof PrepareError ? e.detail : String(e?.message || e).slice(0, 200) }));
@@ -1590,10 +1708,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const BUSY = 'Kiln is already putting this site up. Give it a minute, then reload this page.';
     let care = null;
     if (!row || !row.deployed_at || await careOwed(env, site.id)) {
-      const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
+      const author = await commitAuthor(env, sess);
       care = await lookAfter(env, {
         site, token, worker: url.origin,
-        author: { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` },
+        author,
         firstpassAt: (await preparedTimes(env, sess.account_id))[site.id]?.firstpass_at || null,
         record: { prepared: (sha) => markPrepared(env, site.id, sha), firstPass: (sha) => markFirstPass(env, site.id, sha) },
       });
@@ -1604,7 +1722,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     if (out.state === 'busy') return json({ error: BUSY, code: 'busy', ...looked }, 409);
     if (out.state === 'failed') return json({ error: out.error || hostingSentence(out.reason), code: out.reason || 'cloudflare', hosting: out, ...looked }, 502);
     if (out.state === 'live' && !row) {
-      await notifyOwner(env, `Kiln hosts ${site.repo}`, [`By: ${sess.login}`, `Address: ${out.url}`, `Files: ${out.files}`,
+      await notifyOwner(env, `Kiln hosts ${site.repo}`, [`By: ${signedInAs(sess)}`, `Address: ${out.url}`, `Files: ${out.files}`,
         ...(care || []).map(c => `${c.step}: ${c.state}${c.code ? ` (${c.code})` : ''}${c.commit ? ` ${c.commit.url}` : ''}`)]);
     }
     return json({ ok: out.state === 'live', hosting: out, ...looked, ...(out.state !== 'live' ? { error: out.error, code: out.reason } : {}) });
@@ -1677,7 +1795,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         const fresh = await domainRow(env, site.id);
         await tellNameServers(env, sess.account_id, site, fresh);
         await notifyOwner(env, `Kiln is setting up ${name} for ${site.repo}`, [
-          `By: ${sess.login}`, ...(again ? ['This is the zone from its last set-up, taken up again. No new zone was made.'] : []), `Name servers to enter: ${made.nameServers.join(', ')}`, `Bought at: ${seller || 'not known'}`, `Records kept: ${made.records.length}`,
+          `By: ${signedInAs(sess)}`, ...(again ? ['This is the zone from its last set-up, taken up again. No new zone was made.'] : []), `Name servers to enter: ${made.nameServers.join(', ')}`, `Bought at: ${seller || 'not known'}`, `Records kept: ${made.records.length}`,
           'The site goes live at the domain once its owner has changed the name servers.']);
         return json({ ok: true, domain: publicDomain(fresh) });
       } finally {
@@ -1948,12 +2066,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       await noteRepoBuild(env, site.repo, plan.installed);
       if (plan.state === 'current' || !write) return json({ ok: true, ...shown });
 
-      const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
+      const author = await commitAuthor(env, sess);
       let done;
       try {
         done = await applyUpdate({
           token, repo: site.repo, plan,
-          author: { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` },
+          author,
           releaseBase: env.KILN_RELEASE_BASE,
         });
       } catch (e) {
@@ -1963,7 +2081,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       }
       await noteRepoBuild(env, site.repo, done.to);
       await notifyOwner(env, `Kiln editor updated in ${site.repo}`, [
-        `By: ${sess.login}, from the dashboard`,
+        `By: ${signedInAs(sess)}, from the dashboard`,
         `Editor: ${done.from || 'an unstamped one'} to ${done.to}. Files: ${done.files.join(', ') || 'none'}`,
         done.url,
       ]);
@@ -2149,6 +2267,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         try { eb = r.repo ? await env.KILN.get(`ebuild:${r.repo}`, 'json') : null; } catch { eb = null; }
         r.editor_build = eb?.build || null;
         r.editor_seen = eb?.at || null;
+        r.who = r.github_login || r.email || null;   // an account that signed in with Google has no login: its address stands for it
       }
       const active = rows.filter(s => s.status === 'active');
       const price = (p) => p === 'managed' ? 14.99 : 4.99;
@@ -2251,7 +2370,7 @@ function buildInsights(rows, accountCount, price) {
     // Self-serve trials (no LS subscription) auto-expire 7 days after creation.
     if (s.status === 'trialing' && !s.ls_subscription_id) {
       const daysLeft = Math.ceil((s.created_at + 7 * day - now) / day);
-      trialsExpiring.push({ id: s.id, repo: s.repo, github_login: s.github_login, daysLeft });
+      trialsExpiring.push({ id: s.id, repo: s.repo, github_login: s.github_login || null, email: s.email || null, who: s.github_login || s.email || null, daysLeft });
     }
   }
   const paying = byStatus.active;
