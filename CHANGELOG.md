@@ -6,6 +6,27 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The service can set a hosted site up on its owner's own domain.** This is
+  the service's side only: the dashboard's panel, and the step that makes the
+  site live at the domain by itself, come next. For a site that is up on
+  Kiln's hosting, the service looks at a domain and changes nothing: who it
+  was bought from, whether it has email, which records Kiln can see, and
+  anything that must be done first (DNSSEC switched off where the domain was
+  bought, a domain bought at Cloudflare, a name nobody owns). Setting it up
+  makes everything ready on Kiln's side and leaves the domain's email records
+  working. The records the old host left for every name are dropped, and
+  every other record is kept. The owner gets an email with the two name
+  servers to enter where the domain was bought, a link to that company's own
+  instructions when Kiln knows them, how many records Kiln kept, and the day
+  the set-up is put away if nothing happens. Until the name servers are
+  changed, the site and its email stay where they are. The owner can ask Kiln
+  to look again, stop a set-up that is not live yet, and download the
+  domain's records as a file. A site whose editing is switched off can still
+  do those three, so nobody is trapped. The list of sites says whether the
+  service can do this at all and where each site's domain stands.
+
 ### Fixed
 
 - **A sign-in that fails at its last step says so in plain words.** When

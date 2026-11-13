@@ -1,0 +1,622 @@
+/**
+ * A hosted site on its owner's own domain, as the dashboard asks for it: the
+ * look that changes nothing, the set-up and its lock, "check now", stopping,
+ * the records to download, the email with the two name servers, and what
+ * /cloud/me says (the routes in worker/cloud.js over worker/domain.js, and
+ * the mail in worker/mail.js). The real handlers run over the SQLite-backed
+ * D1 stand-in, an in-memory Cloudflare, and a stand-in for the registry and
+ * the public DNS. The domains are made up (the ".test" ending is kept for
+ * this). Nothing here touches the network.
+ *
+ * The step that makes a domain live is not built yet (cloud.js
+ * domainTookHold): where a test says so, it is to change with that step.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import worker from '../worker/index.js';
+import { fakeKV, withFetch } from './worker-harness.js';
+import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
+import { fakeGitHub } from './github-fake.js';
+import { fakeCloudflare, fakeLookups } from './cloudflare-fake.js';
+import { domainSentence, domainRow, saveDomain, LIMITS } from '../worker/domain.js';
+import { domainTookHold, siteHasAccess } from '../worker/cloud.js';
+import { domainNameServersMail, dayWords } from '../worker/mail.js';
+
+const N = 'oakbakery.test';
+const WORKER = 'club-site1';
+const GODADDY = 'https://www.godaddy.com/help/change-my-domain-nameservers-664';
+const GENERAL = 'https://developers.cloudflare.com/dns/nameservers/update-nameservers/';
+
+// What Cloudflare's copy finds: the website, the email, and a shop at another company.
+const scanned = [
+  { type: 'A', name: N, content: '203.0.113.10' },
+  { type: 'CNAME', name: `www.${N}`, content: N },
+  { type: 'MX', name: N, content: 'aspmx.l.google.com', priority: 1 },
+  { type: 'TXT', name: N, content: '"v=spf1 include:_spf.google.com ~all"' },
+  { type: 'CNAME', name: `shop.${N}`, content: 'shops.myshopify.com' },
+];
+// What the world knows of the domain. The copy above misses the last one.
+const known = (over = {}) => ({ [N]: {
+  seller: { name: 'GoDaddy.com, LLC', id: 146 }, nameServers: ['ns51.domaincontrol.com', 'ns52.domaincontrol.com'], dnssec: false,
+  dns: [
+    { name: N, type: 'MX', data: '1 aspmx.l.google.com.' },
+    { name: N, type: 'TXT', data: '"v=spf1 include:_spf.google.com ~all"' },
+    { name: `_dmarc.${N}`, type: 'TXT', data: '"v=DMARC1; p=none"' },
+  ],
+  ...over,
+} });
+
+/** One account with one site on the hosting plan, up on Kiln's hosting unless `hosted` is false. */
+function world({ domains = known(), down = {}, env: extra = {}, hosted = true } = {}) {
+  const gh = fakeGitHub({ repo: 'ada/club', files: { 'index.html': '<!doctype html><h1>Home</h1>' } });
+  const cf = fakeCloudflare();
+  const dns = fakeLookups(domains, down);
+  cf.scanFinds(N, scanned);
+  const sent = [];
+  const env = cloudEnv(fakeKV({ 'itok:ada/club': 'inst-token' }), {
+    HOSTING_ACCOUNT_ID: cf.account, HOSTING_API_TOKEN: cf.token, HOSTING_SUBDOMAIN: 'kiln-sites',
+    NOTIFY: { send: async (m) => { sent.push(m); return { messageId: '<1@kilncms.com>' }; } }, CUSTOMER_MAIL_FROM: 'hello@kilncms.com', CLOUD_DASHBOARD: 'https://app.example',
+    ...extra,
+  });
+  addSite(env, { id: 'site1', plan: 'managed', status: 'trialing' });
+  if (hosted) {
+    cf.addScript(WORKER);
+    env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, deployed_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'site1', WORKER, `https://${WORKER}.kiln-sites.workers.dev`, 'live', 1, 1, 1);
+  }
+  const handler = async (url, init) => (await cf.handler(url, init)) || (await dns.handler(url, init)) || gh.handler(url, init);
+  return { cf, dns, env, handler, sent, mails: () => sent.filter(m => m.subject), notes: () => sent.filter(m => m.raw) };
+}
+const ask = (env, method, pathname, body, token = 'tok') => worker.fetch(new Request(`https://worker.example${pathname}`, {
+  method, headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined,
+}), env);
+const standing = (env) => ask(env, 'GET', '/cloud/sites/domain?site=site1');
+const lookAt = (env, name = N) => ask(env, 'GET', `/cloud/sites/domain?site=site1&name=${encodeURIComponent(name)}`);
+const setup = (env, name = N) => ask(env, 'POST', '/cloud/sites/domain', { id: 'site1', action: 'setup', name });
+const check = (env) => ask(env, 'POST', '/cloud/sites/domain', { id: 'site1', action: 'check' });
+const stop = (env) => ask(env, 'POST', '/cloud/sites/domain', { id: 'site1', action: 'stop' });
+const records = (env) => ask(env, 'GET', '/cloud/sites/domain/records?site=site1');
+const editingOff = (env) => env.kiln_cloud.exec("UPDATE sites SET status = 'expired' WHERE id = 'site1'");
+const aMinuteAgo = (env) => env.kiln_cloud.exec("UPDATE domains SET checked_at = ? WHERE site_id = 'site1'", Date.now() - 61 * 1000);
+const toCloudflare = (calls) => calls.filter(c => c.url.startsWith('https://api.cloudflare.com/'));
+const quiet = async (fn) => { const real = console.warn; const lines = []; console.warn = (l) => lines.push(String(l)); try { await fn(); } finally { console.warn = real; } return lines; };
+const plain = (s) => { assert.doesNotMatch(s, /[—–]/); assert.doesNotMatch(s, /undefined|null|\[object/); assert.match(s, /^[A-Z].*\.$/); };
+
+// ─── Looking, and changing nothing ────────────────────────────────────────────
+
+test('own domain: a look says who sold the domain, whether it has email and what Kiln can see, and changes nothing', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async (calls) => {
+    assert.deepEqual(await (await standing(w.env)).json(), { ok: true, domain: null }, 'a site with no domain says so');
+    const res = await lookAt(w.env, 'https://www.OakBakery.test/about');
+    assert.equal(res.status, 200);
+    const { ok, look } = await res.json();
+    assert.equal(ok, true);
+    assert.deepEqual({ ...look, found: null }, {
+      name: N, seller: { name: 'GoDaddy', help_url: GODADDY }, name_servers: ['ns51.domaincontrol.com', 'ns52.domaincontrol.com'], mail: true, found: null, stop: null,
+    });
+    assert.deepEqual(look.found, [
+      { type: 'TXT', name: `_dmarc.${N}`, content: 'v=DMARC1; p=none', kind: 'mail' },
+      { type: 'MX', name: N, content: '1 aspmx.l.google.com', kind: 'mail' },
+      { type: 'TXT', name: N, content: 'v=spf1 include:_spf.google.com ~all', kind: 'mail' },
+    ]);
+    assert.equal(toCloudflare(calls).length, 0, 'Cloudflare is not asked for anything');
+    assert.ok(calls.length > 0 && calls.every(c => c.method === 'GET'), 'the registry and the public DNS are only read');
+  });
+  assert.equal(w.cf.zones.size, 0);
+  assert.equal(await domainRow(w.env, 'site1'), null);
+  assert.equal(w.sent.length, 0);
+});
+
+test('own domain: a look says in a sentence what stands in the way, and asks nobody about a domain that cannot be set up anyway', { skip: d1Skip }, async () => {
+  const stopOf = async (w, typed = N) => { const res = await lookAt(w.env, typed); assert.equal(res.status, 200, typed); return (await res.json()).look; };
+
+  // Not a domain at all.
+  let w = world();
+  await withFetch(w.handler, async (calls) => {
+    for (const typed of ['bakery', 'ada@oakbakery.test', 'https://club.kilncms.com', '203.0.113.9', 'oakbakery.test:8080', '']) {
+      const look = await stopOf(w, typed);
+      assert.deepEqual(look, { name: typed, seller: null, name_servers: [], mail: false, found: [], stop: { code: 'not_a_domain', sentence: domainSentence('not_a_domain') } }, typed);
+    }
+    assert.equal(calls.length, 0);
+  });
+
+  // The site is not up on Kiln's hosting: never was, or came down.
+  w = world({ hosted: false });
+  await withFetch(w.handler, async (calls) => {
+    assert.deepEqual((await stopOf(w)).stop, { code: 'not_hosted', sentence: domainSentence('not_hosted') });
+    assert.equal(calls.length, 0);
+  });
+  w = world();
+  w.env.kiln_cloud.exec("UPDATE hosting SET state = 'ended' WHERE site_id = 'site1'");
+  await withFetch(w.handler, async () => { assert.equal((await stopOf(w)).stop.code, 'not_hosted'); });
+
+  // Another site of Kiln's has the domain, and this site has a domain already.
+  w = world();
+  await saveDomain(w.env, 'site-other', { name: N, zone_id: 'z9' });
+  await withFetch(w.handler, async (calls) => {
+    assert.deepEqual((await stopOf(w)).stop, { code: 'taken', sentence: domainSentence('taken', { name: N }) });
+    assert.equal(calls.length, 0);
+  });
+  w = world();
+  await saveDomain(w.env, 'site1', { name: 'elmcafe.test', zone_id: 'z9' });
+  await withFetch(w.handler, async (calls) => {
+    assert.deepEqual((await stopOf(w)).stop, { code: 'has_one', sentence: domainSentence('has_one') });
+    assert.equal(calls.length, 0);
+  });
+
+  // What only the registry and the public DNS can say.
+  w = world({ domains: known({ dnssec: true }) });
+  await withFetch(w.handler, async () => {
+    const look = await stopOf(w);
+    assert.deepEqual(look.stop, { code: 'dnssec_on', sentence: domainSentence('dnssec_on', { name: N, seller: 'GoDaddy' }) });
+    assert.match(look.stop.sentence, /Switch DNSSEC off at GoDaddy/);
+    assert.equal(look.mail, true, 'the rest of what was seen is still told');
+  });
+  w = world({ domains: known({ seller: { name: 'Cloudflare, Inc.', id: 1910 } }) });
+  await withFetch(w.handler, async () => {
+    const { stop: s } = await stopOf(w);
+    assert.equal(s.code, 'at_cloudflare');
+    assert.match(s.sentence, /info@kilncms\.com/);
+  });
+  w = world({ domains: {} });
+  await withFetch(w.handler, async () => { assert.deepEqual((await stopOf(w)).stop, { code: 'not_registered', sentence: domainSentence('not_registered', { name: N }) }); });
+
+  // Nothing could be looked up: every part is empty, and that alone stops nothing.
+  w = world({ down: { rdap: true, dns: true } });
+  await withFetch(w.handler, async () => {
+    assert.deepEqual(await stopOf(w), { name: N, seller: null, name_servers: [], mail: false, found: [], stop: null });
+  });
+
+  // A service that hosts no sites, and a database the migration has not reached.
+  for (const extra of [{ HOSTING_API_TOKEN: '' }, { d1: { upTo: 5 } }]) {
+    w = world({ env: extra });
+    await withFetch(w.handler, async (calls) => {
+      assert.deepEqual((await stopOf(w)).stop, { code: 'not_set_up', sentence: domainSentence('not_set_up') });
+      assert.equal(calls.length, 0);
+    });
+  }
+  for (const c of ['not_a_domain', 'not_hosted', 'taken', 'has_one', 'dnssec_on', 'at_cloudflare', 'not_registered', 'not_set_up']) plain(domainSentence(c, { name: N, seller: 'GoDaddy' }));
+});
+
+test('own domain: only the site\'s owner may ask, and a site whose editing is switched off cannot look or set up', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async (calls) => {
+    for (const [method, pathname, body] of [
+      ['GET', '/cloud/sites/domain?site=site1'], ['GET', `/cloud/sites/domain?site=site1&name=${N}`], ['GET', '/cloud/sites/domain/records?site=site1'],
+      ['POST', '/cloud/sites/domain', { id: 'site1', action: 'setup', name: N }], ['POST', '/cloud/sites/domain', { id: 'site1', action: 'stop' }],
+    ]) {
+      assert.equal((await ask(w.env, method, pathname, body, 'nobody')).status, 401, `${method} ${pathname}`);
+      const other = await ask(w.env, method, pathname.replace('site1', 'nope'), body && { ...body, id: 'nope' });
+      assert.equal(other.status, 404, `${method} ${pathname}`);
+      assert.equal((await other.json()).code, 'no_such_site');
+    }
+    assert.equal(siteHasAccess({ status: 'expired' }), false);
+    editingOff(w.env);
+    for (const res of [await lookAt(w.env), await setup(w.env)]) {
+      assert.equal(res.status, 403);
+      assert.deepEqual(await res.json(), { error: domainSentence('plan_ended'), code: 'plan_ended' });
+    }
+    assert.deepEqual(await (await standing(w.env)).json(), { ok: true, domain: null }, 'where the domain stands can still be read');
+    const odd = await ask(w.env, 'POST', '/cloud/sites/domain', { id: 'site1', action: 'explode' });
+    assert.deepEqual([odd.status, await odd.json()], [400, { error: domainSentence('bad_action'), code: 'bad_action' }]);
+    assert.equal(calls.length, 0, 'nobody outside was asked for anything');
+  });
+  plain(domainSentence('plan_ended'));
+  plain(domainSentence('bad_action'));
+});
+
+// ─── Setting it up ────────────────────────────────────────────────────────────
+
+test('own domain: the set-up makes everything ready, remembers it as waiting, and writes to the owner with the two name servers', { skip: d1Skip }, async () => {
+  const w = world({ env: { NOTIFY_TO: 'ops@example.com' } });
+  let domain, zone;
+  await withFetch(w.handler, async () => {
+    const res = await setup(w.env, 'https://www.OakBakery.test/');
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(Object.keys(body), ['ok', 'domain']);
+    domain = body.domain;
+    zone = w.cf.zoneOf(N);
+    assert.equal(zone.status, 'pending', 'the zone waits for the name servers');
+    assert.deepEqual(Object.keys(domain), ['name', 'state', 'name_servers', 'old_name_servers', 'seller', 'records', 'since', 'checked_at', 'live_at', 'gives_up_at']);
+    assert.deepEqual({ ...domain, records: null, since: null, gives_up_at: null }, {
+      name: N, state: 'waiting', name_servers: zone.name_servers, old_name_servers: ['ns1.old-host.example', 'ns2.old-host.example'],
+      seller: { name: 'GoDaddy', help_url: GODADDY }, records: null, since: null, checked_at: null, live_at: null, gives_up_at: null,
+    });
+    assert.ok(Math.abs(Date.now() - domain.since) < 5000);
+    assert.equal(domain.gives_up_at, domain.since + LIMITS.waitDays * 24 * 60 * 60 * 1000);
+    assert.deepEqual(domain.records.map(r => `${r.kind} ${r.type} ${r.name} ${r.content}`), [
+      `mail TXT _dmarc.${N} v=DMARC1; p=none`, `mail MX ${N} 1 aspmx.l.google.com`, `mail TXT ${N} v=spf1 include:_spf.google.com ~all`, `other CNAME shop.${N} shops.myshopify.com`,
+    ], 'the record the copy missed is among them');
+    assert.doesNotMatch(JSON.stringify(body), new RegExp(zone.id), 'the zone\'s id is never told');
+
+    // At Cloudflare: both names are on the site's own Worker, and nothing that was copied goes through Cloudflare.
+    assert.deepEqual([...w.cf.workerDomains.values()].map(d => [d.hostname, d.service]), [[N, WORKER], [`www.${N}`, WORKER]]);
+    assert.deepEqual(w.cf.recordsOf(N).filter(r => !r.meta && r.proxied), []);
+
+    // What the service remembers, and what it says when asked again.
+    const row = await domainRow(w.env, 'site1');
+    assert.deepEqual({ name: row.name, zone_id: row.zone_id, state: row.state, ns1: row.ns1, ns2: row.ns2, seller: row.seller, seller_id: row.seller_id },
+      { name: N, zone_id: zone.id, state: 'waiting', ns1: zone.name_servers[0], ns2: zone.name_servers[1], seller: 'GoDaddy.com, LLC', seller_id: 146 });
+    assert.deepEqual(await (await standing(w.env)).json(), { ok: true, domain });
+    assert.equal(await w.env.KILN.get('domainlock:site1'), null, 'the lock is let go');
+
+    // The list of sites carries it without the records.
+    const me = await (await ask(w.env, 'GET', '/cloud/me')).json();
+    assert.equal(me.domains, true);
+    const { records: _left, ...small } = domain;
+    assert.deepEqual(me.sites[0].domain, small);
+
+    // Pressed again: the site has a domain, and nothing more is made.
+    const again = await setup(w.env);
+    assert.deepEqual([again.status, await again.json()], [409, { error: domainSentence('has_one'), code: 'has_one' }]);
+    assert.equal(w.cf.zones.size, 1);
+  });
+
+  // The owner is written to once, and so is whoever runs the service.
+  assert.equal(w.mails().length, 1);
+  const mail = w.mails()[0];
+  assert.equal(mail.to, 'ada@example.com');
+  assert.equal(mail.subject, `Two name servers to enter for ${N}`);
+  assert.equal(mail.text, domainNameServersMail({
+    origin: 'https://club.example', name: N, nameServers: zone.name_servers, seller: { name: 'GoDaddy' }, helpUrl: GODADDY, records: domain.records, givesUpAt: domain.gives_up_at, dashboard: 'https://app.example',
+  }).text);
+  for (const ns of zone.name_servers) assert.ok(mail.text.includes(`\n\n${ns}\n\n`), ns);
+  assert.match(mail.text, /Kiln copied 3 email records and 1 other record of oakbakery\.test/);
+  assert.equal(w.notes().length, 1);
+  assert.match(w.notes()[0].raw, /Subject: Kiln is setting up oakbakery\.test for ada\/club/);
+  assert.doesNotMatch(w.notes()[0].raw, /[—–]/);
+});
+
+test('own domain: a site named the way the design names it is found, and an account with no address is not written to', { skip: d1Skip }, async () => {
+  const w = world();
+  w.env.kiln_cloud.exec("UPDATE accounts SET email = NULL WHERE id = 'acct-1'");
+  await withFetch(w.handler, async () => {
+    const res = await ask(w.env, 'POST', '/cloud/sites/domain', { site: 'site1', action: 'setup', name: N });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).domain.state, 'waiting');
+  });
+  assert.equal(w.sent.length, 0);
+  // A service that does not write to customers stays silent too.
+  const silent = world({ env: { CUSTOMER_MAIL_FROM: '' } });
+  await withFetch(silent.handler, async () => { assert.equal((await setup(silent.env)).status, 200); });
+  assert.equal(silent.sent.length, 0);
+});
+
+test('own domain: the set-up looks again for itself and refuses with the look\'s sentences, and a set-up that fails leaves nothing behind', { skip: d1Skip }, async () => {
+  const nothingMade = async (w) => {
+    assert.equal(w.cf.zones.size, 0);
+    assert.equal(w.cf.workerDomains.size, 0);
+    assert.equal(await domainRow(w.env, 'site1'), null);
+    assert.equal(w.sent.length, 0);
+    assert.equal(await w.env.KILN.get('domainlock:site1'), null);
+  };
+  // The dashboard is never trusted: what the look would have stopped, the set-up stops.
+  const cases = [
+    [world({ domains: known({ dnssec: true }) }), N, 409, 'dnssec_on', { name: N, seller: 'GoDaddy' }],
+    [world({ domains: known({ seller: { name: 'Cloudflare, Inc.', id: 1910 } }) }), N, 409, 'at_cloudflare', { name: N }],
+    [world({ domains: {} }), N, 409, 'not_registered', { name: N }],
+    [world({ hosted: false }), N, 409, 'not_hosted', {}],
+    [world(), 'bakery', 400, 'not_a_domain', {}],
+    [world(), null, 400, 'not_a_domain', {}],   // no name at all
+    [world({ env: { d1: { upTo: 5 } } }), N, 503, 'not_set_up', {}],
+  ];
+  for (const [w, typed, status, code, about] of cases) {
+    await withFetch(w.handler, async (calls) => {
+      const res = await setup(w.env, typed);
+      assert.deepEqual([res.status, await res.json()], [status, { error: domainSentence(code, about), code }], code);
+      assert.equal(toCloudflare(calls).length, 0, `${code}: Cloudflare was not asked for anything`);
+    });
+    await nothingMade(w);
+  }
+
+  // Cloudflare will not take the domain.
+  let w = world();
+  w.cf.refuseZone(N, 1097, 'This zone is banned and cannot be added to Cloudflare at this time, please contact Cloudflare Support.');
+  let lines = await quiet(() => withFetch(w.handler, async () => {
+    const res = await setup(w.env);
+    assert.deepEqual([res.status, await res.json()], [409, { error: domainSentence('refused', { name: N, seller: 'GoDaddy' }), code: 'refused' }]);
+  }));
+  await nothingMade(w);
+  assert.deepEqual((({ evt, repo, name, stage, reason }) => ({ evt, repo, name, stage, reason }))(JSON.parse(lines[0])), { evt: 'domain_setup_failed', repo: 'ada/club', name: N, stage: 'prepare', reason: 'refused' });
+
+  // A step fails after the zone was made (the second name cannot be attached): the zone is taken away again.
+  w = world();
+  let puts = 0;
+  w.cf.failOn((method, path) => method === 'PUT' && path === '/workers/domains' && ++puts === 2);
+  await quiet(() => withFetch(w.handler, async () => {
+    const res = await setup(w.env);
+    assert.deepEqual([res.status, await res.json()], [502, { error: domainSentence('cloudflare', { name: N }), code: 'cloudflare' }]);
+  }));
+  await nothingMade(w);
+  // And the owner can simply press again.
+  w.cf.failOn(null);
+  await withFetch(w.handler, async () => { assert.equal((await setup(w.env)).status, 200); });
+  assert.equal(w.cf.zones.size, 1);
+
+  // Another site takes the name between the look and the moment it is written down: the zone that was just made goes again.
+  w = world();
+  let taken = false;
+  w.cf.failOn((method, path) => {
+    if (method === 'PUT' && path === '/workers/domains' && !taken) {
+      taken = true;
+      w.env.kiln_cloud.exec("INSERT INTO domains (site_id, name, zone_id, state, created_at, updated_at) VALUES ('site-other', ?, 'z-other', 'waiting', 1, 1)", N);
+    }
+    return false;
+  });
+  lines = await quiet(() => withFetch(w.handler, async () => {
+    const res = await setup(w.env);
+    assert.deepEqual([res.status, await res.json()], [409, { error: domainSentence('taken', { name: N, seller: 'GoDaddy' }), code: 'taken' }]);
+  }));
+  await nothingMade(w);
+  assert.equal(JSON.parse(lines[0]).stage, 'record');
+});
+
+test('own domain: two presses at once make one zone', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async (calls) => {
+    // While one set-up runs, another is told to wait, and nobody is asked for anything.
+    await w.env.KILN.put('domainlock:site1', '1');
+    const busy = await setup(w.env);
+    assert.deepEqual([busy.status, await busy.json()], [409, { error: domainSentence('busy'), code: 'busy' }]);
+    assert.equal(calls.length, 0);
+    assert.equal(await w.env.KILN.get('domainlock:site1'), '1', 'the lock of the set-up that runs is left alone');
+    await w.env.KILN.delete('domainlock:site1');
+
+    // Two at the very same moment: one goes through, and the other is refused without making or removing anything.
+    const both = await quiet(async () => {
+      const answers = await Promise.all([setup(w.env), setup(w.env)]);
+      assert.deepEqual(answers.map(r => r.status).sort(), [200, 409]);
+    });
+    assert.ok(both.length <= 1);
+    assert.equal(w.cf.zones.size, 1);
+    assert.equal(w.cf.workerDomains.size, 2);
+    assert.equal((await domainRow(w.env, 'site1')).zone_id, w.cf.zoneOf(N).id);
+    assert.equal(w.mails().length, 1, 'and the owner is written to once');
+    assert.equal(await w.env.KILN.get('domainlock:site1'), null);
+  });
+  // The lock runs out by itself, in case a set-up never came back.
+  const held = world();
+  await withFetch(held.handler, async () => {
+    let ttl = null;
+    const put = held.env.KILN.put.bind(held.env.KILN);
+    held.env.KILN.put = async (key, value, opts) => { if (key === 'domainlock:site1') ttl = opts?.expirationTtl; return put(key, value, opts); };
+    assert.equal((await setup(held.env)).status, 200);
+    assert.equal(ttl, 120);
+  });
+  plain(domainSentence('busy'));
+});
+
+// ─── Check now ────────────────────────────────────────────────────────────────
+
+test('own domain: "check now" asks Cloudflare to look again, once a minute at most, and says when the name servers have changed', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    const none = await check(w.env);
+    assert.deepEqual([none.status, await none.json()], [404, { error: domainSentence('no_domain'), code: 'no_domain' }]);
+
+    await setup(w.env);
+    const zone = w.cf.zoneOf(N);
+    let res = await check(w.env);
+    const first = await res.json();
+    assert.equal(res.status, 200);
+    assert.deepEqual(Object.keys(first), ['ok', 'domain']);
+    assert.equal(first.domain.state, 'waiting');
+    assert.ok(first.domain.checked_at > 0);
+    assert.equal(zone.checks, 1, 'Cloudflare was asked to look at the name servers again');
+
+    // Pressed again within the minute: what is known is the answer, and Cloudflare is left alone.
+    w.cf.calls.length = 0;
+    res = await check(w.env);
+    assert.deepEqual(await res.json(), first);
+    assert.equal(w.cf.calls.length, 0);
+
+    // A minute later, and the owner has changed the name servers.
+    aMinuteAgo(w.env);
+    w.cf.setStatus(N, 'active');
+    res = await check(w.env);
+    const after = await res.json();
+    assert.equal(zone.checks, 2);
+    assert.equal(after.changed, true, 'Cloudflare has seen the new name servers');
+    // NOT BUILT YET: with the step that makes a domain live (cloud.js domainTookHold), this answer is to say `live`.
+    assert.equal(after.domain.state, 'waiting');
+    assert.deepEqual(await domainTookHold(w.env, { site: { id: 'site1' }, row: await domainRow(w.env, 'site1') }), { live: false });
+
+    // Cloudflare cannot be asked: nothing changes, and the answer says to try again.
+    aMinuteAgo(w.env);
+    const before = (await domainRow(w.env, 'site1')).checked_at;
+    w.cf.failOn((method, path) => method === 'GET' && /^\/zones\/[^/]+$/.test(path));
+    await quiet(async () => {
+      res = await check(w.env);
+      const body = await res.json();
+      assert.equal(res.status, 502);
+      assert.deepEqual({ error: body.error, code: body.code, state: body.domain.state }, { error: domainSentence('not_asked', { name: N }), code: 'not_asked', state: 'waiting' });
+    });
+    assert.equal((await domainRow(w.env, 'site1')).checked_at, before);
+    w.cf.failOn(null);
+
+    // A domain that does not wait has nothing to ask about.
+    await saveDomain(w.env, 'site1', { state: 'put_away', reason: 'not_changed' });
+    w.cf.calls.length = 0;
+    res = await check(w.env);
+    const away = await res.json();
+    assert.deepEqual({ state: away.domain.state, error: away.domain.error }, { state: 'put_away', error: domainSentence('not_changed', { name: N }) });
+    assert.equal(w.cf.calls.length, 0);
+  });
+  for (const c of ['no_domain', 'not_asked']) plain(domainSentence(c, { name: N }));
+});
+
+// ─── Stopping, and taking the records away ────────────────────────────────────
+
+test('own domain: a set-up that is not live can be stopped, and one that is live says how to move away instead', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    assert.deepEqual(await (await stop(w.env)).json(), { ok: true, domain: null }, 'with nothing set up there is nothing to stop');
+    await setup(w.env);
+    let res = await stop(w.env);
+    assert.deepEqual([res.status, await res.json()], [200, { ok: true, domain: null }]);
+    assert.equal(w.cf.zones.size, 0, 'the waiting zone is removed');
+    assert.equal(w.cf.workerDomains.size, 0, 'with the two names that were on the site\'s Worker');
+    assert.equal(await domainRow(w.env, 'site1'), null);
+    assert.deepEqual(await (await standing(w.env)).json(), { ok: true, domain: null });
+
+    // They can start again at once.
+    assert.equal((await setup(w.env)).status, 200);
+    // The name servers were changed while it waited: the zone answers for the domain now, and stays.
+    w.cf.setStatus(N, 'active');
+    res = await stop(w.env);
+    let body = await res.json();
+    assert.equal(res.status, 409);
+    assert.deepEqual({ error: body.error, code: body.code, state: body.domain.state }, { error: domainSentence('changed', { name: N, seller: 'GoDaddy' }), code: 'changed', state: 'waiting' });
+    assert.equal(w.cf.zones.size, 1);
+    assert.equal(w.cf.workerDomains.size, 2);
+
+    // Live: refused, with how to move away (the records first, then the name servers at the seller).
+    await saveDomain(w.env, 'site1', { state: 'live', live_at: Date.now() });
+    w.cf.calls.length = 0;
+    res = await stop(w.env);
+    body = await res.json();
+    assert.equal(res.status, 409);
+    assert.deepEqual({ error: body.error, code: body.code, state: body.domain.state }, { error: domainSentence('is_live', { name: N, seller: 'GoDaddy' }), code: 'is_live', state: 'live' });
+    assert.match(body.error, /download its records from this page first, and then change its name servers at GoDaddy/);
+    assert.equal(w.cf.calls.length, 0, 'nothing of a live domain is touched');
+    assert.equal((await domainRow(w.env, 'site1')).state, 'live');
+
+    // Put away while its zone still answers for the domain's email: the set-up is forgotten, and the zone stays.
+    await saveDomain(w.env, 'site1', { state: 'put_away', reason: 'moved' });
+    res = await stop(w.env);
+    assert.deepEqual([res.status, await res.json()], [200, { ok: true, domain: null }]);
+    assert.equal(await domainRow(w.env, 'site1'), null);
+    assert.equal(w.cf.zones.size, 1, 'a zone that took hold is never removed by Kiln');
+    assert.equal(w.cf.recordsOf(N).filter(r => r.type === 'MX').length, 1);
+  });
+
+  // Cloudflare cannot be asked: the set-up stays as it is, so nothing is left there that nobody knows of.
+  const d = world();
+  await withFetch(d.handler, async () => {
+    await setup(d.env);
+    d.cf.failOn((method, path) => method === 'GET' && /^\/zones\/[^/]+$/.test(path));
+    await quiet(async () => {
+      const res = await stop(d.env);
+      assert.equal(res.status, 502);
+      assert.equal((await res.json()).code, 'not_asked');
+    });
+    assert.equal((await domainRow(d.env, 'site1')).state, 'waiting');
+    assert.equal(d.cf.zones.size, 1);
+  });
+  for (const c of ['is_live', 'changed']) plain(domainSentence(c, { name: N, seller: 'GoDaddy' }));
+});
+
+test('own domain: the records are a file to download, and with editing switched off the owner can still check, download and stop', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    const none = await records(w.env);
+    assert.deepEqual([none.status, await none.json()], [404, { error: domainSentence('no_domain'), code: 'no_domain' }]);
+    await setup(w.env);
+    editingOff(w.env);
+
+    const res = await records(w.env);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('Content-Disposition'), `attachment; filename="${N}-records.txt"`);
+    assert.match(res.headers.get('Content-Type'), /^text\/plain/);
+    assert.equal(res.headers.get('Access-Control-Expose-Headers'), 'Content-Disposition', 'the dashboard, at another address, may read the file\'s name');
+    const text = await res.text();
+    assert.match(text, new RegExp(`${N.replace('.', '\\.')}\\.\\t1\\tIN\\tMX\\t1 aspmx\\.l\\.google\\.com`));
+    assert.match(text, /_dmarc\.oakbakery\.test\./);
+
+    assert.equal((await check(w.env)).status, 200);
+    assert.equal((await standing(w.env)).status, 200);
+    assert.deepEqual(await (await stop(w.env)).json(), { ok: true, domain: null });
+    assert.equal(w.cf.zones.size, 0);
+  });
+
+  // A set-up whose zone Cloudflare no longer has: there is nothing to hand over, and the answer says where the records are.
+  const g = world();
+  await withFetch(g.handler, async () => {
+    await setup(g.env);
+    g.cf.zones.clear();
+    const res = await records(g.env);
+    assert.deepEqual([res.status, await res.json()], [404, { error: domainSentence('no_records', { name: N }), code: 'no_records' }]);
+    // Cloudflare cannot be asked at all.
+    await saveDomain(g.env, 'site1', { zone_id: 'zone-x' });
+    g.cf.failOn(() => true);
+    await quiet(async () => {
+      const down = await records(g.env);
+      assert.deepEqual([down.status, await down.json()], [502, { error: domainSentence('not_asked', { name: N }), code: 'not_asked' }]);
+    });
+  });
+  plain(domainSentence('no_records', { name: N }));
+});
+
+// ─── What the dashboard is told ───────────────────────────────────────────────
+
+test('own domain: the list of sites says whether this service can do it at all, and where each site\'s domain stands', { skip: d1Skip }, async () => {
+  const me = async (w) => (await (await ask(w.env, 'GET', '/cloud/me')).json());
+  let w = world();
+  await withFetch(w.handler, async () => {
+    let out = await me(w);
+    assert.equal(out.domains, true);
+    assert.equal(out.sites[0].domain, null);
+    await saveDomain(w.env, 'site1', { name: N, zone_id: 'zone-secret', state: 'put_away', reason: 'not_changed', ns1: 'ada.ns.cloudflare.com', ns2: 'bob.ns.cloudflare.com', records: [{ type: 'MX', name: N, content: '1 mx.example', kind: 'mail' }] });
+    out = await me(w);
+    assert.deepEqual({ ...out.sites[0].domain, since: null }, {
+      name: N, state: 'put_away', name_servers: ['ada.ns.cloudflare.com', 'bob.ns.cloudflare.com'], old_name_servers: [], seller: null,
+      since: null, checked_at: null, live_at: null, gives_up_at: null, error: domainSentence('not_changed', { name: N }),
+    });
+    assert.doesNotMatch(JSON.stringify(out), /zone-secret/);
+  });
+  // A service that hosts no sites, and a database the migration has not reached.
+  for (const extra of [{ HOSTING_API_TOKEN: '' }, { d1: { upTo: 5 } }]) {
+    w = world({ env: extra });
+    await withFetch(w.handler, async () => {
+      const out = await me(w);
+      assert.equal(out.domains, false);
+      assert.equal(out.sites[0].domain, null);
+    });
+  }
+});
+
+// ─── The email ────────────────────────────────────────────────────────────────
+
+test('own domain: the email says which two name servers to enter and where, what keeps working, what Kiln kept, and the day the set-up is put away', () => {
+  const givesUpAt = Date.UTC(2026, 11, 7, 15);
+  const about = {
+    origin: 'https://club.example', name: N, nameServers: ['ada.ns.cloudflare.com', 'bob.ns.cloudflare.com'], seller: { name: 'GoDaddy', help_url: GODADDY }, helpUrl: GODADDY,
+    records: [{ kind: 'mail' }, { kind: 'mail' }, { kind: 'mail' }, { kind: 'proof' }, { kind: 'other' }], givesUpAt, dashboard: 'https://app.example',
+  };
+  const mail = domainNameServersMail(about);
+  assert.equal(dayWords(givesUpAt), 'Monday, December 7');
+  assert.equal(mail.subject, 'Two name servers to enter for oakbakery.test');
+  assert.equal(mail.text, [
+    'Hello,',
+    'Kiln has made everything ready for your site to answer at oakbakery.test. One step is left, and only you can take it: sign in at GoDaddy, and replace the name servers of oakbakery.test with these two.',
+    'ada.ns.cloudflare.com',
+    'bob.ns.cloudflare.com',
+    'The domain was bought at GoDaddy. This page explains how to change its name servers:',
+    GODADDY,
+    'Until that change takes hold, your site and your email keep working exactly where they are now. It takes from a few minutes to a day. Kiln notices by itself, puts your site at oakbakery.test, and writes to you again when it is live.',
+    'Kiln copied 3 email records and 2 other records of oakbakery.test, so that email and everything else on the domain keep working after the change. Kiln cannot always see every record, so before you change the name servers, compare the list on the site\'s row in your dashboard with the list at GoDaddy.',
+    'https://app.example',
+    'If the name servers are not changed by Monday, December 7, Kiln puts this set-up away. Nothing of yours is changed by that, and you can start again any time.',
+    'Kiln\nYou are getting this because club.example was added to Kiln Cloud with this email address. Reply to this email to reach a person.\n',
+  ].join('\n\n'));
+  assert.ok(mail.html.includes(`<a href="${GODADDY}"`), 'the seller\'s page is a link');
+  assert.ok(mail.html.includes('<a href="https://app.example"'));
+  assert.ok(mail.html.includes('>ada.ns.cloudflare.com</p>'));
+
+  // One record of each sort, and a seller nobody could name.
+  const one = domainNameServersMail({ ...about, seller: null, helpUrl: GENERAL, records: [{ kind: 'mail' }, { kind: 'other' }] }).text;
+  assert.match(one, /Kiln copied 1 email record and 1 other record of oakbakery\.test/);
+  assert.match(one, /sign in at the company you bought the domain from, and replace/);
+  assert.match(one, /compare the list on the site's row in your dashboard with the list at the company you bought the domain from\./);
+  assert.ok(one.includes(`This page explains how to change a domain's name servers:\n\n${GENERAL}\n\n`));
+  // No email records among those Kiln kept, and no records at all: the owner is told not to go on if the domain has email.
+  const noMail = domainNameServersMail({ ...about, records: [{ kind: 'other' }] }).text;
+  assert.ok(noMail.includes('Kiln copied 1 record of oakbakery.test and saw none for email. If the domain has email, do not change the name servers yet: reply to this email, and we will add the records with you first. The list is on the site\'s row in your dashboard.'));
+  const empty = domainNameServersMail({ ...about, records: [] }).text;
+  assert.ok(empty.includes('Kiln found no records to copy for oakbakery.test. If the domain has email, do not change the name servers yet: reply to this email, and we will add the records with you first.'));
+  for (const text of [mail.text, mail.html, mail.subject, one, noMail, empty]) {
+    assert.doesNotMatch(text, /[—–]/);
+    assert.doesNotMatch(text, /undefined|null|\[object/);
+  }
+});

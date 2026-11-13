@@ -19,6 +19,9 @@
  *   GET  /cloud/sites/check      → a checklist of how the site is set up (sitecheck.js); changes nothing
  *   GET  /cloud/sites/hosting    → where a hosted site stands (hosted.js)
  *   POST /cloud/sites/hosting    → put the site on Kiln's hosting, or publish it again (hosting.js)
+ *   GET  /cloud/sites/domain     → where a hosted site's own domain stands, or a look at a domain that changes nothing (domain.js)
+ *   POST /cloud/sites/domain     → set the domain up, ask whether its name servers have changed, or stop a set-up that is not live
+ *   GET  /cloud/sites/domain/records → the domain's records as a file, for an owner who moves the domain away
  *   GET  /cloud/portal?site=     → Lemon Squeezy customer-portal link
  *   POST /cloud/webhook/ls       → Lemon Squeezy webhook (signed) → set site status
  *   GET  /admin/cloud/overview   → (owner only) accounts, sites (with the editor build each runs), MRR
@@ -31,7 +34,7 @@
  */
 
 import { RUNBOOK_HTML } from './runbook.js';
-import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
+import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
@@ -39,6 +42,10 @@ import { checkSite, editingOffLine } from './sitecheck.js';
 import { hostingOn, hostingSentence } from './hosting.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
+import {
+  domainsOn, domainsReady, cleanDomain, lookUp, whatStops, sellerHelp, prepareDomain, domainStatus, removeWaitingDomain, exportRecords,
+  domainSentence, publicDomain, publicLook, domainRow, domainForName, domainsForAccount, saveDomain, forgetDomain, DomainError,
+} from './domain.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -511,6 +518,91 @@ async function shownHosting(env, row, site, now = Date.now()) {
   const down = row && row.state !== 'ended' && row.state !== 'removing' ? await hostingDownAt(env, site, { now, deployed: !!row.deployed_at }) : null;
   return publicHosting(row, { repo: site.repo, endsAt: down?.at || null, planEnded: Number(site.access_until) || null });
 }
+// ─── A hosted site on its owner's own domain (domain.js) ─────────────────────
+
+const DOMAIN_LOCK_S = 120;                 // one set-up at a time for a site; the lock runs out by itself
+const DOMAIN_CHECK_EVERY_MS = 60 * 1000;   // Cloudflare is asked to look at a site's domain again this often at most
+
+/** True when a site is up on Kiln's hosting. Only such a site can answer at its owner's domain. */
+const isUp = (row) => !!(row && row.deployed_at && row.state !== 'ended' && row.state !== 'removing');
+
+/** True when this service can put a site on its owner's domain at all: it hosts sites, and the database has the table. */
+async function domainsAvailable(env) {
+  return hostingOn(env) && domainsOn(env) && await domainsReady(env);
+}
+
+/**
+ * Look at a domain for a site, and change nothing: { name, look, stop }.
+ * `look` is what domain.js could read (a part it could not read is empty),
+ * and `stop` is the code of what stands in the way of a set-up, or null. What
+ * can be known without asking anybody outside is looked at first, so a domain
+ * that cannot be set up anyway costs no lookups. The set-up runs this again
+ * itself: what the dashboard was told earlier is never trusted.
+ */
+async function lookAtDomain(env, site, typed) {
+  const nothing = (name) => ({ name, registered: null, seller: null, nameServers: [], dnssec: null, atCloudflare: false, mail: false, found: [] });
+  let name;
+  try { name = cleanDomain(typed); }
+  catch { return { name: null, look: nothing(String(typed ?? '').trim().slice(0, 253)), stop: 'not_a_domain' }; }
+  const stopped = (stop) => ({ name, look: nothing(name), stop });
+  if (!(await domainsAvailable(env))) return stopped('not_set_up');
+  if (!isUp(await hostingRow(env, site.id))) return stopped('not_hosted');
+  const mine = await domainRow(env, site.id);
+  if (mine && (mine.state === 'waiting' || mine.state === 'live')) return stopped('has_one');
+  const holder = await domainForName(env, name);
+  if (holder && holder.site_id !== site.id) return stopped('taken');
+  const look = await lookUp(name);
+  return { name, look, stop: whatStops(look) };
+}
+
+/**
+ * The owner is written to with the two name servers to enter (mail.js), where
+ * this service writes to customers and the account has an address. Once for
+ * one set-up: the key holds the zone, so a set-up that is started again
+ * later is written about again. Never throws.
+ */
+async function tellNameServers(env, accountId, site, row) {
+  try {
+    if (!customerMailOn(env)) return;
+    const account = await env.kiln_cloud.prepare('SELECT email FROM accounts WHERE id = ?').bind(accountId).first();
+    if (!mailAddress(account?.email)) return;
+    const d = publicDomain(row);
+    await sendOnce(env, `domain-ns:${site.id}:${row.zone_id}`, account.email, domainNameServersMail({
+      origin: site.origin, name: d.name, nameServers: d.name_servers, seller: d.seller, helpUrl: d.seller?.help_url || sellerHelp(null).url,
+      records: d.records, givesUpAt: d.gives_up_at, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com',
+    }));
+  } catch { /* the set-up is made all the same, and the dashboard shows the two name servers */ }
+}
+
+/**
+ * NOT BUILT YET (piece 6, the part after the routes): the step that makes a
+ * domain live. POST /cloud/sites/domain with action "check" calls it the
+ * moment Cloudflare says the domain's name servers point at Kiln, and the
+ * five-minute job is to call it for every waiting domain whose zone has
+ * become active. Until it is built it changes nothing, so a domain stays
+ * `waiting` after its name servers have changed.
+ *
+ * What it must do, in this order (the design's "The five-minute job"):
+ *   1. confirm the site answers at https://<name>/ (domain.js siteAnswers).
+ *      When it does not yet (a certificate takes a few minutes), change
+ *      nothing and answer { live: false }: the next run looks again;
+ *   2. mark the row `live` with `live_at` (saveDomain);
+ *   3. set the site's address on record (`sites.origin`) to https://<name>,
+ *      or to https://www.<name> when the address on record already was the
+ *      `www` one;
+ *   4. send the other of the two names on to that one (domain.js
+ *      redirectToOne, with `www: true` in the www case) and switch HTTPS on
+ *      for every visitor (alwaysHttps);
+ *   5. write to the owner that the site is live at the domain (a mail in
+ *      mail.js, sent once, where the account has an address).
+ * It must never throw: what goes wrong is logged, and the answer says
+ * whether the domain is live now. `row` is the site's row in `domains`, and
+ * `site` its row in `sites` (id, repo and origin at least).
+ */
+export async function domainTookHold(env, { site, row, now = Date.now() } = {}) {   // eslint-disable-line no-unused-vars
+  return { live: false };
+}
+
 const MAILS_PER_RUN = 25;   // a run writes to this many people at most; the rest wait five minutes
 
 /**
@@ -706,7 +798,8 @@ async function ownedSite(request, env, url, sess, tools = {}, { needToken = true
   if (!sess) return { response: json({ error: 'not signed in' }, 401) };
   const write = request.method === 'POST';
   const body = write ? await request.json().catch(() => ({})) : {};
-  const id = write ? body.id : url.searchParams.get('site');
+  // A POST names the site `id`. `site` is taken too: it is the word the design of the domain routes uses.
+  const id = write ? (body.id ?? body.site) : url.searchParams.get('site');
   const site = await withAccessUntil(
     () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
     () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
@@ -817,7 +910,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     await Promise.all(rows.filter(r => r.hosting).map(async (r) => { const care = await lookedAfter(env, r.id); if (care) r.looked_after = care; }));
     // `prepare`, `firstpass`: this service can add Kiln to a repository itself, and mark a first pass of what can be edited.
     const can = typeof tools.installationToken === 'function';
-    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env) });
+    // `domains`: this service can put a hosted site on its owner's own domain. Each site's `domain` says where
+    // that stands (domain.js), without the records Kiln kept, which the site's own panel asks for.
+    const domains = can && await domainsAvailable(env);
+    const owned = domains ? await domainsForAccount(env, sess.account_id) : {};
+    for (const r of rows) r.domain = publicDomain(owned[r.id] || null, { records: false });
+    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains });
   }
 
   // The address notices about the account's own sites go to (mail.js). The
@@ -1083,6 +1181,141 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         ...(care || []).map(c => `${c.step}: ${c.state}${c.code ? ` (${c.code})` : ''}${c.commit ? ` ${c.commit.url}` : ''}`)]);
     }
     return json({ ok: out.state === 'live', hosting: out, ...looked, ...(out.state !== 'live' ? { error: out.error, code: out.reason } : {}) });
+  }
+
+  // A hosted site on its owner's own domain (domain.js). GET says where the
+  // site's domain stands, or with `name` looks at a domain and changes
+  // nothing. POST sets the domain up ("setup"), asks Cloudflare whether its
+  // name servers have changed ("check"), or puts away a set-up that is not
+  // live ("stop"). A site whose editing is switched off cannot start anything
+  // new, and can still check, stop and take its records away, so nobody is
+  // trapped. None of it reads the repository, so the App's token is not asked for.
+  if (path === '/cloud/sites/domain' && (request.method === 'GET' || request.method === 'POST')) {
+    const asked = await ownedSite(request, env, url, sess, tools, { needToken: false, needAccess: false });
+    if (asked.response) return asked.response;
+    const { site, body } = asked;
+    const row = await domainRow(env, site.id);
+    const sellerOf = (r) => (r && (r.seller || r.seller_id) ? sellerHelp({ name: r.seller, id: r.seller_id }).name : null);
+    const refuse = (code, status, { name = row?.name || null, seller = sellerOf(row), ...extra } = {}) => json({ error: domainSentence(code, { name, seller }), code, ...extra }, status);
+    const detail = (e) => (e instanceof DomainError ? e.detail || e.code : String(e?.message || e).slice(0, 300));
+
+    if (request.method === 'GET') {
+      const typed = url.searchParams.get('name');
+      if (typed === null) return json({ ok: true, domain: publicDomain(row) });
+      if (!asked.access) return refuse('plan_ended', 403);
+      const { look, stop } = await lookAtDomain(env, site, typed);
+      return json({ ok: true, look: publicLook(look, stop) });
+    }
+
+    const action = String(body.action || '');
+    if (action === 'setup') {
+      if (!asked.access) return refuse('plan_ended', 403);
+      // One set-up at a time for a site, so that two presses do not make two
+      // zones. The look comes after the lock: a second press that arrives as
+      // the first one finishes finds the first one's row, and stops there.
+      const lock = `domainlock:${site.id}`;
+      if (await env.KILN.get(lock)) return refuse('busy', 409);
+      await env.KILN.put(lock, '1', { expirationTtl: DOMAIN_LOCK_S });
+      try {
+        const { name, look, stop } = await lookAtDomain(env, site, body.name);
+        const seller = look.seller ? sellerHelp(look.seller).name : null;
+        if (stop) return refuse(stop, stop === 'not_a_domain' ? 400 : stop === 'not_set_up' ? 503 : 409, { name, seller });
+        const failed = (e, stage) => {
+          const code = e instanceof DomainError ? e.code : 'cloudflare';
+          console.warn(JSON.stringify({ evt: 'domain_setup_failed', repo: site.repo, name, stage, reason: code, detail: detail(e) }));
+          return refuse(code, code === 'cloudflare' ? 502 : code === 'not_set_up' ? 503 : 409, { name, seller });
+        };
+        const host = await hostingRow(env, site.id);
+        let made;
+        try { made = await prepareDomain(env, { name, worker: host.name, look }); }
+        catch (e) { return failed(e, 'prepare'); }   // domain.js has taken away again whatever it made
+        try {
+          const saved = await saveDomain(env, site.id, {
+            name, zone_id: made.zoneId, state: 'waiting', ns1: made.nameServers[0], ns2: made.nameServers[1], old_name_servers: made.oldNameServers,
+            seller: look.seller?.name || null, seller_id: look.seller?.id || null, records: made.records,
+          });
+          if (!saved) throw new DomainError('not_set_up');
+        } catch (e) {
+          // A zone nobody remembers would wait in the hosting account with the site's two names on it: it is taken away again.
+          try { await removeWaitingDomain(env, { zoneId: made.zoneId }); }
+          catch (left) { console.warn(JSON.stringify({ evt: 'domain_cleanup_failed', name, zone: made.zoneId, detail: detail(left) })); }
+          return failed(e, 'record');
+        }
+        const fresh = await domainRow(env, site.id);
+        await tellNameServers(env, sess.account_id, site, fresh);
+        await notifyOwner(env, `Kiln is setting up ${name} for ${site.repo}`, [
+          `By: ${sess.login}`, `Name servers to enter: ${made.nameServers.join(', ')}`, `Bought at: ${seller || 'not known'}`, `Records kept: ${made.records.length}`,
+          'The site goes live at the domain once its owner has changed the name servers.']);
+        return json({ ok: true, domain: publicDomain(fresh) });
+      } finally {
+        try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ }
+      }
+    }
+
+    if (action === 'check') {
+      if (!row) return refuse('no_domain', 404);
+      const now = Date.now();
+      let changed = false;
+      // Only a domain that waits has anything to ask about, and Cloudflare is
+      // asked once a minute at most for a site: sooner, what is known is the answer.
+      if (row.state === 'waiting' && row.zone_id && now - Number(row.checked_at || 0) >= DOMAIN_CHECK_EVERY_MS) {
+        let status;
+        try { ({ status } = await domainStatus(env, { zoneId: row.zone_id, recheck: true })); }
+        catch (e) {
+          console.warn(JSON.stringify({ evt: 'domain_check_failed', repo: site.repo, name: row.name, detail: detail(e) }));
+          return refuse('not_asked', 502, { domain: publicDomain(row) });
+        }
+        try { await saveDomain(env, site.id, { checked_at: now }); } catch { /* the answer is right all the same; the next press asks again */ }
+        if (status === 'active') changed = !(await domainTookHold(env, { site, row, now })).live;
+      }
+      const fresh = await domainRow(env, site.id);
+      // `changed`: Cloudflare has seen the new name servers, and the site is not live at the domain yet.
+      return json({ ok: true, domain: publicDomain(fresh), ...(changed && fresh && fresh.state === 'waiting' ? { changed: true } : {}) });
+    }
+
+    if (action === 'stop') {
+      if (!row) return json({ ok: true, domain: null });   // nothing is set up, which is what was asked for
+      if (row.state === 'live') return refuse('is_live', 409, { domain: publicDomain(row) });
+      if (row.zone_id) {
+        let gone;
+        // domain.js takes a zone away only while it still waits: one that has taken hold may be answering for somebody's email.
+        try { gone = await removeWaitingDomain(env, { zoneId: row.zone_id }); }
+        catch (e) {
+          console.warn(JSON.stringify({ evt: 'domain_stop_failed', repo: site.repo, name: row.name, detail: detail(e) }));
+          return refuse('not_asked', 502, { domain: publicDomain(row) });
+        }
+        // The name servers were changed while this waited. The zone answers for the domain now, so the set-up is not thrown away.
+        if (row.state === 'waiting' && !gone.removed && gone.status === 'active') return refuse('changed', 409, { domain: publicDomain(row) });
+      }
+      await forgetDomain(env, site.id);
+      return json({ ok: true, domain: null });
+    }
+
+    return refuse('bad_action', 400);
+  }
+
+  // The domain's records as one text file, for an owner who moves the domain
+  // away: they hand it to whoever answers for the domain next. It is there
+  // whatever state the set-up is in, and with editing switched off.
+  if (path === '/cloud/sites/domain/records' && request.method === 'GET') {
+    const asked = await ownedSite(request, env, url, sess, tools, { needToken: false, needAccess: false });
+    if (asked.response) return asked.response;
+    const row = await domainRow(env, asked.site.id);
+    const refuse = (code, status) => json({ error: domainSentence(code, { name: row?.name || null }), code }, status);
+    if (!row) return refuse('no_domain', 404);
+    if (!row.zone_id) return refuse('no_records', 404);
+    let text;
+    try { text = await exportRecords(env, { zoneId: row.zone_id }); }
+    catch (e) {
+      if (e instanceof DomainError && e.code === 'no_records') return refuse('no_records', 404);
+      console.warn(JSON.stringify({ evt: 'domain_records_failed', repo: asked.site.repo, name: row.name, detail: e instanceof DomainError ? e.detail || e.code : String(e?.message || e).slice(0, 300) }));
+      return refuse('not_asked', 502);
+    }
+    // The dashboard is at another address than this service, so it is told that it may read the file's name.
+    return new Response(text, { status: 200, headers: {
+      'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="${row.name}-records.txt"`,
+      'Access-Control-Expose-Headers': 'Content-Disposition', 'Cache-Control': 'no-store',
+    } });
   }
 
   if (path === '/cloud/sites/remove' && request.method === 'POST') {

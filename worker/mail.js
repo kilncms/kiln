@@ -7,6 +7,9 @@
  *   editing stopped  a site Kiln hosts, when its paid plan has ended: the day
  *                    the site comes down, and what keeps it up
  *   comes down soon  seven days before that day
+ *   name servers     a hosted site that is being put on its owner's own
+ *                    domain: the two name servers to enter where the domain
+ *                    was bought
  *
  * A free trial needs no card, so the payment company knows nothing of it and
  * cannot remind anyone: before these, a trial ended in silence and the owner
@@ -144,6 +147,37 @@ export function hostingEndingMail({ origin, plan, repo, endsAt, pastDue = false,
     `To keep it up, ${takeUpAgain(plan, pastDue, ' before then')} Editing comes back too, as soon as the payment is confirmed.`,
     dashboard,
     `If you do nothing, the site goes offline on ${day}. Nothing is lost. Every file stays in your own GitHub repository${repo ? ` (${repo})` : ''}, so you can subscribe later and put the site back up, or move it to another host.`,
+  ], whyLine(host));
+}
+
+const count = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+/**
+ * Sent once when a hosted site's own domain has been made ready on Kiln's
+ * side: the two name servers its owner enters where the domain was bought.
+ * `seller` is { name } or null when nobody could say who sold the domain;
+ * `helpUrl` a page on changing name servers (the seller's own when Kiln knows
+ * it); `records` the records Kiln kept, each with its `kind`; `givesUpAt`
+ * (ms) the day the set-up is put away if the name servers are not changed.
+ */
+export function domainNameServersMail({ origin, name, nameServers = [], seller = null, helpUrl = null, records = [], givesUpAt = null, dashboard }) {
+  const host = hostOf(origin);
+  const at = seller?.name || 'the company you bought the domain from';
+  const mail = records.filter(r => r && r.kind === 'mail').length;
+  const others = records.length - mail;
+  const noMail = 'If the domain has email, do not change the name servers yet: reply to this email, and we will add the records with you first.';
+  const kept = !records.length ? `Kiln found no records to copy for ${name}. ${noMail}`
+    : !mail ? `Kiln copied ${count(others, 'record')} of ${name} and saw none for email. ${noMail} The list is on the site's row in your dashboard.`
+      : `Kiln copied ${count(mail, 'email record')} and ${count(others, 'other record')} of ${name}, so that email and everything else on the domain keep working after the change. Kiln cannot always see every record, so before you change the name servers, compare the list on the site's row in your dashboard with the list at ${at}.`;
+  return message(`Two name servers to enter for ${name}`, [
+    'Hello,',
+    `Kiln has made everything ready for your site to answer at ${name}. One step is left, and only you can take it: sign in at ${at}, and replace the name servers of ${name} with these two.`,
+    ...nameServers,
+    ...(helpUrl ? [seller?.name ? `The domain was bought at ${seller.name}. This page explains how to change its name servers:` : 'This page explains how to change a domain\'s name servers:', helpUrl] : []),
+    `Until that change takes hold, your site and your email keep working exactly where they are now. It takes from a few minutes to a day. Kiln notices by itself, puts your site at ${name}, and writes to you again when it is live.`,
+    kept,
+    dashboard,
+    ...(givesUpAt ? [`If the name servers are not changed by ${dayWords(givesUpAt)}, Kiln puts this set-up away. Nothing of yours is changed by that, and you can start again any time.`] : []),
   ], whyLine(host));
 }
 

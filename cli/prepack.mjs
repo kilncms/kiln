@@ -27,6 +27,7 @@ const items = [
   ['worker/mail.js', 'worker/mail.js'],                     // imported by worker/cloud.js
   ['worker/hosting.js', 'worker/hosting.js'],               // ditto — copying a hosted site's files to Cloudflare
   ['worker/hosted.js', 'worker/hosted.js'],                 // ditto — the record of hosted sites, the push webhook, the sweep
+  ['worker/domain.js', 'worker/domain.js'],                 // imported by worker/cloud.js: a hosted site on its owner's own domain
   ['worker/prepare.js', 'worker/prepare.js'],               // ditto — adding Kiln to a repository from the dashboard
   ['worker/firstpass.js', 'worker/firstpass.js'],           // ditto — the first pass at what can be edited (uses src/autotag.js)
   ['worker/sitecheck.js', 'worker/sitecheck.js'],           // ditto — the "Check this site" checklist
