@@ -100,6 +100,27 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checked at its own address, as before. The answer carries `looked_at`, the
   address that was asked (`worker/sitecheck.js`, `worker/cloud.js`).
 
+- **Saving the site menu changes only what was changed.** "Site menu > Save to
+  all pages" wrote every page's menu afresh from each link's words and address
+  alone, so a link lost everything else it carried:
+  `<a class="is-cta" href="/members-login.html">Members</a>` came back without
+  its class on every page and both templates, and a styled button became a
+  plain link. The indentation of the first link and of the closing tag changed
+  too. Now each page's menu is worked out from that page's own text. A link
+  that was already in the menu keeps every attribute it has on that page (its
+  class, id, target, rel, aria and data attributes, anything), and only its
+  words or its address are written, and only when the person changed them. A
+  link that is moved moves whole, with its list item when it has one. A link
+  that is removed goes whole. A link that is added is written like its
+  neighbours: with the same whitespace before it, inside a list item when the
+  others are, and with the class every link of that page shares when they
+  share one. The whitespace before the first link, between the links and
+  before the closing tag stays as the page had it. A page whose menu comes out
+  the same is not written at all, and a save that changes nothing makes no
+  change in the history and says so. An address is still made safe before it
+  is written, and what is typed as a link's words can never become markup
+  (`src/editor/menu-links.js`, `src/editor/menu-save.js`).
+
 ## [0.6.3] - 2026-11-12
 
 ### Fixed

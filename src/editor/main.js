@@ -67,7 +67,8 @@ import { pageAddress } from './page-address.js';
 import { takeBase, readAttrs } from './baselines.js';
 import { notDone, whyNot, said } from './plain-failure.js';
 import { pictureNotAdded } from './picture-not-added.js';
-import { saveMenuEverywhere, menuStepText } from './menu-save.js';
+import { saveMenuEverywhere, menuStepText, MENU_SAME } from './menu-save.js';
+import { menuLinks, rewriteMenu } from './menu-links.js';
 import { plainName, readableName } from './names.js';
 import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
@@ -6584,30 +6585,12 @@ function menuEditor() {
   }
   // Parse the current items from this page's source.
   const innerHtml = demoNav ? demoNav.innerHTML : state.page.text.slice(menuField.inner.start, menuField.inner.end);
-  const docFrag = new DOMParser().parseFromString(innerHtml, 'text/html');
-  let rows = [...docFrag.querySelectorAll('a')].map(a => ({
-    label: a.textContent.trim(), href: a.getAttribute('href') || '/',
-  }));
-  // Preserve the item wrapper (e.g. <ul><li><a>) so list-based navs keep their
-  // markup instead of being flattened to bare <a> on the next menu edit.
-  const anchors = [...docFrag.querySelectorAll('a')];
-  const itemTag = anchors.length && anchors.every(a => a.parentElement && a.parentElement.tagName === 'LI')
-    ? 'li' : null;
-  // Also preserve the surrounding <ul>/<ol>. When the menu is tagged on a <nav>
-  // (what autotag does), menuField.inner is the whole <ul>…</ul>; rebuilding only
-  // the <li> rows would drop the <ul>, orphaning <li> under <nav> and breaking
-  // every `nav ul li` rule site-wide. If the items sit in exactly one list, keep
-  // that list's open/close tags (with its attributes).
-  let listOpen = '', listClose = '';
-  if (itemTag === 'li') {
-    const lists = [...docFrag.body.querySelectorAll('ul, ol')].filter(l => l.querySelector('li > a'));
-    if (lists.length === 1) {
-      const tag = lists[0].tagName.toLowerCase();
-      const attrs = [...lists[0].attributes].map(a => ` ${a.name}="${escapeHtml(a.value)}"`).join('');
-      listOpen = `<${tag}${attrs}>`;
-      listClose = `</${tag}>`;
-    }
-  }
+  // The links as this page's own text holds them (menu-links.js). Each row
+  // remembers which link it was, so that a save can leave that link's own
+  // attributes, on every page, exactly as they are.
+  const origin = menuLinks(innerHtml);
+  let rows = origin.map((l, i) => ({ label: l.label, href: l.href || '/', from: i }));
+  origin.forEach((l) => { if (!l.href) l.href = '/'; });   // a row shows "/" for a link with no address: that is not a change
 
   const m = modal(`
     <h3>Site menu</h3>
@@ -6641,35 +6624,36 @@ function menuEditor() {
     });
   }
   render();
-  m.querySelector('#kiln-menu-add').onclick = () => { rows.push({ label: 'New item', href: '/' }); render(); };
+  m.querySelector('#kiln-menu-add').onclick = () => { rows.push({ label: 'New item', href: '/', from: null }); render(); };
 
   m.querySelector('#kiln-menu-save').onclick = async () => {
     const status = m.querySelector('#kiln-menu-status');
     if (cfg.sandbox) { status.textContent = demoSays('menu'); return; }
     const menuKey = menuField.key;
-    const wrap = (a) => itemTag ? `<${itemTag}>${a}</${itemTag}>` : a;
-    const items = rows
-      .filter(r => r.label.trim())
-      // safeUrl() the href before it's spliced: menu inner-HTML bypasses DOMPurify,
-      // and escapeHtml alone doesn't neutralize javascript:/data: schemes, so an
-      // editor could otherwise plant script on every page's nav. (safeUrl mirrors
-      // the engine's own href gate.)
-      .map(r => wrap(`<a href="${escapeHtml(safeUrl(r.href.trim() || '/'))}">${escapeHtml(r.label.trim())}</a>`))
-      .join('\n        ');
-    const newInner = listOpen
-      ? `\n      ${listOpen}\n        ${items}\n      ${listClose}\n    `
-      : `\n      ${items}\n    `;
+    // Each page's menu is worked out from that page's own text (menu-links.js):
+    // a link that was there keeps every attribute it has on that page, a new
+    // one is written like its neighbours, and the whitespace around them stays.
+    // An address is made safe there before it is written (safeUrl), since a
+    // menu's inside does not go through the sanitizer.
+    const asked = rows.map(r => ({ ...r }));
     try {
       // Every page is read, then all of them are saved as one change, or none
       // is (menu-save.js): a refusal part-way leaves the site as it was.
       const branch = cfg.branch || 'main';
-      const { changed, skipped: skippedPages, commit } = await saveMenuEverywhere({
-        gh: state.gh, repo: cfg.repo, branch, menuKey, newInner, getFile, applyEdits, commitFiles,
+      const { changed, skipped: skippedPages, same, commit } = await saveMenuEverywhere({
+        gh: state.gh, repo: cfg.repo, branch, menuKey, rewrite: (inner) => rewriteMenu(inner, origin, asked), getFile, applyEdits, commitFiles,
         onStep: (step) => { status.textContent = menuStepText(step); },
       });
+      // Nothing differs from what the pages already hold: no page is written, and that is said.
+      if (!commit && same) { status.textContent = MENU_SAME; return; }
       if (!commit) throw said('No page of the site has this menu marked for Kiln. For the owner: the menu needs a matching data-cms-menu container');
       const thisPage = changed.find(c => c.path === state.page.path);
       if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Menu update', sha: commit.sha });
+      if (!thisPage) {
+        // This page's own menu needed no change, so there is nothing to watch for here.
+        status.textContent = `The menu is saved on ${changed.length} other page${changed.length === 1 ? '' : 's'}. This page already had it, so it was left as it is.`;
+        return;
+      }
       status.innerHTML = `Step 2 of 3 · Committed ✓ — the site is rebuilding.
         ${skippedPages ? skippedPages + ' page(s) had no managed menu and were left alone.' : ''}<br>
         <small><strong>Safe to close this window</strong> — Kiln keeps watching in the background and

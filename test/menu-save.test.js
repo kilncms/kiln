@@ -113,7 +113,7 @@ test('menu: a page without the menu is left alone, and a site where no page has 
   assert.equal(repo.commits.get(repo.head()).message, 'Update menu on 3 pages (via Kiln)');
 
   const none = fakeRepo({ 'a.html': '<html><body><p>a</p></body></html>', 'b.html': '<html><body><p>b</p></body></html>' });
-  assert.deepEqual(await save(none), { changed: [], skipped: 2, commit: null });
+  assert.deepEqual(await save(none), { changed: [], skipped: 2, same: 0, commit: null });
   assert.equal(writes(none).length, 0);
 });
 
