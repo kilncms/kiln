@@ -339,11 +339,22 @@ function tipOpts(inSheet = false) {
   return { touch: window.matchMedia('(hover: none)').matches, keys, inSheet };
 }
 
+/**
+ * The mark the page carries while the guide's second tip is up. That tip has
+ * the place over Publish, at the foot of the screen. On a phone that is where
+ * the demo's banner sits while Undo, Redo or Publish share the pencil's row,
+ * and the banner lay on the tip's first words: "Now publish it." read
+ * "n it." With the mark on the page the banner steps aside (main.js), as it
+ * does for a field's toolbar and for the menu, and comes back when the tip goes.
+ */
+export const TIP_OVER_ROW = 'kiln-guide-pub';
+
 function removeTip() {
   tip?._seen?.disconnect();
   tip?.remove();
   tip = null;
   tipStep = 0;
+  document.documentElement.classList.remove(TIP_OVER_ROW);
 }
 
 /** The first heading on the page a visitor can edit (any first field, failing that). */
@@ -382,6 +393,7 @@ function showTip(step, target) {
     if (inSheet) target.closest('#kiln-modal').classList.add('kiln-guided');
     try { localStorage.setItem(GUIDE_KEY, '1'); } catch { /* storage blocked */ }
   }
+  document.documentElement.classList.toggle(TIP_OVER_ROW, tipStep === 2);
   const moved = tip._target !== target;
   tip._target = target;
   placeGuideTip();

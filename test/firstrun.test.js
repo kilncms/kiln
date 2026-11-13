@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { publishLabel, editCommitMessage, goingLiveLabel, guideStep, guideCardCopy, diffSnippet, placeTip, sideForHeading, initGuide, guideSync, guidePublished, guideUndone, tipWords, guideSaid } from '../src/editor/firstrun.js';
+import { publishLabel, editCommitMessage, goingLiveLabel, guideStep, guideCardCopy, diffSnippet, placeTip, sideForHeading, initGuide, guideSync, guidePublished, guideUndone, tipWords, guideSaid, TIP_OVER_ROW } from '../src/editor/firstrun.js';
 
 test('publishLabel: says how many edits will go out', () => {
   assert.equal(publishLabel(0), 'Publish');                 // an upload with no field edit still publishes
@@ -218,4 +218,25 @@ test('what a screen reader hears names the part the tip points at', () => {
   assert.equal(guideSaid(1, { keys: true }, 'Week of  Remembrance'), 'Press Enter on “Week of Remembrance” and type.');
   assert.equal(guideSaid(1, {}, ''), 'Click this and type.');
   assert.equal(guideSaid(2, {}, 'Week'), 'Now publish it.');
+});
+
+// On a 390 px phone in the demo, after a first edit, the demo's banner lay on
+// the first words of the second tip: "Now publish it." read "n it." Both stand
+// just above the row of Undo, Redo and Publish. The tip marks the page while it
+// is up, and the banner steps aside for it (the rule is in main.js, with the
+// banner's other rules for a phone; see test/demo-get-kiln.test.js).
+test('the second tip marks the page while it is up, and the mark goes with the tip', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../src/editor/firstrun.js', import.meta.url), 'utf8');
+  assert.equal(TIP_OVER_ROW, 'kiln-guide-pub');
+  const show = src.slice(src.indexOf('function showTip('), src.indexOf('function placeGuideTip('));
+  // only the tip that points at Publish: the first tip rides the page beside its heading
+  assert.match(show, /document\.documentElement\.classList\.toggle\(TIP_OVER_ROW, tipStep === 2\);/);
+  const gone = src.slice(src.indexOf('function removeTip('), src.indexOf('function firstHeading('));
+  assert.match(gone, /document\.documentElement\.classList\.remove\(TIP_OVER_ROW\);/);
+  // every way the tip leaves goes through removeTip: Skip and the end of the guide, the card after a publish, a Publish button that is not there
+  const finish = src.slice(src.indexOf('function finish('), src.indexOf('function closeCardLater('));
+  assert.match(finish, /removeTip\(\);/);
+  const sync = src.slice(src.indexOf('export function guideSync('), src.indexOf('export function guideWaiting('));
+  assert.equal((sync.match(/removeTip\(\)/g) || []).length, 2);
 });

@@ -78,6 +78,9 @@ test('get Kiln: on a phone the pill holds the link and "Start over", and gives u
   // the pill still keeps the pencil's column free, and still steps aside for the toolbar and the menu
   assert.match(phone, /max-width:calc\(100vw - 108px\)/);
   assert.match(phone, /\.kiln-tb-open #kiln-sandbox-banner,\.kiln-menu-open #kiln-sandbox-banner\{display:none\}/);
+  // …and for the guide's second tip, which stands where the pill sits above the row: the pill lay on its first words
+  assert.match(phone, /\.kiln-guide-pub #kiln-sandbox-banner\{display:none\}/);
+  assert.equal(css.slice(0, css.indexOf('@media ${MOBILE_MQ}{')).includes('.kiln-guide-pub'), false, 'only on a phone: in a wide window the pill is at the left and the tip at the right');
   // in a wide window the long sentence makes way for the link
   assert.match(css, /\.kiln-sbx-get \.kiln-sbx-more\{display:none\}/);
 });

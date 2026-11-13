@@ -24,6 +24,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   info@kilncms.com. (Before this release such pages went up as plain files
   that anyone could open.)
 
+### Fixed
+
+- **On a phone, the demo's banner no longer covers the guide's "Now publish
+  it."** After a first edit in the demo, the guide's second tip stands over
+  Publish, at the foot of the screen. On a phone that is also where the
+  demo's banner sits while Undo, Redo and Publish share the pencil's row. The
+  banner lay on the tip's first words, and a visitor on a 390 px screen read
+  "n it." beside Skip. While that tip is up the banner now steps aside, as it
+  already does for a field's toolbar and for the menu, and it is back as soon
+  as the tip has gone. The browser check now looks at the words of both of
+  the guide's tips and fails when anything lies on them
+  (`src/editor/firstrun.js`).
+
 ## [0.6.7] - 2026-11-13
 
 ### Added
@@ -1862,7 +1875,6 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not a full web address where the schema wants one, empty where it is
   required, not one of an enum's words). References made by the helpers carry
   the entry's collection (`?c=posts`).
-
 
 - **The release runs the end-to-end tests itself.** With the two test
   repositories named (`KILN_E2E_REPO`, `KILN_E2E_SOURCE_REPO`),

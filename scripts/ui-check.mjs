@@ -253,6 +253,19 @@ const roomOnScreen = () => {
   }
   return { top, bottom };
 };
+/**
+ * What lies on the words of the guide's tip, if anything: at the start, the
+ * middle and the end of them, the tip must be what a finger or an eye meets.
+ * (On a phone the demo's banner lay on the first words of "Now publish it.")
+ */
+const overTipWords = (guide) => guide.evaluate((g) => {
+  const words = g.querySelector('.kiln-guide-words') || g.querySelector('span');
+  const r = words.getBoundingClientRect();
+  if (!r.width || !r.height) return ['the tip has no words to read'];
+  const y = r.top + r.height / 2;
+  const name = (n) => (n ? (n.closest('[id]') ? `#${n.closest('[id]').id}` : n.tagName.toLowerCase()) : 'off the screen');
+  return [...new Set([r.left + 2, r.left + r.width / 2, r.right - 2].map((x) => { const at = document.elementFromPoint(x, y); return at && g.contains(at) ? '' : name(at); }).filter(Boolean))];
+});
 /** Wait until the page has stopped moving (the editor moves it smoothly to show a block's opened buttons). */
 async function atRest(page) {
   let was = NaN;
@@ -324,6 +337,8 @@ async function run(browser, size, firstVisit) {
         : apart(g, await box(heading));
       check(scope, 'guide step 1 does not cover the heading', clear,
         `tip ${side} the heading, at x ${Math.round(g.left)} to ${Math.round(g.right)}, y ${Math.round(g.top)} to ${Math.round(g.bottom)}${words.first ? `; first line of words x ${Math.round(words.first.left)} to ${Math.round(words.first.right)}, y ${Math.round(words.first.top)} to ${Math.round(words.first.bottom)}` : ''}`);
+      const over1 = await overTipWords(guide);
+      check(scope, 'guide step 1\'s words can be read: nothing lies on them', over1.length === 0, over1.join(', '));
     }
     if (await guide.count()) {
       await page.waitForTimeout(2400);   // the page's own fade-ins have settled, and the tip has been looked at again
@@ -488,16 +503,27 @@ async function run(browser, size, firstVisit) {
     check(scope, 'the row covers no more than the pencil\'s own band of the page', covered <= 80, `${Math.round(covered)}px`);
     check(scope, 'Undo and Redo are icons, named for screen readers', row[0].name === 'Undo' && row[1].name === 'Redo' && row[0].width <= 48 && row[1].width <= 48, `${row[0].name} ${Math.round(row[0].width)}px, ${row[1].name} ${Math.round(row[1].width)}px`);
   }
+  if (firstVisit) await guide.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
   if (phone && await banner.count()) {
-    const bb = await box(banner);
-    const others = [pencil, publish, page.locator('#kiln-undo-btn'), page.locator('#kiln-redo-btn')];
-    let clear = true;
-    for (const o of others) if (await o.count()) clear = clear && apart(bb, await box(o));
-    check(scope, 'demo banner covers none of pencil, Publish, Undo, Redo', clear);
+    if (firstVisit && await guide.isVisible()) {
+      // The guide's second tip stands over Publish. On a phone that is where the banner sits while Undo, Redo
+      // or Publish share the pencil's row, and it lay on the tip's first words. It steps aside for the tip, as
+      // it does for a field's toolbar and the menu, and is back when the tip has gone (checked after the guide).
+      check(scope, 'the demo banner steps aside while the guide points at Publish', !(await banner.isVisible()));
+    } else {
+      const bb = await box(banner);
+      const others = [pencil, publish, page.locator('#kiln-undo-btn'), page.locator('#kiln-redo-btn')];
+      let clear = await banner.isVisible();
+      for (const o of others) if (await o.count()) clear = clear && apart(bb, await box(o));
+      check(scope, 'demo banner covers none of pencil, Publish, Undo, Redo', clear);
+    }
   }
   if (firstVisit) {
-    await guide.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
     check(scope, 'guide step 2 points at Publish', ((await guide.locator('span').first().textContent().catch(() => '')) || '') === 'Now publish it.');
+    if (await guide.count()) {
+      const over2 = await overTipWords(guide);
+      check(scope, 'guide step 2\'s words can be read: nothing lies on them', over2.length === 0, over2.join(', '));
+    }
     if (await guide.count() && name) {
       const g = await box(guide);
       let clear = true;
@@ -742,6 +768,7 @@ async function run(browser, size, firstVisit) {
     if (await keep.count()) await press(keep);
     await page.waitForTimeout(200);
     check(scope, '"Keep exploring" closes the guide', (await card.count()) === 0 && (await guide.count()) === 0);
+    if (phone && await banner.count()) check(scope, 'with the guide gone, the demo banner is back', await banner.isVisible());
     await page.reload({ waitUntil: 'load' });
     await pencil.waitFor({ state: 'visible', timeout: 15000 });
     await page.waitForTimeout(700);

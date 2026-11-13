@@ -6368,6 +6368,10 @@ function renderSandboxBanner() {
     .kiln-sbx-get #kiln-sandbox-get{display:inline-flex;align-items:center;flex:none;box-sizing:border-box;min-height:34px;padding:6px 12px}
     .kiln-row-on #kiln-sandbox-banner{bottom:calc(84px + env(safe-area-inset-bottom,0px))}
     .kiln-tb-open #kiln-sandbox-banner,.kiln-menu-open #kiln-sandbox-banner{display:none}
+    /* So does the guide's second tip, "Now publish it.": it stands over
+       Publish, just where the banner sits above that row, and the banner lay
+       on its first words (firstrun.js marks the page while that tip is up). */
+    .kiln-guide-pub #kiln-sandbox-banner{display:none}
   }
   /* The demo's menu is the menu of a real site: every item opens its own
      dialog, and says what a real site does where the demo cannot act. Only
