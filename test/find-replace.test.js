@@ -168,7 +168,7 @@ test('find & replace: only web pages are searched, a hundred at the most', () =>
 test('find & replace: the tool in the editor works through this, and says what it said before', () => {
   const panel = main.slice(main.indexOf('function findReplacePanel()'), main.indexOf('// ─── Drafts (kiln-drafts branch)'));
   assert.match(panel, /await findEverywhere\(\{ gh: state\.gh, repo: cfg\.repo, branch, find, getFile,/);
-  assert.match(panel, /await replaceEverywhere\(\{ gh: state\.gh, repo: cfg\.repo, branch, hits, find, repl, commitFiles \}\)/);
+  assert.match(panel, /await whileSending\(\(\) => replaceEverywhere\(\{ gh: state\.gh, repo: cfg\.repo, branch, hits, find, repl, commitFiles \}\)\)/);
   assert.equal(/getFile\(state\.gh/.test(panel), false, 'no page is read anywhere else');
   assert.equal(/await commitFiles\(/.test(panel), false, 'and none is saved anywhere else');
   // the same handling as the Site menu tool when the service says to wait
@@ -179,7 +179,7 @@ test('find & replace: the tool in the editor works through this, and says what i
   assert.match(panel, /const \{ hits, left \} = await findEverywhere\(/);
   assert.match(panel, /if \(!hits\.length\) \{ status\.textContent = noMatchText\(find, left\); return; \}/);
   assert.match(panel, /status\.textContent = previewText\(find, count, hits\.length, left\);/);
-  assert.match(panel, /const \{ changed, commit, count: done \} = await replaceEverywhere\(/);
+  assert.match(panel, /const \{ changed, commit, count: done \} = await whileSending\(\(\) => replaceEverywhere\(/);
   assert.match(panel, /status\.textContent = replacedText\(done, changed\.length, left, !!thisPage\);/);
   // the preview shows each page's count and its first places, as they are and as they would be, every word of it escaped
   assert.match(panel, /<small>\$\{nPlaces\(h\.count\)\}<\/small>/);

@@ -47,6 +47,21 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   keeps arriving for as long as the domain's name servers point at Kiln.
   `/cloud/me` carries `forwarding` and each site's `forward`. The setup tool
   now copies `worker/domain-mail.js` for a service somebody hosts themselves.
+### Fixed
+
+- **Leaving the page while any save is being sent asks first.** Since 0.6.5
+  the browser asks "Leave site?" while a Publish or a "Save to all pages"
+  is on its way. A tester left during one of the editor's other saves and
+  the change was lost without a word. Now every save that writes to the site
+  is counted, from the press of its button until Kiln's service has answered
+  or the attempt has failed: "Replace everywhere", Theme's Apply, Page
+  settings' Publish, Settings' Save, making, duplicating, removing or
+  deleting a post or a page, Save as draft and Delete draft, scheduling a
+  change and cancelling one, sending a suggestion and approving or declining
+  one, Undo after a publish, "Go back to this" and Undo on a site built from
+  content files, naming a version in History, "Make this whole page
+  editable" and adding the first reusable block. The demo sends nothing and
+  asks nothing, as before.
 
 ## [0.6.5] - 2026-11-13
 

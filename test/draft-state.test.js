@@ -158,7 +158,7 @@ test('drafts: anyone who can save a draft is shown "Delete draft", and an invite
   const check = main.slice(main.indexOf('async function checkForDraft()'), main.indexOf('// ─── Scheduled publishing'));
   assert.match(check, /const canDelete = hasFeature\('draft'\) && !\(mode === 'editor' && state\.scope\?\.mode === 'review'\);\n  const m = draftDialog\(canDelete, draftWords\(saved, \{ canDelete \}\)\);/);
   // the owner removes the file; an editor writes the page as it is over the draft, saying the draft was deleted
-  assert.match(check, /if \(mode === 'admin'\) \{\n        await state\.gh\.request\('DELETE',[^\n]*\n          \{ message: draftDeleteMessage\(state\.page\.path\), sha: draft\.sha, branch: DRAFT_BRANCH \}\);\n      \} else \{\n        await putFile\(state\.gh, cfg\.repo, state\.page\.path,\n          \{ text: state\.page\.text, sha: draft\.sha, branch: DRAFT_BRANCH, message: draftDeleteMessage\(state\.page\.path\) \}\);/);
+  assert.match(check, /if \(mode === 'admin'\) \{\n        await whileSending\(\(\) => state\.gh\.request\('DELETE',[^\n]*\n          \{ message: draftDeleteMessage\(state\.page\.path\), sha: draft\.sha, branch: DRAFT_BRANCH \}\)\);\n      \} else \{\n        await whileSending\(\(\) => putFile\(state\.gh, cfg\.repo, state\.page\.path,\n          \{ text: state\.page\.text, sha: draft\.sha, branch: DRAFT_BRANCH, message: draftDeleteMessage\(state\.page\.path\) \}\)\);/);
   // a published draft is put away the same two ways
   const retire = main.slice(main.indexOf('async function retireResumedDraft('), main.indexOf('async function checkForDraft()'));
   assert.match(retire, /\} else if \(now\.text !== state\.page\.text\) \{/);

@@ -4163,7 +4163,7 @@ async function undoPublish(rec) {
   endUndoOffer(false);
   setStatus('Undoing that publish…', 'saving');
   try {
-    const r = await revertPublish({ gh: state.gh, repo: cfg.repo, branch: rec.branch, path: rec.path, before: rec.before, after: rec.after, message: rec.message });
+    const r = await whileSending(() => revertPublish({ gh: state.gh, repo: cfg.repo, branch: rec.branch, path: rec.path, before: rec.before, after: rec.after, message: rec.message }));
     if (!r.ok) { undoBlocked(); return; }
     // Stop waiting for the undone commit to appear on the site.
     journalSave(journalAll().filter(e => e.sha !== rec.sha));
@@ -5194,7 +5194,7 @@ async function openEntryPanel(file) {
     if (m.isConnected) m._kilnClose();
     setStatus('Removing…', 'saving');
     try {
-      const r = await entryCall('/source/remove', { file });
+      const r = await whileSending(() => entryCall('/source/remove', { file }));
       for (const el of entryInfo.get(file)?.els || []) el.classList.add('kiln-entry-removed');
       entryRead.delete(file);
       const committed = [{ file, sha: r.commit.sha, parent: r.commit.parent, refs: [] }];
@@ -5234,9 +5234,9 @@ function scheduleEntry(file, title, rule, over) {
     if (!at) return;
     said.textContent = 'Scheduling…';
     try {
-      const data = await ask('/schedule', { method: 'POST', body: { repo: cfg.repo, branch: cfg.branch || 'main', at: new Date(at).toISOString(),
+      const data = await whileSending(() => ask('/schedule', { method: 'POST', body: { repo: cfg.repo, branch: cfg.branch || 'main', at: new Date(at).toISOString(),
         desc: `${title} goes on the site`,
-        source: { adapter: cfg.adapter || 'astro', file, edits: [{ pointer: `/frontmatter/${rule.name}`, value: !rule.value, type: 'boolean', add: true }] } } });
+        source: { adapter: cfg.adapter || 'astro', file, edits: [{ pointer: `/frontmatter/${rule.name}`, value: !rule.value, type: 'boolean', add: true }] } } }));
       said.textContent = `Scheduled: it goes on the site ${new Date(data.at).toLocaleString()}. You can close this.`;
     } catch (err) {
       said.textContent = stopped(err, 'scheduled') || notDone('Nothing was scheduled.', err);
@@ -5300,7 +5300,7 @@ async function newEntryPanel({ collection = null, copyOf = null, title = '' } = 
     for (let tries = 0; tries < 6; tries++) {
       const file = entryFileName(fields.title || 'entry', { folder: copyOf ? copyOf.split('/').slice(0, -1).join('/') : col.folder, ext: copyOf ? (/\.[^./]+$/.exec(copyOf) || ['.md'])[0] : col.ext, taken });
       try {
-        const r = await entryCall('/source/create', { file, fields, ...(copyOf && { copyOf }) });
+        const r = await whileSending(() => entryCall('/source/create', { file, fields, ...(copyOf && { copyOf }) }));
         col.files.push(r.file);
         m._kilnClose();
         const committed = [{ file: r.file, sha: r.commit.sha, parent: r.commit.parent, refs: [], created: true }];
@@ -5397,7 +5397,7 @@ async function sourceHistoryPanel(file = null) {
     if (m.isConnected) m._kilnClose();
     setStatus('Going back…', 'saving');
     try {
-      const r = await entryCall('/source/revert', { file: f, toSha: sha });
+      const r = await whileSending(() => entryCall('/source/revert', { file: f, toSha: sha }));
       entryRead.delete(f);
       if (r.unchanged) { setStatus('The file is already as it was then.', 'idle'); return; }
       const committed = [{ file: f, sha: r.commit.sha, parent: r.commit.parent, refs: [] }];
@@ -5548,11 +5548,11 @@ async function sourcePageSettings() {
     }
     if (!refs.size) { said.textContent = 'Nothing changed.'; return; }
     said.textContent = 'Publishing…';
-    try { await commitStagedFiles([...refs].map(r => String(state.pendingSource.get(r)?.value ?? '')).join('\n'), { prune: false }); }
+    try { await whileSending(() => commitStagedFiles([...refs].map(r => String(state.pendingSource.get(r)?.value ?? '')).join('\n'), { prune: false })); }
     catch (err) { said.textContent = stopped(err, 'published') || notDone('The settings were not published.', err); return; }
     m._kilnClose();
     entryRead.delete(pe.file);
-    await publishSource('', { only: refs });
+    await whileSending(() => publishSource('', { only: refs }));
   };
 }
 
@@ -5898,7 +5898,7 @@ async function askTheirsOrMine(changed, note) {
     else waiting++;
   }
   refreshPublishButton();
-  if (mine.size) return publishSource(note, { only: mine });
+  if (mine.size) return whileSending(() => publishSource(note, { only: mine }));
   if (waiting) setStatus(waiting === 1 ? 'Your edit is still on the page, not published.' : 'Your edits are still on the page, not published.', 'idle', { hold: 9000 });
   else if (kept) setStatus(kept === 1 ? 'Theirs is kept. Your edit was dropped.' : 'Theirs are kept. Your edits were dropped.', 'idle', { hold: 9000 });
 }
@@ -6038,8 +6038,8 @@ function sourceBuildFailedBanner(committed, sha) {
       btn.disabled = true;
       btn.textContent = 'Undoing…';
       try {
-        if (c.created) await entryCall('/source/remove', { file: c.file });
-        else await ask('/source/revert', { method: 'POST', body });
+        if (c.created) await whileSending(() => entryCall('/source/remove', { file: c.file }));
+        else await whileSending(() => ask('/source/revert', { method: 'POST', body }));
         btn.textContent = 'Undone ✓';
         restageAfterUndo(c);
         setStatus('Undone. The site rebuilds without that change, and your edit is back on this page, not published.', 'saved', { hold: 12000 });
@@ -6583,6 +6583,9 @@ function newContent() {
       </div>`;
     const status = body.querySelector('#kiln-np-status');
     const openBtn = body.querySelector('#kiln-np-open');
+    // Counted as a save from the press of the button until the new file is
+    // written or the attempt has failed (sending.js).
+    const sent = cfg.sandbox ? () => {} : state.sending.start();
     try {
       const filePath = root + href.slice(1);
       const exists = await getFile(state.gh, cfg.repo, filePath, branch).catch(err => {
@@ -6677,7 +6680,7 @@ function newContent() {
       body.style.display = 'none';
       form.style.display = '';
       m.querySelector('#kiln-np-said').textContent = stopped(err, 'created', typedIn(form)) || notDone('Nothing was created.', err);
-    }
+    } finally { sent(); }
   };
 }
 
@@ -7498,8 +7501,8 @@ async function historyPanel(resume = null) {
       const btn = form.querySelector('[data-nv="save"]');
       btn.disabled = true; btn.textContent = 'Saving…';
       try {
-        await state.gh.request('POST', `/repos/${cfg.repo}/git/refs`,
-          { ref: `refs/tags/kiln/${Math.floor(Date.now() / 1000)}-${slug}`, sha: c.sha });
+        await whileSending(() => state.gh.request('POST', `/repos/${cfg.repo}/git/refs`,
+          { ref: `refs/tags/kiln/${Math.floor(Date.now() / 1000)}-${slug}`, sha: c.sha }));
         closeForm();
         status.textContent = `Saved as “${raw}”. It’s in Named versions above.`;
         loadNamedVersions();
@@ -7744,9 +7747,9 @@ function pageSettingsPanel() {
     if (cfg.sandbox) { status.textContent = demoSays('pagesettings'); return; }
     status.textContent = 'Publishing…';
     try {
-      const result = await editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
+      const result = await whileSending(() => editFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main',
         (text) => editHead(text, { title, description, ogImage }),
-        `Page settings: ${state.page.path} (via Kiln)`);
+        `Page settings: ${state.page.path} (via Kiln)`));
       if (result.unchanged) { status.textContent = 'Nothing changed.'; return; }
       await loadPageSource();
       journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: 'Page settings', sha: result.commit?.sha });
@@ -7763,8 +7766,8 @@ function pageSettingsPanel() {
     (async () => {
       try {
         const file = await getFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main');
-        await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
-          { message: `Delete ${state.page.path} (via Kiln)`, sha: file.sha, branch: cfg.branch || 'main' });
+        await whileSending(() => state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
+          { message: `Delete ${state.page.path} (via Kiln)`, sha: file.sha, branch: cfg.branch || 'main' }));
         status.innerHTML = 'Deleted ✓ The page comes off the site on the next deploy. <strong>Open Site menu to remove its link.</strong>';
       } catch (err) { status.textContent = stopped(err, 'deleted') || notDone('The page was not deleted.', err); }
     })();
@@ -7822,7 +7825,7 @@ function findReplacePanel() {
       act.querySelector('.kiln-btn-publish').onclick = async () => {
         status.textContent = 'Replacing…';
         try {
-          const { changed, commit, count: done } = await replaceEverywhere({ gh: state.gh, repo: cfg.repo, branch, hits, find, repl, commitFiles });
+          const { changed, commit, count: done } = await whileSending(() => replaceEverywhere({ gh: state.gh, repo: cfg.repo, branch, hits, find, repl, commitFiles }));
           const thisPage = changed.find(c => c.path === state.page.path);
           if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Find & replace', sha: commit.sha });
           // The number said is the number of places really changed, not the number previewed.
@@ -7864,6 +7867,8 @@ async function saveDraft() {
     return;
   }
   setStatus('Saving draft…', 'saving');
+  // Counted as a save until the draft is written or the attempt has failed (sending.js).
+  const sent = state.sending.start();
   try {
     await ensureDraftBranch();
     const edits = editsForFile(state.page.text, flattenPending(), listsWaiting());
@@ -7891,7 +7896,7 @@ async function saveDraft() {
     console.error('[kiln] draft', err);
     if (err instanceof ListLoss) { setStatus(LIST_NOT_WHOLE_DRAFT(readableName(err.key)), 'error'); return; }
     say(err, 'saved', notDone('The draft was not saved.', err));
-  }
+  } finally { sent(); }
 }
 
 /**
@@ -8073,11 +8078,11 @@ async function checkForDraft() {
     status.textContent = 'Deleting…';
     try {
       if (mode === 'admin') {
-        await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
-          { message: draftDeleteMessage(state.page.path), sha: draft.sha, branch: DRAFT_BRANCH });
+        await whileSending(() => state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
+          { message: draftDeleteMessage(state.page.path), sha: draft.sha, branch: DRAFT_BRANCH }));
       } else {
-        await putFile(state.gh, cfg.repo, state.page.path,
-          { text: state.page.text, sha: draft.sha, branch: DRAFT_BRANCH, message: draftDeleteMessage(state.page.path) });
+        await whileSending(() => putFile(state.gh, cfg.repo, state.page.path,
+          { text: state.page.text, sha: draft.sha, branch: DRAFT_BRANCH, message: draftDeleteMessage(state.page.path) }));
       }
       status.textContent = 'Draft deleted.';
       setTimeout(() => m.remove(), 600);
@@ -8183,7 +8188,7 @@ function schedulePanel(at, opts) {
       row.querySelector('[data-yes]').onclick = async (e) => {
         e.currentTarget.disabled = true;
         try {
-          await ask('/schedule/cancel', { method: 'POST', body: { repo: cfg.repo, id: s.id } });
+          await whileSending(() => ask('/schedule/cancel', { method: 'POST', body: { repo: cfg.repo, id: s.id } }));
         } catch (err) {
           status.textContent = stopped(err, 'cancelled') || notDone('That was not cancelled.', err);
           drawRow(row, s);
@@ -8227,11 +8232,11 @@ function schedulePanel(at, opts) {
       // them against the live source at fire time, so edits published in the
       // meantime aren't wiped.
       const edits = flattenPending();
-      const data = await ask('/schedule', { method: 'POST',
+      const data = await whileSending(() => ask('/schedule', { method: 'POST',
         body: { repo: cfg.repo, path: state.page.path, branch: cfg.branch || 'main',
           edits, at: new Date(at).toISOString(),
           message: `Scheduled edit: ${state.page.path} (via Kiln)`,
-          desc: `${state.page.path} (${[...state.pending.keys()].slice(0, 3).join(', ')})` } });
+          desc: `${state.page.path} (${[...state.pending.keys()].slice(0, 3).join(', ')})` } }));
       if (!data.ok) throw said(data.error || 'The site did not take the schedule');
       // The edits now live in the schedule on the worker — retire the stage.
       retireStaged();
@@ -8283,9 +8288,9 @@ function scheduleSourcePanel(at) {
     let done = 0;
     for (const g of groups) {
       try {
-        await ask('/schedule', { method: 'POST', body: { repo: cfg.repo, branch: cfg.branch || 'main', at: new Date(when).toISOString(),
+        await whileSending(() => ask('/schedule', { method: 'POST', body: { repo: cfg.repo, branch: cfg.branch || 'main', at: new Date(when).toISOString(),
           desc: `${entryTitle(g.file)}: ${g.refs.map(r => sourceName(r).split(' · ')[0]).join(', ')}`.slice(0, 200),
-          source: { adapter: cfg.adapter || 'astro', file: g.file, edits: g.body.edits } } });
+          source: { adapter: cfg.adapter || 'astro', file: g.file, edits: g.body.edits } } }));
         for (const ref of g.refs) { state.pendingSource.delete(ref); syncSourceDom(ref); }
         markEntry(g.file);
         done++;
@@ -8343,14 +8348,14 @@ function settingsPanel() {
     status.textContent = 'Committing site settings…';
     try {
       const cfgPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + 'assets/kiln-config.js';
-      const result = await editFile(state.gh, cfg.repo, cfgPath, cfg.branch || 'main', (text) => {
+      const result = await whileSending(() => editFile(state.gh, cfg.repo, cfgPath, cfg.branch || 'main', (text) => {
         let out = text;
         const flags = `\n  // Managed by Kiln Settings\n  auth: { google: ${google} },\n`;
         out = out.replace(/\n\s*\/\/ Managed by Kiln Settings\n\s*(loginButton:[^\n]*\n\s*)?auth:[^\n]*\n/, '\n');
         out = out.replace(/\n\s*loginButton:[^\n]*\n/, '\n');
         const close = out.lastIndexOf('};');
         return out.slice(0, close) + flags + out.slice(close);
-      }, 'Kiln settings (via Kiln)');
+      }, 'Kiln settings (via Kiln)'));
       journalAdd({ type: 'compare', target: '/assets/kiln-config.js', expect: djb2(result.text), desc: 'Site settings', sha: result.commit?.sha });
       status.textContent = 'Saved ✓ Everyone gets it once the site has rebuilt, in about a minute.' + (uiChanged ? ' Reloading…' : '');
       if (uiChanged) setTimeout(() => location.reload(), 1500);
@@ -8556,7 +8561,7 @@ function bootBlocks() {
     sanitizeBlock: (html) => DOMPurify.sanitize(html, BLOCK_SANITIZE),
     ghRequest: (method, path, body) => state.gh.request(method, path, body),
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
-    putRepoFile: (path, opts) => putFile(state.gh, cfg.repo, path, opts) });
+    putRepoFile: (path, opts) => whileSending(() => putFile(state.gh, cfg.repo, path, opts)) });
 }
 
 function makeEditableMode() {
@@ -8645,12 +8650,12 @@ async function wholePage(btn) {
     if (!(await askFirst(modal, wholePageCopy('ask', { counts: plan.counts })))) return;
     if (anythingUnpublished()) { tell(modal, wholePageCopy('unpublished')); return; }
     btn.textContent = WHOLE_PAGE_SAVING;
-    const result = await editFile(state.gh, cfg.repo, path, branch, (text) => {
+    const result = await whileSending(() => editFile(state.gh, cfg.repo, path, branch, (text) => {
       // Worked out again on the very text that is written: nothing but marks, and as many as were agreed to.
       const write = wholePageWrite(text, plan.counts);
       if (!write.html) throw said(WHOLE_PAGE_WHY[write.why]);
       return write.html;
-    }, wholePageMessage(path, plan.counts));
+    }, wholePageMessage(path, plan.counts)));
     exitPickMode();
     setStatus(WHOLE_PAGE_SAVED, 'saving');
     // What the editor holds of the file is the file again (a failure to read it here is mended by the reload).
@@ -8933,7 +8938,7 @@ function renderAdminBar() {
       },
     }),
     sourceFieldRows: () => [...(state.sourceFields || [])].map(([ref, f]) => ({ ref, name: sourceName(ref), el: f.els.find(el => el.isConnected && !el.classList.contains('kiln-source-locked')) })).filter(r => r.el) });
-  initSuggest({ state, cfg, mode, modal, setStatus, escapeHtml, ask, stopped, flattenPending, retireStaged,
+  initSuggest({ state, cfg, mode, modal, setStatus, escapeHtml, ask, stopped, flattenPending, retireStaged, whileSending,
     saveDraft, journalAdd, humanizeKey, noteTyped,
     note: () => keptNote, noteDone: () => { keptNote = ''; },
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
@@ -8941,7 +8946,7 @@ function renderAdminBar() {
   initAssist({ state, cfg, mode, modal, setStatus, escapeHtml, ask, say,
     stagePending, stageContainer, commitEdit, humanizeKey,
     noAi: () => noteAi({ aiConfigured: false }) });
-  initTheme({ state, cfg, mode, modal, setStatus, escapeHtml, pageInScope, journalAdd, djb2, stopped,
+  initTheme({ state, cfg, mode, modal, setStatus, escapeHtml, pageInScope, journalAdd, djb2, stopped, whileSending,
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main') });
   if ((localStorage.getItem('kiln_ui_mode') || 'fab') === 'bar') { renderTopBar(); return; }
   const fab = document.createElement('div');

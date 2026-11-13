@@ -64,7 +64,7 @@ test('try-out: "Schedule for later" asks nothing of the worker, and says what a 
   assert.ok(main.slice(main.indexOf('async function fetchScheduled()'), main.indexOf('function schedulePanel(')).includes('await ask(`/schedules'));
   assert.ok(main.includes("if (!cfg.sandbox && !state.scheduledAsked && (mode === 'admin' || (hasFeature('schedule') && !isSuggestMode()))) {"), 'nor is the count for the menu item');
   const go = panel.slice(panel.indexOf("#kiln-sc-go').onclick"));
-  assert.ok(go.indexOf('if (cfg.sandbox)') !== -1 && go.indexOf('if (cfg.sandbox)') < go.indexOf("await ask('/schedule'"), 'nothing is sent in the demo');
+  assert.ok(go.indexOf('if (cfg.sandbox)') !== -1 && go.indexOf('if (cfg.sandbox)') < go.indexOf("await whileSending(() => ask('/schedule'"), 'nothing is sent in the demo');
   assert.equal(demoShort('schedule'), 'Nothing is scheduled in the demo.');
   for (const item of DEMO_ITEMS) assert.equal(demoSays(item).startsWith(demoShort(item)), true);
 });

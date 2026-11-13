@@ -128,6 +128,11 @@ export function suggestChanges() {
  * Returns { previewSkipped }.
  */
 export async function sendSuggestion(note, onStatus = () => {}) {
+  // Counted as a save from here until the service has answered or the attempt has failed (sending.js).
+  return deps.whileSending(() => sendSuggestionNow(note, onStatus));
+}
+
+async function sendSuggestionNow(note, onStatus) {
   const { state, cfg, flattenPending, ask, retireStaged } = deps;
   const edits = flattenPending();
   onStatus('Sending your suggestion…');
@@ -333,7 +338,7 @@ function suggestionRow(m, sug) {
     try {
       let data;
       try {
-        data = await ask('/suggestions/decide', { method: 'POST', body: { repo: cfg.repo, id: sug.id, approve, ...(note && { note }) } });
+        data = await deps.whileSending(() => ask('/suggestions/decide', { method: 'POST', body: { repo: cfg.repo, id: sug.id, approve, ...(note && { note }) } }));
       } catch (e2) {
         if (!Number.isInteger(e2.status)) throw e2;
         // The worker answered. An ended sign-in, a refusal and trouble are said

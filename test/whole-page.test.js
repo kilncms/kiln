@@ -175,7 +175,7 @@ test('main.js: the bar offers it, the editor\'s own dialogs ask and tell, and Pu
   assert.match(flow, /tell\(modal, wholePageCopy\('unpublished'\)\)/);
   assert.match(flow, /askFirst\(modal, wholePageCopy\('ask', \{ counts: plan\.counts \}\)\)/);
   // the same write Publish makes for a page, with the check on the text that is written
-  assert.match(flow, /await editFile\(state\.gh, cfg\.repo, path, branch, \(text\) => \{/);
+  assert.match(flow, /await whileSending\(\(\) => editFile\(state\.gh, cfg\.repo, path, branch, \(text\) => \{/);
   assert.match(flow, /wholePageWrite\(text, plan\.counts\)/);
   assert.match(flow, /notDone\(WHOLE_PAGE_NOT_DONE, err\)/);
   // the marks are not switched on in the page as it stands: the page is loaded again

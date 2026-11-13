@@ -389,7 +389,7 @@ export function controlHtml(token, cur, choices, esc) {
 }
 
 export async function openThemePanel() {
-  const { state, cfg, mode, modal, setStatus, escapeHtml, journalAdd, djb2 } = deps;
+  const { state, cfg, mode, modal, setStatus, escapeHtml, journalAdd, djb2, whileSending } = deps;
   const m = modal(`<h3>Theme</h3>
 <p class="kiln-dim">The site’s colors and type sizes. A change shows on this page at once;
 <strong>Apply</strong> puts it on every page.${mode === 'admin' ? ' <small>For the owner: these are the custom properties on <code>:root</code> in the site’s stylesheet.</small>' : ''}</p>
@@ -537,7 +537,7 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
       let skipped = [];
       let gone = [];   // the same settings by the names a person reads
       try {
-        const result = await editFile(state.gh, cfg.repo, path, cfg.branch || 'main', (text) => {
+        const result = await whileSending(() => editFile(state.gh, cfg.repo, path, cfg.branch || 'main', (text) => {
           skipped = [];
           gone = [];
           let attempt = applyTokenEdits(text, edits);
@@ -555,7 +555,7 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
           }
           appliedNames = attempt.applied;
           return attempt.css;
-        }, themeCommitMessage(edits.map(e => e.phrase)));
+        }, themeCommitMessage(edits.map(e => e.phrase))));
         for (const label of gone) notices.push(`“${label}” is no longer in the style sheet, so it was left as it is.`);
         if (!result.unchanged) {
           committed += appliedNames.length;
