@@ -195,8 +195,8 @@
       '<h1 style="font-size:21px;line-height:1.2;margin:0 0 4px;color:#1c1c28">' + (location.hash === '#out' ? 'You are signed out' : 'Sign in to edit') + '</h1>' +
       '<p style="font-size:13px;color:#888;margin:0 0 22px">' + esc(cfg.siteName || 'this site') + '</p>' +
       '<div id="kiln-entry-btns"></div>' +
-      '<p style="font-size:11px;line-height:1.5;color:#b0b0b8;margin:20px 0 0">Editors and members sign in with Google. ' +
-      'The site owner signs in with GitHub.</p>';
+      '<p style="font-size:11px;line-height:1.5;color:#b0b0b8;margin:20px 0 0">Site owners sign in with GitHub, ' +
+      'or with Google if they have no GitHub account.</p>';
 
     var btns = card.querySelector('#kiln-entry-btns');
     if (showGoogle) btns.appendChild(loginButton('google', 'Continue with Google', 'Invited editors & members',
