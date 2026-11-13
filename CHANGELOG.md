@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-11-13
+
 ### Added
 
 - **A person with no GitHub account can start a site, and Kiln keeps its
