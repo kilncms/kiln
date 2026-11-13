@@ -383,7 +383,7 @@ test('who owns a kept site: the account on its row and nobody else, with GitHub 
   addSite(w.env, { id: 'site-k', repo: 'kiln-sites/elm-cafe-12345678', origin: 'https://elm.example' });
   w.env.kiln_cloud.exec("UPDATE sites SET kept = 1 WHERE id = 'site-k'");
   r = await reach('site-k', 'tok');
-  assert.deepEqual([r.status, r.json.code], [409, 'no_access']);
+  assert.deepEqual([r.status, r.json.code], [502, 'not_reached'], 'a kept site is never told to install an app');
   assert.equal(github(r.calls).length, 0);
   // an ordinary row on a Google account is still out of reach
   addSite(w.env, { id: 'site-g', account_id: 'acct-g', repo: 'rosa/shop', origin: 'https://shop.example' });
