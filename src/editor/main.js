@@ -46,6 +46,7 @@ import { publishLabel, editCommitMessage, goingLiveLabel, initGuide, guideSync, 
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
+import { limitsSaid } from './your-pages.js';
 import { findEverywhere, replaceEverywhere, changedSinceText, previewText, noMatchText, replacedText } from './find-replace.js';
 import { aiAfter, aiOffered, noAiKey } from './ai-offered.js';
 import { DRAFT_BRANCH, draftSaveMessage, draftDeleteMessage, draftPublishedMessage, blobSha, draftOfPage, draftWords, DRAFT_DELETE_REFUSED } from './draft-state.js';
@@ -1015,6 +1016,24 @@ function keyInScope(key) {
   return ks.some(p => key === p || key.startsWith(p));
 }
 
+/**
+ * What an invited editor with limits is told about this page, after their
+ * name (your-pages.js): that it is not one of theirs and which are, or that
+ * only its outlined parts are. '' for the owner, the demo, someone who only
+ * comments (they have a line of their own) and a page the site builds from
+ * content files (what is theirs there is decided field by field).
+ */
+function limitsHere() {
+  if (mode !== 'editor' || cfg.sandbox || !state.page?.path || state.scope?.mode === 'review') return '';
+  const partsLimited = !!state.scope?.keys?.length;
+  // A part inside a list goes by the list's name, as it does when it is outlined.
+  const nameOf = (el) => (el.closest('[data-cms-repeat]') || el).getAttribute('data-cms-repeat') || el.getAttribute('data-cms');
+  return limitsSaid({
+    pageMine: pageInScope(), paths: state.scope?.paths, root: cfg.root, suggest: state.scope?.mode === 'suggest', partsLimited,
+    anyPart: !partsLimited || [...document.querySelectorAll('[data-cms],[data-cms-repeat]')].some(el => keyInScope(nameOf(el) || '')),
+  });
+}
+
 /** Suggest-mode editor: their Publish proposes instead of committing (worker-enforced). */
 function isSuggestMode() {
   return mode === 'editor' && !cfg.sandbox && state.scope?.mode === 'suggest';
@@ -1120,10 +1139,10 @@ function hideEmptyGroups() {
 
 function renderScopeNote() {
   if (document.getElementById('kiln-scope-note')) return;
-  const paths = (state.scope?.paths || []).filter(p => p && p !== '**' && p !== '*');
   const note = document.createElement('div');
   note.id = 'kiln-scope-note';
-  note.innerHTML = `<span class="kiln-presence-dot"></span>Read-only here. Your editing access covers: <strong>${paths.map(escapeHtml).join(', ') || 'other pages'}</strong>`;
+  // The same sentence the status line says (your-pages.js), kept on the page.
+  note.innerHTML = `<span class="kiln-presence-dot"></span>${escapeHtml(limitsHere() || limitsSaid({ pageMine: false, paths: state.scope?.paths, root: cfg.root }))}`;
   document.body.appendChild(note);
 }
 
@@ -6455,7 +6474,7 @@ function setStatusIdle(after = 4000) {
 
 /** The line the editor rests on. After a publish went live it goes on saying so, with the time (went-live.js). */
 function restStatus() {
-  setStatus(restLine(state.user, state.lastLive), 'idle', state.lastLive ? { hold: LIVE_STAYS } : undefined);
+  setStatus(restLine(state.user, state.lastLive, { limits: limitsHere() }), 'idle', state.lastLive ? { hold: LIVE_STAYS } : undefined);
 }
 
 function swapImagePreviews() {
@@ -9079,8 +9098,10 @@ function renderAdminBar() {
   // What this person can do here, in one true sentence (grants.js startLine).
   // A phone has no click, and its outlines are always on.
   const seat = mode === 'editor' && !cfg.sandbox ? state.scope?.mode || null : null;
+  // Someone given only some pages, or only some parts, is told which (your-pages.js).
+  const limits = limitsHere();
   setStatus(startLine({ user: state.user, touch: window.matchMedia('(hover: none)').matches, scopeMode: seat,
-    comments: hasFeature('comments'), pageFile: !!state.page?.path || !!cfg.sandbox }), 'idle', seat === 'review' || (seat === 'suggest' && !state.page?.path) ? { hold: 12000 } : undefined);
+    comments: hasFeature('comments'), pageFile: !!state.page?.path || !!cfg.sandbox, limits }), 'idle', seat === 'review' || (seat === 'suggest' && !state.page?.path) || limits ? { hold: 12000 } : undefined);
 }
 
 /**
@@ -9193,7 +9214,7 @@ function renderTopBar() {
   refreshPublishButton();   // suggest-mode label ("Suggest changes") from the first paint
   updateOnlineChip();
   watchToolbar();
-  setStatus(`Signed in as ${state.user}`, 'idle');
+  setStatus(restLine(state.user, null, { limits: limitsHere() }), 'idle');
 }
 
 function discardEdits() {

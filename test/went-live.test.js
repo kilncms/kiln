@@ -64,7 +64,7 @@ test('the editor asks several times before it says live, keeps the line, and nev
   assert.match(main, /state\.lastLive = \{ at: Date\.now\(\)/);
   assert.match(main, /setStatus\(`\$\{e\.desc\} — live ✓`, 'saved', \{ hold, rest: true \}\)/);
   assert.match(main, /const hold = isMobileEditor\(\) \? LIVE_STAYS_PHONE : LIVE_STAYS;/);
-  assert.match(main, /setStatus\(restLine\(state\.user, state\.lastLive\), 'idle', state\.lastLive \? \{ hold: LIVE_STAYS \} : undefined\)/);
+  assert.match(main, /setStatus\(restLine\(state\.user, state\.lastLive, \{ limits: limitsHere\(\) \}\), 'idle', state\.lastLive \? \{ hold: LIVE_STAYS \} : undefined\)/);
   assert.match(main, /if \(leaves\.then === 'sign-in'\) setStatus\(withLastLive\(signInLine\[0\], state\.lastLive\), signInLine\[1\], signInLine\[2\]\);/);
   // in publish(): a stop after the commit goes nowhere near publishFailed
   assert.match(main, /if \(!committed\) \{ publishFailed\(err, opts\); return; \}/);
@@ -155,5 +155,5 @@ test('the editor settles what follows a line where the line is shown, and says "
   // a line kept back by "Published. Undo" has no timer until it is shown: the offer returns before any is set
   assert.ok(set.indexOf('undoOffer.held = [text, kind, opts]; return;') < set.indexOf('const leaves = lineLeaves('));
   assert.match(main, /setStatus\('Live ✓ — view site', 'saved', \{ href: e\.target, hold, rest: true \}\);/);
-  assert.match(main, /function restStatus\(\) \{\n  setStatus\(restLine\(state\.user, state\.lastLive\), 'idle', state\.lastLive \? \{ hold: LIVE_STAYS \} : undefined\);\n\}/);
+  assert.match(main, /function restStatus\(\) \{\n  setStatus\(restLine\(state\.user, state\.lastLive, \{ limits: limitsHere\(\) \}\), 'idle', state\.lastLive \? \{ hold: LIVE_STAYS \} : undefined\);\n\}/);
 });

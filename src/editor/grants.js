@@ -49,11 +49,15 @@ export function helpUrl(who) {
  * one true sentence. It used to tell everyone to click any outlined text,
  * including a comment-only editor, for whom nothing is outlined.
  *
- *   who: { user, touch, scopeMode, comments, pageFile }
+ *   who: { user, touch, scopeMode, comments, pageFile, limits }
  *   comments   the Comments tool is theirs (granted, or the owner)
  *   pageFile   the page is a file of its own in the repository. A page the
  *              site builds from content files is not, and neither a
  *              suggestion nor a comment can be filed against it yet.
+ *   limits     what a person given only some pages, or only some parts of
+ *              pages, is told about this one (your-pages.js limitsSaid). On a
+ *              page that is not theirs nothing is outlined, and the line said
+ *              "click any outlined text" all the same.
  */
 export function startLine(who) {
   const hello = `Signed in as ${who.user}.`;
@@ -63,5 +67,6 @@ export function startLine(who) {
     return who.pageFile ? `${hello} You can comment on this page. Comments is in the menu.` : `${hello} Comments can’t be left here yet, ${built}.`;
   }
   if (who.scopeMode === 'suggest' && !who.pageFile) return `${hello} Suggestions can’t be made here yet, ${built}.`;
+  if (who.limits) return `${hello} ${who.limits}`;
   return `${hello} ${who.touch ? 'Tap' : 'Click'} any outlined text to edit.`;
 }

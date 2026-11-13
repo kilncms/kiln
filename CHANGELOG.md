@@ -99,6 +99,21 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   site on the hosting plan that its owner never put on Kiln's hosting is
   checked at its own address, as before. The answer carries `looked_at`, the
   address that was asked (`worker/sitecheck.js`, `worker/cloud.js`).
+- **An editor on a page they may not change is told so, and told which pages
+  they can change.** An invited editor can be given only some pages (say,
+  those under `blog/`) or only some parts of pages. On a page outside their
+  pages nothing was outlined and Publish did nothing, and the status line
+  still read "Signed in as Rosa. Click any outlined text to edit." It now
+  reads "Signed in as Rosa. This page is not one you can change. You can
+  change: the pages under /blog/." Up to three pages and folders are named,
+  then "and 2 more". On a page where only some parts are theirs it reads
+  "Signed in as Rosa. You can change the outlined parts of this page.", and
+  where no part is, "No part of this page is one you can change." Someone
+  whose changes are suggestions reads "suggest changes to" in place of
+  "change". The same sentence is there each time the line comes back, after
+  a publish and after "live", and the note that stays on a page that is not
+  theirs says it too, where it said "Read-only here. Your editing access
+  covers: blog/".
 
 - **Saving the site menu changes only what was changed.** "Site menu > Save to
   all pages" wrote every page's menu afresh from each link's words and address

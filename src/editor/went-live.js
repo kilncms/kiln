@@ -64,9 +64,14 @@ export function withLastLive(line, lastLive, { locale } = {}) {
   return `${base}${/[.!?]$/.test(base) ? '' : '.'} Your last publish went live${when ? ` at ${when}` : ''}.`;
 }
 
-/** The line the editor rests on when nothing is happening. After a publish went live it goes on saying so. */
+/**
+ * The line the editor rests on when nothing is happening. After a publish went
+ * live it goes on saying so. `opts.limits`: what a person given only some
+ * pages or parts is told about this page (your-pages.js), said after the name
+ * every time the line comes back.
+ */
 export function restLine(user, lastLive, opts) {
-  const who = `Signed in as ${user}`;
+  const who = `Signed in as ${user}${opts && opts.limits ? `. ${opts.limits}` : ''}`;
   return lastLive && lastLive.at ? withLastLive(who, lastLive, opts) : who;
 }
 
