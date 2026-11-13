@@ -6,6 +6,24 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A suggestion on a site Kiln hosts gets a preview of its own.** When
+  somebody who may only suggest saves a change, or somebody shares a preview
+  link, the editor writes it to a branch (`kiln/suggest-<name>` or
+  `kiln-drafts`). Kiln's hosting now puts that branch up at an address of its
+  own, `https://pv-<the start of the site's id>-<the branch>.<subdomain>.workers.dev`,
+  each time the branch changes. A preview never has the pages under `members/`
+  in it, tells search engines to leave it out, and is never attached to the
+  site's own domain. A site has five previews at most: a sixth takes the place
+  of the one changed longest ago. A preview comes down when its branch is
+  deleted, when the site comes down from Kiln's hosting or is removed, and
+  after thirty days without a change. This is the service's half: the link the
+  editor shows leads to the preview once the site's settings file names the
+  pattern, which the next step writes there. It needs migration
+  `0010_previews.sql`. A service without it has no previews and works as
+  before.
+
 ## [0.6.8] - 2026-11-13
 
 ### Added
