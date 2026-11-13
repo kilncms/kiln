@@ -26,6 +26,7 @@ export function fakeD1({ upTo = Infinity } = {}) {
   const db = new sqlite.DatabaseSync(':memory:');
   schemaFiles().slice(0, upTo).forEach(f => db.exec(readFileSync(f, 'utf8')));
   const statement = (sql, args = []) => ({
+    sql, args,
     bind: (...a) => statement(sql, a),
     async first() { return db.prepare(sql).get(...args) ?? null; },
     async all() { return { results: db.prepare(sql).all(...args) }; },
@@ -34,6 +35,12 @@ export function fakeD1({ upTo = Infinity } = {}) {
   return {
     db,
     prepare: (sql) => statement(sql),
+    /** As D1 does it: every statement is carried out, or none is. */
+    async batch(list) {
+      db.exec('BEGIN');
+      try { const out = list.map(s => ({ success: true, meta: { changes: Number(db.prepare(s.sql).run(...s.args).changes) } })); db.exec('COMMIT'); return out; }
+      catch (e) { db.exec('ROLLBACK'); throw e; }
+    },
     /** Test conveniences, not part of D1. */
     row: (sql, ...a) => db.prepare(sql).get(...a) ?? null,
     exec: (sql, ...a) => db.prepare(sql).run(...a),

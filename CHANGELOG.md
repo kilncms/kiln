@@ -81,6 +81,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **An account that signs in with GitHub is known by GitHub's number for the
+  person, not by their login.** A login is not permanent: a person can rename
+  their GitHub account, and somebody else can then take the old name. Until now
+  the person who renamed found an empty dashboard with fresh free days, and
+  whoever took the old name signed in as the old account, with its sites, its
+  billing page and the editor of any site whose files Kiln keeps. Now a renamed
+  person finds their own account and their new login is written down, and a
+  person who holds somebody's old login gets a new, empty account. Apply
+  migration `0012_github_id.sql` before you deploy this worker. An account from
+  before this change gets its number the first time its person signs in. To
+  close that gap at once, run `node scripts/fill-github-ids.mjs <login> …` and
+  then the statements it prints (see "Database changes" in `ENVIRONMENTS.md`).
 - **The route the copying job answers on is counted for each address**, like
   the dashboard's other routes. It takes no sign-in (its answer is signed
   instead), so until now a stranger could send it requests without limit.

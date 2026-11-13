@@ -329,13 +329,103 @@ async function session(request, env) {
 
 // ─── Accounts + sites (D1) ────────────────────────────────────────────────────
 
-async function upsertAccount(env, login, email) {
-  const existing = await env.kiln_cloud.prepare('SELECT * FROM accounts WHERE github_login = ?').bind(login).first();
-  if (existing) return existing;
+/**
+ * The account of a person who signed in to the dashboard with GitHub: found by
+ * GitHub's own number for them (`number`, the `id` of their sign-in), or made
+ * the first time. A login is not permanent: a person can rename their GitHub
+ * account and somebody else can then take the old name, so a login alone finds
+ * an account only while that account has no number yet.
+ *   1. The account with this number is the person's, whatever login it holds.
+ *      When the login differs the person renamed, and the new one is written.
+ *   2. Else the account with this login and no number is one from before
+ *      accounts had numbers (migration 0012): it is used, once, and gets the
+ *      number.
+ *   3. Else a new account is made with both.
+ * An account with this login and ANOTHER number is never used: the login
+ * belongs to somebody else now. The table allows one account for a login, so
+ * before a login is written on one row it is taken off any other row that still
+ * carries it, in the same step, and the write cannot fail. A row that loses its
+ * login keeps its number: its person is found by the number at their next
+ * sign-in, and their login of that day is written then. A row that loses its
+ * login and has no number can be reached by nobody (see the note in the rename
+ * step below).
+ *
+ * Returns null, and changes nothing, for the one sign-in that cannot be placed:
+ * GitHub gave no number and the login is on an account that has one.
+ *
+ * On a database migration 0012 has not reached, an account is found by its
+ * login, as before.
+ */
+async function upsertAccount(env, login, email, number) {
+  const db = env.kiln_cloud;
+  const n = Number.isSafeInteger(number) && number > 0 ? number : null;
+  const byNumber = () => db.prepare('SELECT * FROM accounts WHERE github_id = ?').bind(n).first();
+  const withoutNumber = async () => {
+    const id = uuid();
+    await db.prepare('INSERT INTO accounts (id, github_login, email, created_at) VALUES (?,?,?,?)')
+      .bind(id, login, email || null, Date.now()).run();
+    return { id, github_login: login, email, ls_customer_id: null };
+  };
+
+  let mine;
+  try { mine = await byNumber(); }   // with no number this finds nobody, and still tells whether the column is there
+  catch (e) {
+    // Only a missing column means "an older database". Any other trouble stops the sign-in:
+    // it must never fall back to finding an account by its login.
+    if (!/no such column/i.test(String(e?.message || e))) throw e;
+    const existing = await db.prepare('SELECT * FROM accounts WHERE github_login = ?').bind(login).first();
+    return existing || withoutNumber();
+  }
+
+  if (mine) {
+    if (mine.github_login !== login) {
+      // The person renamed. Another row may still carry their new login. Its person gave that
+      // name up on GitHub, or this person could not hold it today. That row loses the login first.
+      // If it has a number, its person still finds it. If it has none (an account from before
+      // 0012 whose person has not signed in since), nobody can reach it any more, and that is
+      // the safe side: the only person its login could let in is this one, who has an account,
+      // and after them whoever takes the name next. It is logged so that a person at Kiln can
+      // write the right number on it by hand.
+      const other = await db.prepare('SELECT id, github_id FROM accounts WHERE github_login = ? AND id <> ?').bind(login, mine.id).first();
+      await db.batch([
+        db.prepare('UPDATE accounts SET github_login = NULL WHERE github_login = ? AND id <> ?').bind(login, mine.id),
+        db.prepare('UPDATE accounts SET github_login = ? WHERE id = ?').bind(login, mine.id),
+      ]);
+      if (other) console.warn(JSON.stringify({ evt: 'account_login_taken_off', account: other.id, login, has_number: other.github_id != null, now_on: mine.id }));
+      mine = { ...mine, github_login: login };
+    }
+    return mine;
+  }
+
+  const old = await db.prepare('SELECT * FROM accounts WHERE github_login = ? AND github_id IS NULL').bind(login).first();
+  if (n === null) {
+    // GitHub gave no number (it always does). Such a sign-in reaches an account without a
+    // number, as before, and never one that has a number.
+    if (old) return old;
+    if (await db.prepare('SELECT id FROM accounts WHERE github_login = ?').bind(login).first()) return null;
+    return withoutNumber();
+  }
+  if (old) {
+    try { await db.prepare('UPDATE accounts SET github_id = ? WHERE id = ? AND github_id IS NULL').bind(n, old.id).run(); }
+    catch { /* the same person signing in twice at the same moment: the number is on a row already */ }
+    const now = await byNumber();
+    if (now) return now;
+    // Somebody with another number was given the old account a moment ago: this person gets a new one.
+  }
+
   const id = uuid();
-  await env.kiln_cloud.prepare('INSERT INTO accounts (id, github_login, email, created_at) VALUES (?,?,?,?)')
-    .bind(id, login, email || null, Date.now()).run();
-  return { id, github_login: login, email, ls_customer_id: null };
+  try {
+    await db.batch([
+      // Only a row with a number gives up its login here, so no account is ever left unreachable by this step.
+      db.prepare('UPDATE accounts SET github_login = NULL WHERE github_login = ? AND github_id IS NOT NULL').bind(login),
+      db.prepare('INSERT INTO accounts (id, github_login, email, created_at, github_id) VALUES (?,?,?,?,?)').bind(id, login, email || null, Date.now(), n),
+    ]);
+  } catch (e) {
+    const other = await byNumber();   // two sign-ins at the same moment: the other one made the account
+    if (other) return other;
+    throw e;
+  }
+  return { id, github_login: login, email, ls_customer_id: null, github_id: n };
 }
 
 /**
@@ -1827,7 +1917,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     if (!tok.access_token) return notFinished('token', tok.error || tokRes.status);
     const user = await ghUser(tok.access_token, { fresh: true });
     if (!user) return notFinished('user');
-    const account = await upsertAccount(env, user.login, user.email);
+    const account = await upsertAccount(env, user.login, user.email, user.id);
+    if (!account) return notFinished('user', 'GitHub gave no number, and the login is on an account that has one');
     const sid = uuid();
     // Keep the user's OAuth token server-side (never sent to the browser) so
     // /cloud/sites can verify the signer actually has push on the repo they're

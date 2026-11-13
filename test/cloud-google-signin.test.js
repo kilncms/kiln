@@ -297,7 +297,7 @@ test('a GitHub sign-in to the dashboard is exactly as before: the same session, 
     const sid = tokenOf(res);
     const row = { ...env.kiln_cloud.row("SELECT * FROM accounts WHERE github_login = 'rosa'") };
     assert.deepEqual(JSON.parse(env.KILN.map.get(`csess:${sid}`)), { account_id: row.id, login: 'rosa', uid: 7, gh: 'ghu_new' });
-    assert.deepEqual({ ...row, id: 'x', created_at: 0 }, { id: 'x', github_login: 'rosa', email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: null, name: null, google_email: null, github_id: null });
+    assert.deepEqual({ ...row, id: 'x', created_at: 0 }, { id: 'x', github_login: 'rosa', email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: null, name: null, google_email: null, github_id: 7 });
     // the same person then signs in with Google at the same address: a second account, and the first is as it was
     const g = tokenOf((await signIn(env)).res);
     assert.notEqual(JSON.parse(env.KILN.map.get(`csess:${g}`)).account_id, row.id);
