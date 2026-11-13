@@ -33,6 +33,37 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = existsSync(path.join(HERE, 'dist', 'kiln.js')) ? HERE : path.resolve(HERE, '..');
 
 const UA = 'kiln-rescue/0.1 (+https://kilncms.com)';
+// A font service hands each browser the files that browser can read, and an
+// unknown caller gets the oldest and biggest kind. Asked as a current desktop
+// browser, it names woff2 files, which every browser of the last ten years reads.
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+// Font services: a style sheet on the service's host that names font files on
+// the service's host. copy says whether the fonts may be kept with the site:
+// the open ones may, the rented ones are tied to the account that pays for them.
+const ICON_FONT_PATH_RE = /font-?awesome|fortawesome|bootstrap-icons|material-?(design-?)?icons|ionicons|dashicons|themify-icons|line-?awesome|boxicons|remixicon/i;
+const FONT_SERVICES = [
+  { name: 'Google Fonts', host: /^fonts\.(googleapis|gstatic)\.com$/, copy: true },
+  { name: 'Bunny Fonts', host: /^fonts\.bunny\.net$/, copy: true },
+  { name: 'Font Awesome', host: /^use\.fontawesome\.com$/, copy: true },
+  { name: 'an icon font on a shared file host', host: /^(cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net|unpkg\.com|(maxcdn|stackpath|netdna)\.bootstrapcdn\.com)$/, path: ICON_FONT_PATH_RE, copy: true },
+  { name: 'Adobe Fonts', host: /^(use|p)\.typekit\.(net|com)$/, copy: false },
+  { name: 'Font Awesome Pro', host: /^pro\.fontawesome\.com$/, copy: false },
+  { name: 'Monotype Fonts', host: /^fast\.fonts\.(net|com)$/, copy: false },
+  { name: 'Hoefler&Co', host: /^cloud\.typography\.com$/, copy: false },
+];
+
+/** The font service an address belongs to: { name, copy }, or null for any other address. */
+export function fontService(url) {
+  let u; try { u = url instanceof URL ? url : new URL(String(url)); } catch { return null; }
+  if (!/^https?:$/.test(u.protocol)) return null;
+  const f = FONT_SERVICES.find(s => s.host.test(u.hostname.toLowerCase()) && (!s.path || s.path.test(u.pathname)));
+  return f ? { name: f.name, copy: f.copy } : null;
+}
+
+/** The headers one file is asked for with: a font service is asked the way a current desktop browser asks. */
+export function headersFor(url) {
+  return { 'user-agent': fontService(url) ? BROWSER_UA : UA, accept: '*/*' };
+}
 const MAX_ASSET_BYTES = 20 * 1024 * 1024;    // per file; --max-asset-mb changes it
 const MAX_TOTAL_BYTES = 250 * 1024 * 1024;   // per run; --max-total-mb changes it
 const PAGES_FILE_LIMIT_MB = 25;              // Cloudflare Pages refuses a bigger file
@@ -236,9 +267,11 @@ function baseOf(doc, pageUrl) {
   return base;
 }
 
-const cssUrls = (css) => {
+const CSS_IMPORT_RE = /(@import\s+)(['"])([^'"]+)\2/gi;   // @import "x": the form with no url()
+export const cssUrls = (css) => {
   const out = [];
   for (const m of css.matchAll(/url\(\s*(['"]?)([^'")\s][^'")]*)\1\s*\)/gi)) out.push(m[2]);
+  for (const m of css.matchAll(CSS_IMPORT_RE)) out.push(m[3]);
   return out;
 };
 
@@ -279,6 +312,8 @@ export function extractRefs(html, pageUrl) {
       case 'link': {
         const rels = relsOf(n);
         if (rels.includes('stylesheet') || rels.some(r => ICON_RELS.includes(r))) asset(getAttr(n, 'href'));
+        // a style sheet asked for early (rel="preload" as="style") is how many themes ask a font service
+        else if (rels.includes('preload') && (getAttr(n, 'as') || '').toLowerCase() === 'style') asset(getAttr(n, 'href'));
         break;
       }
       case 'meta': {
@@ -308,16 +343,20 @@ export function rewriteCssUrls(css, opts = {}) {
   const base = new URL(opts.base || 'http://localhost/');
   const assetMap = opts.assetMap || new Map();
   const offOrigin = new Set(), leftBehind = new Set();
-  const out = css.replace(/url\(\s*(['"]?)([^'")\s][^'")]*)\1\s*\)/gi, (m, q, ref) => {
-    if (/^(data:|blob:|#)/i.test(ref)) return m;
-    let u; try { u = new URL(ref, base); } catch { return m; }
-    if (!/^https?:$/.test(u.protocol)) return m;
+  // one address → what the copy should say in its place, or null to leave it
+  const to = (ref) => {
+    if (/^(data:|blob:|#)/i.test(ref)) return null;
+    let u; try { u = new URL(ref, base); } catch { return null; }
+    if (!/^https?:$/.test(u.protocol)) return null;
     const local = assetMap.get(siteKey(u, base));
-    if (local) return `url(${q}${opts.sameDir ? local.split('/').pop() : '/' + local}${u.hash || ''}${q})`;
-    if (!sameSite(u, base)) { offOrigin.add(u.href); return m; }
+    if (local) return (opts.sameDir ? local.split('/').pop() : '/' + local) + (u.hash || '');
+    if (!sameSite(u, base)) { offOrigin.add(u.href); return null; }
     leftBehind.add(siteKey(u, base));
-    return `url(${q}${base.origin}${u.pathname}${u.search}${u.hash}${q})`;
-  });
+    return base.origin + u.pathname + u.search + u.hash;
+  };
+  const out = css
+    .replace(/url\(\s*(['"]?)([^'")\s][^'")]*)\1\s*\)/gi, (m, q, ref) => { const r = to(ref); return r === null ? m : `url(${q}${r}${q})`; })
+    .replace(CSS_IMPORT_RE, (m, lead, q, ref) => { const r = to(ref); return r === null ? m : `${lead}${q}${r}${q}`; });
   return { css: out, offOrigin: [...offOrigin], leftBehind: [...leftBehind] };
 }
 
@@ -467,6 +506,8 @@ export function cleanPage(html, opts = {}) {
         // the canonical address is a full address, like og:url: left as it is
         else if (rels.includes('canonical')) { oldHead++; break; }
         else if (rels.includes('stylesheet') || rels.some(r => ICON_RELS.includes(r))) rwAttr(n, 'href', 'asset');
+        // a style sheet or a font asked for early points at the copied file when there is one
+        else if (rels.includes('preload') && (as === 'style' || as === 'font')) rwAttr(n, 'href', 'asset');
         else rwAttr(n, 'href', 'plain');
         break;
       }
@@ -523,6 +564,15 @@ export function cleanPage(html, opts = {}) {
         break;
       }
       case 'form': rwAttr(n, 'action', 'plain'); break;
+      case 'html': {
+        // Themes that draw their icons as SVG (WordPress's Twenty Seventeen is
+        // one) print no-svg on <html>, and their script changes it to svg when
+        // the browser can draw SVG, which every browser now can. Left as
+        // no-svg, the theme hides each icon and shows its name as words.
+        const cls = classesOf(n);
+        if (!opts.keepScripts && cls.includes('no-svg')) setAttr(n, 'class', cls.map(c => c === 'no-svg' ? 'svg' : c).filter((c, i, a) => a.indexOf(c) === i).join(' '));
+        break;
+      }
       case 'body': {
         // WooCommerce prints woocommerce-no-js on every page of a shop, and
         // the first thing its script does is add woocommerce-js. Themes write
@@ -1116,6 +1166,40 @@ export function staticLostLines(pages, origin, opts = {}) {
 /** Every file the pages use that is not in the copy: what the download loop
  *  skipped ({ url, reason, bytes? }), then same-site files it never fetches
  *  (a PDF, a video), as [{ url, reason, bytes? }]. */
+/**
+ * What the copy still asks a font service for: [{ url, name, why }].
+ * skipped = files the rescue asked for and did not get ({ url, reason });
+ * offOrigin = addresses the pages and style sheets still carry.
+ */
+export function fontsLeftOf(offOrigin = [], skipped = [], localized = []) {
+  const out = new Map();
+  const add = (url, reason) => {
+    const f = fontService(url);
+    if (!f || out.has(url) || localized.includes(url)) return;
+    out.set(url, { url, name: f.name, why: !f.copy ? 'lent' : reason ? `It could not be copied this time (${reason}). Run the rescue again to try once more.` : 'unread' });
+  };
+  for (const s of skipped) add(s.url, s.reason);
+  for (const u of offOrigin) add(u, '');
+  return [...out.values()];
+}
+
+/** The report's section for them: says the site still depends on the font service, and what to do about each. */
+export function fontServiceLines(left = []) {
+  if (!left.length) return [];
+  const names = [...new Set(left.map(f => f.name))];
+  const said = names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names[0];
+  const WHY = {
+    lent: 'This service lends its fonts to the account that pays for them, so they may not be copied. Keep that account open, or choose another font for the site.',
+    unread: 'The page asks for it in a way the rescue does not follow. It still works. To stop depending on the service, save the file into the site and point the page at it.',
+  };
+  const L = ['## Fonts that still come from a font service', '',
+    `This copy still depends on ${said} for ${left.length === 1 ? 'one file' : left.length + ' files'}: the fonts themselves, or the style sheets that name them. The pages look right for as long as the service answers, and they show another typeface if it ever stops. None of this depends on the old site, so switching it off changes nothing here.`, ''];
+  for (const f of left.slice(0, 20)) L.push(`- ${f.name}: ${f.url} ${WHY[f.why] || f.why}`);
+  if (left.length > 20) L.push(`- and ${left.length - 20} more from the same ${names.length > 1 ? 'services' : 'service'}.`);
+  L.push('');
+  return L;
+}
+
 export function notCopiedOf(skippedAssets, leftBehind = []) {
   const out = new Map();
   for (const s of skippedAssets) if (!out.has(s.url)) out.set(s.url, s);
@@ -1175,7 +1259,7 @@ function stillThereLines(notCopied, again) {
 // ─── crawl + download + write ────────────────────────────────────────────────
 
 const get = (url) => fetch(url, {
-  headers: { 'user-agent': UA, accept: '*/*' },
+  headers: headersFor(url),
   redirect: 'follow',
   signal: AbortSignal.timeout(15000),
 });
@@ -1402,6 +1486,9 @@ export async function rescueCmd(startUrl, args = {}) {
   for (const key of assetRefs) { const h = new URL(key).hostname; hostCount.set(h, (hostCount.get(h) || 0) + 1); }
   const localize = [...assetRefs].filter(key => {
     const u = new URL(key);
+    // a font service's style sheet and fonts are copied when its terms allow it, and never when they do not
+    const fonts = fontService(u);
+    if (fonts) return fonts.copy;
     return sameSite(u, origin) || BUILDER_CDN_RE.test(u.hostname) || hostCount.get(u.hostname) > 3;
   });
 
@@ -1479,7 +1566,10 @@ export async function rescueCmd(startUrl, args = {}) {
       for (const ref of cssUrls(buf.toString('utf8'))) {
         try {
           const u = new URL(ref, key);
-          if (/^https?:$/.test(u.protocol) && !downloads.has(siteKey(u, new URL(key)))) dlQueue.push({ key: siteKey(u, new URL(key)), scan: false });
+          // a font service's style sheet named by this one (@import) is read too, for the font files it names
+          const fonts = fontService(u);
+          if (fonts && !fonts.copy) continue;
+          if (/^https?:$/.test(u.protocol) && !downloads.has(siteKey(u, new URL(key)))) dlQueue.push({ key: siteKey(u, new URL(key)), scan: !!fonts });
         } catch { /* skip */ }
       }
     }
@@ -1647,11 +1737,14 @@ function printReport(r) {
     console.log(text(skippedShort).split('\n').map(l => `  ${l}`).join('\n'));
     if (!r.dry) (r.blank?.drawn ? info : ok)(`full report saved to ${path.join(r.out, 'RESCUE-REPORT.md')}`);
   };
-  const notCopied = r.notCopied || [];
+  const fontsLeft = fontsLeftOf(r.offOrigin, r.skippedAssets, r.localized);
+  const fromFontService = (u) => fontsLeft.some(f => f.url === u);
+  const notCopied = (r.notCopied || []).filter(f => !fromFontService(f.url));
   const gone = notCopied.filter(f => f.missing).length, stillThere = notCopied.length - gone;
+  if (fontsLeft.length) lines.push(`- Files still coming from a font service: ${fontsLeft.length} (see "Fonts that still come from a font service" below)`);
   if (stillThere) lines.push(`- Files not copied, still loading from the old site: ${stillThere} (see "Files not copied" below)`);
   if (gone) lines.push(`- Files already missing on the old site: ${gone} (see "Files already missing on the old site" below)`);
-  const left = r.offOrigin.filter(u => !r.localized.includes(u) && !notCopied.some(f => f.url === u));
+  const left = r.offOrigin.filter(u => !r.localized.includes(u) && !notCopied.some(f => f.url === u) && !fromFontService(u));
   if (left.length) {
     lines.push(`- Off-origin references left as-is: ${left.length}`);
     for (const u of left.slice(0, 30)) lines.push(`  - ${u}`);
@@ -1665,7 +1758,7 @@ function printReport(r) {
   lines.push('');
   lines.push(...shopLines(r.shop), ...shopChangeLines(r.shopLooks));
   lines.push(...blankLines(r.blank));
-  if (!r.dry) lines.push(...notCopiedLines(notCopied, r.again));
+  if (!r.dry) lines.push(...notCopiedLines(notCopied, r.again), ...fontServiceLines(fontsLeft));
   if (r.rendered) {
     lines.push(...lostLines([...r.pages].map(([id, p]) => ({ href: fileToHref(r.pageMap.get(id)), rendered: p.rendered }))));
   } else if (r.plainLost?.length) {

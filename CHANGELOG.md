@@ -215,6 +215,22 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its words now say that. A person who may only suggest still sends the
   editable parts, and is told that the rest stays
   (`src/editor/restore-page.js`).
+- **A rescued site keeps its fonts and its icons.** A site that asked Google
+  Fonts, Bunny Fonts or Font Awesome for its typefaces kept asking them after
+  it was copied, and a copy made for a browser the service did not know got
+  the oldest kind of font file or none. Rescue now copies the service's style
+  sheet and the font files it names into the site like any other file, and it
+  asks for them the way a current desktop browser does, so the copy holds the
+  small woff2 files. That covers a style sheet linked from the page, one
+  asked for early with `rel="preload"`, and one named by `@import` inside
+  another style sheet. Fonts that are lent to a paying account (Adobe Fonts,
+  Monotype, Font Awesome Pro) may not be copied, so their links stay, and the
+  report lists them, and any font file that could not be fetched, under
+  "Fonts that still come from a font service" with what to do about each.
+  Icons drawn as SVG come back too: themes such as WordPress's Twenty
+  Seventeen print `no-svg` on the page and swap it for `svg` with a script,
+  and without the script every social icon turned into its name in words.
+  Rescue now makes that swap itself.
 
 - **A rescued WooCommerce shop keeps its layout.** The store page and the
   category pages of a copied shop came out squeezed: the products in a narrow
