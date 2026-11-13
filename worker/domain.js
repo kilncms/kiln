@@ -838,7 +838,9 @@ function publicSeller(seller) {
  * What the dashboard is told about a site's domain: { name, state,
  * name_servers, old_name_servers, seller, records, since, checked_at,
  * live_at, gives_up_at } and `error`, the sentence for a set-up that stopped
- * short. `gives_up_at` is the moment a set-up that waits is put away. A
+ * short. `has_records: true` says Kiln still holds a zone for the row, so the file of the
+ * domain's records can be downloaded: for a domain that was put away when
+ * hosting ended too. `gives_up_at` is the moment a set-up that waits is put away. A
  * set-up whose name servers have changed, and which is not live yet, is
  * never put away: the zone answers for the domain. Such a row (it waits, and
  * its `reason` is TAKING_HOLD) has `gives_up_at` null and `taking_hold: true`,
@@ -848,6 +850,11 @@ function publicSeller(seller) {
  * Never the zone's id: it is the handle the whole domain is moved by, and no
  * page needs it.
  */
+// Does Kiln still hold a zone for this row? The row keeps the zone's id in every case, but a set-up that was put away
+// because its name servers were never changed had its zone removed, one that is `gone` lost it at Cloudflare, and a
+// set-up that failed left nothing behind.
+const holdsZone = (row) => !!row.zone_id && row.state !== 'failed' && !(row.state === 'put_away' && (row.reason === 'not_changed' || row.reason === 'gone'));
+
 export function publicDomain(row, { records = true } = {}) {
   if (!row) return null;
   const takingHold = row.state === 'waiting' && row.reason === TAKING_HOLD;
@@ -866,6 +873,9 @@ export function publicDomain(row, { records = true } = {}) {
     live_at: row.live_at || null,
     gives_up_at: row.state === 'waiting' && !takingHold && row.created_at ? Number(row.created_at) + LIMITS.waitDays * DAY_MS : null,
     ...(takingHold ? { taking_hold: true } : {}),
+    // Kiln still holds a zone for the row, so the file of the domain's records can be asked for (GET /cloud/sites/domain/records):
+    // also for a domain that was put away when hosting ended, whose zone stays for the owner's email.
+    ...(holdsZone(row) ? { has_records: true } : {}),
   };
   if (row.state !== 'live' && row.reason && !takingHold) out.error = domainSentence(row.reason, { name: row.name, seller: seller?.name });
   return out;

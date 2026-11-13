@@ -223,10 +223,10 @@ test('own domain: the set-up makes everything ready, remembers it as waiting, an
     domain = body.domain;
     zone = w.cf.zoneOf(N);
     assert.equal(zone.status, 'pending', 'the zone waits for the name servers');
-    assert.deepEqual(Object.keys(domain), ['name', 'state', 'name_servers', 'old_name_servers', 'seller', 'records', 'since', 'checked_at', 'live_at', 'gives_up_at']);
+    assert.deepEqual(Object.keys(domain), ['name', 'state', 'name_servers', 'old_name_servers', 'seller', 'records', 'since', 'checked_at', 'live_at', 'gives_up_at', 'has_records']);
     assert.deepEqual({ ...domain, records: null, since: null, gives_up_at: null }, {
       name: N, state: 'waiting', name_servers: zone.name_servers, old_name_servers: ['ns1.old-host.example', 'ns2.old-host.example'],
-      seller: { name: 'GoDaddy', help_url: GODADDY }, records: null, since: null, checked_at: null, live_at: null, gives_up_at: null,
+      seller: { name: 'GoDaddy', help_url: GODADDY }, records: null, since: null, checked_at: null, live_at: null, gives_up_at: null, has_records: true,
     });
     assert.ok(Math.abs(Date.now() - domain.since) < 5000);
     assert.equal(domain.gives_up_at, domain.since + LIMITS.waitDays * 24 * 60 * 60 * 1000);
@@ -1464,5 +1464,39 @@ test('own domain: "check now" marks a set-up whose name servers have changed, an
     assert.deepEqual((await sweep(w.env, Date.now() + 5 * 60000)).out, tally({ looked: 1 }));
     const shown = await shownTo(w.env);
     assert.deepEqual([(await where(w.env)).reason, 'taking_hold' in shown, shown.gives_up_at > Date.now()], [null, false, true]);
+  });
+});
+
+test('leaving: after hosting ended the put-away domain still says its records can be downloaded, and the file is there with editing off', { skip: d1Skip }, async () => {
+  const w = world({ env: { NOTIFY_TO: 'ops@example.com' } });
+  await withFetch(w.handler, async () => {
+    await goLive(w);
+    assert.equal((await (await standing(w.env)).json()).domain.has_records, true, 'a live domain');
+    await takeDown(w);
+    const shown = publicDomain(await domainRow(w.env, 'site1'), { records: false });   // what the list of sites carries
+    assert.deepEqual([shown.state, shown.has_records], ['put_away', true]);
+    assert.match(shown.error, /download its records from this page first/);
+    editingOff(w.env);
+    const res = await records(w.env);
+    assert.equal(res.status, 200);
+    assert.ok(res.headers.get('Content-Disposition').includes(`${N}-records.txt`));
+    assert.ok((await res.text()).includes(N));
+  });
+});
+
+test('leaving: removing a site that is live at its own domain is not refused, answers with what became of the domain, and keeps the zone', { skip: d1Skip }, async () => {
+  const w = world({ env: { NOTIFY_TO: 'ops@example.com' } });
+  await withFetch(w.handler, async () => {
+    await goLive(w);
+    const res = await remove(w.env);
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.domain.name, N);
+    assert.equal(typeof body.domain.note, 'string');
+    assert.ok(body.domain.note.includes(N));
+    assert.match(body.domain.note, /keep working/);
+    assert.ok(w.cf.zoneOf(N), 'the zone is kept');
+    assert.equal((await records(w.env)).status, 404, 'the site is off the account, so the file is no longer here');
   });
 });

@@ -645,7 +645,7 @@ test('domain: the dashboard is told of a domain in the names it was built to, wi
   assert.deepEqual(out, {
     name: N, state: 'waiting', name_servers: ['ada.ns.cloudflare.com', 'bob.ns.cloudflare.com'], old_name_servers: ['ns51.domaincontrol.com', 'ns52.domaincontrol.com'],
     seller: { name: 'GoDaddy', help_url: 'https://www.godaddy.com/help/change-my-domain-nameservers-664' },
-    records: kept, since: 1000, checked_at: 5000, live_at: null, gives_up_at: 1000 + 25 * 24 * 60 * 60 * 1000,
+    records: kept, since: 1000, checked_at: 5000, live_at: null, gives_up_at: 1000 + 25 * 24 * 60 * 60 * 1000, has_records: true,
   });
   // The list of sites carries it without the records, to keep it small.
   const small = publicDomain(row, { records: false });
@@ -890,4 +890,17 @@ test('domain: a set-up whose name servers have changed is promised no day on whi
   assert.ok(!('error' in holds), 'it is not a fault, and has no sentence');
   assert.ok(!JSON.stringify(holds).includes('zone-secret'));
   for (const state of ['live', 'put_away', 'failed']) assert.ok(!('taking_hold' in publicDomain({ ...row, state, reason: TAKING_HOLD })), `only a set-up that waits can be taking hold, not one that is ${state}`);
+});
+
+test('domain: the dashboard is told when the file of the domain\'s records can be downloaded, which is whenever Kiln still holds a zone for it', () => {
+  const row = { site_id: 'site-1', name: N, zone_id: 'zone-secret-0001', state: 'live', reason: null, ns1: 'ada.ns.cloudflare.com', ns2: 'bob.ns.cloudflare.com', created_at: 1000 };
+  assert.equal(publicDomain(row).has_records, true);
+  assert.equal(publicDomain(row, { records: false }).has_records, true, 'in the list of sites too');
+  assert.equal(publicDomain({ ...row, state: 'waiting' }).has_records, true);
+  // Put away when hosting ended, or when the name servers moved: the zone stays, for the owner's email.
+  for (const reason of ['hosting_ended', 'site_removed', 'moved']) assert.equal(publicDomain({ ...row, state: 'put_away', reason }).has_records, true, reason);
+  // The zone was removed, or Cloudflare dropped it, or the set-up never got one: there is no file to offer.
+  for (const reason of ['not_changed', 'gone']) assert.equal('has_records' in publicDomain({ ...row, state: 'put_away', reason }), false, reason);
+  assert.equal('has_records' in publicDomain({ ...row, state: 'failed', reason: 'cloudflare' }), false);
+  assert.equal('has_records' in publicDomain({ ...row, zone_id: null, state: 'put_away', reason: 'hosting_ended' }), false);
 });
