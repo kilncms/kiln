@@ -415,9 +415,29 @@ export async function cloudOriginStanding(env, origin) {
 export async function cloudSiteForOrigin(env, origin, now = Date.now()) {
   if (!env.kiln_cloud || !origin) return null;
   const named = await siteNamedByOrigin(env, origin, now);
-  // A hosted site is also edited at its temporary address, before (and after)
-  // its own domain points at Kiln.
-  return named || siteForHostingAddress(env, origin, (s) => siteHasAccess(s, now));
+  // A hosted site answers at two addresses: the one on record, which is its
+  // own domain once that is live, and its temporary address, before and
+  // after. A domain that still waits for its name servers is neither yet,
+  // even where it already is the address on record: until the name servers
+  // change, what answers there is not this site.
+  if (named && !(await ownDomainStillWaits(env, origin))) return named;
+  return siteForHostingAddress(env, origin, (s) => siteHasAccess(s, now));
+}
+
+/**
+ * Is this address the own domain (the bare name or the `www` one) of the site
+ * that has it on record, with that site's set-up still waiting? Only the
+ * site's own set-up counts: somebody else's set-up for the same name takes
+ * nothing from a site that has the address on record.
+ */
+async function ownDomainStillWaits(env, origin) {
+  let host = '';
+  try { host = new URL(origin).host; } catch { return false; }
+  try {
+    return !!(await env.kiln_cloud.prepare(
+      `SELECT d.site_id FROM domains d JOIN sites s ON s.id = d.site_id WHERE s.origin = ? AND d.state = 'waiting' AND d.name IN (?, ?) LIMIT 1`)
+      .bind(origin, host, host.replace(/^www\./, '')).first());
+  } catch { return false; }   // a database the domains table has not reached: no site has a domain
 }
 async function siteNamedByOrigin(env, origin, now) {
   return withAccessUntil(

@@ -42,6 +42,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Kiln can tell where a domain was bought when it asks from the live
   service.** The registry refused the question because it did not say who
   was asking. It says so now.
+- **A site on its own domain can be edited at both of its addresses.** Once
+  a domain is live, the owner and the people they invited can sign in and
+  edit at the domain and still at the temporary address. While a domain
+  still waits for its name servers, only the temporary address counts, even
+  when the owner had already given the domain as the site's address: until
+  the name servers change, what answers at the domain is not the site Kiln
+  publishes (`worker/cloud.js`).
 
 ### Fixed
 

@@ -14,12 +14,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../worker/index.js';
-import { fakeKV, withFetch } from './worker-harness.js';
+import { fakeKV, withFetch, call } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare, fakeLookups } from './cloudflare-fake.js';
-import { domainSentence, domainRow, saveDomain, removeWaitingDomain, LIMITS } from '../worker/domain.js';
-import { domainTookHold, sweepDomains, siteHasAccess } from '../worker/cloud.js';
+import { domainSentence, domainRow, saveDomain, removeWaitingDomain, domainsReady, LIMITS } from '../worker/domain.js';
+import { domainTookHold, sweepDomains, siteHasAccess, cloudSiteForOrigin } from '../worker/cloud.js';
 import { domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, dayWords } from '../worker/mail.js';
 
 const N = 'oakbakery.test';
@@ -978,4 +978,90 @@ test('own domain: the five-minute job looks at ten domains a run, the one looked
     assert.deepEqual(run.out, tally({ looked: 3, putAway: 2, failed: 1 }));
     assert.equal(w.mails().length, 11);
   });
+});
+
+// ─── A site answers at two addresses ──────────────────────────────────────────
+
+const OWNER = 'c'.repeat(64), EDITOR = 'e'.repeat(64);
+const AT_DOMAIN = `https://${N}`, AT_WWW = `https://www.${N}`;
+/** The owner, signed in at `address`, asks who they are there: 200 where the address is the site's own, 403 where it is not. */
+async function ownerAt(w, address) {
+  await w.env.KILN.put(`osess:${OWNER}`, JSON.stringify({ v: 1, token: 'ghu_live', token_exp: Date.now() + 8 * 3600000, refresh_token: 'ghr_live', login: 'ada', uid: 7, repo: 'ada/club', origin: address, created: Date.now() }));
+  const r = await call(w.env, 'GET', '/auth/session', { session: OWNER, headers: { Origin: address } });
+  return { status: r.status, code: r.json?.code, role: r.json?.role, allowed: r.res.headers.get('Access-Control-Allow-Origin') };
+}
+/** An invited editor reads a page of the site from `address`: the browser hands the answer to the page only when `allowed` is that address. */
+async function editorAt(w, address) {
+  await w.env.KILN.put(`esess:${EDITOR}`, JSON.stringify({ repo: 'ada/club', name: 'Sam', role: 'editor', email: 'sam@example.com', paths: [''], keys: [], features: null, mode: null }));
+  const r = await call(w.env, 'GET', '/gh/repos/ada/club/contents/index.html', { session: EDITOR, headers: { Origin: address } });
+  return { status: r.status, allowed: r.res.headers.get('Access-Control-Allow-Origin') };
+}
+/** Both sessions work at the address, and the service's answers are let through to it. */
+async function works(w, address, why) {
+  assert.deepEqual(await ownerAt(w, address), { status: 200, code: undefined, role: 'owner', allowed: address }, `owner at ${address}: ${why}`);
+  assert.deepEqual(await editorAt(w, address), { status: 200, allowed: address }, `editor at ${address}: ${why}`);
+}
+/** Neither works: the owner's session is refused, and no answer is let through to a page at the address. */
+async function refused(w, address, why) {
+  assert.deepEqual(await ownerAt(w, address), { status: 403, code: 'origin_refused', role: undefined, allowed: null }, `owner at ${address}: ${why}`);
+  assert.equal((await editorAt(w, address)).allowed, null, `editor at ${address}: ${why}`);
+}
+
+test('two addresses: while a domain waits for its name servers, the owner and an editor work at the temporary address and not at the domain', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await works(w, TEMP, 'before any domain');
+    await refused(w, AT_DOMAIN, 'before any domain');
+
+    await setup(w.env);
+    assert.equal((await domainRow(w.env, 'site1')).state, 'waiting');
+    await works(w, TEMP, 'while the domain waits');
+    await refused(w, AT_DOMAIN, 'while the domain waits');
+    await refused(w, AT_WWW, 'while the domain waits');
+
+    // The owner had given the domain as the site's address before it pointed at Kiln: it still does not count while it waits.
+    for (const address of [AT_DOMAIN, AT_WWW]) {
+      w.env.kiln_cloud.exec("UPDATE sites SET origin = ? WHERE id = 'site1'", address);
+      await refused(w, address, 'on record, and still waiting');
+      await works(w, TEMP, 'while the domain waits');
+    }
+  });
+});
+
+test('two addresses: once the domain is live, the owner and an editor work at the domain and still at the temporary address', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    const row = await changed(w);
+    w.answers(N);
+    await hush(async () => assert.deepEqual(await took(w.env, row), { live: true }));
+    assert.equal(await originOf(w.env), AT_DOMAIN);
+    await works(w, AT_DOMAIN, 'the domain is live');
+    await works(w, TEMP, 'the domain is live');
+    await refused(w, AT_WWW, 'www is sent on to the one address');
+    await refused(w, 'https://club.example', 'the address it had before');
+    await refused(w, 'https://club-other.kiln-sites.workers.dev', 'another site');
+
+    // A session is for the address it was made at: the owner's session from one address is not taken at the other.
+    await ownerAt(w, TEMP);
+    const crossed = await call(w.env, 'GET', '/auth/session', { session: OWNER, headers: { Origin: AT_DOMAIN } });
+    assert.deepEqual([crossed.status, crossed.json.code], [403, 'owner_origin']);
+
+    // Editing switched off: neither address.
+    editingOff(w.env);
+    await refused(w, AT_DOMAIN, 'editing is switched off');
+    await refused(w, TEMP, 'editing is switched off');
+  });
+});
+
+test('two addresses: a site keeps the address it has on record while somebody else\'s set-up for that name waits, and a database without domains works as before', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => { await setup(w.env); });
+  addSite(w.env, { id: 'site2', repo: 'bo/shop', origin: AT_DOMAIN, status: 'active' });
+  assert.equal((await cloudSiteForOrigin(w.env, AT_DOMAIN))?.repo, 'bo/shop');
+  assert.equal((await cloudSiteForOrigin(w.env, TEMP))?.repo, 'ada/club');
+
+  const old = world({ env: { d1: { upTo: 5 } } });
+  assert.equal(await domainsReady(old.env), false);
+  assert.equal((await cloudSiteForOrigin(old.env, 'https://club.example'))?.repo, 'ada/club');
+  assert.equal((await cloudSiteForOrigin(old.env, TEMP))?.repo, 'ada/club');
 });
