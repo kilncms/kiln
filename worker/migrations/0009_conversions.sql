@@ -45,3 +45,21 @@ CREATE TABLE IF NOT EXISTS conversions (
 );
 CREATE INDEX IF NOT EXISTS idx_conversions_state ON conversions(state);
 CREATE INDEX IF NOT EXISTS idx_conversions_site ON conversions(site_id);
+
+-- Each time an account starts a site Kiln keeps the files of (keeps.js), one
+-- row. The row is written before anything is made and stays when the site is
+-- removed, so what one account starts over time can be counted, whatever it
+-- removes. The same rows say when an account's free days began: with the
+-- first site it ever started here.
+--   id          the row's own id
+--   account_id  the account that asked
+--   at          when it asked
+--   site_id     the site the start made, once it is in the account's list.
+--               Empty for a start that did not finish
+CREATE TABLE IF NOT EXISTS kept_starts (
+  id          TEXT PRIMARY KEY,
+  account_id  TEXT NOT NULL,
+  at          INTEGER NOT NULL,
+  site_id     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_kept_starts_account ON kept_starts(account_id, at);

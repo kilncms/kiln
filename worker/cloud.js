@@ -43,7 +43,7 @@ import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } fro
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { hostingOn, hostingSentence } from './hosting.js';
-import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept } from './keeps.js';
+import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence } from './keeps.js';
 import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies } from './bring.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
@@ -214,7 +214,7 @@ async function editorPerson(env, sess) {
  * it. `kept` marks a site whose files Kiln keeps (keeps.js), which is the only
  * caller that names an `id`.
  */
-async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, kept = false, name = null }) {
+async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, kept = false, name = null, since = null }) {
   // Anti-abuse: the 7-day self-serve trial clock is anchored to the FIRST time
   // this origin was ever registered, so removing + re-adding a site can't farm
   // a fresh trial indefinitely. (First registration records the timestamp.)
@@ -223,6 +223,10 @@ async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, k
   const prior = await env.KILN.get(firstSeenKey);
   if (prior) createdAt = Number(prior) || createdAt;
   else await env.KILN.put(firstSeenKey, String(createdAt));   // no TTL: a permanent trial marker
+  // A site Kiln keeps has a new address every time it is started, so the address cannot say whether
+  // the free days were had before. They are counted for the account instead (keeps.js): `since` is
+  // when the account's first kept site was started, for an account that pays for nothing.
+  if (kept && Number(since) > 0 && Number(since) < createdAt) createdAt = Number(since);
   const site = { id, account_id: accountId, repo, origin, plan: plan === 'managed' ? 'managed' : 'cloud', status: 'trialing', created_at: createdAt };
   // `kept` arrives with migration 0008, so only a kept site's row names the column.
   // A kept site also keeps the name its owner typed for it.
@@ -1769,9 +1773,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const { name } = await request.json().catch(() => ({}));
     let typed = null;   // the name as it is put on the site's row: what the person typed, tidied
+    let since = null;   // when this site's free days began, if they began with an earlier site of the account
     const out = await startKept(env, {
       accountId: sess.account_id, name, worker: url.origin, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
-      register: ({ id, repo, origin, name }) => { typed = name; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name }); },
+      register: ({ id, repo, origin, name, since: began }) => { typed = name; since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began }); },
       forget: (id) => env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(),
       note: (subject, lines) => notifyOwner(env, subject, lines),
     });
@@ -1784,7 +1789,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       await sendOnce(env, `started:${out.site.id}`, to, siteStartedMail({ name: typed || name, address: out.site.origin, endsAt: trialEndsAt(out.site.created_at, TRIAL_GRACE_DAYS), dashboard: dash }));
     } catch { /* a mail that could not go is not a reason to fail the start */ }
     const site = await listedSite(request, env, url, tools, out.site.id);
-    return json({ ok: true, site: site || { ...out.site, kept: true } });
+    // `free_days`: one sentence for the dashboard to show when this site got no free days of its own.
+    const freeDays = freeDaysSentence({ since, days: TRIAL_GRACE_DAYS });
+    return json({ ok: true, site: site || { ...out.site, kept: true }, ...(freeDays ? { free_days: freeDays } : {}) });
   }
 
   // Bring my site in (bring.js): a site Kiln keeps the files of, started empty,
@@ -1793,16 +1800,19 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   if (path === '/cloud/sites/bring' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const { address, name, mine } = await request.json().catch(() => ({}));
+    let since = null;   // as for a site that is started: when its free days began, if with an earlier site
     const out = await bringIn(env, {
       accountId: sess.account_id, address, name, mine, worker: url.origin, dashboard: dash, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
-      register: ({ id, repo, origin, name }) => registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name }),
+      register: ({ id, repo, origin, name, since: began }) => { since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began }); },
       forget: (id) => env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(),
       note: (subject, lines) => notifyOwner(env, subject, lines),
     });
     if (!out.site) return json({ error: out.error, code: out.code }, out.status);
     const site = await listedSite(request, env, url, tools, out.site.id) || { ...out.site, kept: true, bring: out.bring };
     // The site is made either way. When its job could not be started, the answer says so and still carries the site.
-    return out.ok ? json({ ok: true, site }) : json({ error: out.error, code: out.code, site }, out.status);
+    const freeDays = freeDaysSentence({ since, days: TRIAL_GRACE_DAYS });
+    const more = freeDays ? { free_days: freeDays } : {};
+    return out.ok ? json({ ok: true, site, ...more }) : json({ error: out.error, code: out.code, site, ...more }, out.status);
   }
   // How a site's copy stands, with the report of what was left out.
   if (path === '/cloud/sites/bring' && request.method === 'GET') {

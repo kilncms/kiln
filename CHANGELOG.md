@@ -209,6 +209,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it stops at that first line, and no Google account loses its name or its
   sign-in. Nothing changes for a database the file has already been applied
   to.
+- **One account can no longer use up everybody's allowance for new sites, or
+  get new free days by starting again.** An account may start 3 sites that
+  Kiln keeps the files of in 7 days, and 10 if it pays for a site. Sites it
+  removed are counted too, and bringing a site in counts the same as starting
+  one. A person over the number reads one sentence that says when they can
+  start the next one and to write to info@kilncms.com if they need more.
+  Nothing is made for a start that is refused, and it takes nothing from the
+  30 an hour the whole service starts. An account that pays for nothing has
+  its free days once: a second site gets what is left of the days that began
+  with its first site, and none once they are over, and the answer carries a
+  sentence (`free_days`) that says so. The site can still be subscribed. The
+  count is kept in a new table, `kept_starts`, added to
+  `worker/migrations/0009_conversions.sql`.
 
 ## [0.6.6] - 2026-11-13
 

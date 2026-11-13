@@ -26,6 +26,10 @@ import { hostingOn, siteName, siteAddress } from './hosting.js';
 const CONFIG_FILE = 'assets/kiln-config.js';
 const DEFAULT_STARTER = 'kilncms/kiln-demo';
 export const STARTS_AN_HOUR = 30;           // new kept sites the whole service starts in one hour
+export const STARTS_A_WEEK = 3;             // sites one account starts in 7 days, the ones it removed counted too
+export const STARTS_A_WEEK_PAYING = 10;     // the same for an account that pays for a site
+const DAY = 86400000;
+const WEEK = 7 * DAY;
 export const START_MESSAGE = "Kiln's starter site";
 export const KEPT_REPO_DAYS = 30;           // how long a removed site's repository is left before anyone may remove it by hand
 const LOCK_S = 120;                         // one start at a time for an account; the lock runs out by itself
@@ -69,10 +73,37 @@ const SENTENCES = {
   half_made: 'Kiln could not finish starting your site, so it is not in your list. Please try again in a few minutes, and write to info@kilncms.com if it happens again.',
   in_keep_org: 'That repository is one Kiln keeps for a site, so it cannot be added here. Enter a repository of your own.',
 };
-const STATUS = { not_set_up: 409, bad_name: 400, busy: 409, one_unpaid: 409, too_many: 429, not_started: 502, half_made: 502, in_keep_org: 403 };
+const STATUS = { your_limit: 429, not_set_up: 409, bad_name: 400, busy: 409, one_unpaid: 409, too_many: 429, not_started: 502, half_made: 502, in_keep_org: 403 };
 
 export const keepSentence = (code) => SENTENCES[code] || SENTENCES.not_started;
 const refusal = (code) => ({ ok: false, code, status: STATUS[code] || 502, error: keepSentence(code) });
+
+/** "3 days", "5 hours": how long from now, rounded up so that it is never too short. */
+function howLong(ms) {
+  const hours = Math.max(1, Math.ceil(ms / 3600000));
+  if (hours > 24) return `${Math.ceil(ms / DAY)} days`;
+  return hours === 1 ? '1 hour' : `${hours} hours`;
+}
+
+/** What an account reads when it has started as many sites in 7 days as one account may. `wait` is how long until the oldest of them is 7 days old. */
+export const ownLimitSentence = (most, wait) =>
+  `You have started ${most} sites in the last 7 days, so you can start the next one in ${howLong(wait)}, and you can write to info@kilncms.com if you need more.`;
+
+/**
+ * What is true about the free days of a site that got no days of its own: an
+ * account that pays for nothing has its free days once, counted from the first
+ * site it ever started here. `since` is when that was, and null for a site
+ * whose days start with it (then there is nothing to say). `days` is how long
+ * the free days are.
+ */
+export function freeDaysSentence({ since, days, now = Date.now() } = {}) {
+  if (!since) return null;
+  const left = Number(since) + days * DAY - now;
+  if (left <= 0) return "Your free days began with the first site you started here and they are over, so this site has none. Subscribe on the site's row to edit it and keep it up.";
+  const whole = Math.floor(left / DAY);
+  const much = whole >= 2 ? `${whole} free days` : whole === 1 ? '1 free day' : 'less than one free day';
+  return `Your free days began with the first site you started here, so this site has ${much} left. Subscribe on the site's row before they end to keep editing it.`;
+}
 
 /** What the person calls the site, tidied: 2 to 60 characters, or null. */
 export function cleanName(name) {
@@ -280,7 +311,10 @@ async function fill(token, { starter, repo, branch, config, sleep }) {
  *   by        who is signed in, for the operator's notes
  *   sign      the service's signer for a GitHub App
  *   pkcs1     the service's converter for the older form of a private key
- *   register  ({ id, repo, origin }) → the new row of `sites`, with kept = 1
+ *   register  ({ id, repo, origin, name, since }) → the new row of `sites`, with
+ *             kept = 1. `since` is when the free days of this site began: null
+ *             for days of its own, else when the account's first site was
+ *             started (an account that pays for nothing has its free days once)
  *   forget    (id) → takes that row away again
  *   note      (subject, lines) → a note to the operator
  *
@@ -298,7 +332,7 @@ async function fill(token, { starter, repo, branch, config, sleep }) {
  *             failure after the repository was made does
  *   about     more lines for the note to the operator
  *
- * Answers { ok: true, site, repo, branch, name, files, commit } or { ok:
+ * Answers { ok: true, site, repo, branch, name, files, commit, since } or { ok:
  * false, code, status, error }, where `error` is the one sentence the person
  * reads.
  */
@@ -309,14 +343,36 @@ export async function startKept(env, { accountId, name, worker, by = '', sign, p
   const called = cleanName(name);
   if (!called) return refusal('bad_name');
   const lock = `keeplock:${accountId}`;
-  let held = false, made = null, id = null;
+  let held = false, made = null, id = null, counted = null, stays = false;
   try {
     held = await takeLock(env, lock);
     if (!held) return refusal('busy');
     // Fair use, before anything is made. The look comes after the lock: a second
     // press that arrives as the first one finishes finds the site it registered.
-    const mine = await env.kiln_cloud.prepare('SELECT id, status FROM sites WHERE account_id = ? AND kept = 1').bind(accountId).all();
-    if ((mine?.results || []).some(s => s.status !== 'active')) return refusal('one_unpaid');
+    const mine = (await env.kiln_cloud.prepare('SELECT id, status, kept FROM sites WHERE account_id = ?').bind(accountId).all())?.results || [];
+    if (mine.some(s => s.kept && s.status !== 'active')) return refusal('one_unpaid');
+    // What this account has started in 7 days, the sites it removed counted too.
+    // One statement writes this start's row only while the account is under its
+    // number, so two requests at once cannot both get past it. The row stays
+    // once a repository is asked for, and is taken away again if the start ends
+    // before that (the `finally` below).
+    const paying = mine.some(s => s.status === 'active');
+    const most = paying ? STARTS_A_WEEK_PAYING : STARTS_A_WEEK;
+    const row = crypto.randomUUID();
+    let wrote;
+    try {
+      wrote = await env.kiln_cloud.prepare('INSERT INTO kept_starts (id, account_id, at) SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM kept_starts WHERE account_id = ? AND at > ?) < ?')
+        .bind(row, accountId, now, accountId, now - WEEK, most).run();
+    } catch { return refusal('not_set_up'); }   // a database the table has not reached (migration 0009)
+    if (!(Number(wrote && wrote.meta && wrote.meta.changes) > 0)) {
+      const oldest = await env.kiln_cloud.prepare('SELECT MIN(at) AS at FROM kept_starts WHERE account_id = ? AND at > ?').bind(accountId, now - WEEK).first();
+      return { ok: false, code: 'your_limit', status: STATUS.your_limit, error: ownLimitSentence(most, Number(oldest && oldest.at) + WEEK - now) };
+    }
+    counted = row;
+    // An account that pays for nothing has its free days once: they began with the first site it started here.
+    const first = paying ? null : await env.kiln_cloud.prepare('SELECT MIN(at) AS at FROM kept_starts WHERE account_id = ? AND site_id IS NOT NULL').bind(accountId).first();
+    const since = Number(first && first.at) || null;
+    // The whole service's count comes after the account's own, so only a start that passed it is counted there.
     const hour = `keepstarts:${Math.floor(now / 3600000)}`;
     const started = Number(await env.KILN.get(hour)) || 0;
     if (started >= STARTS_AN_HOUR) return refusal('too_many');
@@ -328,6 +384,7 @@ export async function startKept(env, { accountId, name, worker, by = '', sign, p
     await env.KILN.put(hour, String(started + 1), { expirationTtl: 2 * 3600 });
     // One new id for both: the repository's name ends with the start of the site's id.
     id = crypto.randomUUID();
+    stays = true;   // from here on a repository may have been made, so this start is counted whatever follows
     made = await makeRepo(env, token, { name: called, id });
     if (!made.private) throw new KeepError('not_private', `${made.repo} was made, and GitHub does not say it is private`);
     // An empty one keeps GitHub's first commit and nothing else: whoever asked for it fills it, settings file and all.
@@ -335,13 +392,15 @@ export async function startKept(env, { accountId, name, worker, by = '', sign, p
       : await fill(token, { starter, repo: made.repo, branch: made.branch, config: kilnConfigFile({ repo: made.repo, branch: made.branch, worker, siteName: called }), sleep });
     // The address Kiln's hosting will give it, from the same function the hosting uses.
     const origin = siteAddress(env, siteName(env, { repo: made.repo, id }));
-    const site = await register({ id, repo: made.repo, origin, name: called });
+    const site = await register({ id, repo: made.repo, origin, name: called, since });
     await onMade({ id, site, repo: made.repo, branch: made.branch, name: called });
+    // The start's row names its site once the site is in the account's list. The first such row is where the account's free days began.
+    try { await env.kiln_cloud.prepare('UPDATE kept_starts SET site_id = ? WHERE id = ?').bind(id, counted).run(); } catch { /* the site is started either way */ }
     try {
       await note(`Kiln started a site and keeps its files: ${made.repo}`, [`Name: ${called}`, `Address it will have: ${origin}`, `Started by: ${by}`,
         ...(empty ? [] : [`Files: ${filled.files}`, `Commit: ${filled.commit}`]), ...about]);
     } catch { /* the site is started either way */ }
-    return { ok: true, site, repo: made.repo, branch: made.branch, name: called, files: filled.files, commit: filled.commit };
+    return { ok: true, site, repo: made.repo, branch: made.branch, name: called, files: filled.files, commit: filled.commit, since };
   } catch (e) {
     const detail = String((e && (e.detail || e.message)) || e).slice(0, 300);
     console.warn(JSON.stringify({ evt: 'keep_start_failed', code: (e && e.code) || 'error', repo: made ? made.repo : null, detail }));
@@ -357,6 +416,7 @@ export async function startKept(env, { accountId, name, worker, by = '', sign, p
     } catch { /* logged above */ }
     return refusal('half_made');
   } finally {
+    if (counted && !stays) { try { await env.kiln_cloud.prepare('DELETE FROM kept_starts WHERE id = ?').bind(counted).run(); } catch { /* it counts against the account for 7 days at most */ } }
     if (held) { try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ } }
   }
 }

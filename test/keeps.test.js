@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, verify } from 'node:crypto';
 import worker from '../worker/index.js';
-import { keepsOn, keepsReady, inKeepOrg, cleanName, siteSlug, keepKey, keepSentence, keptRemovedNote, STARTS_AN_HOUR } from '../worker/keeps.js';
+import { keepsOn, keepsReady, inKeepOrg, cleanName, siteSlug, keepKey, keepSentence, keptRemovedNote, STARTS_AN_HOUR, STARTS_A_WEEK, STARTS_A_WEEK_PAYING, ownLimitSentence, freeDaysSentence } from '../worker/keeps.js';
 import { siteName, siteAddress } from '../worker/hosting.js';
 import { kilnConfigFile } from '../worker/prepare.js';
 import { siteStartedMail, siteAddedMail } from '../worker/mail.js';
@@ -508,4 +508,140 @@ test('starting a site sends its owner the welcome mail once, and only where cust
   bare.env.kiln_cloud.exec('UPDATE accounts SET email = NULL WHERE id = ?', 'acct-g');
   assert.equal((await start(bare)).status, 200);
   assert.deepEqual(bare.sent, []);
+});
+
+// ─── What one account may start over time (security review 0.6.7, H1) ────────
+
+const DAY = 86400000;
+const starts = (env, account = 'acct-g') => env.kiln_cloud.db.prepare('SELECT * FROM kept_starts WHERE account_id = ? ORDER BY at, rowid').all(account).map(r => ({ ...r }));
+const remove = (w, id, token = 'rosa') => ask(w, 'POST', '/cloud/sites/remove', { id }, token);
+const hourCount = (env) => { const h = Math.floor(Date.now() / 3600000); return env.KILN.map.get(`keepstarts:${h}`) ?? env.KILN.map.get(`keepstarts:${h - 1}`); };
+
+test('the sentences about an account\'s own count and its free days are plain ones that say what to do', () => {
+  assert.equal([STARTS_A_WEEK, STARTS_A_WEEK_PAYING].join(), '3,10');
+  assert.equal(ownLimitSentence(3, 7 * DAY), 'You have started 3 sites in the last 7 days, so you can start the next one in 7 days, and you can write to info@kilncms.com if you need more.');
+  assert.match(ownLimitSentence(3, 25 * 3600000), /in 2 days,/);
+  assert.match(ownLimitSentence(10, 5 * 3600000 - 1), /^You have started 10 sites .* in 5 hours,/);
+  assert.match(ownLimitSentence(3, 1), /in 1 hour,/);
+  const now = Date.now();
+  assert.equal(freeDaysSentence({ since: null, days: 7, now }), null, 'days of its own: nothing to say');
+  assert.equal(freeDaysSentence({ since: now - 3 * DAY + 60000, days: 7, now }), "Your free days began with the first site you started here, so this site has 4 free days left. Subscribe on the site's row before they end to keep editing it.");
+  assert.match(freeDaysSentence({ since: now - 5.5 * DAY, days: 7, now }), /has 1 free day left\./);
+  assert.match(freeDaysSentence({ since: now - 6.5 * DAY, days: 7, now }), /has less than one free day left\./);
+  assert.equal(freeDaysSentence({ since: now - 8 * DAY, days: 7, now }), "Your free days began with the first site you started here and they are over, so this site has none. Subscribe on the site's row to edit it and keep it up.");
+  for (const t of [ownLimitSentence(3, DAY), freeDaysSentence({ since: now - DAY, days: 7, now }), freeDaysSentence({ since: now - 9 * DAY, days: 7, now })]) plain(t);
+});
+
+test('an account that starts sites and removes them is stopped at 3 in 7 days, is told when it can start the next one, and uses up nobody else\'s allowance', { skip: d1Skip }, async () => {
+  const w = world();
+  for (const name of ['Oak Bakery', 'Elm Cafe', 'Fig Tree']) {
+    const r = await start(w, name);
+    assert.equal(r.status, 200, name);
+    assert.equal((await remove(w, r.json.site.id)).status, 200);
+  }
+  assert.equal(rows(w.env).length, 0, 'every site was removed');
+  assert.equal(starts(w.env).length, 3, 'removing a site lowers no count');
+  assert.equal(hourCount(w.env), '3');
+  let r = await start(w, 'Ash Diner');
+  assert.equal(r.status, 429);
+  assert.deepEqual(r.json, { error: 'You have started 3 sites in the last 7 days, so you can start the next one in 7 days, and you can write to info@kilncms.com if you need more.', code: 'your_limit' });
+  plain(r.json.error);
+  assert.equal(github(r.calls).length, 0, 'GitHub was not asked for anything');
+  assert.deepEqual([w.hub.made.length, starts(w.env).length, hourCount(w.env)], [3, 3, '3'], 'nothing was made, and the whole service\'s count did not move');
+  // a hundred more presses change nothing
+  for (let i = 0; i < 5; i++) assert.equal((await start(w, `Site ${i}`)).json.code, 'your_limit');
+  assert.deepEqual([w.hub.made.length, starts(w.env).length, hourCount(w.env)], [3, 3, '3']);
+  // somebody else is not held back
+  person(w.env, 'omar', OMAR, 'acct-o');
+  assert.equal((await start(w, 'Plum Deli', 'omar')).status, 200);
+  // the sentence says how long: the oldest of the three is 6 and a half days old
+  w.env.kiln_cloud.exec('UPDATE kept_starts SET at = at - ? WHERE account_id = ?', 6.5 * DAY, 'acct-g');
+  r = await start(w, 'Ash Diner');
+  assert.match(r.json.error, /you can start the next one in 12 hours,/);
+  // once the oldest is 7 days old, one more goes through, and only one
+  w.env.kiln_cloud.exec('UPDATE kept_starts SET at = at - ? WHERE id = ?', DAY, starts(w.env)[0].id);
+  r = await start(w, 'Ash Diner');
+  assert.equal(r.status, 200);
+  assert.equal((await remove(w, r.json.site.id)).status, 200);
+  assert.equal((await start(w, 'Bay Grill')).json.code, 'your_limit');
+});
+
+test('an account that pays for a site may start 10 in 7 days', { skip: d1Skip }, async () => {
+  const w = world();
+  for (let i = 1; i <= 10; i++) {
+    assert.equal((await start(w, `Shop ${i}`)).status, 200, `site ${i}`);
+    w.env.kiln_cloud.exec("UPDATE sites SET status = 'active'");
+  }
+  const r = await start(w, 'Shop 11');
+  assert.equal(r.status, 429);
+  assert.match(r.json.error, /^You have started 10 sites in the last 7 days, so you can start the next one in 7 days,/);
+  assert.deepEqual([w.hub.made.length, starts(w.env).length], [10, 10]);
+});
+
+test('a start that ends before a repository is asked for is not counted, and one that ends after it is', { skip: d1Skip }, async () => {
+  // the whole service's count is full: the account's own count is left as it was
+  let w = world();
+  const hour = Math.floor(Date.now() / 3600000);
+  for (const h of [hour, hour + 1]) w.env.KILN.map.set(`keepstarts:${h}`, '30');
+  assert.equal((await start(w)).json.code, 'too_many');
+  assert.equal(starts(w.env).length, 0);
+  // the starter could not be read: nothing was made
+  w = world({ fail: 'starter' });
+  assert.equal((await start(w)).json.code, 'not_started');
+  assert.equal(starts(w.env).length, 0);
+  // GitHub refused to make the repository: it was asked, so the start counts
+  w = world({ fail: 'create' });
+  assert.equal((await start(w)).json.code, 'not_started');
+  assert.equal(starts(w.env).length, 1);
+  // the repository was made and the site was not finished: counted, with no site named on the row
+  w = world({ fail: 'commit' });
+  assert.equal((await start(w)).json.code, 'half_made');
+  assert.deepEqual(starts(w.env).map(s => s.site_id), [null]);
+  // a site that started: its row names it
+  w = world();
+  const ok = await start(w);
+  assert.deepEqual(starts(w.env).map(s => s.site_id), [ok.json.site.id]);
+  // a database the table has not reached starts nothing
+  w = world();
+  w.env.kiln_cloud.db.exec('DROP TABLE kept_starts');
+  const no = await start(w);
+  assert.deepEqual([no.status, no.json.code, w.hub.made.length], [409, 'not_set_up', 0]);
+});
+
+test('free days do not start afresh: a second site of an account that pays for nothing gets what is left of the first site\'s days, and none once they are over', { skip: d1Skip }, async () => {
+  const w = world();
+  const first = await start(w);
+  assert.equal(first.json.free_days, undefined, 'the first site has days of its own');
+  const began = starts(w.env)[0].at;
+  assert.ok(Math.abs(first.json.site.created_at - began) < 5000);
+  assert.equal((await remove(w, first.json.site.id)).status, 200);
+  // three days on (less a minute), the account starts another site
+  w.env.kiln_cloud.exec('UPDATE kept_starts SET at = at - ?', 3 * DAY - 60000);
+  const since = starts(w.env)[0].at;
+  const second = await start(w, 'Elm Cafe');
+  assert.equal(second.status, 200);
+  assert.equal(second.json.site.created_at, since, 'its free days are counted from the first site');
+  assert.equal(second.json.site.trial_ends, since + 7 * DAY, 'and the dashboard is told the day they really end');
+  assert.equal(second.json.free_days, "Your free days began with the first site you started here, so this site has 4 free days left. Subscribe on the site's row before they end to keep editing it.");
+  assert.equal(rows(w.env)[0].created_at, since);
+  assert.equal((await remove(w, second.json.site.id)).status, 200);
+  // nine days after the first site: no free days are left, and the site is started all the same
+  w.env.kiln_cloud.exec('UPDATE kept_starts SET at = at - ?', 6 * DAY);
+  const old = starts(w.env)[0].at;
+  const third = await start(w, 'Fig Tree');
+  assert.equal(third.status, 200);
+  assert.equal(third.json.site.created_at, old);
+  assert.equal(third.json.free_days, "Your free days began with the first site you started here and they are over, so this site has none. Subscribe on the site's row to edit it and keep it up.");
+  assert.ok(third.json.site.trial_ends < Date.now());
+});
+
+test('a new site of an account that pays for a site has free days of its own', { skip: d1Skip }, async () => {
+  const w = world();
+  assert.equal((await start(w)).status, 200);
+  w.env.kiln_cloud.exec("UPDATE sites SET status = 'active'");
+  w.env.kiln_cloud.exec('UPDATE kept_starts SET at = at - ?', 5 * DAY);
+  const r = await start(w, 'Elm Cafe');
+  assert.equal(r.status, 200);
+  assert.equal(r.json.free_days, undefined);
+  assert.ok(Date.now() - r.json.site.created_at < 5000);
 });
