@@ -77,7 +77,9 @@ function fakeHub({ fail = null } = {}) {
 
 /** A person signed in to the dashboard with Google. */
 function person(env, token, who, id) {
-  env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES (?, NULL, ?, ?, ?, 1)', id, who.email, who.name, who.sub);
+  // `google_email` is what a sign-in writes down (migration 0009). A database it has not reached has no such column.
+  try { env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, name, google_sub, google_email, created_at) VALUES (?, NULL, ?, ?, ?, ?, 1)', id, who.email, who.name, who.sub, who.email); }
+  catch { env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES (?, NULL, ?, ?, ?, 1)', id, who.email, who.name, who.sub); }
   env.KILN.map.set(`csess:${token}`, JSON.stringify({ account_id: id, login: null, uid: null, gh: null, google: who }));
 }
 
@@ -531,8 +533,15 @@ test('whose name a change carries when nobody is signed in: the account\'s own, 
   assert.deepEqual(await accountAuthor(w.env, 'acct-g'), { name: 'Rosa Diaz (via Kiln)', email: 'rosa@example.com' });
   w.env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES (?, ?, ?, NULL, NULL, 1)', 'acct-h', 'grace', 'grace@example.com');
   assert.deepEqual(await accountAuthor(w.env, 'acct-h'), { name: 'grace', email: 'grace@users.noreply.github.com' });
-  w.env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES (?, NULL, ?, NULL, ?, 1)', 'acct-n', 'lena@example.com', 'g-3003');
+  w.env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, name, google_sub, google_email, created_at) VALUES (?, NULL, ?, NULL, ?, ?, 1)', 'acct-n', 'lena@example.com', 'g-3003', 'lena@example.com');
   assert.deepEqual(await accountAuthor(w.env, 'acct-n'), { name: 'lena (via Kiln)', email: 'lena@example.com' });
+  // an address that was typed for a Google account, which nobody confirmed, goes on nothing
+  w.env.kiln_cloud.exec("UPDATE accounts SET email = 'somebody-else@example.org' WHERE id IN ('acct-g', 'acct-n')");
+  assert.deepEqual(await accountAuthor(w.env, 'acct-g'), { name: 'Rosa Diaz (via Kiln)', email: 'rosa@example.com' });
+  assert.deepEqual(await accountAuthor(w.env, 'acct-n'), { name: 'lena (via Kiln)', email: 'lena@example.com' });
+  // and a Google account with no confirmed address written down has none
+  w.env.kiln_cloud.exec("UPDATE accounts SET google_email = NULL WHERE id = 'acct-n'");
+  assert.deepEqual(await accountAuthor(w.env, 'acct-n'), { name: 'Somebody (via Kiln)', email: null });
 });
 
 test('settings that cannot be written leave the copy as it was, so the job can answer again', { skip: d1Skip }, async () => {

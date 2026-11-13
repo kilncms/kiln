@@ -16,7 +16,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import worker from '../worker/index.js';
-import { isCloudAdmin, commitAuthor, signedInAs } from '../worker/cloud.js';
+import { isCloudAdmin, commitAuthor, accountAuthor, signedInAs } from '../worker/cloud.js';
+import { accountAddress, addressSql } from '../worker/mail.js';
 import { googleTrouble, forDashboard, troubleBody, STALE_SIGN_IN, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN } from '../worker/signin-trouble.js';
 import { fakeKV, withFetch, jsonRes, ORIGIN, REPO } from './worker-harness.js';
 import { cloudEnv, addSite, fakeD1, schemaFiles, d1Skip } from './d1-fake.js';
@@ -92,7 +93,7 @@ test('Google sign-in to the dashboard: the first one makes an account and a sess
     const sid = tokenOf(res);
     const account = { ...env.kiln_cloud.row("SELECT * FROM accounts WHERE google_sub = 'g-1001'") };
     assert.match(account.id, /^[0-9a-f-]{36}$/);
-    assert.deepEqual({ ...account, id: 'x', created_at: 0 }, { id: 'x', github_login: null, email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: 'g-1001', name: 'Rosa Diaz' });
+    assert.deepEqual({ ...account, id: 'x', created_at: 0 }, { id: 'x', github_login: null, email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: 'g-1001', name: 'Rosa Diaz', google_email: 'rosa@example.com' });
     assert.deepEqual(JSON.parse(env.KILN.map.get(`csess:${sid}`)), { account_id: account.id, login: null, uid: null, gh: null, google: { sub: 'g-1001', email: 'rosa@example.com', name: 'Rosa Diaz' } });
     const life = env.KILN.expires.get(`csess:${sid}`) - Date.now() / 1000;
     assert.ok(life > 30 * 86400 - 60 && life <= 30 * 86400, 'the session lasts 30 days');
@@ -261,7 +262,7 @@ test('a Google account cannot add a repository, reach one, or be the operator', 
   assert.equal(isCloudAdmin({ ...sess, uid: 4242 }, { CLOUD_ADMIN_ID: '4242' }), false, 'whatever else the session says');
 });
 
-test('whose name a change from the dashboard carries: a GitHub person exactly as before, a Google person by name "(via Kiln)" with the address on their account', { skip: d1Skip }, async () => {
+test('whose name a change from the dashboard carries: a GitHub person exactly as before, a Google person by name "(via Kiln)" with the address Google confirmed', { skip: d1Skip }, async () => {
   const env = cloud();
   assert.deepEqual(await commitAuthor(env, { account_id: 'acct-1', login: 'ada', uid: 7, gh: 'gho_x' }), { name: 'ada', email: '7+ada@users.noreply.github.com' });
   assert.deepEqual(await commitAuthor(env, { account_id: 'acct-1', login: 'ada', gh: 'gho_x' }), { name: 'ada', email: 'ada@users.noreply.github.com' });
@@ -271,11 +272,11 @@ test('whose name a change from the dashboard carries: a GitHub person exactly as
   const sess = JSON.parse(env.KILN.map.get(`csess:${sid}`));
   assert.deepEqual(await commitAuthor(env, sess), { name: 'Rosa Diaz (via Kiln)', email: 'rosa@example.com' });
   assert.equal(signedInAs(sess), 'rosa@example.com', 'a note to the operator names the address');
-  // the owner gives another address for notices: that is the account's address now
-  assert.equal((await post(env, '/cloud/account', { email: 'shop@example.org' }, sid)).status, 200);
-  assert.deepEqual(await commitAuthor(env, sess), { name: 'Rosa Diaz (via Kiln)', email: 'shop@example.org' });
-  // and takes it away: the address they sign in with
-  assert.equal((await post(env, '/cloud/account', { email: '' }, sid)).status, 200);
+  // the owner types another address for notices: nobody confirmed it, so it is not taken, and they read what to do
+  const typed = await post(env, '/cloud/account', { email: 'shop@example.org' }, sid);
+  assert.deepEqual([typed.status, await typed.json()], [403, { error: 'Kiln writes to the address you signed in with. To use another address, sign in with that Google account.', code: 'google_address' }]);
+  assert.equal((await post(env, '/cloud/account', { email: '' }, sid)).status, 403);
+  assert.equal(env.kiln_cloud.row("SELECT email FROM accounts WHERE google_sub = 'g-1001'").email, 'rosa@example.com', 'nothing was stored');
   assert.deepEqual(await commitAuthor(env, sess), { name: 'Rosa Diaz (via Kiln)', email: 'rosa@example.com' });
   // Google gave no name: the part of the address before the @
   assert.deepEqual(await commitAuthor(env, { ...sess, google: { ...sess.google, name: null } }), { name: 'rosa (via Kiln)', email: 'rosa@example.com' });
@@ -294,10 +295,60 @@ test('a GitHub sign-in to the dashboard is exactly as before: the same session, 
     const sid = tokenOf(res);
     const row = { ...env.kiln_cloud.row("SELECT * FROM accounts WHERE github_login = 'rosa'") };
     assert.deepEqual(JSON.parse(env.KILN.map.get(`csess:${sid}`)), { account_id: row.id, login: 'rosa', uid: 7, gh: 'ghu_new' });
-    assert.deepEqual({ ...row, id: 'x', created_at: 0 }, { id: 'x', github_login: 'rosa', email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: null, name: null });
+    assert.deepEqual({ ...row, id: 'x', created_at: 0 }, { id: 'x', github_login: 'rosa', email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: null, name: null, google_email: null });
     // the same person then signs in with Google at the same address: a second account, and the first is as it was
     const g = tokenOf((await signIn(env)).res);
     assert.notEqual(JSON.parse(env.KILN.map.get(`csess:${g}`)).account_id, row.id);
     assert.deepEqual({ ...env.kiln_cloud.row("SELECT * FROM accounts WHERE github_login = 'rosa'") }, row);
   });
+});
+
+// ─── The address Kiln writes to (security review 0.6.7, L5) ──────────────────
+
+test('an account that signed in with Google is written to at the address Google confirmed at its last sign-in, and at no other', { skip: d1Skip }, async () => {
+  const env = cloud();
+  const sid = tokenOf((await signIn(env)).res);
+  const id = env.kiln_cloud.row("SELECT id FROM accounts WHERE google_sub = 'g-1001'").id;
+  assert.equal(await accountAddress(env, id), 'rosa@example.com');
+  // an address that was typed for the account before, which nobody confirmed, is used for nothing
+  env.kiln_cloud.exec("UPDATE accounts SET email = 'stranger@example.org' WHERE id = ?", id);
+  assert.equal(await accountAddress(env, id), 'rosa@example.com');
+  const sess = JSON.parse(env.KILN.map.get(`csess:${sid}`));
+  assert.deepEqual(await commitAuthor(env, sess), { name: 'Rosa Diaz (via Kiln)', email: 'rosa@example.com' });
+  assert.deepEqual(await accountAuthor(env, id), { name: 'Rosa Diaz (via Kiln)', email: 'rosa@example.com' });
+  const me = await (await withFetch(google(), () => get(env, '/cloud/me', sid))).json();
+  assert.equal(me.account.email, 'rosa@example.com', 'the dashboard shows the address Kiln writes to');
+  // a query that joins accounts for a mail reads the same address, and a GitHub account's own
+  addSite(env, { id: 'site-a' });
+  addSite(env, { id: 'site-g', account_id: id, repo: 'kiln-sites/oak', origin: 'https://oak.example' });
+  const joined = await env.kiln_cloud.prepare(`SELECT s.id, ${await addressSql(env)} FROM sites s JOIN accounts a ON a.id = s.account_id ORDER BY s.id`).all();
+  assert.deepEqual(joined.results.map(r => ({ ...r })), [{ id: 'site-a', email: 'ada@example.com' }, { id: 'site-g', email: 'rosa@example.com' }]);
+  // Rosa's address at Google changes and she signs in again: the new one is written down, and what was typed stays unused
+  assert.match(tokenOf((await signIn(env, ROSA, { email: 'Rosa.Diaz@Example.net' })).res), /^[0-9a-f-]{36}$/);
+  assert.deepEqual({ ...env.kiln_cloud.row('SELECT email, google_email FROM accounts WHERE id = ?', id) }, { email: 'stranger@example.org', google_email: 'rosa.diaz@example.net' });
+  assert.equal(await accountAddress(env, id), 'rosa.diaz@example.net');
+  // a Google account with no confirmed address written down has no address at all
+  env.kiln_cloud.exec('UPDATE accounts SET google_email = NULL WHERE id = ?', id);
+  assert.equal(await accountAddress(env, id), null);
+  assert.deepEqual(await accountAuthor(env, id), { name: 'Rosa Diaz (via Kiln)', email: null });
+  // an account that signed in with GitHub is as before: the address it gives is stored and used
+  assert.equal(await accountAddress(env, 'acct-1'), 'ada@example.com');
+  const res = await post(env, '/cloud/account', { email: 'ada@club.example' }, 'tok');
+  assert.deepEqual([res.status, await res.json()], [200, { ok: true, email: 'ada@club.example' }]);
+  assert.equal(await accountAddress(env, 'acct-1'), 'ada@club.example');
+});
+
+test('a database the confirmed address has not reached: a Google account has no address Kiln may use, a GitHub account is as before, and signing in still works', { skip: d1Skip }, async () => {
+  const eight = cloud({ d1: { upTo: 8 } });
+  eight.kiln_cloud.exec("INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES ('g1', NULL, 'typed@example.org', 'Rosa Diaz', 'g-1001', 1)");
+  assert.equal(await addressSql(eight), 'CASE WHEN a.google_sub IS NOT NULL THEN NULL ELSE a.email END AS email');
+  assert.equal(await accountAddress(eight, 'g1'), null);
+  assert.equal(await accountAddress(eight, 'acct-1'), 'ada@example.com');
+  const sid = tokenOf((await signIn(eight)).res);
+  assert.equal(JSON.parse(eight.KILN.map.get(`csess:${sid}`)).account_id, 'g1');
+  // on what they publish, the address Google confirmed for this session
+  assert.deepEqual(await commitAuthor(eight, JSON.parse(eight.KILN.map.get(`csess:${sid}`))), { name: 'Rosa Diaz (via Kiln)', email: 'rosa@example.com' });
+  const seven = cloud({ d1: { upTo: 7 } });
+  assert.equal(await addressSql(seven), 'a.email AS email');
+  assert.equal(await accountAddress(seven, 'acct-1'), 'ada@example.com');
 });

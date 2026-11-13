@@ -98,7 +98,7 @@ function fakeHub({ fail = null, notReady = 0 } = {}) {
 
 /** A person signed in to the dashboard with Google, as part A leaves them. */
 function person(env, token, who, id) {
-  env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES (?, NULL, ?, ?, ?, 1)', id, who.email, who.name, who.sub);
+  env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, name, google_sub, google_email, created_at) VALUES (?, NULL, ?, ?, ?, ?, 1)', id, who.email, who.name, who.sub, who.email);
   env.KILN.map.set(`csess:${token}`, JSON.stringify({ account_id: id, login: null, uid: null, gh: null, google: who }));
 }
 
@@ -503,11 +503,17 @@ test('starting a site sends its owner the welcome mail once, and only where cust
   assert.deepEqual([...off.env.KILN.map.keys()].filter(k => k.startsWith('mail:started:')), []);
   assert.equal(off.notes.some(raw => /is started on Kiln/.test(String(raw))), false);
 
-  // The account has no address: the same.
+  // The account has no address Google confirmed: the same, also when another address was typed for it, which nobody confirmed.
   const bare = withMail();
-  bare.env.kiln_cloud.exec('UPDATE accounts SET email = NULL WHERE id = ?', 'acct-g');
+  bare.env.kiln_cloud.exec("UPDATE accounts SET email = 'stranger@example.org', google_email = NULL WHERE id = ?", 'acct-g');
   assert.equal((await start(bare)).status, 200);
   assert.deepEqual(bare.sent, []);
+
+  // An address was typed for the account and Google confirmed another: the mail goes to the one Google confirmed.
+  const both = withMail();
+  both.env.kiln_cloud.exec("UPDATE accounts SET email = 'stranger@example.org' WHERE id = ?", 'acct-g');
+  assert.equal((await start(both)).status, 200);
+  assert.deepEqual(both.sent.map(m => m.to), ['rosa@example.com']);
 });
 
 // ─── What one account may start over time (security review 0.6.7, H1) ────────

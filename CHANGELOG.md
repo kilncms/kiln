@@ -234,6 +234,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   kept for the account and the site together: it stops the same account from
   copying the same site again and again, and nobody else. What one account may
   start over time is held by its own count of 3 in 7 days.
+- **A person who signed in with Google is written to only at the address
+  Google confirmed.** The dashboard stored any address a person typed for
+  notices, and Kiln's mails went there and it went on what they published,
+  though nobody had confirmed it. For an account that signed in with Google,
+  Kiln now writes down the address Google confirmed at every sign-in (a new
+  column, `google_email`, added to `worker/migrations/0009_conversions.sql`)
+  and uses that address alone for its mails, for the author of a change, and
+  for what the dashboard shows. Such a person who tries to give another
+  address reads "Kiln writes to the address you signed in with. To use another
+  address, sign in with that Google account." Nothing changes for an account
+  that signed in with GitHub.
 
 ## [0.6.6] - 2026-11-13
 

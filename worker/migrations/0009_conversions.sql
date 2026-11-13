@@ -63,3 +63,11 @@ CREATE TABLE IF NOT EXISTS kept_starts (
   site_id     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_kept_starts_account ON kept_starts(account_id, at);
+
+-- The address Google confirmed for a person at their last sign-in. An account
+-- that signed in with Google is written to at this address and at no other,
+-- and it is the address on what Kiln publishes in their name: nobody confirmed
+-- an address that was typed into the dashboard. Written at every Google
+-- sign-in. Empty for an account that signed in with GitHub, and for a Google
+-- account that has not signed in since this column came.
+ALTER TABLE accounts ADD COLUMN google_email TEXT;

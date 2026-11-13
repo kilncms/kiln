@@ -39,6 +39,43 @@ export function mailAddress(v) {
   return s.length <= 254 && /^[^\s@<>,;:"'()\\[\]]+@[^\s@<>,;:"'()\\[\]]+\.[^\s@<>,;:"'()\\[\]]{2,}$/.test(s) ? s : null;
 }
 
+/**
+ * The address Kiln writes to for an account, and puts on what it publishes in
+ * the account's name. An account that signed in with Google is written to at
+ * the address Google confirmed at its last sign-in (`google_email`, migration
+ * 0009) and at no other, whatever `email` holds: nobody confirmed that one. An
+ * account that signed in with GitHub is written to at `email`, as before.
+ *
+ * `addressSql` is that rule as SQL, for a query that reads `accounts a`: it
+ * gives one column named `email`. A database the column has not reached is
+ * asked the nearest thing it can answer: with migration 0008 alone a Google
+ * account has no address Kiln may use, and before 0008 every account signed in
+ * with GitHub.
+ */
+const ADDRESS_SQL = [
+  'CASE WHEN a.google_sub IS NOT NULL THEN a.google_email ELSE a.email END AS email',
+  'CASE WHEN a.google_sub IS NOT NULL THEN NULL ELSE a.email END AS email',
+  'a.email AS email',
+];
+const hasGoogleEmail = new WeakSet();   // databases known to have the column, so most queries ask nothing first
+export async function addressSql(env) {
+  const db = env.kiln_cloud;
+  if (hasGoogleEmail.has(db)) return ADDRESS_SQL[0];
+  try { await db.prepare('SELECT google_email FROM accounts LIMIT 1').first(); }
+  catch {
+    try { await db.prepare('SELECT google_sub FROM accounts LIMIT 1').first(); return ADDRESS_SQL[1]; }
+    catch { return ADDRESS_SQL[2]; }
+  }
+  try { hasGoogleEmail.add(db); } catch { /* asked again next time */ }
+  return ADDRESS_SQL[0];
+}
+
+/** The address Kiln writes to for one account (see addressSql), or null. Never throws. */
+export async function accountAddress(env, accountId) {
+  try { return (await env.kiln_cloud.prepare(`SELECT ${await addressSql(env)} FROM accounts a WHERE a.id = ?`).bind(accountId).first())?.email || null; }
+  catch { return null; }
+}
+
 /** "Tuesday, November 17": the day alone, the same for everyone who reads it. */
 export function dayWords(ms) {
   return new Date(ms).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });

@@ -25,7 +25,7 @@
  */
 import { gh, kilnConfigFile } from './prepare.js';
 import { keepsReady, keepOrg, keepToken, forgetKeepToken, cleanName, startKept } from './keeps.js';
-import { sendOnce, trialEndsAt, siteCopiedMail, copyFailedMail } from './mail.js';
+import { sendOnce, trialEndsAt, siteCopiedMail, copyFailedMail, accountAddress } from './mail.js';
 
 const CONFIG_FILE = 'assets/kiln-config.js';
 export const SETTINGS_MESSAGE = "This site's Kiln settings";
@@ -200,10 +200,8 @@ async function ownSite(env, accountId, id) {
   catch { return null; }
 }
 
-async function ownerEmail(env, accountId) {
-  try { return (await env.kiln_cloud.prepare('SELECT email FROM accounts WHERE id = ?').bind(accountId).first())?.email || null; }
-  catch { return null; }
-}
+/** The address the account is written to: for one that signed in with Google, the address Google confirmed (mail.js). */
+const ownerEmail = (env, accountId) => accountAddress(env, accountId);
 
 async function hasPaidSite(env, accountId) {
   try { return Number((await env.kiln_cloud.prepare('SELECT COUNT(*) n FROM sites WHERE account_id = ? AND ls_subscription_id IS NOT NULL').bind(accountId).first())?.n) > 0; }

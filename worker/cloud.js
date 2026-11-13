@@ -37,7 +37,7 @@
 
 import { RUNBOOK_HTML } from './runbook.js';
 import { troubleBody, forDashboard, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN } from './signin-trouble.js';
-import { customerMailOn, mailAddress, sendOnce, siteAddedMail, siteStartedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
+import { customerMailOn, mailAddress, addressSql, accountAddress, sendOnce, siteAddedMail, siteStartedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
@@ -174,23 +174,32 @@ async function upsertAccount(env, login, email) {
  */
 async function googleAccount(env, { sub, email, name }) {
   const find = () => env.kiln_cloud.prepare('SELECT * FROM accounts WHERE google_sub = ?').bind(sub).first();
+  // The address Google confirmed at this sign-in is written down every time, apart from `email`:
+  // it is the only address Kiln writes to for this account (mail.js: accountAddress).
+  const confirmed = async (id) => {
+    try { await env.kiln_cloud.prepare('UPDATE accounts SET google_email = ? WHERE id = ?').bind(email || null, id).run(); }
+    catch { /* a database migration 0009 has not reached: such an account is not written to */ }
+  };
   const existing = await find();
-  if (existing) return existing;
+  if (existing) { await confirmed(existing.id); return existing; }
   const id = uuid();
   try {
     await env.kiln_cloud.prepare('INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES (?,?,?,?,?,?)')
       .bind(id, null, email || null, name || null, sub, Date.now()).run();
   } catch (e) {
     const other = await find();   // two sign-ins at the same moment: the other one made the account
-    if (other) return other;
+    if (other) { await confirmed(other.id); return other; }
     throw e;
   }
+  await confirmed(id);
   return { id, github_login: null, email: email || null, name: name || null, google_sub: sub, ls_customer_id: null };
 }
 
 /** A dashboard session with no GitHub person behind it: the person signed in with Google. */
 function withoutGitHub(sess) { return !!sess && !sess.login && !!sess.google; }
 
+// POST /cloud/account, from a person who signed in with Google.
+const GOOGLE_ADDRESS = 'Kiln writes to the address you signed in with. To use another address, sign in with that Google account.';
 // POST /cloud/sites/editor: what a person reads when the editor of a site Kiln keeps the files of cannot be opened.
 const EDITOR_NOT_UP = "Your site is not up yet. Press Put it on Kiln's hosting on the site's row first, then open the editor.";
 const EDITOR_PLAN_ENDED = "Editing is switched off for this site, so its editor cannot be opened. Subscribe on the site's row, then open the editor again.";
@@ -199,11 +208,11 @@ const EDITOR_NOT_OPENED = 'Kiln could not open the editor just now. Please try a
 // GET /cloud/sites/check: a site Kiln keeps the files of has no other host, so until it is on Kiln's hosting there is no address to look at.
 const CHECK_KEPT_NOT_UP = "Your site is not up yet. Press Put it on Kiln's hosting on the site's row, then check again.";
 
-/** The name and the email an owner with no GitHub account goes by in their site's editor and on what they publish: the account's own, else what Google said at sign-in. */
+/** The name and the email an owner with no GitHub account goes by in their site's editor and on what they publish: the account's name, and the address Google confirmed for them. */
 async function editorPerson(env, sess) {
   let acct = null;
-  try { acct = await env.kiln_cloud.prepare('SELECT name, email FROM accounts WHERE id = ?').bind(sess.account_id).first(); } catch { acct = null; }
-  const email = String((acct && acct.email) || sess.google?.email || '').trim();
+  try { acct = await env.kiln_cloud.prepare('SELECT name FROM accounts WHERE id = ?').bind(sess.account_id).first(); } catch { acct = null; }
+  const email = String((await accountEmail(env, sess.account_id)) || sess.google?.email || '').trim();
   const name = String((acct && acct.name) || sess.google?.name || '').replace(/[\s\u0000-\u001f<>]+/g, ' ').trim()
     || email.split('@')[0] || String(sess.login || '') || 'Owner';
   return { name: name.slice(0, 60), email: email || null };
@@ -248,7 +257,8 @@ export function signedInAs(sess) { return sess.login || sess.google?.email || 's
  * Whose name a change made from the dashboard carries in the repository's
  * history. A person signed in with GitHub is the author as GitHub knows them.
  * A person signed in with Google has no GitHub name: the author is their own
- * name with "(via Kiln)" after it, and the address on their account.
+ * name with "(via Kiln)" after it, and the address Google confirmed for them
+ * (never one that was typed into the dashboard, which nobody confirmed).
  */
 export async function commitAuthor(env, sess) {
   if (sess.login) {
@@ -272,7 +282,7 @@ export async function accountAuthor(env, accountId) {
   // `name` arrives with migration 0008: ask for it, then for the older columns alone.
   try { acct = await env.kiln_cloud.prepare('SELECT github_login, name, email FROM accounts WHERE id = ?').bind(accountId).first(); }
   catch { try { acct = await env.kiln_cloud.prepare('SELECT github_login, email FROM accounts WHERE id = ?').bind(accountId).first(); } catch { acct = null; } }
-  return commitAuthor(env, { account_id: accountId, login: (acct && acct.github_login) || null, uid: null, google: { name: (acct && acct.name) || '', email: (acct && acct.email) || null } });
+  return commitAuthor(env, { account_id: accountId, login: (acct && acct.github_login) || null, uid: null, google: { name: (acct && acct.name) || '', email: null } });   // the address is read by commitAuthor: the one Kiln may use for the account, or none
 }
 
 // ─── Lemon Squeezy ────────────────────────────────────────────────────────────
@@ -385,11 +395,12 @@ async function lsCheckout(env, site, { email = null } = {}) {
   return d?.data?.attributes?.url || null;
 }
 
-/** The email on a dashboard account, for the checkout to start with. Never fails a request. */
-async function accountEmail(env, accountId) {
-  try { return (await env.kiln_cloud.prepare('SELECT email FROM accounts WHERE id = ?').bind(accountId).first())?.email || null; }
-  catch { return null; }
-}
+/**
+ * The address Kiln writes to for a dashboard account, and starts a checkout with: the account's
+ * own for a GitHub account, and for an account that signed in with Google the address Google
+ * confirmed and no other (mail.js). Never fails a request.
+ */
+const accountEmail = (env, accountId) => accountAddress(env, accountId);
 
 async function lsPortal(env, subscriptionId) {
   if (!lsConfigured(env) || !subscriptionId) return null;
@@ -635,7 +646,7 @@ export async function hostingDownAt(env, site, { now = Date.now(), deployed = tr
   if (!site.ls_subscription_id || !deployed || !customerMailOn(env)) return plain;
   let email = site.email;
   if (email === undefined) {
-    try { email = (await env.kiln_cloud.prepare('SELECT a.email FROM sites s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?').bind(site.id).first())?.email; }
+    try { email = (await env.kiln_cloud.prepare(`SELECT ${await addressSql(env)} FROM sites s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?`).bind(site.id).first())?.email; }
     catch { email = null; }
   }
   if (!mailAddress(email)) return plain;
@@ -730,7 +741,7 @@ const oneSetUp = (row) => `${row.zone_id}:${Number(row.created_at) || 0}`;
 async function tellNameServers(env, accountId, site, row) {
   try {
     if (!customerMailOn(env)) return;
-    const account = await env.kiln_cloud.prepare('SELECT email FROM accounts WHERE id = ?').bind(accountId).first();
+    const account = { email: await accountEmail(env, accountId) };
     if (!mailAddress(account?.email)) return;
     const d = publicDomain(row);
     await sendOnce(env, `domain-ns:${site.id}:${oneSetUp(row)}`, account.email, domainNameServersMail({
@@ -750,7 +761,7 @@ const why = (e) => (e instanceof DomainError ? e.detail || e.code : String(e?.me
  */
 async function siteForDomain(env, siteId) {
   return env.kiln_cloud.prepare(
-    `SELECT s.id, s.repo, s.origin, a.email, h.url AS temp_url FROM sites s
+    `SELECT s.id, s.repo, s.origin, ${await addressSql(env)}, h.url AS temp_url FROM sites s
        LEFT JOIN accounts a ON a.id = s.account_id LEFT JOIN hosting h ON h.site_id = s.id WHERE s.id = ?`).bind(siteId).first();
 }
 
@@ -927,7 +938,7 @@ export async function sweepDomains(env, { now = Date.now() } = {}) {
   try {
     if (!env.kiln_cloud || !(await domainsAvailable(env))) return out;
     rows = (await env.kiln_cloud.prepare(
-      `SELECT d.*, s.repo, s.origin, a.email, h.url AS temp_url FROM domains d
+      `SELECT d.*, s.repo, s.origin, ${await addressSql(env)}, h.url AS temp_url FROM domains d
          JOIN sites s ON s.id = d.site_id LEFT JOIN accounts a ON a.id = s.account_id LEFT JOIN hosting h ON h.site_id = d.site_id
         WHERE d.zone_id IS NOT NULL AND (d.state = 'waiting' OR (d.state = 'live' AND COALESCE(d.checked_at, 0) <= ?))
         ORDER BY COALESCE(d.checked_at, 0) ASC, d.created_at ASC LIMIT ?`).bind(now - DOMAIN_LIVE_LOOK_EVERY_MS, DOMAINS_PER_RUN).all())?.results || [];
@@ -1103,7 +1114,7 @@ export async function sweepForwards(env, { now = Date.now() } = {}) {
     try {
       if (await env.KILN.get(forwardLock(r.site_id))) continue;   // a press in the dashboard is at work on this one
       const s = await env.kiln_cloud.prepare(
-        `SELECT s.id, s.repo, s.account_id, a.email, d.name, d.zone_id, d.state AS domain_state FROM sites s
+        `SELECT s.id, s.repo, s.account_id, ${await addressSql(env)}, d.name, d.zone_id, d.state AS domain_state FROM sites s
            LEFT JOIN accounts a ON a.id = s.account_id LEFT JOIN domains d ON d.site_id = s.id WHERE s.id = ?`).bind(r.site_id).first();
       const w = whatWaits(r);
       if (!w) continue;   // it was settled between the reading and this look
@@ -1173,7 +1184,7 @@ export async function noticeEndingHosting(env, now = Date.now()) {
   let rows = [];
   try {
     rows = (await env.kiln_cloud.prepare(
-      `SELECT s.id, s.repo, s.origin, s.plan, s.status, s.access_until, s.created_at, s.ls_subscription_id, h.deployed_at, a.email
+      `SELECT s.id, s.repo, s.origin, s.plan, s.status, s.access_until, s.created_at, s.ls_subscription_id, h.deployed_at, ${await addressSql(env)}
        FROM hosting h JOIN sites s ON s.id = h.site_id LEFT JOIN accounts a ON a.id = s.account_id
        WHERE s.ls_subscription_id IS NOT NULL AND s.status IN ('canceled','past_due') AND h.state NOT IN ('removing','ended')
        ORDER BY s.access_until`).all())?.results || [];
@@ -1238,7 +1249,7 @@ export async function remindEndingTrials(env, now = Date.now()) {
   let sent = 0;
   try {
     const rows = await env.kiln_cloud.prepare(
-      `SELECT s.id, s.origin, s.plan, s.created_at, a.email FROM sites s JOIN accounts a ON a.id = s.account_id
+      `SELECT s.id, s.origin, s.plan, s.created_at, ${await addressSql(env)} FROM sites s JOIN accounts a ON a.id = s.account_id
        WHERE s.status = 'trialing' AND s.ls_subscription_id IS NULL AND s.created_at <= ? AND s.created_at > ?
        ORDER BY s.created_at LIMIT ${MAILS_PER_RUN}`
     ).bind(now - (TRIAL_GRACE_DAYS - TRIAL_NOTICE_DAYS) * day, now - TRIAL_GRACE_DAYS * day).all();
@@ -1263,7 +1274,7 @@ export async function expireStaleTrials(env) {
   let expiring = null;
   try {
     expiring = await env.kiln_cloud.prepare(
-      `SELECT s.id, s.repo, s.origin, s.plan, a.email FROM sites s LEFT JOIN accounts a ON a.id = s.account_id
+      `SELECT s.id, s.repo, s.origin, s.plan, ${await addressSql(env)} FROM sites s LEFT JOIN accounts a ON a.id = s.account_id
        WHERE s.status = 'trialing' AND s.ls_subscription_id IS NULL AND s.created_at < ?`
     ).bind(cutoff).all();
   } catch { /* a reduced D1 stand-in has no .all(): expiry still proceeds, just unannounced */ }
@@ -1656,6 +1667,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     catch { row = await env.kiln_cloud.prepare('SELECT id, github_login, email, ls_customer_id FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
     // `google` says the person signs in with Google. Google's id for them stays here.
     const account = row ? { id: row.id, github_login: row.github_login || null, email: row.email ?? null, ls_customer_id: row.ls_customer_id ?? null, name: row.name || null, google: !!row.google_sub } : null;
+    // A person who signs in with Google is shown the address Kiln writes to: the one Google confirmed.
+    if (account && account.google) account.email = await accountEmail(env, sess.account_id);
     const sites = await withAccessUntil(
       () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until, created_at, ls_subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
       () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, created_at, ls_subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
@@ -1717,6 +1730,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   // nothing; this is how they give one, change it, or take it away.
   if (path === '/cloud/account' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
+    // Nobody confirms an address typed here, so an account that signed in with Google keeps the one Google confirmed.
+    if (withoutGitHub(sess)) return json({ error: GOOGLE_ADDRESS, code: 'google_address' }, 403);
     const { email } = await request.json().catch(() => ({}));
     const clean = email === '' || email === null ? null : mailAddress(email);
     if (email !== '' && email !== null && !clean) return json({ error: 'That does not look like an email address. Please check it and try again.' }, 400);
@@ -2184,7 +2199,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       };
       // The inbox has confirmed: the rule is made, and the account's own address is written to.
       const switchOn = async (waiting, inboxId) => {
-        const account = await env.kiln_cloud.prepare('SELECT email FROM accounts WHERE id = ?').bind(sess.account_id).first();
+        const account = { email: await accountEmail(env, sess.account_id) };
         await forwardingOn(env, { s: { id: site.id, repo: site.repo, email: account?.email }, row: waiting, zoneId: domain.zone_id, inboxId, now });
       };
 
