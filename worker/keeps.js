@@ -100,8 +100,9 @@ export function freeDaysSentence({ since, days, now = Date.now() } = {}) {
   if (!since) return null;
   const left = Number(since) + days * DAY - now;
   if (left <= 0) return "Your free days began with the first site you started here and they are over, so this site has none. Subscribe on the site's row to edit it and keep it up.";
-  const whole = Math.floor(left / DAY);
-  const much = whole >= 2 ? `${whole} free days` : whole === 1 ? '1 free day' : 'less than one free day';
+  // Counted as the site's row in the dashboard counts them: part of a day is a day, and the last day is "less than one".
+  const whole = Math.ceil(left / DAY);
+  const much = whole >= 2 ? `${whole} free days` : 'less than one free day';
   return `Your free days began with the first site you started here, so this site has ${much} left. Subscribe on the site's row before they end to keep editing it.`;
 }
 

@@ -535,8 +535,8 @@ test('the sentences about an account\'s own count and its free days are plain on
   assert.match(ownLimitSentence(3, 1), /in 1 hour,/);
   const now = Date.now();
   assert.equal(freeDaysSentence({ since: null, days: 7, now }), null, 'days of its own: nothing to say');
-  assert.equal(freeDaysSentence({ since: now - 3 * DAY + 60000, days: 7, now }), "Your free days began with the first site you started here, so this site has 4 free days left. Subscribe on the site's row before they end to keep editing it.");
-  assert.match(freeDaysSentence({ since: now - 5.5 * DAY, days: 7, now }), /has 1 free day left\./);
+  assert.equal(freeDaysSentence({ since: now - 3 * DAY + 60000, days: 7, now }), "Your free days began with the first site you started here, so this site has 5 free days left. Subscribe on the site's row before they end to keep editing it.");
+  assert.match(freeDaysSentence({ since: now - 5.5 * DAY, days: 7, now }), /has 2 free days left\./, 'part of a day counts as a day, as on the site\'s row in the dashboard');
   assert.match(freeDaysSentence({ since: now - 6.5 * DAY, days: 7, now }), /has less than one free day left\./);
   assert.equal(freeDaysSentence({ since: now - 8 * DAY, days: 7, now }), "Your free days began with the first site you started here and they are over, so this site has none. Subscribe on the site's row to edit it and keep it up.");
   for (const t of [ownLimitSentence(3, DAY), freeDaysSentence({ since: now - DAY, days: 7, now }), freeDaysSentence({ since: now - 9 * DAY, days: 7, now })]) plain(t);
@@ -632,7 +632,7 @@ test('free days do not start afresh: a second site of an account that pays for n
   assert.equal(second.status, 200);
   assert.equal(second.json.site.created_at, since, 'its free days are counted from the first site');
   assert.equal(second.json.site.trial_ends, since + 7 * DAY, 'and the dashboard is told the day they really end');
-  assert.equal(second.json.free_days, "Your free days began with the first site you started here, so this site has 4 free days left. Subscribe on the site's row before they end to keep editing it.");
+  assert.equal(second.json.free_days, "Your free days began with the first site you started here, so this site has 5 free days left. Subscribe on the site's row before they end to keep editing it.");
   assert.equal(rows(w.env)[0].created_at, since);
   assert.equal((await remove(w, second.json.site.id)).status, 200);
   // nine days after the first site: no free days are left, and the site is started all the same
