@@ -125,6 +125,9 @@ test('hosting: a site\'s name is safe as a web address and never shared by two s
   assert.equal(siteName(env, { repo: 'ada/The_Club.Site', id: '3F2A9C1D-aaaa-bbbb' }), 'the-club-site-3f2a9c1d');
   assert.notEqual(siteName(env, { repo: 'ada/club', id: 'aaaaaaaa-1' }), siteName(env, { repo: 'bob/club', id: 'bbbbbbbb-1' }));
   assert.equal(siteName({ HOSTING_PREFIX: 'stg-' }, { repo: 'ada/club', id: 'abcdef12-9' }), 'stg-club-abcdef12');
+  // A repository whose name already ends with the start of the site's id (a site whose files Kiln keeps) is not given it twice.
+  assert.equal(siteName(env, { repo: 'kiln-sites/oak-bakery-3f2a9c1d', id: '3f2a9c1d-aaaa-bbbb' }), 'oak-bakery-3f2a9c1d');
+  assert.equal(siteName(env, { repo: 'ada/oak-bakery-3f2a9c1d', id: '77777777-aaaa' }), 'oak-bakery-3f2a9c1d-77777777');
   const long = siteName(env, { repo: `ada/${'x'.repeat(200)}`, id: 'abcdef12' });
   assert.ok(long.length <= 63 && /^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(long), long);
   assert.equal(siteName(env, { repo: 'ada/---', id: '' }), 'site-0');

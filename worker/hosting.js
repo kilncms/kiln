@@ -62,7 +62,9 @@ export function siteName(env, { repo, id }) {
   const words = String(repo || '').split('/').pop().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'site';
   const tail = String(id || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || '0';
   const prefix = String((env && env.HOSTING_PREFIX) || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 8);
-  return `${prefix}${words}-${tail}`.replace(/^-+/, '').slice(0, 63);
+  // A site whose files Kiln keeps already carries those eight characters at the end of its repository's name
+  // (keeps.js), so they are not said twice in its address.
+  return `${prefix}${words.endsWith(`-${tail}`) ? words : `${words}-${tail}`}`.replace(/^-+/, '').slice(0, 63);
 }
 
 export const siteAddress = (env, name) => `https://${name}.${env.HOSTING_SUBDOMAIN}.workers.dev`;

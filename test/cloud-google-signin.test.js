@@ -62,7 +62,7 @@ test('migration 0008: every account and site is kept as it was, a login may now 
     { id: 'a1', github_login: 'ada', email: 'ada@example.com', ls_customer_id: 'cus_9', created_at: 11, google_sub: null, name: null },
     { id: 'a2', github_login: 'Grace-H', email: null, ls_customer_id: null, created_at: 22, google_sub: null, name: null },
   ]);
-  assert.deepEqual({ ...d1.row("SELECT * FROM sites WHERE id = 's1'") }, { ...siteBefore, kept: null }, 'the site is untouched, and is not one Kiln keeps');
+  assert.deepEqual({ ...d1.row("SELECT * FROM sites WHERE id = 's1'") }, { ...siteBefore, kept: null, name: null }, 'the site is untouched, and is not one Kiln keeps');
   assert.equal(d1.row("SELECT COUNT(*) n FROM sqlite_master WHERE name = 'accounts_new'").n, 0, 'nothing is left over');
   // two accounts with no login, each with its own Google id
   d1.exec("INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES ('g1', NULL, 'rosa@example.com', 'Rosa', 'g-1', 1)");

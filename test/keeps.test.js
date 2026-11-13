@@ -218,9 +218,11 @@ test('a Google account starts a site: a private repository in Kiln\'s organizati
   const all = rows(w.env);
   assert.equal(all.length, 1);
   const address = siteAddress(w.env, siteName(w.env, { repo, id: site.id }));
-  assert.match(address, /^https:\/\/oak-bakery-[0-9a-f]{8}-[0-9a-f]{8}\.kiln-sites\.workers\.dev$/);
-  assert.deepEqual({ id: all[0].id, account_id: all[0].account_id, repo: all[0].repo, origin: all[0].origin, plan: all[0].plan, status: all[0].status, kept: all[0].kept },
-    { id: site.id, account_id: 'acct-g', repo, origin: address, plan: 'managed', status: 'trialing', kept: 1 });
+  // The eight characters at the end of the repository's name are the start of the site's id, and the address says them once.
+  assert.match(address, /^https:\/\/oak-bakery-[0-9a-f]{8}\.kiln-sites\.workers\.dev$/);
+  assert.equal(address, `https://${repo.split('/')[1].toLowerCase()}.kiln-sites.workers.dev`);
+  assert.deepEqual({ id: all[0].id, account_id: all[0].account_id, repo: all[0].repo, origin: all[0].origin, plan: all[0].plan, status: all[0].status, kept: all[0].kept, name: all[0].name },
+    { id: site.id, account_id: 'acct-g', repo, origin: address, plan: 'managed', status: 'trialing', kept: 1, name: 'Oak Bakery' }, 'the row keeps the name as it was typed');
 
   // the answer is the site as /cloud/me lists it
   const me = await ask(w, 'GET', '/cloud/me');
@@ -435,7 +437,7 @@ test('what the dashboard is told: keeps on /cloud/me and /healthz, and kept on e
   assert.deepEqual(me.json.sites, []);
   await start(w);
   me = await ask(w, 'GET', '/cloud/me');
-  assert.deepEqual(me.json.sites.map(s => s.kept), [true]);
+  assert.deepEqual(me.json.sites.map(s => [s.kept, s.name]), [[true, 'Oak Bakery']], 'the dashboard is given the name as it was typed');
   addSite(w.env);
   me = await ask(w, 'GET', '/cloud/me', null, 'tok');
   assert.equal(me.json.keeps, true);

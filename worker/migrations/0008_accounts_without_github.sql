@@ -40,3 +40,7 @@ DROP TABLE accounts;
 ALTER TABLE accounts_new RENAME TO accounts;
 
 ALTER TABLE sites ADD COLUMN kept INTEGER;
+
+-- What its owner called a site whose files Kiln keeps ("Oak Bakery"), as they
+-- typed it. The dashboard shows it where another site shows its repository.
+ALTER TABLE sites ADD COLUMN name TEXT;

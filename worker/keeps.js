@@ -153,6 +153,14 @@ export async function keptIds(env, accountId) {
   } catch { return new Set(); }
 }
 
+/** What the owner called each kept site of an account, by site id: the name as they typed it. */
+export async function keptNames(env, accountId) {
+  try {
+    const rows = await env.kiln_cloud.prepare('SELECT id, name FROM sites WHERE account_id = ? AND kept = 1').bind(accountId).all();
+    return Object.fromEntries((rows?.results || []).filter(r => r.name).map(r => [r.id, r.name]));
+  } catch { return {}; }
+}
+
 /** What the operator is told when a kept site is removed. Its repository is not touched. */
 export function keptRemovedNote({ repo, by = '', now = Date.now() }) {
   const day = new Date(now + KEPT_REPO_DAYS * 86400 * 1000).toISOString().slice(0, 10);
@@ -299,7 +307,7 @@ export async function startKept(env, { accountId, name, worker, by = '', sign, p
     const filled = await fill(token, { starter, repo: made.repo, branch: made.branch, config, sleep });
     // The address Kiln's hosting will give it, from the same function the hosting uses.
     const origin = siteAddress(env, siteName(env, { repo: made.repo, id }));
-    const site = await register({ id, repo: made.repo, origin });
+    const site = await register({ id, repo: made.repo, origin, name: called });
     try {
       await note(`Kiln started a site and keeps its files: ${made.repo}`, [`Name: ${called}`, `Address it will have: ${origin}`, `Started by: ${by}`, `Files: ${filled.files}`, `Commit: ${filled.commit}`]);
     } catch { /* the site is started either way */ }

@@ -43,7 +43,7 @@ import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } fro
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { hostingOn, hostingSentence } from './hosting.js';
-import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptRemovedNote, startKept } from './keeps.js';
+import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, startKept } from './keeps.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
 import {
@@ -195,7 +195,7 @@ function withoutGitHub(sess) { return !!sess && !sess.login && !!sess.google; }
  * it. `kept` marks a site whose files Kiln keeps (keeps.js), which is the only
  * caller that names an `id`.
  */
-async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, kept = false }) {
+async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, kept = false, name = null }) {
   // Anti-abuse: the 7-day self-serve trial clock is anchored to the FIRST time
   // this origin was ever registered, so removing + re-adding a site can't farm
   // a fresh trial indefinitely. (First registration records the timestamp.)
@@ -206,8 +206,14 @@ async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, k
   else await env.KILN.put(firstSeenKey, String(createdAt));   // no TTL: a permanent trial marker
   const site = { id, account_id: accountId, repo, origin, plan: plan === 'managed' ? 'managed' : 'cloud', status: 'trialing', created_at: createdAt };
   // `kept` arrives with migration 0008, so only a kept site's row names the column.
-  await env.kiln_cloud.prepare(`INSERT INTO sites (id, account_id, repo, origin, plan, status, created_at${kept ? ', kept' : ''}) VALUES (?,?,?,?,?,?,?${kept ? ',1' : ''})`)
-    .bind(site.id, site.account_id, site.repo, site.origin, site.plan, site.status, site.created_at).run();
+  // A kept site also keeps the name its owner typed for it.
+  if (kept) {
+    await env.kiln_cloud.prepare('INSERT INTO sites (id, account_id, repo, origin, plan, status, created_at, kept, name) VALUES (?,?,?,?,?,?,?,1,?)')
+      .bind(site.id, site.account_id, site.repo, site.origin, site.plan, site.status, site.created_at, name ? String(name).slice(0, 60) : null).run();
+  } else {
+    await env.kiln_cloud.prepare('INSERT INTO sites (id, account_id, repo, origin, plan, status, created_at) VALUES (?,?,?,?,?,?,?)')
+      .bind(site.id, site.account_id, site.repo, site.origin, site.plan, site.status, site.created_at).run();
+  }
   await env.KILN.delete(`cloudgone:${String(site.repo).toLowerCase()}`);
   return site;
 }
@@ -1488,7 +1494,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // `keeps`: this service can start a site whose files Kiln keeps, for someone with no GitHub account (keeps.js).
     // Each such site says `kept`.
     const keptHere = await keptIds(env, sess.account_id);
-    for (const r of rows) if (keptHere.has(r.id)) r.kept = true;
+    const called = keptHere.size ? await keptNames(env, sess.account_id) : {};
+    for (const r of rows) if (keptHere.has(r.id)) { r.kept = true; if (called[r.id]) r.name = called[r.id]; }
     return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env) });
   }
 
@@ -1554,7 +1561,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const { name } = await request.json().catch(() => ({}));
     const out = await startKept(env, {
       accountId: sess.account_id, name, worker: url.origin, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
-      register: ({ id, repo, origin }) => registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true }),
+      register: ({ id, repo, origin, name }) => registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name }),
       forget: (id) => env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(),
       note: (subject, lines) => notifyOwner(env, subject, lines),
     });
