@@ -68,9 +68,11 @@ export function hostingOn(env) {
  * that two repositories of the same name never share one. Lowercase letters,
  * digits and dashes, 63 at most, as a web address allows.
  */
+const idStart = (id) => String(id || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || '0';
+
 export function siteName(env, { repo, id }) {
   const words = String(repo || '').split('/').pop().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'site';
-  const tail = String(id || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || '0';
+  const tail = idStart(id);
   const prefix = String((env && env.HOSTING_PREFIX) || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 8);
   // A site whose files Kiln keeps already carries those eight characters at the end of its repository's name
   // (keeps.js), so they are not said twice in its address.
@@ -78,6 +80,48 @@ export function siteName(env, { repo, id }) {
 }
 
 export const siteAddress = (env, name) => `https://${name}.${env.HOSTING_SUBDOMAIN}.workers.dev`;
+
+// ── Previews ───────────────────────────────────────────────────────────────
+//
+// A suggestion is written to a branch named kiln/suggest-<name>, and a shared
+// draft to the branch kiln-drafts. Each such branch of a hosted site is put up
+// as a second Worker of its own, so the link the editor shows leads somewhere.
+// A preview never carries the pages under members/, tells search engines to
+// leave it out, and is never attached to the site's own domain.
+
+/** True for a branch the editor writes a suggestion or a shared draft to. */
+export const isPreviewBranch = (branch) => typeof branch === 'string' && (branch === 'kiln-drafts' || branch.startsWith('kiln/suggest-'));
+
+/**
+ * The part of a preview's address that stands for its branch. The same rule,
+ * step for step, as `previewUrl` in src/editor/suggest.js, which makes the link
+ * the editor shows: the two must agree or the link leads nowhere.
+ */
+export function previewAlias(branch) {
+  return String(branch).toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 28)
+    .replace(/-+$/, '');
+}
+
+/** The name of the Worker a branch's preview is served from, or null for a branch with no usable name. */
+export function previewName(site, branch) {
+  const alias = previewAlias(branch);
+  return alias ? `pv-${idStart(site?.id)}-${alias}` : null;
+}
+
+/**
+ * The pattern a hosted site's settings file needs for its preview links
+ * (`preview:` in the site's settings), with `{branch}` where the editor puts
+ * the branch. Null when this service hosts nothing.
+ */
+export function previewPattern(env, site) {
+  return hostingOn(env) && site?.id ? siteAddress(env, `pv-${idStart(site.id)}-{branch}`) : null;
+}
+
+/** What every preview's `_headers` ends with: no search engine lists any of its pages. */
+export const PREVIEW_HEADERS = '/*\n  X-Robots-Tag: noindex\n';
 
 const TYPES = {
   html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', mjs: 'text/javascript; charset=utf-8',
@@ -161,12 +205,12 @@ async function cloudflare(env, method, path, { json, form, bearer } = {}) {
   return { status: res.status, result: data.result };
 }
 
-/** A repository's files at the head of its default branch: { state, branch, head, entries }. */
-export async function readTree({ token, repo }) {
+/** A repository's files at the head of `branch`, or of its default branch when none is named: { state, branch, head, entries }. */
+export async function readTree({ token, repo, branch: named = null }) {
   const meta = await gh(token, 'GET', `/repos/${repo}`);
   if ([401, 403, 404].includes(meta.status)) return { state: 'no_access' };
   if (!meta.ok) return { state: 'github' };
-  const branch = (await meta.json()).default_branch || 'main';
+  const branch = named || (await meta.json()).default_branch || 'main';
   const ref = await gh(token, 'GET', `/repos/${repo}/git/ref/heads/${refPath(branch)}`);
   if (ref.status === 404 || ref.status === 409) return { state: 'empty', branch };
   if (!ref.ok) return { state: 'github' };
@@ -204,17 +248,23 @@ async function settingsText(token, repo, entry) {
  * the answer carries `members: 'left_out'`, so the caller can tell the owner
  * that those pages are not on the site yet. They are never served open. `siteId` is what the site's member secret is made
  * from; without one the Worker's name stands in.
+ *
+ * `branch` names another branch than the default one to copy, and `preview`
+ * says the Worker is a preview of it: the files under members/ are then left
+ * out always and the gate is never uploaded (a preview's address is not a
+ * place members can sign in), and its `_headers` ends with PREVIEW_HEADERS
+ * after whatever the site's own file says.
  */
-export async function deploySite(env, { token, repo, name, first = false, siteId = null }) {
+export async function deploySite(env, { token, repo, name, first = false, siteId = null, branch = null, preview = false }) {
   if (!hostingOn(env)) throw new HostingError('not_set_up');
-  const tree = await readTree({ token, repo });
+  const tree = await readTree({ token, repo, branch });
   if (tree.state !== 'ok') return tree;
   const all = publishedFiles(tree.entries);
   const { headers, redirects, skipped } = all;
   // Members-only pages are never put up without their gate. Where this service cannot switch the gate on,
   // they are left out of what is published, so nobody without the right can open them (tried for real on
   // the test service: a page under members/ that is uploaded as a plain file is served to everybody).
-  const gate = membersGateOn(env), hadMembers = hasMembersArea(all.files);
+  const gate = !preview && membersGateOn(env), hadMembers = hasMembersArea(all.files);
   const files = hadMembers && !gate ? all.files.filter(f => !String(f.path).startsWith('/members/')) : all.files;
   if (!files.some(f => f.path === '/index.html')) return { state: 'no_home', branch: tree.branch, head: tree.head };
   if (files.length > LIMITS.files) return { state: 'too_big', branch: tree.branch, head: tree.head, fileCount: files.length };
@@ -243,7 +293,8 @@ export async function deploySite(env, { token, repo, name, first = false, siteId
   if (!done) throw new HostingError('cloudflare', 'every file was sent but Cloudflare did not say the set is complete');
 
   const config = { html_handling: 'auto-trailing-slash', not_found_handling: manifest['/404.html'] ? '404-page' : 'none' };
-  const headersText = await settingsText(token, repo, headers);
+  const ownHeaders = await settingsText(token, repo, headers);
+  const headersText = preview ? `${ownHeaders ? `${ownHeaders.replace(/\s+$/, '')}\n\n` : ''}${PREVIEW_HEADERS}` : ownHeaders;
   const redirectsText = await settingsText(token, repo, redirects);
   if (headersText) config._headers = headersText;
   if (redirectsText) config._redirects = redirectsText;
