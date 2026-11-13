@@ -85,7 +85,7 @@ const WORKER_VERSION = '0.6.6';
 
 import { handleCloud, googleDashboardSignIn, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
-import { keepsReady } from './keeps.js';
+import { keepsReady, keptStands } from './keeps.js';
 import { githubTrouble, googleTrouble, troubleBody, troubleLog, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkNewPageWrite, templatePathsFor, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
@@ -162,7 +162,7 @@ async function routeRequest(request, env, ctx) {
       }
       // The dashboard's routes get the App's token for a repository from here (cloud.js cannot import this file).
       // `pkcs1`: a GitHub App's private key as GitHub hands it out, rewrapped for the signer (keeps.js, for the app that makes repositories).
-      const r = await handleCloud(request, env, url, path, { installationToken, page: html, pkcs1: (pem) => bufToB64(pkcs1PemToPkcs8Der(pem)) });
+      const r = await handleCloud(request, env, url, path, { installationToken, editorSession: keptEditorSession, page: html, pkcs1: (pem) => bufToB64(pkcs1PemToPkcs8Der(pem)) });
       if (r) return await cors(env, request, r);
     }
 
@@ -487,7 +487,7 @@ async function realSession(request, env) {
   let real = false;
   try {
     const o = await ownerRecord(request, env, id);
-    if (o && o.v === 1 && typeof o.token === 'string') real = ownerSessionEnds(o) >= now;
+    if (isOwnerRecord(o)) real = ownerSessionEnds(o) >= now;
     else {
       const e = await env.KILN.get(`esess:${id}`, 'json');
       real = !!e && typeof e === 'object' && (!e.exp || e.exp >= now);
@@ -738,6 +738,19 @@ async function authLogout(request, env) {
 const REPO_RE = /^(?!\.\.?\/)[\w.-]+\/(?!\.\.?$)[\w.-]+$/;
 const OWNER_SESSION_RE = /^[a-f0-9]{64}$/;
 const OWNER_SESSION_DAYS = 180;
+// The owner of a site whose files Kiln keeps (keeps.js) has no GitHub account.
+// Their owner session carries no GitHub token:
+//
+//   osess:<64 hex>  { v: 1, kept: true, account_id, login, email, repo, rid,
+//                     origin, created }   (30 days from `created`)
+//
+// `login` is the person's name. POST /cloud/sites/editor makes it, nothing
+// renews it, and it stands only while that account's site row does. It reaches
+// its one repository with the app's installation token, and nothing else.
+const KEPT_SESSION_DAYS = 30;
+const isKeptSession = (sess) => !!sess && sess.v === 1 && sess.kept === true && typeof sess.token !== 'string'
+  && typeof sess.account_id === 'string' && typeof sess.repo === 'string';
+const isOwnerRecord = (sess) => !!sess && sess.v === 1 && (typeof sess.token === 'string' || isKeptSession(sess));
 const OWNER_RENEW_MS = 5 * 60 * 1000;   // renew a token this close to running out
 const owners = new WeakMap();            // request → { id, sess }, set once by routeRequest
 const endedSignIns = new WeakSet();      // requests whose owner session GitHub stopped accepting
@@ -748,9 +761,14 @@ const OWNER_SCOPE = 'This sign-in is for one repository only, and this request i
 const ORIGIN_OFF = 'Editing through Kiln is switched off for this site address, so nothing was sent to GitHub.';
 const GITHUB_UNREACHABLE ='Kiln could not reach GitHub just now. Wait a moment and try again.';
 
-function signinEnded() { return json({ error: SIGNIN_ENDED, code: 'signin_ended' }, 401); }
+const KEPT_SIGNIN_ENDED = 'Your sign-in has ended. Open the editor again from your Kiln dashboard to keep editing.';
+const KEPT_ORIGIN = 'This sign-in belongs to another site address, so it cannot be used here. Open the editor again from your Kiln dashboard.';
+const KEPT_NOT_CHECKED = 'Kiln could not check your site just now. Wait a moment and try again.';
+const PLAN_ENDED_NO_PUBLISH = "This site's Kiln plan has ended, so nothing can be published through Kiln until it is renewed.";
+
+function signinEnded(sess = null) { return json({ error: isKeptSession(sess) ? KEPT_SIGNIN_ENDED : SIGNIN_ENDED, code: 'signin_ended' }, 401); }
 function sameName(a, b) { return typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase(); }
-function ownerSessionEnds(sess) { return (Number(sess.created) || 0) + OWNER_SESSION_DAYS * 86400 * 1000; }
+function ownerSessionEnds(sess) { return (Number(sess.created) || 0) + (isKeptSession(sess) ? KEPT_SESSION_DAYS : OWNER_SESSION_DAYS) * 86400 * 1000; }
 function newOwnerSessionId() {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
@@ -806,6 +824,46 @@ async function createOwnerSession(env, { token, tokenExp, refreshToken, login, u
   return { id, exp: ownerSessionEnds(sess) };
 }
 
+/** An owner session for the owner of a site whose files Kiln keeps: no GitHub token in it, and 30 days. */
+async function createKeptSession(env, { accountId, login, email, repo, rid, origin }) {
+  const id = newOwnerSessionId();
+  const sess = { v: 1, kept: true, account_id: accountId, login, email: email || null, repo, rid: Number.isInteger(rid) ? rid : null, origin, created: Date.now() };
+  await env.KILN.put(`osess:${id}`, JSON.stringify(sess), { expirationTtl: KEPT_SESSION_DAYS * 86400 });
+  return { id, exp: ownerSessionEnds(sess) };
+}
+
+/**
+ * The address a newly signed-in owner is sent to. The small file every visitor
+ * loads reads the session from the fragment, and reads the name with
+ * decodeURIComponent, so a space in a name is written %20 and never "+".
+ */
+function ownerArrival(origin, returnTo, { id, login, exp }) {
+  const frag = new URLSearchParams({ 'kiln-owner': id, 'kiln-login': login, 'kiln-exp': String(exp) });
+  return `${origin}${returnTo}#${String(frag).replace(/\+/g, '%20')}`;
+}
+
+/**
+ * The session half of POST /cloud/sites/editor. cloud.js has already checked
+ * whose site it is, that Kiln keeps its files, that it is up and that it may
+ * be edited. Here the repository's id is read with the app's installation
+ * token, the name is put on record as that repository (as a GitHub sign-in
+ * does), and the session is made. Answers { url, exp }, or null when the
+ * repository could not be read or its name is on record as another one.
+ */
+async function keptEditorSession(env, { accountId, name, email, repo, origin }) {
+  if (!accountId || !name || !REPO_RE.test(String(repo || ''))) return null;
+  let site = '';
+  try { site = new URL(origin).origin; } catch { return null; }
+  let token = null;
+  try { token = await installationToken(env, repo); } catch { token = null; }
+  if (!token) return null;
+  const access = await repoAccess(token, repo);
+  if (!access || access.id === null) return null;
+  if (!(await admitRepo(env, repo, { id: access.id, name: repo }))) return null;
+  const { id, exp } = await createKeptSession(env, { accountId, login: name, email, repo, rid: access.id, origin: site });
+  return { url: ownerArrival(site, '/kiln', { id, login: name, exp }), exp };
+}
+
 /** Write a session back (a renewed token) without moving the day it ends. */
 async function rewriteOwnerSession(env, id, sess) {
   const expiration = Math.floor(ownerSessionEnds(sess) / 1000);
@@ -846,6 +904,7 @@ async function refreshAtGitHub(env, refreshToken) {
  * { refuse } when the sign-in has ended (or GitHub cannot be asked just now).
  */
 async function freshOwnerSession(env, id, sess) {
+  if (isKeptSession(sess)) return { sess };   // no GitHub token to renew: it stands until its 30 days are over
   if (!sess.token_exp || sess.token_exp - Date.now() > OWNER_RENEW_MS) return { sess };
   const end = async () => { await env.KILN.delete(`osess:${id}`); return { refuse: signinEnded() }; };
   if (!sess.refresh_token) return end();
@@ -893,14 +952,41 @@ async function ownerSessionFor(request, env) {
   const id = request.headers.get('X-Kiln-Session') || '';
   if (!OWNER_SESSION_RE.test(id)) return null;
   const sess = await ownerRecord(request, env, id);
-  if (!sess || sess.v !== 1 || typeof sess.token !== 'string') return null;
-  if (ownerSessionEnds(sess) < Date.now()) { await env.KILN.delete(`osess:${id}`); return { refuse: signinEnded() }; }
+  if (!isOwnerRecord(sess)) return null;
+  const kept = isKeptSession(sess);
+  if (ownerSessionEnds(sess) < Date.now()) { await env.KILN.delete(`osess:${id}`); return { refuse: signinEnded(sess) }; }
   const origin = request.headers.get('Origin') || '';
-  if (!origin || origin !== sess.origin) return { refuse: json({ error: OWNER_ORIGIN, code: 'owner_origin' }, 403) };
+  if (!origin || origin !== sess.origin) return { refuse: json({ error: kept ? KEPT_ORIGIN : OWNER_ORIGIN, code: 'owner_origin' }, 403) };
+  if (kept) return keptSessionFor(env, id, sess, origin);
   if (!(await originAllowed(env, origin))) return { refuse: json({ error: ORIGIN_OFF, code: 'origin_refused' }, 403) };
   const fresh = await freshOwnerSession(env, id, sess);
   if (fresh.refuse) return fresh;
   return { id, sess: fresh.sess };
+}
+
+/**
+ * A kept session, used from its own address. Its site must still stand: that
+ * account's row for that repository, with `kept` set (keeps.js, a yes
+ * remembered for a minute). When the row is gone the session is removed and
+ * the person is told they are signed out. An address whose plan has ended
+ * still passes, so the site can be read: ownerProxy and requirePush refuse
+ * whatever would change something. Nothing is renewed at GitHub.
+ */
+async function keptSessionFor(env, id, sess, origin) {
+  const stands = await keptStands(env, sess);
+  if (stands === null) return { refuse: json({ error: KEPT_NOT_CHECKED, code: 'try_again' }, 503) };
+  if (!stands) { await env.KILN.delete(`osess:${id}`); return { refuse: signinEnded(sess) }; }
+  if (!(await originAllowed(env, origin))) {
+    const standing = (await repoPlanEnded(env, sess.repo)) ? await cloudOriginStanding(env, origin) : null;
+    if (!(standing && standing.known)) return { refuse: json({ error: ORIGIN_OFF, code: 'origin_refused' }, 403) };
+  }
+  const fresh = await freshOwnerSession(env, id, sess);
+  return fresh.refuse ? fresh : { id, sess: fresh.sess };
+}
+
+/** Is `repo` the one repository a kept session is for? By its name only: nobody but Kiln can rename it. */
+async function keptRepoIs(env, sess, repo) {
+  return REPO_RE.test(String(repo || '')) && sameName(sess.repo, repo) && !(await answersAsAnother(env, repo, sess.rid));
 }
 
 /** Is `repo` the repository this owner session is for (by name, or by GitHub's id after a rename)? */
@@ -918,6 +1004,8 @@ async function ownerRepoMatches(env, sess, repo) {
  */
 async function askingToken(request, env, repo) {
   const owner = owners.get(request);
+  // A kept session has no GitHub token: for its own repository the answer is { kept: true }, and GitHub is not asked.
+  if (owner && isKeptSession(owner.sess)) return (await keptRepoIs(env, owner.sess, repo)) ? { token: null, owner, kept: true } : null;
   if (owner) return (await ownerRepoMatches(env, owner.sess, repo)) ? { token: owner.sess.token, owner } : null;
   const auth = (request.headers.get('Authorization') || '').replace(/^(token|Bearer)\s+/i, '');
   return auth ? { token: auth, owner: null } : null;
@@ -947,8 +1035,7 @@ async function ownerSignedIn(env, state, tok) {
     refreshToken: tok.refresh_token,
     login: user.login, uid: user.id, repo, rid: access.id, origin: state.origin,
   });
-  const frag = new URLSearchParams({ 'kiln-owner': id, 'kiln-login': user.login, 'kiln-exp': String(exp) });
-  return Response.redirect(`${state.origin}${state.returnTo}#${frag}`, 302);
+  return Response.redirect(ownerArrival(state.origin, state.returnTo, { id, login: user.login, exp }), 302);
 }
 
 /** GET /auth/session: who this owner session is, or 401 when it is not one (any more). */
@@ -956,7 +1043,7 @@ async function authSession(request, env) {
   const owner = await ownerSessionFor(request, env);
   if (!owner) return json({ error: 'You are not signed in on this site.', code: 'signin_ended' }, 401);
   if (owner.refuse) return owner.refuse;
-  return json({ ok: true, role: 'owner', login: owner.sess.login, repo: owner.sess.repo, exp: ownerSessionEnds(owner.sess) });
+  return json({ ok: true, role: 'owner', login: owner.sess.login, repo: owner.sess.repo, exp: ownerSessionEnds(owner.sess), ...(isKeptSession(owner.sess) ? { kept: true } : {}) });
 }
 
 /**
@@ -1011,6 +1098,7 @@ async function requirePush(request, repo, env) {
   // From an owner session for this repository, or the old way (Authorization).
   const asking = await askingToken(request, env, repo);
   if (!asking) return false;
+  if (asking.kept) return keptMayChange(request, env, repo, asking.owner.sess);
   const auth = asking.token;
   const res = await fetch(`${GH}/repos/${repo}`, {
     headers: { Authorization: `Bearer ${auth}`, Accept: 'application/vnd.github+json', 'User-Agent': UA },
@@ -1028,12 +1116,25 @@ async function requirePush(request, repo, env) {
 
 // Why requirePush said no, when the reason is worth telling the person asking.
 const pushRefusal = new WeakMap();
+const pushRefusalCode = new WeakMap();   // its code, when that is not 'repo_changed'
+
+/**
+ * requirePush for a kept session on its own repository (askingToken has held
+ * it to that one): yes, and GitHub is not asked, because there is no person's
+ * token to ask with. A plan that has ended says no, as it does for an invited
+ * editor, and the name is put on record as this repository as requirePush does.
+ */
+async function keptMayChange(request, env, repo, sess) {
+  if (await repoPlanEnded(env, sess.repo)) { pushRefusal.set(request, PLAN_ENDED_NO_PUBLISH); pushRefusalCode.set(request, 'plan_ended'); return false; }
+  if (Number.isInteger(sess.rid) && !(await admitRepo(env, repo, { id: sess.rid, name: sess.repo }))) { pushRefusal.set(request, REPO_CHANGED); return false; }
+  return true;
+}
 const REPO_CHANGED = 'This name now belongs to a different repository than the one these people were added to, so their list is not shown or changed here. If the repository was renamed or moved, set repo in kiln-config.js to its current owner/name. If it was deleted and made again, run kiln doctor: it says how to start a new list.';
 
 /** The answer to an owner request that requirePush turned down. */
 function forbidden(request) {
   const why = pushRefusal.get(request);
-  return json(why ? { error: why, code: 'repo_changed' } : { error: 'forbidden' }, 403);
+  return json(why ? { error: why, code: pushRefusalCode.get(request) || 'repo_changed' } : { error: 'forbidden' }, 403);
 }
 
 /** Whether a file path is within an editor's granted paths. Empty / '**' = whole site. */
@@ -1065,6 +1166,14 @@ export { pathInScope, isSensitivePath, normalizePaths, keyInScope, apiPageFilter
 // sched:<id> → { repo, path, branch, content(b64), message, at, desc, by }
 // A cron tick commits every due entry using the App installation token.
 
+/** Who a schedule is filed as. A kept owner is filed under their own name, with the account whose site it is, so the change goes out as theirs. */
+function schedAuthor(actor) {
+  if (actor.kept) return { by: actor.kept.name, byEmail: actor.kept.email || undefined, admin: true, kept: actor.kept.account_id };
+  return { by: actor.name, byEmail: actor.email, admin: !!actor.admin };
+}
+/** The author's address on a scheduled change: a kept owner's own, and the editors' shared one for everybody else. */
+const schedEmail = (v) => (v && v.kept && v.byEmail) || EDITOR_COMMIT_EMAIL;
+
 async function authActor(request, env, repo) {
   // Either an admin's GitHub token (push access) or an editor session for this repo.
   const sess = request.headers.get('X-Kiln-Session');
@@ -1076,7 +1185,13 @@ async function authActor(request, env, repo) {
     // repository than the session's, this is no session for it.
     if (e && (!e.exp || e.exp >= Date.now()) && e.role === 'editor' && (e.repo === repo || await sameOnRecord(env, e.repo, repo)) && !(await answersAsAnother(env, repo, e.rid)) && !(await repoPlanEnded(env, e.repo))) return { name: e.name, email: e.email, paths: e.paths || [''], keys: e.keys || [], mode: e.mode || null, features: e.features || null, admin: false };
   }
-  if (await requirePush(request, repo, env)) return { name: 'admin', admin: true };
+  if (await requirePush(request, repo, env)) {
+    // The owner of a site whose files Kiln keeps is an admin like any owner.
+    // `kept` says who they are, for what they schedule (schedAuthor).
+    const owner = owners.get(request);
+    if (owner && isKeptSession(owner.sess)) return { name: 'admin', admin: true, kept: { account_id: owner.sess.account_id, name: owner.sess.login, email: owner.sess.email || null } };
+    return { name: 'admin', admin: true };
+  }
   return null;
 }
 
@@ -1139,7 +1254,7 @@ async function scheduleCreate(request, env) {
   // always the one this site's config has (a renamed repository).
   const { home } = await shelf(env, repo);
   await env.KILN.put(`sched:${id}`,
-    JSON.stringify({ repo: home, path, branch, edits: edits || null, content: edits ? null : content, message: message || 'Scheduled publish (via Kiln)', at: when, desc: desc || path, by: actor.name, byEmail: actor.email, admin: !!actor.admin }),
+    JSON.stringify({ repo: home, path, branch, edits: edits || null, content: edits ? null : content, message: message || 'Scheduled publish (via Kiln)', at: when, desc: desc || path, ...schedAuthor(actor) }),
     { expirationTtl: Math.ceil((when - Date.now()) / 1000) + 14 * 24 * 3600 });
   return json({ ok: true, id, at: when });
 }
@@ -1170,7 +1285,7 @@ async function scheduleSourceCreate(request, env, body) {
   const edits = v.cleanEdits.map(({ was, ...e }) => e);
   await env.KILN.put(`sched:${id}`,
     JSON.stringify({ repo: home, kind: 'source', adapter: v.adapter.id, path: v.file, branch, edits, message: `Scheduled publish: ${v.file} (via Kiln)`,
-      at: when, desc: typeof desc === 'string' && desc.trim() ? desc.trim().slice(0, 200) : v.file, by: actor.name, byEmail: actor.email, admin: !!actor.admin }),
+      at: when, desc: typeof desc === 'string' && desc.trim() ? desc.trim().slice(0, 200) : v.file, ...schedAuthor(actor) }),
     { expirationTtl: Math.ceil((when - Date.now()) / 1000) + 14 * 24 * 3600 });
   return json({ ok: true, id, at: when });
 }
@@ -1240,6 +1355,15 @@ async function runDueSchedules(env) {
       // nothing. The schedule is held, not deleted: renewed within its 14-day
       // expiry, it goes out on the next run; otherwise it expires on its own.
       if (await repoPlanEnded(env, v.repo)) { console.log(`[kiln-cron] ${k.name} held: the site's plan has ended`); continue; }
+      // Scheduled by the owner of a site whose files Kiln keeps: it goes out,
+      // in their name, for as long as that account's site row stands. When the
+      // row is gone it never goes out, and when the database cannot be asked
+      // it waits for the next run.
+      if (v.kept) {
+        const stands = await keptStands(env, { repo: v.repo, account_id: v.kept });
+        if (stands === null) continue;
+        if (!stands) { console.log(`[kiln-cron] ${k.name} not published: the site it was scheduled for is no longer on Kiln`); await env.KILN.delete(k.name); continue; }
+      }
       // Whatever answers to the stored name now must be the repository the
       // schedule was made for. If the name has changed hands, the schedule
       // waits where it is: for its site to say where the repository went, or
@@ -1273,7 +1397,7 @@ async function runDueSchedules(env) {
           if (!h) continue;
           const vs = validateSourceRequest({ file: v.path, edits: v.edits, adapter: v.adapter, actor: { name: v.by, admin: true } }, { isSensitivePath, pathInScope });
           if (vs.error) { console.log(`[kiln-cron] ${k.name} not published: ${vs.error}`); await env.KILN.delete(k.name); continue; }
-          const r = await commitSourceEdits(h, target, v.branch, vs, { message: v.message, author: `${v.by} (via Kiln, scheduled)` });
+          const r = await commitSourceEdits(h, target, v.branch, vs, { message: v.message, author: `${v.by} (via Kiln, scheduled)`, email: schedEmail(v) });
           if (r.status === 200 || r.status === 422 || r.status === 404) await env.KILN.delete(k.name);
           if (r.status !== 200) console.log(`[kiln-cron] ${k.name}: ${r.body.error}`);
         } catch (err) {
@@ -1307,7 +1431,7 @@ async function runDueSchedules(env) {
         const res = await fetch(`${GH}/repos/${target}/contents/${encodeURIComponent(v.path)}`, {
           method: 'PUT', headers: h,
           body: JSON.stringify({ message: v.message, content, branch: v.branch, sha,
-            author: { name: `${v.by} (via Kiln, scheduled)`, email: 'kiln-editor@users.noreply.github.com' } }),
+            author: { name: `${v.by} (via Kiln, scheduled)`, email: schedEmail(v) } }),
         });
         if (res.ok || res.status === 409) await env.KILN.delete(k.name);
       } catch (err) {
@@ -1347,6 +1471,7 @@ async function requirePushCached(request, env, repo) {
   // cache is asked: two sessions can carry the same token (adopted twice).
   const asking = await askingToken(request, env, repo);
   if (!asking) return false;
+  if (asking.kept) return requirePush(request, repo, env);   // a kept owner: GitHub is not asked, so there is no answer of its to remember
   const auth = asking.token;
   const digest = bufToB64(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${auth}:${repo}`)));
   const cacheKey = `pauth:${digest}`;
@@ -2236,7 +2361,7 @@ async function sourceCommit(request, env) {
  * `v`: { adapter, file, cleanEdits } from validateSourceRequest.
  * Returns { status, body } for the answer.
  */
-async function commitSourceEdits(h, repo, branch, v, { message, author }) {
+async function commitSourceEdits(h, repo, branch, v, { message, author, email = EDITOR_COMMIT_EMAIL }) {
   // Rule 4: typed validation skips a bad edit, never the batch (§8.1/§9).
   const typedSkips = typedEditProblems(v.cleanEdits, { safeUrl, checkFragment });
   const badKeys = new Set(typedSkips.map(s => s.key));
@@ -2274,7 +2399,7 @@ async function commitSourceEdits(h, repo, branch, v, { message, author }) {
         method: 'PUT', headers: h,
         body: JSON.stringify({
           message, content: b64FromUtf8(content), branch, sha: cur.sha,
-          author: { name: author, email: 'kiln-editor@users.noreply.github.com' },
+          author: { name: author, email },
         }),
       });
       if (put.ok) {
@@ -3486,6 +3611,7 @@ const OWNER_PASS_HEADERS = ['content-type', 'etag', 'last-modified', 'link', 'x-
  */
 async function ownerProxy(request, env, owner, ghPath) {
   const { sess } = owner;
+  if (isKeptSession(sess)) return keptProxy(request, env, owner, ghPath);
   if (proxyPathTraverses(ghPath)) return json({ error: 'bad path' }, 400);
   const clean = ghPath.split('?')[0];
   if (await answersAsAnother(env, sess.repo, sess.rid)) return sessionRepoChanged();
@@ -3516,6 +3642,11 @@ async function ownerProxy(request, env, owner, ghPath) {
   try { res = await fetch(`${GH}${forward}`, { method: request.method, headers, body }); }
   catch { return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502); }
   if (res.status === 401) { await endOwnerSession(env, request, owner); return signinEnded(); }
+  return ownerAnswer(res);
+}
+
+/** GitHub's answer, handed back to an owner's editor. */
+function ownerAnswer(res) {
   const out = new Headers();
   for (const h of OWNER_PASS_HEADERS) { const v = res.headers.get(h); if (v) out.set(h, v); }
   if (!out.has('content-type')) out.set('content-type', 'application/json');
@@ -3524,6 +3655,75 @@ async function ownerProxy(request, env, owner, ghPath) {
   // long after it has changed. What goes through here is never to be kept.
   out.set('cache-control', GH_ANSWER_CACHE);
   return new Response(res.body, { status: res.status, headers: out });
+}
+
+// What the editor of a site whose files Kiln keeps may change with the
+// service's own token: files, and the git objects and branches a save is made
+// of. The repository itself, its settings, its hooks and anything under
+// .github (workflows) are never written this way.
+const KEPT_WRITES = [
+  ['PUT', /^\/contents\/.+/],
+  ['DELETE', /^\/contents\/.+/],
+  ['POST', /^\/git\/(?:blobs|trees|commits|refs)$/],
+  ['PATCH', /^\/git\/refs\/heads\/.+/],
+];
+const underDotGithub = (p) => String(p || '').split('/').some(part => part.toLowerCase() === '.github');
+function keptWriteAllowed(method, rest, parsed) {
+  let p = rest.split('?')[0];
+  try { p = decodeURIComponent(p); } catch { return false; }
+  if (!KEPT_WRITES.some(([m, re]) => m === method && re.test(p))) return false;
+  if (p.startsWith('/contents/') && underDotGithub(p.slice('/contents/'.length))) return false;
+  if (p === '/git/trees' && (!parsed || !Array.isArray(parsed.tree) || parsed.tree.some(e => underDotGithub(e && e.path)))) return false;
+  return true;
+}
+
+/**
+ * The /gh proxy for the owner of a site whose files Kiln keeps. They have no
+ * GitHub account, so GET /user is answered here, and what is asked of their
+ * one repository goes out with the app's installation token for it, a write
+ * carrying them as its author. Nothing else is sent. A 401 from GitHub is
+ * about the service's own token and never about the person: the token is
+ * dropped and asked for again, once, and the session stays as it is. When the
+ * site's plan has ended, reading still works and nothing is written.
+ */
+async function keptProxy(request, env, owner, ghPath) {
+  const { sess } = owner;
+  if (proxyPathTraverses(ghPath)) return json({ error: 'bad path' }, 400);
+  const scope = () => json({ error: OWNER_SCOPE, code: 'owner_scope' }, 403);
+  if (ghPath.split('?')[0] === '/user') {
+    return request.method === 'GET' ? json({ login: sess.login, name: sess.login, id: null, kept: true }) : scope();
+  }
+  const asked = /^\/repos\/([\w.-]+\/[\w.-]+)(?=[/?]|$)/.exec(ghPath);
+  if (!asked || !sameName(asked[1], sess.repo)) return scope();
+  if (await answersAsAnother(env, sess.repo, sess.rid)) return sessionRepoChanged();
+  const rest = ghPath.slice(asked[0].length);
+  const write = !['GET', 'HEAD'].includes(request.method);
+  const headers = { Accept: request.headers.get('Accept') || 'application/vnd.github+json', 'User-Agent': UA };
+  for (const h of ['If-None-Match', 'If-Modified-Since']) { const v = request.headers.get(h); if (v) headers[h] = v; }
+  let body;
+  if (write) {
+    const read = await readBodyCapped(request, PROXY_BODY_MAX);
+    if (read.tooLarge) return json({ error: FILE_MESSAGES.size, code: 'file_size' }, 413);
+    let parsed = null;
+    try { parsed = JSON.parse(read.text); } catch { parsed = null; }
+    if (!keptWriteAllowed(request.method, rest, parsed)) return scope();
+    if (await repoPlanEnded(env, sess.repo)) return json({ error: PLAN_ENDED_NO_PUBLISH, code: 'plan_ended' }, 403);
+    const fields = !!parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+    if (fields) delete parsed.committer;   // the committer stays the Kiln bot, whatever the page sent
+    body = stampedBody(fields ? JSON.stringify(parsed) : read.text, parsed, rest, viaKiln(sess.login, sess.email));
+    headers['Content-Type'] = 'application/json';
+  }
+  let res = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let token = null;
+    try { token = await installationToken(env, sess.repo); } catch { token = null; }
+    if (!token) return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502);
+    try { res = await fetch(`${GH}/repos/${sess.repo}${rest}`, { method: request.method, headers: { ...headers, Authorization: `Bearer ${token}` }, body }); }
+    catch { return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502); }
+    if (res.status !== 401) return ownerAnswer(res);
+    await env.KILN.delete(`itok:${sess.repo}`);   // the service's own token went stale: ask for a new one
+  }
+  return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502);
 }
 
 async function ghProxy(request, env, ghPath) {
@@ -3543,7 +3743,7 @@ async function ghProxy(request, env, ghPath) {
   if (await answersAsAnother(env, sess.repo, sess.rid)) return sessionRepoChanged();
   // The browser is already turned away once a Cloud plan ends; this stops a
   // session that is used from outside a browser, too.
-  if (await repoPlanEnded(env, sess.repo)) return json({ error: "This site's Kiln plan has ended, so nothing can be published through Kiln until it is renewed.", code: 'plan_ended' }, 403);
+  if (await repoPlanEnded(env, sess.repo)) return json({ error: PLAN_ENDED_NO_PUBLISH, code: 'plan_ended' }, 403);
 
   // A site whose config still has the name from before a rename or a transfer
   // asks for /repos/<that name>/…. When the worker's records say it is the
@@ -3730,13 +3930,8 @@ async function ghProxy(request, env, ghPath) {
   let body;
   if (isWrite) {
     headers['Content-Type'] = 'application/json';
-    body = rawBody;
     // Attribute the change to the human editor (committer stays the Kiln bot).
-    // Anything that is not a JSON object passes through untouched.
-    if (parsedBody && typeof parsedBody === 'object' && (ghPath.includes('/contents/') || ghPath.includes('/git/commits'))) {
-      parsedBody.author = editorStamp(sess);
-      body = JSON.stringify(parsedBody);
-    }
+    body = stampedBody(rawBody, parsedBody, ghPath, editorStamp(sess));
   }
   const res = await fetch(`${GH}${ghPath}`, { method: request.method, headers, body });
   return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'application/json', 'Cache-Control': GH_ANSWER_CACHE } });
@@ -3749,8 +3944,18 @@ const NO_DELETE_MESSAGE = 'editors cannot delete files';
 // The author every commit made through an editor session carries. The
 // committer stays the Kiln bot.
 const EDITOR_COMMIT_EMAIL = 'kiln-editor@users.noreply.github.com';
-function editorStamp(sess) {
-  return { name: `${sess.name} (via Kiln)`, email: EDITOR_COMMIT_EMAIL };
+function viaKiln(name, email = '') { return { name: `${name} (via Kiln)`, email: email || EDITOR_COMMIT_EMAIL }; }
+function editorStamp(sess) { return viaKiln(sess.name); }
+/**
+ * The body of a write, with its human author on it when it writes a file or
+ * makes a commit. Anything that is not a JSON object passes through untouched.
+ */
+function stampedBody(rawBody, parsedBody, ghPath, stamp) {
+  if (parsedBody && typeof parsedBody === 'object' && (ghPath.includes('/contents/') || ghPath.includes('/git/commits'))) {
+    parsedBody.author = stamp;
+    return JSON.stringify(parsedBody);
+  }
+  return rawBody;
 }
 // Names are compared by their letters and digits only: git trims punctuation
 // from the ends of a name, and that must not turn a real publish away.

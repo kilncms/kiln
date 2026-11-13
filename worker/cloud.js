@@ -43,7 +43,7 @@ import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } fro
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { hostingOn, hostingSentence } from './hosting.js';
-import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, startKept } from './keeps.js';
+import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept } from './keeps.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
 import {
@@ -189,6 +189,22 @@ async function googleAccount(env, { sub, email, name }) {
 
 /** A dashboard session with no GitHub person behind it: the person signed in with Google. */
 function withoutGitHub(sess) { return !!sess && !sess.login && !!sess.google; }
+
+// POST /cloud/sites/editor: what a person reads when the editor of a site Kiln keeps the files of cannot be opened.
+const EDITOR_NOT_UP = "Your site is not up yet. Press Put it on Kiln's hosting on the site's row first, then open the editor.";
+const EDITOR_PLAN_ENDED = "Editing is switched off for this site, so its editor cannot be opened. Subscribe on the site's row, then open the editor again.";
+const EDITOR_NOT_KEPT = "This site's files are in a GitHub repository of your own, so its editor opens at the site. Go to your site's address with /kiln at the end, and sign in with GitHub there.";
+const EDITOR_NOT_OPENED = 'Kiln could not open the editor just now. Please try again in a few minutes.';
+
+/** The name and the email an owner with no GitHub account goes by in their site's editor and on what they publish: the account's own, else what Google said at sign-in. */
+async function editorPerson(env, sess) {
+  let acct = null;
+  try { acct = await env.kiln_cloud.prepare('SELECT name, email FROM accounts WHERE id = ?').bind(sess.account_id).first(); } catch { acct = null; }
+  const email = String((acct && acct.email) || sess.google?.email || '').trim();
+  const name = String((acct && acct.name) || sess.google?.name || '').replace(/[\s\u0000-\u001f<>]+/g, ' ').trim()
+    || email.split('@')[0] || String(sess.login || '') || 'Owner';
+  return { name: name.slice(0, 60), email: email || null };
+}
 
 /**
  * Writes a new site's row, on the free trial every new site gets, and answers
@@ -2071,6 +2087,42 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     } });
   }
 
+  // Open the editor of a site whose files Kiln keeps. Its owner has no GitHub
+  // account to sign in with at the site, so the dashboard asks here, and the
+  // answer is the site's address with an owner session in its fragment: the
+  // very address a GitHub sign-in sends an owner to (index.js makes both).
+  // The session carries no GitHub token and reaches that one repository only.
+  if (path === '/cloud/sites/editor' && request.method === 'POST') {
+    const asked = await ownedSite(request, env, url, sess, {}, { needToken: false, needAccess: false });
+    if (asked.response) return asked.response;
+    const { site, access } = asked;
+    const kept = await keptSite(env, site.id);
+    if (!kept || kept.account_id !== sess.account_id) return json({ error: EDITOR_NOT_KEPT, code: 'not_kept' }, 403);
+    if (!access) return json({ error: EDITOR_PLAN_ENDED, code: 'plan_ended' }, 403);
+    const row = hostingOn(env) ? await hostingRow(env, site.id) : null;
+    const hosting = row ? publicHosting(row, { repo: site.repo }) : null;
+    const up = !!(hosting && hosting.url && (hosting.state === 'live' || hosting.serving));
+    // The session goes only to an address that is this site for certain: the
+    // one on record, or the temporary one while a domain of its own still
+    // waits for its name servers (what answers there is not this site yet).
+    const isThisSite = async (address) => {
+      try {
+        const s = await cloudSiteForOrigin(env, new URL(address).origin);
+        return !!s && (s.id === site.id || String(s.repo || '').toLowerCase() === String(site.repo).toLowerCase());
+      } catch { return false; }
+    };
+    const address = !up ? null : (await isThisSite(site.origin)) ? site.origin : (await isThisSite(hosting.url)) ? hosting.url : null;
+    if (!address) return json({ error: EDITOR_NOT_UP, code: 'not_up' }, 409);
+    const who = await editorPerson(env, sess);
+    let made = null;
+    try {
+      made = typeof tools.editorSession === 'function'
+        ? await tools.editorSession(env, { accountId: sess.account_id, name: who.name, email: who.email, repo: site.repo, origin: address }) : null;
+    } catch { made = null; }
+    if (!made || !made.url) return json({ error: EDITOR_NOT_OPENED, code: 'not_opened' }, 502);
+    return json({ ok: true, url: made.url });
+  }
+
   if (path === '/cloud/sites/remove' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const { id } = await request.json().catch(() => ({}));
@@ -2083,6 +2135,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const kept = await keptSite(env, site.id);   // asked before the row goes
     const gone = await forgetHosting(env, site.id);   // a hosted site comes down with it, and so does its own domain
     await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).run();
+    // Its owner's editing session ends with it, at once and not a minute later (keptStands).
+    if (kept && site.repo) { try { await env.KILN.delete(keptStandsKey(sess.account_id, site.repo)); } catch { /* it is forgotten within the minute anyway */ } }
     if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
     // The repository of a site Kiln kept the files of is never touched here. The operator is told that nothing uses it now.
     if (kept && site.repo) { const told = keptRemovedNote({ repo: site.repo, by: signedInAs(sess) }); await notifyOwner(env, told.subject, told.lines); }

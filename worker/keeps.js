@@ -330,3 +330,28 @@ export async function startKept(env, { accountId, name, worker, by = '', sign, p
     if (held) { try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ } }
   }
 }
+
+// ─── The owner's editor (index.js: an owner session with no GitHub token) ────
+
+export const KEPT_STANDS_SECONDS = 60;
+export const keptStandsKey = (accountId, repo) => `keptup:${String(accountId)}:${String(repo).toLowerCase()}`;
+
+/**
+ * Does a kept site still stand: a row for this repository, on this account,
+ * with `kept` set? The owner's editing session and what they scheduled lean on
+ * it. true or false, or null when the database could not be asked (then
+ * nothing is ended: the next request asks again). A yes is remembered for a
+ * minute, so editing is not a database read on every call; removing the site
+ * forgets it at once (cloud.js).
+ */
+export async function keptStands(env, { repo, account_id: accountId } = {}) {
+  if (!env || !env.kiln_cloud || !repo || !accountId) return false;
+  const key = keptStandsKey(accountId, repo);
+  try { if (await env.KILN.get(key)) return true; } catch { /* the database answers instead */ }
+  let row = null;
+  try { row = await env.kiln_cloud.prepare('SELECT id FROM sites WHERE lower(repo) = lower(?) AND account_id = ? AND kept = 1').bind(String(repo), String(accountId)).first(); }
+  catch { return null; }
+  if (!row) return false;
+  try { await env.KILN.put(key, '1', { expirationTtl: KEPT_STANDS_SECONDS }); } catch { /* asked again next time */ }
+  return true;
+}
