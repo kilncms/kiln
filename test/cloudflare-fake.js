@@ -21,6 +21,18 @@
  * them), and whether deleting a zone detaches its names (here it does not, so
  * the code under test has to).
  *
+ * And it forwards email for a zone (worker/domain-mail.js), as the real
+ * service did when it was tried (2026-11-13): a zone's forwarding is off and
+ * "unconfigured" until the one call that switches it on, which writes three
+ * mail servers and a signing key marked `meta.email_routing`, and an SPF note
+ * beside them; the account keeps one list of inboxes, each not verified
+ * until a test says its owner pressed the button (`confirm`); and a rule that
+ * forwards to an inbox that is not verified is refused with code 2054. Every
+ * zone has the built-in catch-all rule, off. Not tried against the real
+ * service, and a best guess here: asking for one inbox by its id, how an
+ * inbox it already has is refused, replacing a rule, and what is answered
+ * for a rule or an inbox that is gone (here a plain 404).
+ *
  * `fakeLookups` at the end stands in for the registry (RDAP) and the public
  * DNS over HTTPS. Not a test file.
  */
@@ -37,11 +49,17 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
   const workerDomains = new Map();   // id → { id, hostname, service, zone_id, environment, cert_id }
   const scans = new Map();       // domain → the records a scan finds there
   const refusals = new Map();    // domain → { status, code, message }: Cloudflare will not make this zone
+  const addresses = new Map();   // email → { id, tag, email, verified, created, modified }: the inboxes the account may forward to
+  const confirmations = [];      // every inbox Cloudflare "sent" its email with the button to, in order
   const calls = [];
   let fail = null;
   let n = 0;
   const api = {
-    account, token, stored, scripts, calls, zones, workerDomains,
+    account, token, stored, scripts, calls, zones, workerDomains, addresses, confirmations,
+    /** The owner of an inbox pressed the button in Cloudflare's email. */
+    confirm: (email) => { const a = addresses.get(email); a.verified = new Date().toISOString(); a.modified = a.verified; },
+    /** The forwarding rules of a zone, without the built-in catch-all. */
+    rulesOf: (name) => [...(api.zoneOf(name)?.mail?.rules.values() || [])].filter(r => r.matchers?.[0]?.type !== 'all'),
     failOn: (fn) => { fail = fn; },
     /** A Worker that is up, for a test that needs one and does not copy any files. */
     addScript: (name) => { scripts.set(name, { manifest: {}, config: {}, message: '', address: true, deploys: 1 }); },
@@ -141,6 +159,46 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
         if (rest === '' && method === 'DELETE') { zones.delete(z.id); return ok({ id: z.id }); }
         if (rest === '/activation_check' && method === 'PUT') { z.checks++; return ok({ id: z.id }); }
         if (rest === '/dnssec' && method === 'GET') return ok({ status: 'disabled' });
+        // ─── Email forwarding for the zone ───────────────────────────────────
+        if (rest.startsWith('/email/routing')) {
+          const catchAll = { id: `rule-all-${z.id}`, tag: `rule-all-${z.id}`, name: '', enabled: false, priority: 2147483647, matchers: [{ type: 'all' }], actions: [{ type: 'drop' }] };
+          const mail = (z.mail ||= { enabled: false, status: 'unconfigured', rules: new Map([[catchAll.id, catchAll]]) });
+          const mailView = () => ({ id: `mail-${z.id}`, tag: `mail-${z.id}`, name: z.name, enabled: mail.enabled, status: mail.status, skip_wizard: true });
+          // Cloudflare will not forward to an inbox whose owner has not pressed the button.
+          const unverified = (b) => (b.actions || []).filter(a => a.type === 'forward').flatMap(a => a.value || []).some(e => !addresses.get(e)?.verified);
+          const ruleOf = (id, b) => ({ id, tag: id, name: b.name || '', enabled: b.enabled !== false, priority: b.priority || 0, matchers: b.matchers || [], actions: b.actions || [] });
+          if (rest === '/email/routing' && method === 'GET') return ok(mailView());
+          if (rest === '/email/routing/dns' && method === 'POST') {
+            const write = (rec, extra) => { if (![...z.records.values()].some(x => x.type === rec.type && x.name === rec.name && x.content === rec.content)) addRecord(z, rec, extra); };
+            const own = { meta: { email_routing: true, read_only: true } };
+            [[1, 15], [2, 21], [3, 38]].forEach(([i, priority]) => write({ type: 'MX', name: z.name, content: `route${i}.mx.cloudflare.net`, priority }, own));
+            write({ type: 'TXT', name: `cf2024-1._domainkey.${z.name}`, content: '"v=DKIM1; h=sha256; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A"' }, own);
+            write({ type: 'TXT', name: z.name, content: '"v=spf1 include:_spf.mx.cloudflare.net ~all"' });
+            mail.enabled = true; mail.status = 'ready';
+            return ok(mailView());
+          }
+          if (rest === '/email/routing/rules' && method === 'GET') {
+            const all = [...mail.rules.values()];
+            return jsonRes({ success: true, errors: [], messages: [], result: all, result_info: { page: 1, per_page: Number(asked.get('per_page')) || 20, count: all.length, total_count: all.length } });
+          }
+          if (rest === '/email/routing/rules' && method === 'POST') {
+            const b = JSON.parse(init.body);
+            if (unverified(b)) return no(400, 2054, 'Destination address is not verified');
+            const rule = ruleOf(`rule-${++n}`, b);
+            mail.rules.set(rule.id, rule);
+            return ok(rule);
+          }
+          if ((r = /^\/email\/routing\/rules\/([^/]+)$/.exec(rest))) {
+            if (!mail.rules.has(r[1])) return no(404, 2020, 'Rule not found');
+            if (method === 'PUT') {
+              const b = JSON.parse(init.body);
+              if (unverified(b)) return no(400, 2054, 'Destination address is not verified');
+              mail.rules.set(r[1], ruleOf(r[1], b));
+              return ok(mail.rules.get(r[1]));
+            }
+            if (method === 'DELETE') { const gone = mail.rules.get(r[1]); mail.rules.delete(r[1]); return ok(gone); }
+          }
+        }
         if (rest === '/dns_records/scan' && method === 'POST') {
           const found = scans.get(z.name) || [];
           const by = {};
@@ -219,6 +277,30 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
           if (method === 'PATCH') { Object.assign(rec, JSON.parse(init.body)); return ok(rec); }
           if (method === 'DELETE') { z.records.delete(rec.id); return ok({ id: rec.id }); }
         }
+      }
+      // ─── The inboxes the account may forward to ────────────────────────────
+      if (inAccount && (m = /^\/email\/routing\/addresses(?:\/([^/]+))?$/.exec(path))) {
+        if (auth !== token) return no(403, 10000, 'Authentication error');
+        if (!m[1] && method === 'GET') {
+          const per = Number(asked.get('per_page')) || 20, page = Number(asked.get('page')) || 1;
+          const all = [...addresses.values()];
+          const shown = all.slice((page - 1) * per, page * per);
+          return jsonRes({ success: true, errors: [], messages: [], result: shown, result_info: { page, per_page: per, count: shown.length, total_count: all.length } });
+        }
+        if (!m[1] && method === 'POST') {
+          const { email } = JSON.parse(init.body);
+          if (addresses.has(email)) return no(409, 2000, 'Destination address already exists');
+          const at = new Date().toISOString();
+          const a = { id: `addr-${++n}`, email, verified: null, created: at, modified: at };
+          a.tag = a.id;
+          addresses.set(email, a);
+          confirmations.push(email);
+          return ok(a);
+        }
+        const a = [...addresses.values()].find(x => x.id === m[1]);
+        if (!a) return no(404, 2032, 'Destination address not found');
+        if (method === 'GET') return ok(a);
+        if (method === 'DELETE') { addresses.delete(a.email); return ok(a); }
       }
       if (inAccount && path === '/workers/domains' && method === 'PUT') {
         const b = JSON.parse(init.body);
