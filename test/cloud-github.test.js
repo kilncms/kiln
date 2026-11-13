@@ -177,7 +177,7 @@ test('/cloud/github: when GitHub does not answer, installed is null and nothing 
   }
 });
 
-test('/cloud/github: an answer is kept for three seconds and the token for the list for fifty minutes', { skip: d1Skip }, async () => {
+test('/cloud/github: an answer is kept for three seconds and the token for the list for one minute', { skip: d1Skip }, async () => {
   const e = env();
   const gh = fakeInstallation({ repos: [{ full_name: 'ada/club' }] });
   await withFetch(gh.handler, async () => {
@@ -189,7 +189,7 @@ test('/cloud/github: an answer is kept for three seconds and the token for the l
     assert.equal(gh.calls.length, 3);
     const now = Math.floor(Date.now() / 1000);
     assert.ok(e.KILN.expires.get('cgh:acct-1') - now <= 60, 'the kept answer leaves KV within a minute');
-    assert.ok(Math.abs(e.KILN.expires.get('itok-acct:9001') - now - 50 * 60) <= 2, 'the token is kept for fifty minutes');
+    assert.ok(Math.abs(e.KILN.expires.get('itok-acct:9001') - now - 60) <= 2, 'the token is kept for one minute');
     assert.equal(e.KILN.map.get('itok-acct:9001'), 'ghs_list_1');
     // After three seconds GitHub is asked again, with the token it already has.
     wait(e);

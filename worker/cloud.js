@@ -168,8 +168,8 @@ export async function repoReach(env, repo) {
   } catch { return null; }
 }
 
-// The token that reads an account's list of repositories is kept as index.js
-// keeps a repository's (`itok:<repo>`, 50 minutes), under a name of its own.
+// The token that reads an account's list of repositories is kept under a name
+// of its own, and for one minute only (see where it is written).
 const listTokenKey = (installationId) => `itok-acct:${installationId}`;
 async function listToken(env, jwt, installationId, { fresh = false } = {}) {
   if (!fresh) {
@@ -184,7 +184,10 @@ async function listToken(env, jwt, installationId, { fresh = false } = {}) {
   if (!r || !r.ok) return null;
   const tok = await r.json().catch(() => null);
   if (!tok || typeof tok.token !== 'string' || !tok.token) return null;
-  await env.KILN.put(listTokenKey(installationId), tok.token, { expirationTtl: 50 * 60 });
+  // Kept for one minute only (the shortest the store keeps anything). Whether a token made before a repository was added to
+  // the installation sees that repository was not tried against GitHub, and a list that is a minute behind is the most a
+  // person waiting for their repository to show up should meet.
+  await env.KILN.put(listTokenKey(installationId), tok.token, { expirationTtl: 60 });
   return { token: tok.token, kept: false };
 }
 
