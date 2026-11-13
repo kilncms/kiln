@@ -43,6 +43,7 @@ import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } fro
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { hostingOn, hostingSentence } from './hosting.js';
+import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptRemovedNote, startKept } from './keeps.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
 import {
@@ -188,6 +189,28 @@ async function googleAccount(env, { sub, email, name }) {
 
 /** A dashboard session with no GitHub person behind it: the person signed in with Google. */
 function withoutGitHub(sess) { return !!sess && !sess.login && !!sess.google; }
+
+/**
+ * Writes a new site's row, on the free trial every new site gets, and answers
+ * it. `kept` marks a site whose files Kiln keeps (keeps.js), which is the only
+ * caller that names an `id`.
+ */
+async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, kept = false }) {
+  // Anti-abuse: the 7-day self-serve trial clock is anchored to the FIRST time
+  // this origin was ever registered, so removing + re-adding a site can't farm
+  // a fresh trial indefinitely. (First registration records the timestamp.)
+  const firstSeenKey = `firstseen:${origin}`;
+  let createdAt = Date.now();
+  const prior = await env.KILN.get(firstSeenKey);
+  if (prior) createdAt = Number(prior) || createdAt;
+  else await env.KILN.put(firstSeenKey, String(createdAt));   // no TTL: a permanent trial marker
+  const site = { id, account_id: accountId, repo, origin, plan: plan === 'managed' ? 'managed' : 'cloud', status: 'trialing', created_at: createdAt };
+  // `kept` arrives with migration 0008, so only a kept site's row names the column.
+  await env.kiln_cloud.prepare(`INSERT INTO sites (id, account_id, repo, origin, plan, status, created_at${kept ? ', kept' : ''}) VALUES (?,?,?,?,?,?,?${kept ? ',1' : ''})`)
+    .bind(site.id, site.account_id, site.repo, site.origin, site.plan, site.status, site.created_at).run();
+  await env.KILN.delete(`cloudgone:${String(site.repo).toLowerCase()}`);
+  return site;
+}
 
 /** Who is signed in, for a note to the operator: the GitHub login, or the Google address. */
 export function signedInAs(sess) { return sess.login || sess.google?.email || 'somebody signed in with Google'; }
@@ -1271,15 +1294,18 @@ export async function markFirstPass(env, siteId, commit) {
  */
 async function ownedSite(request, env, url, sess, tools = {}, { needToken = true, needAccess = true } = {}) {
   if (!sess) return { response: json({ error: 'not signed in' }, 401) };
-  // A person signed in with Google has no GitHub account, so there is no
-  // repository they could be checked against. Every site is refused for now.
-  // Part B of "Kiln keeps the files" adds the one rule that lets them in: a
-  // site with `kept = 1` whose row carries their account.
-  if (withoutGitHub(sess)) return { response: json({ error: NEEDS_GITHUB_FOR_SITE, code: 'needs_github' }, 403) };
   const write = request.method === 'POST';
   const body = write ? await request.json().catch(() => ({})) : {};
   // A POST names the site `id`. `site` is taken too: it is the word the design of the domain routes uses.
   const id = write ? (body.id ?? body.site) : url.searchParams.get('site');
+  // A site whose files Kiln keeps (`kept = 1`, keeps.js) belongs to the account
+  // on its row, however that account signs in, and GitHub is not asked about it.
+  const kept = await keptSite(env, id);
+  const mine = !!kept && kept.account_id === sess.account_id;
+  // A person signed in with Google has no GitHub account, so there is no
+  // repository they could be checked against. A kept site of their own is the
+  // only site they reach, and every other one is refused.
+  if (withoutGitHub(sess) && !mine) return { response: json({ error: NEEDS_GITHUB_FOR_SITE, code: 'needs_github' }, 403) };
   const site = await withAccessUntil(
     () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
     () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
@@ -1290,7 +1316,7 @@ async function ownedSite(request, env, url, sess, tools = {}, { needToken = true
     return { response: json({ error: 'Editing is switched off for this site, so Kiln cannot change its repository. Subscribe on the site\'s row, then try again.', code: 'plan_ended' }, 403) };
   }
   const owner = String(site.repo).split('/')[0].toLowerCase();
-  if (!(owner === String(sess.login || '').toLowerCase() || await userCanPush(sess.gh, site.repo))) return { response: json({ error: NOT_YOUR_REPO, code: 'not_yours' }, 403) };
+  if (!mine && !(owner === String(sess.login || '').toLowerCase() || await userCanPush(sess.gh, site.repo))) return { response: json({ error: NOT_YOUR_REPO, code: 'not_yours' }, 403) };
   let token = null;
   if (typeof tools.installationToken === 'function') {
     try { token = await tools.installationToken(env, site.repo); }
@@ -1459,7 +1485,11 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     for (const r of rows) r.forward = publicForward(forwards[r.id] || null);
     // A domain that came with email of its own is never forwarded for, and the site's row says so instead of offering it.
     if (forwarding) for (const r of rows) if (r.domain && mailStop(owned[r.id]) === 'has_own_mail') r.domain.own_mail = true;
-    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding });
+    // `keeps`: this service can start a site whose files Kiln keeps, for someone with no GitHub account (keeps.js).
+    // Each such site says `kept`.
+    const keptHere = await keptIds(env, sess.account_id);
+    for (const r of rows) if (keptHere.has(r.id)) r.kept = true;
+    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env) });
   }
 
   // The address notices about the account's own sites go to (mail.js). The
@@ -1482,6 +1512,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     if (!repo || !origin) return json({ error: 'Enter both the repository and the live site address.' }, 400);
     if (email !== undefined && email !== null && email !== '' && !mailAddress(email)) return json({ error: 'That does not look like an email address. Please check it and try again.' }, 400);
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'The repository should look like owner/name, for example acme/website.' }, 400);
+    // A repository in the organization where Kiln keeps sites' files is nobody's to add: such a site is started, never added.
+    if (inKeepOrg(env, repo)) return json({ error: keepSentence('in_keep_org'), code: 'in_keep_org' }, 403);
     let o; try { o = new URL(origin).origin; } catch { return json({ error: 'The live site address should be a full web address, such as https://yoursite.com.' }, 400); }
     // Ownership: the signer must actually own/push this repo. Installation
     // existence is NOT authorization. A repo under the signer's own account
@@ -1498,18 +1530,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     }
     const dupe = await env.kiln_cloud.prepare('SELECT id FROM sites WHERE origin = ?').bind(o).first();
     if (dupe) return json({ error: 'That site address is already on Kiln Cloud. If it is yours and you cannot see it here, write to info@kilncms.com.' }, 409);
-    // Anti-abuse: the 7-day self-serve trial clock is anchored to the FIRST time
-    // this origin was ever registered, so removing + re-adding a site can't farm
-    // a fresh trial indefinitely. (First registration records the timestamp.)
-    const firstSeenKey = `firstseen:${o}`;
-    let createdAt = Date.now();
-    const prior = await env.KILN.get(firstSeenKey);
-    if (prior) createdAt = Number(prior) || createdAt;
-    else await env.KILN.put(firstSeenKey, String(createdAt));   // no TTL — permanent trial marker
-    const site = { id: uuid(), account_id: sess.account_id, repo, origin: o, plan: plan === 'managed' ? 'managed' : 'cloud', status: 'trialing', created_at: createdAt };
-    await env.kiln_cloud.prepare('INSERT INTO sites (id, account_id, repo, origin, plan, status, created_at) VALUES (?,?,?,?,?,?,?)')
-      .bind(site.id, site.account_id, site.repo, site.origin, site.plan, site.status, site.created_at).run();
-    await env.KILN.delete(`cloudgone:${String(site.repo).toLowerCase()}`);
+    const site = await registerSite(env, { accountId: sess.account_id, repo, origin: o, plan });
     // An address given with the form becomes the account's address for notices.
     if (mailAddress(email)) { try { await env.kiln_cloud.prepare('UPDATE accounts SET email = ? WHERE id = ?').bind(mailAddress(email), sess.account_id).run(); } catch { /* the site is added either way */ } }
     const to = await accountEmail(env, sess.account_id);
@@ -1522,6 +1543,30 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       checkout ? 'A checkout link was issued.' : 'No checkout: billing is not configured.',
     ]);
     return json({ ok: true, site, checkout });   // checkout null until LS is configured
+  }
+
+  // Start a site whose files Kiln keeps (keeps.js), for someone with no GitHub
+  // account: a private repository in Kiln's own organization, filled with the
+  // starter site and registered to this account. The dashboard then puts it on
+  // Kiln's hosting with the route it has for that, as for any site.
+  if (path === '/cloud/sites/start' && request.method === 'POST') {
+    if (!sess) return json({ error: 'not signed in' }, 401);
+    const { name } = await request.json().catch(() => ({}));
+    const out = await startKept(env, {
+      accountId: sess.account_id, name, worker: url.origin, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
+      register: ({ id, repo, origin }) => registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true }),
+      forget: (id) => env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(),
+      note: (subject, lines) => notifyOwner(env, subject, lines),
+    });
+    if (!out.ok) return json({ error: out.error, code: out.code }, out.status);
+    // The site in the form /cloud/me lists it, from /cloud/me's own code, so the two can never differ.
+    let site = null;
+    try {
+      const me = new URL('/cloud/me', url);
+      const listed = await handleCloud(new Request(me, { headers: { Authorization: request.headers.get('Authorization') || '' } }), env, me, '/cloud/me', tools);
+      site = ((await listed.json()).sites || []).find(s => s.id === out.site.id) || null;
+    } catch { /* the plain row, below */ }
+    return json({ ok: true, site: site || { ...out.site, kept: true } });
   }
 
   // Add Kiln to the site's repository (prepare.js), so nobody needs a terminal.
@@ -2028,9 +2073,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // is cancelled first, and the site stays if that cannot be confirmed.
     const cancel = await lsCancel(env, site.ls_subscription_id);
     if (!cancel.ok) return json({ error: NOT_CANCELLED, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
+    const kept = await keptSite(env, site.id);   // asked before the row goes
     const gone = await forgetHosting(env, site.id);   // a hosted site comes down with it, and so does its own domain
     await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).run();
     if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
+    // The repository of a site Kiln kept the files of is never touched here. The operator is told that nothing uses it now.
+    if (kept && site.repo) { const told = keptRemovedNote({ repo: site.repo, by: signedInAs(sess) }); await notifyOwner(env, told.subject, told.lines); }
     return json({ ok: true, subscription: cancel.state, ...(cancel.ends_at ? { ends_at: cancel.ends_at } : {}), ...domainLeft(gone) });
   }
 

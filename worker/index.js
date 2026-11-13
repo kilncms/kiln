@@ -85,6 +85,7 @@ const WORKER_VERSION = '0.6.6';
 
 import { handleCloud, googleDashboardSignIn, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
+import { keepsReady } from './keeps.js';
 import { githubTrouble, googleTrouble, troubleBody, troubleLog, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkNewPageWrite, templatePathsFor, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
@@ -160,7 +161,8 @@ async function routeRequest(request, env, ctx) {
         if (limited) return limited;
       }
       // The dashboard's routes get the App's token for a repository from here (cloud.js cannot import this file).
-      const r = await handleCloud(request, env, url, path, { installationToken, page: html });
+      // `pkcs1`: a GitHub App's private key as GitHub hands it out, rewrapped for the signer (keeps.js, for the app that makes repositories).
+      const r = await handleCloud(request, env, url, path, { installationToken, page: html, pkcs1: (pem) => bufToB64(pkcs1PemToPkcs8Der(pem)) });
       if (r) return await cors(env, request, r);
     }
 
@@ -183,7 +185,7 @@ async function routeRequest(request, env, ctx) {
       // `ownerSessions`: an owner's GitHub sign-in can stay on this worker
       // (/auth/login keep=server, /auth/session, /auth/adopt), and the owner's
       // calls then go through /gh/* with a session, as an invited editor's do.
-      const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, aiConfigured: !!env.AI_API_KEY, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ownerSessions: true, ...deployedBuild(env) };
+      const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, aiConfigured: !!env.AI_API_KEY, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ownerSessions: true, keeps: keepsReady(env), ...deployedBuild(env) };
       // ?deep=1 asks the things publishing depends on. A plain GET stays a
       // constant 200 that touches nothing, as every editor and monitor expects.
       if (url.searchParams.get('deep') === '1') {

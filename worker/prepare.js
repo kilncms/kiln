@@ -78,13 +78,17 @@ export const KILN_PAGE = `<!doctype html>
 
 const quoted = (s) => `'${String(s).replace(/[\\']/g, '\\$&').replace(/[\r\n]/g, '')}'`;
 
-/** The settings file a site starts with. */
-export function kilnConfigFile({ repo, branch, worker }) {
+/**
+ * The settings file a site starts with. `siteName` is what its owner calls
+ * the site, written only for a site that was given one (a site whose files
+ * Kiln keeps, keeps.js); the sign-in page shows it.
+ */
+export function kilnConfigFile({ repo, branch, worker, siteName = '' }) {
   return `window.KILN = {
   repo:   ${quoted(repo)},
   branch: ${quoted(branch)},
   worker: ${quoted(worker)},
-  styles: [],
+${siteName ? `  siteName: ${quoted(siteName)},\n` : ''}  styles: [],
 };
 `;
 }
