@@ -59,7 +59,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   person whose Kiln account owns that very site. Anybody else who presses the
   button is looked up in the site's list of people, as before, and a site whose
   files Kiln does not keep is unchanged. Where the dashboard would refuse, a
-  plain page says what to do. An owner who signs in with GitHub sees no change.
+  plain page says what to do. Check this site reads differently for such a
+  site: the line about installing the Kiln app is left out, no line sends the
+  owner to GitHub or asks them to change a file by hand, and where another
+  site's list says "the repository" it says "your site's files". Until the
+  site is on Kiln's hosting, the list says to put it there. The list for every
+  other site is word for word as before. An owner who signs in with GitHub
+  sees no change.
 
 - **A person with no GitHub account can have a Kiln account, and sign in to
   the dashboard with Google.** The service now answers for it, though the

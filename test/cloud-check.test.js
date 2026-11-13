@@ -665,3 +665,87 @@ test('check, hosted: while a domain waits for its name servers, the address the 
   assert.equal(body.looked_at, HOSTED);
   assert.deepEqual(body.checks.map(c => c.id), ALL);
 });
+
+// ─── A site whose files Kiln keeps ────────────────────────────────────────────
+
+/** checkSite itself, for the site in `w`, as a site on Kiln's hosting. */
+const lines = (w, over = {}) => withFetch(w.handler, async () => {
+  const checks = await checkSite({ token: 'inst-token', repo: 'ada/club', origin: SITE, worker: SERVICE, installUrl: INSTALL, hosted: true, ...over });
+  return { checks, by: Object.fromEntries(checks.map(c => [c.id, c])) };
+});
+const KEPT_IDS = ['files', 'settings', 'address', 'live', 'signin'];
+const noRepository = (checks) => {
+  for (const c of checks) assert.equal(/repositor|github|ada\/club|—|–|undefined/i.test(JSON.stringify(c)), false, JSON.stringify(c));
+};
+
+test('check: a site Kiln keeps the files of has no line about installing the app, and says "your site\'s files" where another site\'s list says the repository', async () => {
+  const plain = await lines(world(withKiln()));
+  const kept = await lines(world(withKiln()), { kept: true });
+  assert.deepEqual(kept.checks.map(c => c.id), KEPT_IDS);
+  for (const c of kept.checks) assert.equal(c.ok, true, `${c.id}: ${c.detail}`);
+  noRepository(kept.checks);
+  assert.equal(kept.by.files.title, "Kiln is in your site's files");
+  assert.equal(kept.by.settings.title, "The settings file names this service and your site's files");
+  assert.ok(plain.by.files.detail.startsWith("Kiln's files are in ada/club, and "), plain.by.files.detail);
+  assert.equal(kept.by.files.detail, plain.by.files.detail.replace("Kiln's files are in ada/club", "Kiln's files are among your site's files"));
+  assert.equal(kept.by.settings.detail, `assets/kiln-config.js names this service (${SERVICE}) and your site's files.`);
+  // The lines about the live site say nothing of a repository for anybody, so they are the same.
+  for (const id of ['address', 'live', 'signin']) assert.deepEqual(kept.by[id], plain.by[id]);
+});
+
+test('check: a site that is not kept reads exactly as before, with the flag off or not given', async () => {
+  const a = await lines(world(withKiln()));
+  const b = await lines(world(withKiln()), { kept: false });
+  assert.deepEqual(a.checks, b.checks);
+  assert.deepEqual(a.checks.map(c => c.id), ALL);
+  assert.equal(a.by.repository.title, 'Kiln can reach the repository');
+  assert.equal(a.by.repository.detail, 'The Kiln app is installed on ada/club and can read it.');
+  assert.equal(a.by.files.title, 'Kiln is in the repository');
+  assert.equal(a.by.settings.detail, `assets/kiln-config.js names this service (${SERVICE}) and this repository (ada/club).`);
+  const none = await lines(world(withKiln()), { token: null });
+  assert.equal(none.by.repository.fix.url, INSTALL);
+  assert.equal(none.by.files.detail, 'Not checked, because Kiln cannot read the repository yet.');
+});
+
+test('check: what a kept site\'s owner reads when something is wrong never sends them to GitHub or asks them to change a file by hand', async () => {
+  const UNREAD = "Not checked, because Kiln could not read your site's files just now. Please check again in a minute.";
+  // Kiln could not read the files: nothing to install, only to try again.
+  const none = await lines(world(withKiln()), { kept: true, token: null });
+  assert.deepEqual(none.checks.map(c => c.id), KEPT_IDS);
+  assert.deepEqual([none.by.files.ok, none.by.files.detail, none.by.settings.detail], [null, UNREAD, UNREAD]);
+  assert.equal(none.checks.some(c => c.fix && c.fix.url), false, 'no link to install anything');
+  noRepository(none.checks);
+
+  // One of Kiln's files is missing: the button the row already has.
+  const { 'assets/kiln-features.js': gone, ...rest } = withKiln();
+  const missing = await lines(world(rest), { kept: true });
+  assert.equal(missing.by.files.ok, false);
+  assert.ok(missing.by.files.detail.includes("This file is missing from your site's files: assets/kiln-features.js."), missing.by.files.detail);
+  assert.deepEqual(missing.by.files.fix, { action: 'prepare', label: 'Add Kiln to this site' });
+  noRepository(missing.checks);
+
+  // The settings file names something else: only Kiln can change it, so there is no link to GitHub.
+  const other = await lines(world(withKiln({ 'assets/kiln-config.js': kilnConfigFile({ repo: 'someone/else', branch: 'main', worker: SERVICE }) })), { kept: true });
+  assert.equal(other.by.settings.ok, false);
+  assert.equal(other.by.settings.detail, 'The settings file (assets/kiln-config.js) needs a change that only Kiln can make. Write to info@kilncms.com and say which site it is, and a person will put it right.');
+  assert.equal('fix' in other.by.settings, false);
+  noRepository(other.checks);
+
+  // Kiln is in the files and the live site does not load it yet.
+  const behind = await lines(world(withKiln(), { served: { 'index.html': page('Home'), 'kiln.html': KILN_PAGE } }), { kept: true });
+  assert.equal(behind.by.live.ok, false);
+  assert.equal(behind.by.live.detail, `Kiln is in your site's files, but the home page at ${SITE} does not load it yet. Kiln has not published the change yet. Press Publish again on the site's row, wait a few seconds, and check again.`);
+  noRepository(behind.checks);
+});
+
+test('check: the dashboard\'s route says a site is kept, and a kept site that is not on Kiln\'s hosting yet is told to put it there', { skip: d1Skip }, async () => {
+  const w = world(withKiln());
+  w.env.kiln_cloud.exec("UPDATE sites SET kept = 1 WHERE id = 'site-1'");
+  const { res, body, by } = await check(w);
+  assert.equal(res.status, 200);
+  assert.deepEqual(body.checks.map(c => c.id), KEPT_IDS);
+  assert.equal(by.files.title, "Kiln is in your site's files");
+  assert.deepEqual([by.address.ok, by.address.detail], [false, "Your site is not up yet. Press Put it on Kiln's hosting on the site's row, then check again."]);
+  noRepository(body.checks);
+  assert.deepEqual(urls(w), [], 'no address is asked for anything while the site is not up');
+});

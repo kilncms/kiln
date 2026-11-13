@@ -326,6 +326,42 @@ async function liveLines(home, base, plan, timeoutMs, hosted = false) {
   return [live, signin];
 }
 
+// ─── A site whose files Kiln keeps ────────────────────────────────────────────
+
+const KEPT_FILES = "your site's files";
+const KEPT_UNREAD = `Not checked, because Kiln could not read ${KEPT_FILES} just now. Please check again in a minute.`;
+const KEPT_WRITE_IN = 'Write to info@kilncms.com and say which site it is, and a person will put it right.';
+
+/**
+ * The list for a site whose files Kiln keeps (keeps.js). Its owner has never
+ * seen a repository or GitHub and can change nothing there, and Kiln's own
+ * organization always has the app. So the line about installing the app is
+ * left out, no line sends the person to GitHub, and where a sentence says
+ * "repository", or names it, it says "your site's files". `unread`: Kiln
+ * could not read the files this time, which the left-out line would have said.
+ * Only the lines of a kept site come through here: every other site's
+ * sentences are untouched.
+ */
+function keptLines(checks, { repo, unread }) {
+  const say = (s) => String(s)
+    .split(` and this repository (${repo}).`).join(` and ${KEPT_FILES}.`)
+    .split(`Kiln's files are in ${repo}`).join(`Kiln's files are among ${KEPT_FILES}`)
+    .split('the repository has no files yet').join('your site has no files yet')
+    .split('To edit a page, add the two lines that load the editor to it by hand.').join(KEPT_WRITE_IN)
+    .split(String(repo)).join(KEPT_FILES)
+    .replace(/\b(?:the|this|that|your) repository\b/g, KEPT_FILES)
+    .replace(/\bGitHub did not answer(?: just now)?/g, `Kiln could not read ${KEPT_FILES} just now`);
+  return checks.filter(c => c.id !== 'repository').map((c) => {
+    const out = { ...c, title: say(c.title) };
+    const toGitHub = !!(c.fix && c.fix.url && /^https:\/\/github\.com\//.test(c.fix.url));
+    if (toGitHub) delete out.fix;
+    if (unread && (c.id === 'files' || c.id === 'settings')) out.detail = KEPT_UNREAD;
+    else if (toGitHub && c.id === 'settings') out.detail = `${String(c.detail).split(' needs a change.')[0]} needs a change that only Kiln can make. ${KEPT_WRITE_IN}`;
+    else out.detail = say(c.detail);
+    return out;
+  });
+}
+
 // ─── The whole list ───────────────────────────────────────────────────────────
 
 /**
@@ -344,9 +380,14 @@ async function liveLines(home, base, plan, timeoutMs, hosted = false) {
  * say that instead. A hosted site whose own domain is live is looked at
  * there: `origin` is then the domain and `ownDomain` is true, so the line
  * about the address says whose address it is.
+ *
+ * A site whose files Kiln keeps: `kept` is true, and the list is worded for a
+ * person who has never seen a repository (keptLines, above). Nothing changes
+ * for any other site.
  */
-export async function checkSite({ token, repo, origin, worker, installUrl = INSTALL_URL, canAdd = true, timeoutMs = LIMITS.timeoutMs, hosted = false, ownDomain = false, down = null }) {
+export async function checkSite({ token, repo, origin, worker, installUrl = INSTALL_URL, canAdd = true, timeoutMs = LIMITS.timeoutMs, hosted = false, ownDomain = false, down = null, kept = false }) {
   const checks = [];
+  let unread = false;   // Kiln could not read the files this time
   try {
     let base = String(origin || '');
     try { base = new URL(base).origin === 'null' ? base : new URL(base).origin; } catch { /* said in the address line */ }
@@ -354,6 +395,7 @@ export async function checkSite({ token, repo, origin, worker, installUrl = INST
       token ? planPrepare({ token, repo, worker }).catch(() => ({ state: 'github' })) : { state: 'no_access' },
       down ? null : visit(`${base}/`, { read: true, timeoutMs }),
     ]);
+    unread = plan.state === 'no_access' || plan.state === 'github';
     checks.push(...repositoryLines(plan, { repo, installUrl, canAdd }));
     checks.push(await settingsLine(plan, { token, repo, worker, hosted: hosted || !!down }));
     if (down) {
@@ -369,7 +411,7 @@ export async function checkSite({ token, repo, origin, worker, installUrl = INST
       if (!checks.some(c => c.id === id)) checks.push(line(id, null, 'Not checked: Kiln could not finish this check just now. Please check again in a minute.'));
     }
   }
-  return checks;
+  return kept ? keptLines(checks, { repo, unread }) : checks;
 }
 
 /**

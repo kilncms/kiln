@@ -195,6 +195,8 @@ const EDITOR_NOT_UP = "Your site is not up yet. Press Put it on Kiln's hosting o
 const EDITOR_PLAN_ENDED = "Editing is switched off for this site, so its editor cannot be opened. Subscribe on the site's row, then open the editor again.";
 const EDITOR_NOT_KEPT = "This site's files are in a GitHub repository of your own, so its editor opens at the site. Go to your site's address with /kiln at the end, and sign in with GitHub there.";
 const EDITOR_NOT_OPENED = 'Kiln could not open the editor just now. Please try again in a few minutes.';
+// GET /cloud/sites/check: a site Kiln keeps the files of has no other host, so until it is on Kiln's hosting there is no address to look at.
+const CHECK_KEPT_NOT_UP = "Your site is not up yet. Press Put it on Kiln's hosting on the site's row, then check again.";
 
 /** The name and the email an owner with no GitHub account goes by in their site's editor and on what they publish: the account's own, else what Google said at sign-in. */
 async function editorPerson(env, sess) {
@@ -2284,9 +2286,11 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const row = hostingOn(env) ? await hostingRow(env, site.id) : null;
     const hosting = row ? publicHosting(row, { repo: site.repo, planEnded: Number(site.access_until) || null }) : null;
     const up = !!(hosting && hosting.url && (hosting.state === 'live' || hosting.serving));
+    // A site whose files Kiln keeps: its owner has never seen a repository, and the list is worded for them (sitecheck.js).
+    const isKept = !!(await keptSite(env, site.id));
     const down = hosting && !up
       ? hosting.error || (hosting.state === 'ended' ? 'Kiln took this site down from its hosting.' : 'Kiln is putting this site up now. Check again in a minute.')
-      : null;
+      : isKept && !up ? CHECK_KEPT_NOT_UP : null;
     // Once the site's own domain is live, that is where it is looked at
     // (still as a hosted site: Kiln publishes there). A domain that still
     // waits for its name servers is not asked for anything: the address the
@@ -2296,7 +2300,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const lookAt = !up ? site.origin
       : !onDomain ? hosting.url
         : [dom.name, `www.${dom.name}`].includes(hostName(site.origin)) ? site.origin : `https://${dom.name}`;
-    const checks = await checkSite({ token, repo: site.repo, origin: lookAt, hosted: up, ownDomain: onDomain, down, worker: url.origin, installUrl: INSTALL_URL, canAdd: access });
+    const checks = await checkSite({ token, repo: site.repo, origin: lookAt, hosted: up, ownDomain: onDomain, down, worker: url.origin, installUrl: INSTALL_URL, canAdd: access, kept: isKept });
     if (dom && dom.state === 'waiting' && dom.name) checks.push(domainWaitingLine({ name: dom.name, seller: publicDomain(dom, { records: false })?.seller?.name }));
     if (!access) {
       let sub = null;
