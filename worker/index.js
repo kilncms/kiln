@@ -3095,6 +3095,23 @@ async function repoForOrigin(env, origin) {
   return STATIC[origin] || null;
 }
 
+/**
+ * True when two addresses are one site: the very same address, or the two
+ * addresses of one site Kiln hosts (its temporary address and, once live, its
+ * own domain). A members sign-in made at one of them belongs to the site at
+ * the other too, as editing already does (cloudSiteForOrigin). Two addresses
+ * that are not both known as the same site right now are never the same.
+ */
+async function sameSiteAddress(env, a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (!env.kiln_cloud) return false;
+  try {
+    const [x, y] = await Promise.all([cloudSiteForOrigin(env, a), cloudSiteForOrigin(env, b)]);
+    return !!(x && y && x.repo && String(x.repo).toLowerCase() === String(y.repo).toLowerCase());
+  } catch { return false; }
+}
+
 async function googleClaim(request, env) {
   const { code, origin, session } = await request.json().catch(() => ({}));
   if (!/^[a-f0-9]{32}$/.test(code || '')) return json({ error: 'bad code' }, 400);
@@ -3109,7 +3126,9 @@ async function googleClaim(request, env) {
   // protects self-host and static-allowlisted origins too. All codes minted by
   // googleCallback carry `origin`; a code without one is rejected rather than
   // trusted.
-  if (!data.origin || !origin || origin !== data.origin) {
+  // A site Kiln hosts answers at two addresses, its temporary one and, once
+  // live, its own domain: both are that one site (sameSiteAddress).
+  if (!data.origin || !origin || !(await sameSiteAddress(env, origin, data.origin))) {
     return json({ error: 'sign-in not valid for this site' }, 403);
   }
   // SECONDARY (defense in depth): the code's origin must map to the code's repo
@@ -3153,7 +3172,7 @@ async function memberCheck(request, env) {
   const { sid, origin } = await request.json().catch(() => ({}));
   if (!/^[a-f0-9]{32}$/.test(sid || '')) return json({ error: 'bad session' }, 400);
   const sess = await env.KILN.get(`msess:${sid}`, 'json');
-  if (!sess || !origin || sess.origin !== origin) return json({ ok: false });
+  if (!sess || !origin || !(await sameSiteAddress(env, origin, sess.origin))) return json({ ok: false });
   // The list that is about to be read is found by the sign-in's name. If that
   // name now answers as another repository than the one the sign-in was made
   // for, it is not read: the sign-in is no longer good.
