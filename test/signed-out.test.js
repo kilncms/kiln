@@ -1,18 +1,17 @@
 /**
- * The page after Sign out (src/kiln.js).
- *
- * A tester chose Kiln menu > Sign out. The page reloaded with no Kiln button
- * and no message. Now signing out leaves a note in sessionStorage, and the
- * next page says one sentence for eight seconds: "You are signed out. To edit
- * again, sign in at ADDRESS/kiln." The note is read once, so the page after
- * that says nothing.
- *
- * The shim itself is run here, against a stand-in page.
+ * Sign out says so. After "Sign out" the page used to come back with no Kiln
+ * button and not a word. Now the person lands on the site's own sign-in page,
+ * whose card reads "You are signed out" and "Sign in again to edit <site>",
+ * once. It is said there, and not by a notice of its own on the site's pages,
+ * because the script that would have to carry such a notice is the one every
+ * visitor of every site downloads (see the size check in sign-in-clock.test.js).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
 
 const SHIM = readFileSync(new URL('../src/kiln.js', import.meta.url), 'utf8');
 const NOTE = 'kiln_signed_out';
@@ -36,69 +35,48 @@ function loadShim(pathname, { local = {}, session = {}, config = {}, storage } =
     fetch: () => new Promise(() => {}),
     setTimeout: (fn, ms) => { timers.push({ fn, ms }); return 0; },
   });
-  const said = body.children.filter(c => c.id === 'kiln-signed-out');
-  return { window, replaced, timers, body, said, local, session };
+  // The sign-in card, when this page drew one: its words without the markup.
+  const card = made.find(c => /<h1/.test(c.innerHTML));
+  return { window, replaced, timers, body, local, session, card: card ? words(card.innerHTML) : null };
 }
 
-test('signed out: Sign out leaves a note, and the next page says the sentence once', () => {
+test('signed out: Sign out leaves a note and goes to the sign-in page, which says so once', () => {
   const session = {};
   const local = { kiln_editor: JSON.stringify({ session: 's1', name: 'Rosa', repo: 'acme/site', role: 'editor' }) };
   const editing = loadShim('/about', { local, session });
-  assert.equal(editing.said.length, 0, 'nothing is said while signed in');
   editing.window.Kiln.logout();
   assert.equal(session[NOTE], '1');
   assert.equal('kiln_editor' in local, false);
-  assert.deepEqual(editing.replaced, ['/'], 'the page that follows is the site, as before');
+  assert.deepEqual(editing.replaced, ['/kiln'], 'the page that follows is the site\'s sign-in page');
 
-  const next = loadShim('/', { local, session });
-  assert.equal(next.said.length, 1);
-  const note = next.said[0];
-  assert.equal(words(note.innerHTML), 'You are signed out. To edit again, sign in at site.example/kiln.');
-  assert.match(note.innerHTML, /<a href="\/kiln" [^>]*>site\.example\/kiln<\/a>\.$/, 'the address is a link to the sign-in page');
-  assert.equal(note.attrs.role, 'status');
-  assert.doesNotMatch(words(note.innerHTML), /[—–]| - /);
+  const next = loadShim('/kiln', { local, session });
+  assert.match(next.card, /^KilnYou are signed outSign in again to edit Acme/);
+  assert.doesNotMatch(next.card, /[—–]/);
   assert.equal(NOTE in session, false, 'the note is read once');
 
-  // It goes away by itself after eight seconds.
-  const away = next.timers.find(t => t.ms === 8000);
-  assert.ok(away);
-  away.fn();
-  assert.equal(next.body.children.includes(note), false);
-
-  // The page after that is the plain site.
-  assert.equal(loadShim('/', { local, session }).said.length, 0);
-  assert.equal(loadShim('/blog/', { local, session }).body.children.length, 0);
+  // Opened again, or by anyone who did not just sign out, it is the plain sign-in page.
+  assert.match(loadShim('/kiln', { local, session }).card, /^KilnSign in to editAcme/);
+  // And the site's own pages get nothing added at all.
+  assert.equal(loadShim('/', { local, session }).body.children.length, 0);
 });
 
-test('signed out: the sentence does not lean on the styles of the site', () => {
-  const [note] = loadShim('/', { session: { [NOTE]: '1' } }).said;
-  assert.match(note.style.cssText, /^all:initial;position:fixed;/);
-  for (const own of ['background:', 'color:#fff', 'font:14px', 'z-index:', 'max-width:']) assert.ok(note.style.cssText.includes(own), own);
-  assert.match(note.innerHTML, /<a [^>]*style="all:initial;font:inherit;color:#fff;text-decoration:underline/);
-});
-
-test('signed out: the address is the sign-in page this site has', () => {
-  const own = loadShim('/', { session: { [NOTE]: '1' }, config: { entry: '/staff/kiln/' } }).said[0];
-  assert.equal(words(own.innerHTML), 'You are signed out. To edit again, sign in at site.example/staff/kiln.');
-  assert.match(own.innerHTML, /<a href="\/staff\/kiln" /);
-  // A site that has turned its sign-in page off has no address to give.
-  const none = loadShim('/', { session: { [NOTE]: '1' }, config: { entry: false } }).said[0];
-  assert.equal(none.innerHTML, 'You are signed out.');
-});
-
-test('signed out: not said where it would be wrong or in the way, and forgotten all the same', () => {
-  // On the sign-in page the way back in is already on the screen.
-  const session = { [NOTE]: '1' };
-  assert.equal(loadShim('/kiln', { session }).said.length, 0);
-  assert.equal(NOTE in session, false);
+test('signed out: the page that follows is the sign-in page this site has', () => {
+  const at = (config) => { const p = loadShim('/about', { local: { kiln_editor: JSON.stringify({ session: 's1', name: 'Rosa', repo: 'acme/site' }) }, config }); p.window.Kiln.logout(); return p.replaced; };
+  assert.deepEqual(at({ entry: '/staff/kiln/' }), ['/staff/kiln/']);
+  // A site that has turned its sign-in page off goes home, as before.
+  assert.deepEqual(at({ entry: false }), ['/']);
+  assert.deepEqual(at({ entry: false, home: '/welcome' }), ['/welcome']);
   // The demo signs every visitor in again at once: nobody is signed out there.
-  const demo = { [NOTE]: '1' };
-  assert.equal(loadShim('/', { session: demo, config: { sandbox: true } }).said.length, 0);
-  assert.equal(NOTE in demo, false);
-  // Somebody signed in again in another tab before this page loaded.
-  const again = { [NOTE]: '1' };
-  assert.equal(loadShim('/', { session: again, local: { kiln_editor: JSON.stringify({ session: 's2', name: 'Rosa', repo: 'acme/site' }) } }).said.length, 0);
-  assert.equal(NOTE in again, false);
+  assert.deepEqual(at({ sandbox: true }), ['/']);
+});
+
+test('signed out: the note is forgotten wherever the next page is, and nothing is added to a page of the site', () => {
+  for (const [pathname, extra] of [['/', {}], ['/blog/', {}], ['/', { config: { sandbox: true } }], ['/', { local: { kiln_editor: JSON.stringify({ session: 's2', name: 'Rosa', repo: 'acme/site' }) } }]]) {
+    const session = { [NOTE]: '1' };
+    const page = loadShim(pathname, { session, ...extra });
+    assert.equal(NOTE in session, false, pathname);
+    assert.equal(page.body.children.some(c => c.id === 'kiln-signed-out'), false);
+  }
   // An ordinary visitor: nothing, as ever.
   assert.equal(loadShim('/', {}).body.children.length, 0);
 });
@@ -108,5 +86,5 @@ test('signed out: a browser that will not give its storage still shows the site,
   const page = loadShim('/', { storage: closed });
   assert.equal(page.body.children.length, 0);
   page.window.Kiln.logout();
-  assert.deepEqual(page.replaced, ['/']);
+  assert.deepEqual(page.replaced, ['/kiln']);
 });

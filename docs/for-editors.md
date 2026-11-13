@@ -106,9 +106,9 @@ after: changed words are marked, a new picture sits beside the old one. In a lis
 every change is named: each item added or removed, a change of order, and each item
 you changed, by its name, with its words before and after. The number on the
 Publish button is the number of things this sheet lists, so an item added, another
-moved and a price changed in the same list count as three. **Drop** leaves one
-edit out and puts that part of the page back; for a list it drops all of that
-list's changes together. A yellow line is a warning, not a stop: a picture with no description, a link
+moved and a price changed in the same list count as three. **Discard this edit**
+leaves one edit out and puts that part of the page back; for a list it discards all of
+that list's changes together. A yellow line is a warning, not a stop: a picture with no description, a link
 that goes nowhere, an empty heading. **Show me** takes you to it. You can write a line
 under **What changed?**, and it is saved with the change so History reads well. Then
 press the one button at the bottom. Escape or Cancel closes the sheet and keeps

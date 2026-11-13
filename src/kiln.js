@@ -24,7 +24,8 @@
   window.KILN_VERSION = (typeof __KILN_VERSION__ !== 'undefined') ? __KILN_VERSION__ : 'dev';
   var ADMIN_KEY = 'kiln_admin';
   var EDITOR_KEY = 'kiln_editor';
-  var OUT_KEY = 'kiln_signed_out';   // the note Sign out leaves for the page that follows
+  var OUT_KEY = 'kiln_signed_out';   // the note Sign out leaves for the sign-in page that follows
+  var signedOut = false;
   var scriptSrc = (document.currentScript && document.currentScript.src) || '/assets/kiln.js';
 
   if (document.readyState === 'loading') {
@@ -38,10 +39,10 @@
     captureAdminToken();
     captureGoogleSession();
 
-    // Sign out leaves a note for the next page (logout, below). It is read
-    // once and forgotten here, so the sentence is not said on a later page.
-    var out = false;
-    try { out = sessionStorage.getItem(OUT_KEY) === '1'; sessionStorage.removeItem(OUT_KEY); } catch (e) {}
+    // Sign out leaves a note for the next page (logout, below), which is the
+    // site's sign-in page: its card then says "You are signed out". It is read
+    // once and forgotten here, so it is not said on a later page.
+    try { signedOut = sessionStorage.getItem(OUT_KEY) === '1'; sessionStorage.removeItem(OUT_KEY); } catch (e) {}
 
     var admin = read(ADMIN_KEY);
     var editor = read(EDITOR_KEY);
@@ -90,31 +91,9 @@
       // sign-in is no longer stored, so the next page is the plain site.
       window.__KILN_OVER = 1;
       loadEditor(over);
-    } else if (out) {
-      saySignedOut();
     }
     // Normal page, no session: do nothing. No button, no clutter. To edit,
     // a visitor would have to know to go to /kiln and sign in.
-  }
-
-  /**
-   * The page after Sign out. It used to come back with no Kiln button and not
-   * a word. One sentence now says what happened and where to sign in again,
-   * for eight seconds. Its styles are all its own (all:initial first), so it
-   * reads the same on any site.
-   */
-  function saySignedOut() {
-    var at = cfg.entry === false ? '' : (typeof cfg.entry === 'string' && cfg.entry ? cfg.entry.replace(/\/+$/, '') : '/kiln');
-    var note = document.createElement('div');
-    note.id = 'kiln-signed-out';
-    note.setAttribute('role', 'status');
-    note.style.cssText = 'all:initial;position:fixed;left:16px;right:16px;bottom:16px;margin:0 auto;width:fit-content;' +
-      'max-width:480px;box-sizing:border-box;padding:10px 16px;border-radius:10px;background:#1a1a2e;color:#fff;' +
-      'font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;z-index:99999;box-shadow:0 2px 8px rgba(0,0,0,.25)';
-    note.innerHTML = 'You are signed out.' + (at ? ' To edit again, sign in at <a href="' + esc(at) +
-      '" style="all:initial;font:inherit;color:#fff;text-decoration:underline;cursor:pointer">' + esc(location.host + at) + '</a>.' : '');
-    document.body.appendChild(note);
-    setTimeout(function () { if (note.parentNode) note.parentNode.removeChild(note); }, 8000);
   }
 
   function loadEditor(mode) {
@@ -220,8 +199,8 @@
       'padding:32px 28px;width:340px;max-width:100%;text-align:center;box-sizing:border-box';
     card.innerHTML =
       '<div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#a3a3ad;margin-bottom:8px">Kiln</div>' +
-      '<h1 style="font-size:21px;line-height:1.2;margin:0 0 4px;color:#1c1c28">Sign in to edit</h1>' +
-      '<p style="font-size:13px;color:#888;margin:0 0 22px">' + esc(cfg.siteName || 'this site') + '</p>' +
+      '<h1 style="font-size:21px;line-height:1.2;margin:0 0 4px;color:#1c1c28">' + (signedOut ? 'You are signed out' : 'Sign in to edit') + '</h1>' +
+      '<p style="font-size:13px;color:#888;margin:0 0 22px">' + (signedOut ? 'Sign in again to edit ' : '') + esc(cfg.siteName || 'this site') + '</p>' +
       '<div id="kiln-entry-btns"></div>' +
       '<p style="font-size:11px;line-height:1.5;color:#b0b0b8;margin:20px 0 0">Editors and members sign in with Google. ' +
       'The site owner signs in with GitHub.</p>';
@@ -294,10 +273,13 @@
       // worker has been told to end it too (or after three seconds without an answer).
       var admin = read(ADMIN_KEY) || {};
       var h = { 'Content-Type': 'application/json' };
-      var go = function () { location.replace(cfg.home || '/'); };
+      // The page that follows is the site's sign-in page, which says "You are
+      // signed out" once and is the way back in. A site that has none, or the
+      // demo (which signs every visitor in again), goes home as before.
+      var entry = cfg.entry === false || cfg.sandbox ? '' : (typeof cfg.entry === 'string' && cfg.entry ? cfg.entry : '/kiln');
+      var go = function () { location.replace(entry || cfg.home || '/'); };
       localStorage.removeItem(ADMIN_KEY);
       localStorage.removeItem(EDITOR_KEY);
-      // The page that follows says "You are signed out" once (saySignedOut).
       try { sessionStorage.setItem(OUT_KEY, '1'); } catch (e) {}
       if (admin.session) h['X-Kiln-Session'] = admin.session;
       if (!cfg.worker || !(admin.sid || admin.session)) return go();
