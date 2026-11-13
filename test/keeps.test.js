@@ -651,3 +651,12 @@ test('a new site of an account that pays for a site has free days of its own', {
   assert.equal(r.json.free_days, undefined);
   assert.ok(Date.now() - r.json.site.created_at < 5000);
 });
+
+test('the welcome mail of a site started after its owner\'s free days ran out names no day in the past: it says the free days are over and what to press', () => {
+  const m = siteStartedMail({ name: 'Second Shop', address: 'https://second-shop-1a2b3c4d.kiln-sites.workers.dev', endsAt: Date.now() - 86400e3, dashboard: 'https://app.example' });
+  assert.ok(m.text.includes("Your free days began with the first site you started here, and they are over. To edit this site and keep it up, press Subscribe on the site's row."));
+  assert.equal(/is free until|If you do not subscribe by/.test(m.text), false);
+  // a site with days left is told the day, as before
+  const fresh = siteStartedMail({ name: 'First Shop', address: 'https://first-shop-1a2b3c4d.kiln-sites.workers.dev', endsAt: Date.now() + 6 * 86400e3, dashboard: 'https://app.example' });
+  assert.ok(/The site is free until [A-Z][a-z]+day, [A-Z][a-z]+ \d+, and no card is needed/.test(fresh.text));
+});

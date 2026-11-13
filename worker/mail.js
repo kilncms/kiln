@@ -124,10 +124,14 @@ export function siteAddedMail({ origin, plan, endsAt, dashboard }) {
 const KEPT_AFTER_TRIAL = 'The site then stays up at its temporary address for three more days and comes down after that. Kiln keeps its files for 30 days after that, and subscribing in that time puts the site back up.';
 
 /** The free days of a site Kiln keeps, in the two paragraphs each of its welcome mails says them in. `day`: when they end, in words. */
-const keptFreeDays = (day) => [
-  `The site is free until ${day}, and no card is needed for that time. To keep it after ${day}, press Subscribe on the site's row. ${planOf('managed')} is ${priceOf('managed')} a month for the site, and you can cancel any time.`,
-  `If you do not subscribe by ${day}, editing is switched off. ${KEPT_AFTER_TRIAL}`,
-];
+const keptFreeDays = (day, over = false) => (over
+  // A person's free days begin with the first site they start. A later site started after they ran out has none, and a day in the past is not named.
+  ? [`Your free days began with the first site you started here, and they are over. To edit this site and keep it up, press Subscribe on the site's row. ${planOf('managed')} is ${priceOf('managed')} a month for the site, and you can cancel any time.`]
+  : [
+    `The site is free until ${day}, and no card is needed for that time. To keep it after ${day}, press Subscribe on the site's row. ${planOf('managed')} is ${priceOf('managed')} a month for the site, and you can cancel any time.`,
+    `If you do not subscribe by ${day}, editing is switched off. ${KEPT_AFTER_TRIAL}`,
+  ]);
+const daysOver = (endsAt) => Number(endsAt) <= Date.now();
 
 /**
  * Sent once when a person starts a site whose files Kiln keeps (cloud.js,
@@ -144,7 +148,7 @@ export function siteStartedMail({ name, address, endsAt, dashboard }) {
     `${site} is started. Kiln made its files and keeps them for you, so there is nothing to install and nothing to store.`,
     `Its temporary address is ${at}. The site is up there about a minute after your dashboard has put it on Kiln's hosting. If the site's row in your dashboard has a button that says Put it on Kiln's hosting, press it.`,
     'To edit the site, open your dashboard and press Open the editor on the site\'s row. There is no password. Click any outlined words or picture, change them, and press Publish.',
-    ...keptFreeDays(day),
+    ...keptFreeDays(day, daysOver(endsAt)),
     'To use a domain of your own for the site, add it from the same row in your dashboard and follow the steps there.',
     'Your dashboard:',
     dashboard,
@@ -175,7 +179,7 @@ export function siteCopiedMail({ name, address, up = false, from, pages, endsAt,
       : `The copy is not up yet. Open your dashboard and press Put it on Kiln's hosting on the site's row. The site is then up at its temporary address, ${at}, about a minute later.`,
     "Some things did not come across: shops and carts, forms that posted to the old site, logins and members' areas. The report on the site's row in your dashboard lists what to check.",
     'To edit the site, open your dashboard and press Open the editor on the site\'s row. There is no password. Click any outlined words or picture, change them, and press Publish.',
-    ...keptFreeDays(day),
+    ...keptFreeDays(day, daysOver(endsAt)),
     'Your dashboard:',
     dashboard,
   ], `You are getting this because a copy of ${bareAddress(from)} was asked for on Kiln Cloud with this email address. Reply to this email to reach a person.`);
