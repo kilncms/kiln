@@ -59,7 +59,10 @@ test('try-out: "Schedule for later" asks nothing of the worker, and says what a 
   // the demo used to ask the real worker for its schedules and print the answer: "forbidden"
   const panel = main.slice(main.indexOf('function schedulePanel('), main.indexOf('// ─── Settings (admin)'));
   const demoList = panel.indexOf("if (cfg.sandbox) { list.innerHTML = `<p class=\"kiln-dim\">${escapeHtml(demoSays('schedule'))}</p>`; return; }");
-  assert.ok(demoList !== -1 && demoList < panel.indexOf('await ask(`/schedules'), 'the list is not asked for in the demo');
+  // fetchScheduled() is the one place the list is asked for now (it also keeps the menu item's count)
+  assert.ok(demoList !== -1 && demoList < panel.indexOf('await fetchScheduled()'), 'the list is not asked for in the demo');
+  assert.ok(main.slice(main.indexOf('async function fetchScheduled()'), main.indexOf('function schedulePanel(')).includes('await ask(`/schedules'));
+  assert.ok(main.includes('else if (!cfg.sandbox && !state.scheduledAsked) { state.scheduledAsked = true; fetchScheduled()'), 'nor is the count for the menu item');
   const go = panel.slice(panel.indexOf("#kiln-sc-go').onclick"));
   assert.ok(go.indexOf('if (cfg.sandbox)') !== -1 && go.indexOf('if (cfg.sandbox)') < go.indexOf("await ask('/schedule'"), 'nothing is sent in the demo');
   assert.equal(demoShort('schedule'), 'Nothing is scheduled in the demo.');

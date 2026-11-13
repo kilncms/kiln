@@ -31,7 +31,8 @@ test('said plainly: a scheduled time is said to the minute, with no dash after i
   const said = scheduledWhen(new Date(2026, 10, 12, 20, 38, 0), 'en-US');
   assert.equal(said, '11/12/2026, 8:38 PM');
   assert.equal(scheduledWhen(new Date(2026, 10, 12, 20, 38, 59).getTime(), 'en-US'), '11/12/2026, 8:38 PM');
-  assert.ok(main.includes('`Scheduled for ${scheduledWhen(data.at)} ✓ You can close this.`'));
+  // The page's own schedule dialog says the time in words now, and what the page shows until then (scheduled-changes.js).
+  assert.ok(main.includes('const line = scheduledLine(data.at);'));
   assert.ok(main.includes('`Scheduled for ${scheduledWhen(when)}. You can close this.`'));
   assert.doesNotMatch(main, /Scheduled for \$\{new Date/);
 });

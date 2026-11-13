@@ -48,6 +48,7 @@ import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
 import { limitsSaid } from './your-pages.js';
 import { addedSectionLine, scheduleHow, scheduledWhen } from './said-plainly.js';
+import { scheduleItem, scheduledRow, mergeScheduled, cancelQuestion, cancelledLine, scheduledLine, LIST_TITLE, NOTHING_SCHEDULED, PUBLISH_FIRST, CANCEL_YES, CANCEL_NO } from './scheduled-changes.js';
 import { findEverywhere, replaceEverywhere, changedSinceText, previewText, noMatchText, replacedText } from './find-replace.js';
 import { aiAfter, aiOffered, noAiKey } from './ai-offered.js';
 import { DRAFT_BRANCH, draftSaveMessage, draftDeleteMessage, draftPublishedMessage, blobSha, draftOfPage, draftWords, DRAFT_DELETE_REFUSED } from './draft-state.js';
@@ -175,6 +176,10 @@ const state = {
   page: null,            // { path, text, sha }
   fields: null,          // indexHtml() of page.text
   pending: new Map(),    // key → { html?, attrs?: {name: value} }
+  scheduled: 0,               // how many scheduled changes there are for this site: the menu item's count (scheduled-changes.js)
+  scheduledMine: new Set(),   // ids of the schedules this tab made: "by you", and the page still shows their words
+  scheduledMade: [],          // those rows, shown until the service lists them (its list can lag a minute)
+  scheduledGone: new Map(),   // id → when this tab cancelled it, left out for the same reason
   active: null,
   // Binary uploads (images/docs) queued for the NEXT Publish, so nothing is
   // committed to the repo until you actually publish (Discard leaves no orphans).
@@ -1127,6 +1132,8 @@ function applyFeatureGating() {
   // live branch directly, which the worker refuses for suggest sessions anyway.
   if (isSuggestMode()) { const t = document.getElementById('kiln-theme'); if (t) t.style.display = 'none'; }
   if (!hasFeature('schedule') || isSuggestMode()) { const s = document.getElementById('kiln-schedule'); if (s) s.dataset.gated = '1'; }
+  // What is already scheduled is counted once at the start, so the menu can offer the list with no edit on the page.
+  else if (!cfg.sandbox && !state.scheduledAsked) { state.scheduledAsked = true; fetchScheduled().catch(() => {}); }
   if (!hasFeature('draft') || isSuggestMode()) { const p = document.getElementById('kiln-sharepreview'); if (p) p.dataset.gated = '1'; }
   hideEmptyGroups();
 }
@@ -8055,54 +8062,110 @@ async function checkForDraft() {
 
 // ─── Scheduled publishing ────────────────────────────────────────────────────
 
+/**
+ * What is scheduled for this site, soonest first, put right for what this tab
+ * did a moment ago (scheduled-changes.js mergeScheduled). The menu item's
+ * count follows it.
+ */
+async function fetchScheduled() {
+  const data = await ask(`/schedules?repo=${encodeURIComponent(cfg.repo)}`);
+  const rows = mergeScheduled(data.schedules || [], { made: state.scheduledMade, cancelled: state.scheduledGone });
+  state.scheduled = rows.length;
+  refreshPublishButton();
+  return rows;
+}
+
+/** The schedule item in the Kiln menu and in the bar: the list alone when the page has nothing to schedule. */
+function openScheduleItem() {
+  schedulePanel(undefined, { listOnly: !state.pending.size });
+}
+
 /** `at`: the time that was chosen before (after signing in again), as the time box holds it. */
-function schedulePanel(at) {
+function schedulePanel(at, opts) {
+  // `opts.listOnly`: what is already scheduled, without the part that schedules.
+  let listOnly = opts?.listOnly === true;
   // Edits to content files only: the worker's scheduler applies them to the files at that time.
-  if (!state.pending.size && state.pendingSource.size && sourceEntriesOn) return scheduleSourcePanel(at);
-  if (!state.pending.size) return;
+  if (!listOnly && !state.pending.size && state.pendingSource.size && sourceEntriesOn) return scheduleSourcePanel(at);
+  if (!state.pending.size) {
+    if (!listOnly && !state.scheduled) return;
+    listOnly = true;
+  }
   // Scheduling re-applies text edits later against the live source; it can't
   // carry queued image uploads or added sections (same reason as drafts).
-  if (state.pendingBinaries.size || state.pendingStructural.length) {
-    setStatus('Publish your new images / added sections first. Scheduling covers text edits only', 'error');
-    return;
+  let first = '';
+  if (!listOnly && (state.pendingBinaries.size || state.pendingStructural.length)) {
+    if (!state.scheduled) {
+      setStatus('Publish your new images / added sections first. Scheduling covers text edits only', 'error');
+      return;
+    }
+    // Something is scheduled: the list still opens, and says why nothing can be added to it yet.
+    listOnly = true;
+    first = PUBLISH_FIRST;
   }
   const inOneHour = new Date(Date.now() + 3600000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-  const scheduling = countChanges(publishItems({ light: true }).filter(i => state.pending.has(i.key)));
-  const m = modal(`
-    <h3>${scheduleTitle(scheduling)}</h3>
-    <p class="kiln-dim">${scheduleHow(scheduling)}</p>
-    <label>Publish at <input type="datetime-local" id="kiln-sc-at" value="${typeof at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(at) ? at : inOneHour}"></label>
+  const scheduling = listOnly ? 0 : countChanges(publishItems({ light: true }).filter(i => state.pending.has(i.key)));
+  // The list alone: its title, the list, the line under it, and Close.
+  const m = listOnly ? modal(`
+    <h3>${LIST_TITLE}</h3>${first ? `
+    <p class="kiln-dim">${escapeHtml(first)}</p>` : ''}
+    <div id="kiln-sc-list" class="kiln-inv-list">Loading…</div>
+    <p class="kiln-np-step" id="kiln-sc-status"></p>
     <div class="kiln-modal-actions">
-      <button class="kiln-btn-ghost" data-close>Cancel</button>
-      <button class="kiln-btn-publish" id="kiln-sc-go">Schedule</button>
+      <button class="kiln-btn-ghost" data-close>Close</button>
+    </div>`) : modal(`
+    <h3>${scheduleTitle(scheduling)}</h3>
+    <p class="kiln-dim" data-make>${scheduleHow(scheduling)}</p>
+    <label data-make>Publish at <input type="datetime-local" id="kiln-sc-at" value="${typeof at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(at) ? at : inOneHour}"></label>
+    <div class="kiln-modal-actions">
+      <button class="kiln-btn-ghost" data-close id="kiln-sc-close">Cancel</button>
+      <button class="kiln-btn-publish" id="kiln-sc-go" data-make>Schedule</button>
     </div>
-    <h4>Already scheduled</h4>
+    <h4 data-make>Already scheduled</h4>
     <div id="kiln-sc-list" class="kiln-inv-list">Loading…</div>
     <p class="kiln-np-step" id="kiln-sc-status"></p>`);
   const status = m.querySelector('#kiln-sc-status');
+  // A row says what, when and who (scheduled-changes.js). Its Cancel asks one
+  // question first, in the row itself, so the dialog and its list stay open.
+  function drawRow(row, s) {
+    const said = scheduledRow(s, { me: state.user, owner: mode === 'admin', mine: state.scheduledMine.has(s.id), root: cfg.root });
+    row.innerHTML = `<span><strong>${escapeHtml(said.what)}</strong>
+      <small>${escapeHtml([said.when, said.who].filter(Boolean).join(', '))}</small></span>
+      <button class="kiln-btn-ghost">Cancel</button>`;
+    row.querySelector('button').onclick = () => {
+      status.textContent = '';
+      row.innerHTML = `<span>${escapeHtml(cancelQuestion(s, { root: cfg.root }))}</span>
+        <button class="kiln-btn-ghost" data-no>${CANCEL_NO}</button>
+        <button class="kiln-btn-ghost" data-yes>${CANCEL_YES}</button>`;
+      row.querySelector('[data-no]').onclick = () => drawRow(row, s);
+      row.querySelector('[data-yes]').onclick = async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          await ask('/schedule/cancel', { method: 'POST', body: { repo: cfg.repo, id: s.id } });
+        } catch (err) {
+          status.textContent = stopped(err, 'cancelled') || notDone('That was not cancelled.', err);
+          drawRow(row, s);
+          return;
+        }
+        state.scheduledGone.set(s.id, Date.now());
+        // One this tab made: the page still shows its words, which are now neither scheduled nor published.
+        status.textContent = cancelledLine({ shownHere: state.scheduledMine.has(s.id) });
+        refreshList();
+      };
+    };
+  }
   async function refreshList() {
     const list = m.querySelector('#kiln-sc-list');
     // Try-out mode has nobody to hand a schedule to. It says what a real site
     // does and asks nothing of the worker, which could only answer "forbidden".
     if (cfg.sandbox) { list.innerHTML = `<p class="kiln-dim">${escapeHtml(demoSays('schedule'))}</p>`; return; }
     try {
-      const data = await ask(`/schedules?repo=${encodeURIComponent(cfg.repo)}`);
-      list.innerHTML = (data.schedules || []).length ? '' : '<p class="kiln-dim">Nothing scheduled.</p>';
-      for (const s of data.schedules || []) {
+      const rows = await fetchScheduled();
+      if (!m.isConnected) return;
+      list.innerHTML = rows.length ? '' : `<p class="kiln-dim">${NOTHING_SCHEDULED}</p>`;
+      for (const s of rows) {
         const row = document.createElement('div');
         row.className = 'kiln-inv-row';
-        row.innerHTML = `<span><strong>${escapeHtml(s.desc)}</strong>
-          <small>${new Date(s.at).toLocaleString()} · by ${escapeHtml(s.by)}</small></span>
-          <button class="kiln-btn-ghost">Cancel</button>`;
-        row.querySelector('button').onclick = async () => {
-          try {
-            await ask('/schedule/cancel', { method: 'POST', body: { repo: cfg.repo, id: s.id } });
-          } catch (err) {
-            status.textContent = stopped(err, 'cancelled') || notDone('That was not cancelled.', err);
-            return;
-          }
-          refreshList();
-        };
+        drawRow(row, s);
         list.appendChild(row);
       }
     } catch (err) {
@@ -8110,7 +8173,7 @@ function schedulePanel(at) {
     }
   }
   refreshList();
-  m.querySelector('#kiln-sc-go').onclick = async () => {
+  if (!listOnly) m.querySelector('#kiln-sc-go').onclick = async () => {
     const at = m.querySelector('#kiln-sc-at').value;
     if (!at) return;
     if (cfg.sandbox) { status.textContent = `${demoShort('schedule')} Your edit${state.pending.size > 1 ? 's are' : ' is'} still here, to publish now.`; return; }
@@ -8128,7 +8191,17 @@ function schedulePanel(at) {
       if (!data.ok) throw said(data.error || 'The site did not take the schedule');
       // The edits now live in the schedule on the worker — retire the stage.
       retireStaged();
-      status.textContent = `Scheduled for ${scheduledWhen(data.at)} ✓ You can close this.`;
+      state.scheduledMine.add(data.id);
+      state.scheduledMade.push({ id: data.id, at: data.at, path: state.page.path, kind: 'page', by: mode === 'admin' ? 'admin' : state.user, madeAt: Date.now() });
+      // When it will be published, and that only the page here shows the words
+      // until then: in the dialog, and on the status line once it is closed.
+      const line = scheduledLine(data.at);
+      status.textContent = line;
+      setStatus(line, 'idle', { hold: 60000 });
+      // Nothing is left to schedule: the dialog is the list now, drawn again with the new row.
+      for (const el of m.querySelectorAll('[data-make]')) el.remove();
+      m.querySelector('h3').textContent = LIST_TITLE;
+      m.querySelector('#kiln-sc-close').textContent = 'Close';
       refreshList();
     } catch (err) {
       status.textContent = stopped(err, 'scheduled', () => {
@@ -9080,7 +9153,7 @@ function renderAdminBar() {
   if (entriesBtn) entriesBtn.onclick = close(() => entriesPanel(state.pageEntry?.collection));
   fab.querySelector('#kiln-findreplace').onclick = close(findReplacePanel);
   fab.querySelector('#kiln-palette-btn').onclick = close(openPalette);
-  fab.querySelector('#kiln-schedule').onclick = close(schedulePanel);
+  fab.querySelector('#kiln-schedule').onclick = close(openScheduleItem);
   fab.querySelector('#kiln-draft').onclick = close(saveDraft);
   fab.querySelector('#kiln-sharepreview').onclick = close(sharePreviewPanel);
   const sugBtn = fab.querySelector('#kiln-suggestions');
@@ -9202,7 +9275,7 @@ function renderTopBar() {
   bar.querySelector('#kiln-discard').onclick = discardEdits;
   bar.querySelector('#kiln-draft').onclick = saveDraft;
   bar.querySelector('#kiln-sharepreview').onclick = sharePreviewPanel;
-  bar.querySelector('#kiln-schedule').onclick = schedulePanel;
+  bar.querySelector('#kiln-schedule').onclick = openScheduleItem;
   const sugBtn = bar.querySelector('#kiln-suggestions');
   if (sugBtn) sugBtn.onclick = suggestionsPanel;
   bar.querySelector('#kiln-signout').onclick = signOut;
@@ -9685,7 +9758,18 @@ function refreshPublishButton() {
   // editor must be granted them (dataset.gated set by applyFeatureGating).
   const nHtml = state.pending.size;
   const sched = document.getElementById('kiln-schedule');
-  if (sched) sched.style.display = (nHtml && !sched.dataset.gated) ? '' : 'none';
+  if (sched) {
+    // There while there is an edit to schedule or something scheduled to see (scheduled-changes.js).
+    if (!sched.dataset.label) sched.dataset.label = sched.textContent;
+    const item = scheduleItem({ may: !sched.dataset.gated, edits: nHtml, scheduled: state.scheduled, label: sched.dataset.label });
+    sched.style.display = item.show ? '' : 'none';
+    sched.textContent = item.label;
+    // With nothing unpublished, the group holds "Scheduled changes (N)" alone: no heading and no Discard.
+    if (grp) {
+      grp.hidden = !anything && !item.show;
+      for (const el of grp.querySelectorAll('.kiln-fab-label, #kiln-discard')) el.style.display = anything ? '' : 'none';
+    }
+  }
   const draftBtn = document.getElementById('kiln-draft');
   if (draftBtn) draftBtn.style.display = (nHtml && !draftBtn.dataset.gated) ? '' : 'none';
   const shareBtn = document.getElementById('kiln-sharepreview');

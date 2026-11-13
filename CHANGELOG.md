@@ -70,6 +70,22 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   font (via Kiln)") where it said "Theme: 2 tokens". The dialog says "Saved 2
   changes", and the status line ends on "The new theme is live ✓". It no
   longer offers "View site" for a theme change, which opened the style sheet.
+- **What is scheduled can be seen and cancelled at any time.** "Schedule for
+  later…" was in the Kiln menu only while the page held an unpublished edit,
+  and the list of what is already scheduled lived inside that dialog.
+  Scheduling an edit clears it from the page, so the item left the menu, and
+  the only way to see or cancel a scheduled change was to make a throwaway
+  edit. The item now stays while anything is scheduled for the site: with
+  nothing left to schedule it reads "Scheduled changes (2)" and opens the list
+  alone. Each row says the page, the time in words to the minute ("Thursday 12
+  November at 8:45 PM") and who scheduled it ("by you", "by Rosa", "by the
+  site owner"). Cancel asks one question first, and says afterwards that the
+  change was cancelled and that nothing was published. The list is drawn again
+  as soon as a schedule is made or cancelled. It used to read "Nothing
+  scheduled." until the dialog was reopened, because the service's list can
+  run a minute behind. After scheduling, the dialog and the status line say
+  when the change will be published, and that the page here shows the
+  scheduled words until then while visitors still see the old ones.
 
 ## [0.6.4] - 2026-11-12
 
