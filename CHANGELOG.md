@@ -19,8 +19,10 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the service: the members area is switched on by one new secret,
   `HOSTING_MEMBER_KEY`, together with the new variable `HOSTING_SERVICE_URL`
   (both are in ENVIRONMENTS.md). Until the secret is set, a hosted site's pages
-  under `members/` are open to anyone, as they were before, and "Check this
-  site" says so and asks the owner to write to info@kilncms.com.
+  under `members/` are left out of what is published, so they are never served
+  to everybody, and "Check this site" says so and asks the owner to write to
+  info@kilncms.com. (Before this release such pages went up as plain files
+  that anyone could open.)
 
 ## [0.6.7] - 2026-11-13
 

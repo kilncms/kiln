@@ -200,16 +200,22 @@ async function settingsText(token, repo, entry) {
  *
  * A site with files under members/ also gets the members gate, and the answer
  * then carries `members: 'on'`. Where this service cannot switch the gate on
- * (membersGateOn), such a site goes up as plain files and the answer carries
- * `members: 'not_switched_on'`, so the caller can tell the owner that those
- * pages are open to anyone. `siteId` is what the site's member secret is made
+ * (membersGateOn), the files under members/ are LEFT OUT of what is published and
+ * the answer carries `members: 'left_out'`, so the caller can tell the owner
+ * that those pages are not on the site yet. They are never served open. `siteId` is what the site's member secret is made
  * from; without one the Worker's name stands in.
  */
 export async function deploySite(env, { token, repo, name, first = false, siteId = null }) {
   if (!hostingOn(env)) throw new HostingError('not_set_up');
   const tree = await readTree({ token, repo });
   if (tree.state !== 'ok') return tree;
-  const { files, headers, redirects, skipped } = publishedFiles(tree.entries);
+  const all = publishedFiles(tree.entries);
+  const { headers, redirects, skipped } = all;
+  // Members-only pages are never put up without their gate. Where this service cannot switch the gate on,
+  // they are left out of what is published, so nobody without the right can open them (tried for real on
+  // the test service: a page under members/ that is uploaded as a plain file is served to everybody).
+  const gate = membersGateOn(env), hadMembers = hasMembersArea(all.files);
+  const files = hadMembers && !gate ? all.files.filter(f => !String(f.path).startsWith('/members/')) : all.files;
   if (!files.some(f => f.path === '/index.html')) return { state: 'no_home', branch: tree.branch, head: tree.head };
   if (files.length > LIMITS.files) return { state: 'too_big', branch: tree.branch, head: tree.head, fileCount: files.length };
 
@@ -241,7 +247,7 @@ export async function deploySite(env, { token, repo, name, first = false, siteId
   const redirectsText = await settingsText(token, repo, redirects);
   if (headersText) config._headers = headersText;
   if (redirectsText) config._redirects = redirectsText;
-  const members = hasMembersArea(files) ? (membersGateOn(env) ? 'on' : 'not_switched_on') : null;
+  const members = hadMembers ? (gate ? 'on' : 'left_out') : null;
   const meta = {
     compatibility_date: COMPATIBILITY_DATE,
     assets: { jwt: done, config },
@@ -312,7 +318,7 @@ export async function memberSecret(env, siteId) {
 }
 
 /** What a person reads when a hosted site has members pages and the gate cannot be switched on. */
-export const MEMBERS_OFF_SENTENCE = 'This site has pages under members/, but the members area is not switched on for Kiln\'s hosting yet, so anyone with the address can open those pages. Write to info@kilncms.com and we will switch it on.';
+export const MEMBERS_OFF_SENTENCE = 'This site has pages under members/, but the members area is not switched on for Kiln\'s hosting yet, so Kiln left those pages out of the site rather than show them to everybody. Write to info@kilncms.com and we will switch it on.';
 
 /** Take a site's Worker away. True when it is gone (or was never there). */
 export async function removeSite(env, name) {

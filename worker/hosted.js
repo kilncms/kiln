@@ -108,7 +108,7 @@ export async function publishSite(env, { site, token, wanted = null }) {
       }
       // The site has pages under members/ and this service cannot guard them
       // (hosting.js: membersGateOn). The owner reads it in "Check this site".
-      if (out.members === 'not_switched_on') console.warn(JSON.stringify({ evt: 'hosting_members_open', repo: site.repo, name: row.name }));
+      if (out.members === 'left_out') console.warn(JSON.stringify({ evt: 'hosting_members_left_out', repo: site.repo, name: row.name }));
       await save(env, site.id, { state: 'live', reason: null, branch: out.branch, commit_sha: out.commit, files: out.files, deployed_at: Date.now(), checked_at: Date.now() });
       row = await hostingRow(env, site.id);
       // Did something newer get asked for meanwhile?

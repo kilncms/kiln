@@ -127,13 +127,16 @@ test('members on hosting: a site\'s secret is the same at every upload, and no t
   assert.notEqual(await memberSecret({ HOSTING_MEMBER_KEY: 'another-key' }, 'site-1'), first, 'another key gives other secrets');
 });
 
-test('members on hosting: without the key, or without the service\'s address, a site with members pages goes up as plain files and the answer says so', async () => {
+test('members on hosting: without the key, or without the service\'s address, the pages under members/ are left out of what is published, never served open, and the answer says so', async () => {
   for (const settings of [{}, { HOSTING_MEMBER_KEY: KEY }, { HOSTING_SERVICE_URL: SERVICE }, { HOSTING_MEMBER_KEY: KEY, HOSTING_SERVICE_URL: 'http://not-https.example' }]) {
     const w = world(club, settings);
     assert.equal(membersGateOn(w.env), false);
     const out = await w.deploy();
     assert.equal(out.state, 'live');
-    assert.equal(out.members, 'not_switched_on');
+    assert.equal(out.members, 'left_out');
+    const published = Object.keys(w.up().manifest);
+    assert.equal(published.some(p => p.startsWith('/members/')), false, 'no members page is among the published files');
+    assert.ok(published.includes('/index.html'), 'the rest of the site is published');
     assert.deepEqual(Object.keys(w.up().meta), ['compatibility_date', 'assets', 'annotations']);
     assert.deepEqual(w.up().parts, ['metadata']);
     assert.equal('run_worker_first' in w.up().meta.assets.config, false);
@@ -409,7 +412,7 @@ test('members on hosting: "Check this site" says of a hosted site with members p
 
   const off = await look(club, { membersOn: false });
   assert.equal(off.line.ok, false);
-  assert.equal(off.line.detail, 'This site has pages under members/, but the members area is not switched on for Kiln\'s hosting yet, so anyone with the address can open those pages. Write to info@kilncms.com and we will switch it on.');
+  assert.equal(off.line.detail, 'This site has pages under members/, but the members area is not switched on for Kiln\'s hosting yet, so Kiln left those pages out of the site rather than show them to everybody. Write to info@kilncms.com and we will switch it on.');
 
   assert.equal((await look(plain, { membersOn: true })).line, null, 'a site with no members pages gets no such line');
   const onPages = await look(club, { hosted: false, membersOn: true });
