@@ -96,13 +96,17 @@ export function typedRecord(typed) {
  *   typed:         what was being typed into a panel (see typedRecord)
  * `source` and `typed` are left out when there is none, so a page without
  * them writes what it always wrote.
+ *   shown:         the number the Publish button showed for these edits (a
+ *                  picture and its description are two). Kept as `n`, so the
+ *                  offer to bring them back says the same number.
  */
-export function draftRecord(pending, pendingSource, now = Date.now(), typed = null) {
+export function draftRecord(pending, pendingSource, now = Date.now(), typed = null, shown = null) {
   const t = typedRecord(typed);
   if (!pending.size && !pendingSource.size && !t) return null;
   const record = { ts: now, edits: Object.fromEntries(pending) };
   if (pendingSource.size) record.source = Object.fromEntries(pendingSource);
   if (t) record.typed = t;
+  if (Number.isInteger(shown) && shown > 0 && (pending.size || pendingSource.size)) record.n = shown;
   return record;
 }
 
@@ -128,7 +132,11 @@ export function readDraft(saved, { now = Date.now(), known = () => true } = {}) 
     if (typeof v.upload === 'string' && /^[\w.-][\w./-]*$/.test(v.upload) && !v.upload.split('/').includes('..')) entry.upload = v.upload;
     source[ref] = entry;
   }
-  const count = Object.keys(saved.edits).length + Object.keys(source).length;
+  // The number to say: the one the Publish button showed when this was saved.
+  // The parts are counted instead when that was not kept, or when an edit is left behind here.
+  const parts = Object.keys(saved.edits).length + Object.keys(source).length;
+  const whole = Object.keys(source).length === Object.keys(stored).length;
+  const count = parts && whole && Number.isInteger(saved.n) && saved.n > 0 ? saved.n : parts;
   const typed = typedRecord(saved.typed);
   if (!count && !typed) return null;
   return typed ? { edits: saved.edits, source, count, typed } : { edits: saved.edits, source, count };

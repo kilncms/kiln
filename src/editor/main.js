@@ -69,6 +69,7 @@ import { notDone, whyNot, said } from './plain-failure.js';
 import { pictureNotAdded } from './picture-not-added.js';
 import { saveMenuEverywhere, menuStepText, MENU_SAME } from './menu-save.js';
 import { menuLinks, rewriteMenu } from './menu-links.js';
+import { discardLabel, discardQuestion, unpublishedHeading, restoredLine } from './edit-count.js';
 import { plainName, readableName } from './names.js';
 import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
@@ -8642,9 +8643,9 @@ function unmakeDialog(el) {
 
 function doneEditing() {
   if (state.pending.size || state.pendingBinaries.size || state.pendingStructural.length || state.pendingSource.size) {
-    const nDone = state.pending.size + state.pendingSource.size || state.pendingBinaries.size;
+    const nDone = changeCount();   // the number on the Publish button
     const m = modal(`
-      <h3>You have ${nDone} unpublished edit${nDone > 1 ? 's' : ''}</h3>
+      <h3>${unpublishedHeading(nDone)}</h3>
       <p class="kiln-dim">Publish them first, or discard and exit?</p>
       <div class="kiln-modal-actions">
         <button class="kiln-btn-ghost" data-close>Keep editing</button>
@@ -9115,10 +9116,11 @@ function renderTopBar() {
 }
 
 function discardEdits() {
-  const nAll = state.pending.size + state.pendingSource.size;
-  if (!nAll) return;
+  // The number the Discard button itself shows, counted the same way (edit-count.js).
+  const nAll = changeCount();
+  if (!nAll && !state.pendingBinaries.size && !state.pendingStructural.length) return;
   const m = modal(`
-    <h3>Discard ${nAll} unpublished edit${nAll > 1 ? 's' : ''}?</h3>
+    <h3>${discardQuestion(nAll)}</h3>
     <p class="kiln-dim">The page goes back to what's currently live. This can't be undone.</p>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Keep editing</button>
@@ -9521,6 +9523,7 @@ function nameDialog(card) {
 function refreshPublishButton() {
   // The number of things the publish sheet lists: every change to a list is one, as every edit to a field is.
   const n = changeCount();
+  state.shownCount = n;   // kept with the saved copy of the edits, so the offer to bring them back says this number too
   // A queued upload with no field edit still needs a Publish to commit it.
   const anything = n || state.pendingBinaries.size || state.pendingStructural.length;
   const btn = document.getElementById('kiln-publish');
@@ -9554,7 +9557,7 @@ function refreshPublishButton() {
   const grp = document.getElementById('kiln-grp-edits');
   if (grp) grp.hidden = !anything;
   const discard = document.getElementById('kiln-discard');
-  if (discard) discard.textContent = n ? `Discard ${n} edit${n > 1 ? 's' : ''}` : 'Discard edits';
+  if (discard) discard.textContent = discardLabel(n);
   // Draft + Schedule + Share preview need actual PAGE edits (not just an uploaded
   // binary — and not source-file edits, which none of them can carry), and an
   // editor must be granted them (dataset.gated set by applyFeatureGating).
@@ -9667,7 +9670,7 @@ function savePendingToStorage() {
   syncKeptFiles();
   try {
     // Edits to the page's own fields, and to the content files of a generated page.
-    const record = draftRecord(withOpenBox(state.pending), state.pendingSource, Date.now(), state.typed);
+    const record = draftRecord(withOpenBox(state.pending), state.pendingSource, Date.now(), state.typed, state.shownCount);
     if (!record) { localStorage.removeItem(pendingStorageKey()); return; }
     localStorage.setItem(pendingStorageKey(), JSON.stringify(record));
   } catch {
@@ -9846,8 +9849,10 @@ async function restoreSaved(saved, kept, signedInAgain) {
   }
   refreshPublishButton();   // also rewrites the saved copy from what is staged: what was typed is taken out of it here
   const typedName = saved.typed ? resumeTyped(saved.typed) : '';
-  if (signedInAgain) setStatus(backAfterSignIn(saved.count, files.length, typedName), 'saved');
-  else if (saved.count) setStatus(`${saved.count} edit${saved.count > 1 ? 's' : ''} restored${files.length ? ', with the files they added' : ''} — Publish when ready`, 'saved');
+  // Counted now that they are staged, as the Publish and Discard buttons count them (edit-count.js).
+  const nBack = saved.count ? changeCount() || saved.count : 0;
+  if (signedInAgain) setStatus(backAfterSignIn(nBack, files.length, typedName), 'saved');
+  else if (saved.count) setStatus(restoredLine(nBack, files.length), 'saved');
 }
 
 // What was typed into a panel is put back where it was typed: the panel is

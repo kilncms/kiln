@@ -121,6 +121,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is written, and what is typed as a link's words can never become markup
   (`src/editor/menu-links.js`, `src/editor/menu-save.js`).
 
+- **The Discard button, its question and the line after edits come back give
+  the same number.** The menu said "Discard 2 edits", the dialog that followed
+  asked "Discard 1 unpublished edit?", and just before that the line had said
+  "1 edit restored". The button counted what the publish sheet lists, where a
+  new picture and its description are two things, and the other two counted
+  the parts of the page that hold an edit. All of them now say the number on
+  the Publish button, and so does the question "Done editing" asks. The copy
+  of the edits kept in the browser remembers that number, so "Pick up where
+  you left off?" says it as well. The Discard button also asks its question
+  when the only thing waiting is an uploaded file, where it used to do
+  nothing (`src/editor/edit-count.js`).
+
 ## [0.6.3] - 2026-11-12
 
 ### Fixed
