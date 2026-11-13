@@ -486,6 +486,7 @@ async function doctor(args) {
 const WORKER_FILES = [
   ...['index.js', 'cloud.js', 'domain.js', 'firstpass.js', 'hosted.js', 'hosting.js', 'lookafter.js', 'mail.js', 'prepare.js', 'runbook.js', 'sanitize-guard.js', 'section-scope.js', 'signin-trouble.js', 'sitecheck.js', 'source.js', 'update.js'].map(f => ['worker', f]),
   ['src', 'autotag.js'],
+  ['src', 'builder-words.js'],   // autotag.js imports it
   ['src', 'engine.js'],
   ['src', 'file-policy.js'],
   ...['astro.js', 'detect.js', 'frontmatter.js', 'index.js', 'json-splice.js', 'markdown.js', 'pictures.js', 'pointer.js', 'toml-splice.js', 'yaml-splice.js'].map(f => ['src', 'adapters', f]),

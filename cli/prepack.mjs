@@ -18,6 +18,7 @@ const items = [
   ['templates', 'templates'],
   ['src/engine.js', 'src/engine.js'],
   ['src/autotag.js', 'src/autotag.js'],   // rescue.mjs auto-tags via PKG_ROOT/src/autotag.js
+  ['src/builder-words.js', 'src/builder-words.js'],   // autotag.js imports it
   ['src/adapters', 'src/adapters'],       // source mode: wizard detection + doctor + worker copy step
   ['src/file-policy.js', 'src/file-policy.js'],   // imported by worker/index.js — wizard deploy fails without it
   ['worker/index.js', 'worker/index.js'],

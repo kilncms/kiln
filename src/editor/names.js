@@ -13,6 +13,8 @@
  * Pure, so they are tested in node.
  */
 
+import { isBuilderName, withoutBuilderLead } from '../builder-words.js';
+
 // What developers shorten, said in full. Only whole words are changed.
 const WORDS = {
   img: 'picture', image: 'picture', pic: 'picture', photo: 'picture',
@@ -24,12 +26,16 @@ const WORDS = {
 /** A stamp the editor itself put into a name ("gallery_mf3k2a9x"): letters and digits mixed, never a word. */
 const isStamp = (word) => word.length >= 5 && /\d/.test(word) && /^[a-z0-9]+$/i.test(word);
 
+// A part named from a page builder's class ("elementor_widg_featured_products",
+// "astra_shop_img_2") is shown without the builder's words in front:
+// "Featured products", "Shop picture 2". The stored name stays as it is.
 function wordsOf(name) {
-  return String(name)
+  const words = String(name)
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')   // heroHeadline
     .split(/[_\-\s.]+/)
     .filter(w => w && !isStamp(w))
-    .map(w => WORDS[w.toLowerCase()] || w.toLowerCase());
+    .map(w => w.toLowerCase());
+  return withoutBuilderLead(words).map(w => WORDS[w] || w);
 }
 
 const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -38,7 +44,8 @@ const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 export function plainName(key) {
   if (key === undefined || key === null || key === '' || key === 'undefined') return 'a section';
   const words = wordsOf(String(key).replace(/^[+-]/, ''));
-  return words.join(' ') || String(key);
+  // a name that was nothing but a builder's words has no words of its own to show
+  return words.join(' ') || (isBuilderName(String(key)) ? 'a section' : String(key));
 }
 
 /** "hero_headline" → "Hero headline", "hero_img" → "Hero picture": a label on its own. */

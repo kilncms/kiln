@@ -17,6 +17,7 @@
  */
 
 import { parse } from 'parse5';
+import { isBuilderName } from './builder-words.js';
 
 const FIELD_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'blockquote', 'figcaption']);
 const SKIP_SUBTREES = new Set(['script', 'style', 'svg', 'template', 'noscript']);
@@ -110,10 +111,19 @@ export function isStylingName(name) {
   return MAYBE_ROOTS.has(root) && (/^\d/.test(last) || SETTINGS.has(last));
 }
 
+/** A name made of words, held to a length without cutting a word in half ("testimonials_s", "elementor_widg"). One long word stays whole. */
+function wholeWords(s, max) {
+  if (s.length <= max) return s;
+  const words = s.split('_');
+  let out = words[0];
+  for (const w of words.slice(1)) { if (out.length + 1 + w.length > max) break; out += '_' + w; }
+  return out;
+}
+
 function slug(text, words = 3) {
   const s = String(text).toLowerCase().replace(/[^a-z0-9\s]+/g, ' ').trim()
     .split(/\s+/).slice(0, words).join('_');
-  return s.replace(/^[0-9_]+/, '').slice(0, 28) || 'text';
+  return wholeWords(s.replace(/^[0-9_]+/, ''), 28).slice(0, 40) || 'text';
 }
 
 /** tag + sorted classes — two siblings with the same signature are "the same kind of block" */
@@ -196,10 +206,46 @@ export function autotag(raw) {
       const a = ancestors[i];
       if (!['section', 'article', 'aside', 'footer', 'header', 'div'].includes(a.tagName)) continue;
       const hints = [attrOf(a, 'id'), ...(attrOf(a, 'class') || '').split(/\s+/)].filter(Boolean);
+      // A page builder's or theme's own class ("elementor-widget-container",
+      // "astra-shop-thumbnail-wrap") says which tool made the part, not what
+      // it is. No name is made from it: null sends the caller to the part's
+      // own words, or to where the part is (wordsKey, imgKey, placeOf).
+      if (hints.some(isBuilderName)) return null;
       const hint = hints.find(h => /^[a-z]/i.test(h) && !isStylingName(h));
-      if (hint) return slug(hint, 2).slice(0, 14);
+      if (hint) return wholeWords(slug(hint, 2), 14);
     }
     return 'page';
+  };
+
+  // Where a part is, in a word anyone would use, on a page whose classes are a builder's.
+  const placeOf = (ancestors) => {
+    for (let i = ancestors.length - 1; i >= 0; i--) {
+      const a = ancestors[i];
+      if (a.tagName === 'header') return 'header';
+      if (a.tagName === 'footer') return 'footer';
+      if (a.tagName === 'aside') return 'sidebar';
+      const cls = (attrOf(a, 'class') || '').split(/\s+/);
+      if (cls.includes('products') || cls.includes('product')) return 'shop';
+    }
+    return 'page';
+  };
+  // Words: "hero_welcome_home" where the page names its parts; on a builder's
+  // page the words themselves, "featured_products_heading" for a heading.
+  const wordsKey = (n, ancestors, text) => {
+    const prefix = prefixFor(ancestors);
+    if (prefix !== null) return `${prefix}_${slug(text)}`;
+    const place = placeOf(ancestors);
+    const lead = place === 'page' || place === 'shop' ? '' : place + '_';
+    return `${lead}${slug(text)}${/^h[1-6]$/.test(n.tagName) ? '_heading' : ''}`;
+  };
+  // A picture: "hero_img"; on a builder's page what its description says
+  // ("yellow_shoes_img"), or without one where it is ("shop_img_2").
+  const imgKey = (n, ancestors) => {
+    const prefix = prefixFor(ancestors);
+    if (prefix !== null) return `${prefix}_img`;
+    const alt = (attrOf(n, 'alt') || '').trim();
+    const words = /[a-z]{3}/i.test(alt) ? slug(alt) : '';
+    return `${words && words !== 'text' ? words : placeOf(ancestors)}_img`;
   };
 
   // ── Repeats: a container whose element children are ≥3 same-signature blocks ──
@@ -218,7 +264,7 @@ export function autotag(raw) {
       // all (or nearly all) children are the same kind of block, and blocks have content
       if (top && share >= 0.8 && textOf(kids[0]).length > 0 && !['table', 'tbody', 'thead', 'tfoot', 'tr', 'select', 'optgroup', 'datalist'].includes(n.tagName)
         && kids.filter(k => signature(k) === sigs[0]).every(holdsMarkable)) {
-        const prefix = prefixFor([...ancestors, n]);
+        const prefix = prefixFor([...ancestors, n]) ?? placeOf([...ancestors, n]);
         const key = uniq(`${prefix}_items`);
         if (annotate(n, ` data-cms-repeat="${key}"`)) {
           counts.repeats++;
@@ -254,13 +300,13 @@ export function autotag(raw) {
       if (FIELD_TAGS.has(n.tagName)) {
         const text = textOf(n);
         if (text.length >= 3 && !elementChildren(n).some(k => FIELD_TAGS.has(k.tagName)) && !holdsMarked(n, marked)) {
-          const key = uniq(`${prefixFor(ancestors)}_${slug(text)}`);
+          const key = uniq(wordsKey(n, ancestors, text));
           if (annotate(n, ` data-cms="${key}"`)) counts.fields++;
           return;
         }
       }
       if (n.tagName === 'img' && attrOf(n, 'src')) {
-        const key = uniq(`${prefixFor(ancestors)}_img`);
+        const key = uniq(imgKey(n, ancestors));
         if (annotate(n, ` data-cms="${key}" data-cms-attr="src"`)) counts.images++;
         return;
       }

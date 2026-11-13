@@ -215,6 +215,21 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its words now say that. A person who may only suggest still sends the
   editable parts, and is told that the rest stays
   (`src/editor/restore-page.js`).
+- **The editor names the parts of a page in words anyone knows.** On a site
+  made with a page builder the editor showed names such as "Elementor widg
+  featured products" and "Astra shop picture 2", because a part's name was
+  made from its class names and held to 14 letters, which cut "widget" in
+  half. The first pass now makes no name from a page builder's, a theme's or
+  a shop plugin's own classes (Elementor, WordPress blocks, Astra,
+  WooCommerce, Divi, Beaver Builder, Squarespace, Wix and others like them).
+  On such a page a part is named from its own words ("Featured products
+  heading"), a picture from its description ("Yellow shoes picture"), and a
+  picture without one from where it is ("Shop picture 2", "Footer picture").
+  No name is cut in the middle of a word any more, on any site. Parts that
+  were already named keep the name they have, and for those the editor leaves
+  the builder's words out of what it shows, so a page marked before this
+  reads "Featured products" and "Shop picture 2" as well.
+
 - **A rescued site keeps its fonts and its icons.** A site that asked Google
   Fonts, Bunny Fonts or Font Awesome for its typefaces kept asking them after
   it was copied, and a copy made for a browser the service did not know got
