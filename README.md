@@ -146,7 +146,8 @@ the way the site was built.
 ### People and access
 
 - **Invite by Google email**, with no GitHub account needed, for 1 to 360 days or with no
-  end date. Removing someone ends their access at once.
+  end date. Removing someone ends their access: an editor at once, a member within
+  about five minutes.
 - **Choose what each person can change:** whole site, some pages, or some parts of a
   page, and which tools they get (drafts, History, new posts, scheduling, the menu, find
   and replace, comments, the AI helper, blocks, theme).

@@ -49,7 +49,8 @@ cookie, and `KILN_WORKER` points the sign-in function at your sign-in service.
 
 Open **People & access** in the Kiln menu and add someone by their Google email as a
 **Member**, for 1 to 360 days or with no end date. They sign in at
-`/members-login.html`. Removing someone ends their access at once.
+`/members-login.html`. Removing someone ends their access within about five minutes, even while they
+are signed in.
 
 Two things to know. Every invited editor can read the members-only pages too. And when
 a Kiln Cloud plan ends, members who are already signed in lose access within about five

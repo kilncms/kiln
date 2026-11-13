@@ -43,6 +43,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the guide's tips and fails when anything lies on them
   (`src/editor/firstrun.js`).
 
+- **People & access says how soon a removed person loses access.** It said "at
+  once" for everybody. That is so for an editor. A member is turned away from
+  the members area within about five minutes, which is how often a site's gate
+  asks Kiln whether each signed-in member is still on the list. The dialog, the
+  README and the members guide now say so.
+
 ## [0.6.7] - 2026-11-13
 
 ### Added

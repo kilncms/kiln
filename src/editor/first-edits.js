@@ -60,7 +60,7 @@ export const PEOPLE_WORDS = {
   never: 'Never expires',
   toolsHint: 'Changing words and pictures is always allowed. People & access and the site’s Settings stay yours alone.',
   suggest: 'Their Publish sends you a suggestion to approve, under Suggestions. Nothing on the live site changes until you do.',
-  signIn: 'People here sign in with their Google account. Removing someone ends their access at once, even while they are signed in.',
+  signIn: 'People here sign in with their Google account. Removing someone ends their access even while they are signed in: an editor at once, a member within about five minutes.',
 };
 
 /** The largest picture the demo keeps, as it is stored: one megabyte. A browser gives a site about five for everything. */
