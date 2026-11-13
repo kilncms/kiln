@@ -259,6 +259,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   make a ref of any name. It now passes on a branch (`refs/heads/...`) and the
   tag a named version is kept as (`refs/tags/kiln/<time>-<name>`), and refuses
   the rest before GitHub is asked.
+- **The editor of a site whose files Kiln keeps reads what it needs from the
+  site's repository and nothing more.** The service passed on any read below
+  the repository, which could have included the list of people who work on
+  it. It now passes on the repository itself, its files, its git objects,
+  commits, branches and comparisons, and the deployments and statuses that say
+  a publish is live. Any other read gets the sentence a request for another
+  repository gets, "This sign-in is for one repository only, and this request
+  is for something else, so Kiln did not send it to GitHub." An owner who
+  signed in with GitHub reads exactly as before.
 
 ## [0.6.6] - 2026-11-13
 

@@ -521,3 +521,33 @@ test('a kept owner makes the refs the editor makes, a branch and a named version
   }
   assert.deepEqual(sent, made, 'nothing more was made');
 });
+
+test('a kept owner reads what the editor needs from their repository, and any other read is refused before GitHub is asked', { skip: d1Skip }, async () => {
+  const w = world();
+  const { session } = await open(w);
+  const whole = await site(w, 'GET', `/gh/repos/${REPO}`, { session });
+  assert.equal(whole.status, 200, 'the repository itself');
+  const passed = [
+    '/contents/index.html?ref=main', '/contents', '/contents/', '/git/ref/heads/main', '/git/matching-refs/tags/kiln/', '/git/matching-refs/heads/kiln/',
+    '/git/trees/main?recursive=1', '/git/blobs/b1', '/commits?path=index.html&per_page=1', '/commits/abc123', '/commits/abc123/status', '/branches', '/branches/main',
+    '/compare/main...kiln-drafts', '/deployments?sha=abc123&per_page=1', '/deployments/5/statuses?per_page=1', '/statuses/abc123',
+  ];
+  for (const rest of passed) {
+    const r = await site(w, 'GET', `/gh/repos/${REPO}${rest}`, { session });
+    assert.notEqual(r.json && r.json.code, 'owner_scope', rest);
+    assert.deepEqual(beyondIdentity(r.calls).map(c => `${c.method} ${c.url} ${c.headers.Authorization}`), [`GET https://api.github.com/repos/${REPO}${rest} Bearer inst-1`], rest);
+  }
+  const refused = [
+    '/collaborators', '/collaborators/somebody/permission', '/assignees', '/contributors', '/teams', '/hooks', '/keys', '/actions/secrets', '/actions/runs',
+    '/environments', '/pulls', '/issues', '/events', '/forks', '/installation', '/commitsx', '/gitx/refs', '/branches-where-head', '/contents%2F..%2Fcollaborators', '/zipball/main',
+  ];
+  for (const rest of refused) {
+    for (const method of ['GET', 'HEAD']) {
+      const r = await site(w, method, `/gh/repos/${REPO}${rest}`, { session });
+      assert.ok(r.status === 403 || r.status === 400, `${method} ${rest}: ${r.status}`);
+      if (method === 'GET' && r.status === 403) assert.equal(r.json.code, 'owner_scope', rest);
+      assert.equal(beyondIdentity(r.calls).length, 0, `${method} ${rest} never reached GitHub`);
+    }
+  }
+  assert.ok(await record(w.env, session), 'and the session is still there');
+});

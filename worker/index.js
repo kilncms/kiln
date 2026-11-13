@@ -3712,6 +3712,17 @@ function keptWriteAllowed(method, rest, parsed) {
   if (p === '/git/trees' && (!parsed || !Array.isArray(parsed.tree) || parsed.tree.some(e => underDotGithub(e && e.path)))) return false;
   return true;
 }
+// What the editor of a site whose files Kiln keeps reads with the service's
+// own token: the repository itself, its files, the git objects, branches and
+// commits a save is made of, and what says a publish is live (deployments and
+// a commit's status). Nothing else GitHub serves under the repository, such as
+// who works on it, is asked for.
+const KEPT_READS = /^(?:\/?|\/(?:contents|git|commits|branches|compare|deployments|statuses)(?:\/.*)?)$/;
+function keptReadAllowed(rest) {
+  let p = rest.split('?')[0];
+  try { p = decodeURIComponent(p); } catch { return false; }
+  return KEPT_READS.test(p);
+}
 /**
  * Whether the owner of a site whose files Kiln keeps may have this file
  * written for them. It is the proxy's own rule for a contents write, asked by
@@ -3747,6 +3758,7 @@ async function keptProxy(request, env, owner, ghPath) {
   if (await answersAsAnother(env, sess.repo, sess.rid)) return sessionRepoChanged();
   const rest = ghPath.slice(asked[0].length);
   const write = !['GET', 'HEAD'].includes(request.method);
+  if (!write && !keptReadAllowed(rest)) return scope();
   const headers = { Accept: request.headers.get('Accept') || 'application/vnd.github+json', 'User-Agent': UA };
   for (const h of ['If-None-Match', 'If-Modified-Since']) { const v = request.headers.get(h); if (v) headers[h] = v; }
   let body;
