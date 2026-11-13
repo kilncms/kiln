@@ -49,6 +49,7 @@ import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
 import { limitsSaid } from './your-pages.js';
 import { addedSectionLine, scheduleHow, scheduledWhen } from './said-plainly.js';
 import { scheduleItem, scheduledRow, mergeScheduled, cancelQuestion, cancelledLine, scheduledLine, LIST_TITLE, NOTHING_SCHEDULED, PUBLISH_FIRST, CANCEL_YES, CANCEL_NO } from './scheduled-changes.js';
+import { makeSending, asksBeforeLeaving } from './sending.js';
 import { findEverywhere, replaceEverywhere, changedSinceText, previewText, noMatchText, replacedText } from './find-replace.js';
 import { aiAfter, aiOffered, noAiKey } from './ai-offered.js';
 import { DRAFT_BRANCH, draftSaveMessage, draftDeleteMessage, draftPublishedMessage, blobSha, draftOfPage, draftWords, DRAFT_DELETE_REFUSED } from './draft-state.js';
@@ -180,6 +181,7 @@ const state = {
   scheduledMine: new Set(),   // ids of the schedules this tab made: "by you", and the page still shows their words
   scheduledMade: [],          // those rows, shown until the service lists them (its list can lag a minute)
   scheduledGone: new Map(),   // id → when this tab cancelled it, left out for the same reason
+  sending: makeSending(),     // saves and publishes on their way to the service: leaving the page meanwhile asks first (sending.js)
   active: null,
   // Binary uploads (images/docs) queued for the NEXT Publish, so nothing is
   // committed to the repo until you actually publish (Discard leaves no orphans).
@@ -433,10 +435,23 @@ async function init() {
 
   window.addEventListener('beforeunload', (e) => {
     // Leaving to sign in again was chosen in a dialog that said what is kept.
-    if (leavingToSignIn) return;
-    if (state.pending.size || state.pendingBinaries.size || state.pendingStructural.length
-      || state.pendingSource.size) { e.preventDefault(); e.returnValue = ''; }
+    // Otherwise the browser asks "Leave site?" while there are unpublished edits,
+    // as it always has, and while a save or a publish is still on its way to the
+    // service (sending.js): "Save to all pages" takes ten seconds or more, and
+    // leaving in that time lost the save without a word.
+    const unpublished = !!(state.pending.size || state.pendingBinaries.size || state.pendingStructural.length
+      || state.pendingSource.size);
+    if (asksBeforeLeaving({ toSignIn: leavingToSignIn, unpublished, sending: state.sending.any })) { e.preventDefault(); e.returnValue = ''; }
   });
+}
+
+/**
+ * Runs a save or a publish as something being sent: from here until the
+ * service has answered or the attempt has failed, leaving the page asks the
+ * browser's "Leave site?" question first (sending.js). The demo sends nothing.
+ */
+function whileSending(work) {
+  return cfg.sandbox ? work() : state.sending.during(work);
 }
 
 // ─── A sign-in that has ended ────────────────────────────────────────────────
@@ -3837,6 +3852,11 @@ function sourceHaystack() {
 }
 
 async function publish(opts = {}) {
+  return whileSending(() => publishNow(opts));
+}
+
+/** The publish itself. publish() above counts it as being sent. */
+async function publishNow(opts = {}) {
   // Still typing in a field? That text is part of what the person is publishing:
   // stage it first (the click-away that normally does this runs after us).
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
@@ -6727,10 +6747,12 @@ function menuEditor() {
       // Every page is read, then all of them are saved as one change, or none
       // is (menu-save.js): a refusal part-way leaves the site as it was.
       const branch = cfg.branch || 'main';
+      // From this press until the save has answered or failed, leaving the page asks first (sending.js).
+      const sent = state.sending.start();
       const { changed, skipped: skippedPages, same, commit } = await saveMenuEverywhere({
         gh: state.gh, repo: cfg.repo, branch, menuKey, rewrite: (inner) => rewriteMenu(inner, origin, asked), getFile, applyEdits, commitFiles,
         onStep: (step) => { status.textContent = menuStepText(step); },
-      });
+      }).finally(sent);
       // Nothing differs from what the pages already hold: no page is written, and that is said.
       if (!commit && same) { status.textContent = MENU_SAME; return; }
       if (!commit) throw said('No page of the site has this menu marked for Kiln. For the owner: the menu needs a matching data-cms-menu container');

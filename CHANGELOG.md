@@ -86,6 +86,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   run a minute behind. After scheduling, the dialog and the status line say
   when the change will be published, and that the page here shows the
   scheduled words until then while visitors still see the old ones.
+- **Leaving the page while a save is being sent asks first.** "Site menu >
+  Save to all pages" writes many pages and takes ten seconds or more. Someone
+  who closed the tab or followed a link in that time lost the save, and
+  nothing warned them. From the press of the button until the service has
+  answered, the browser now asks its own "Leave site?" question, and the same
+  holds for a publish that is on its way. It asks at no other time, apart from
+  the question it has always asked while there are unpublished edits.
 
 ## [0.6.4] - 2026-11-12
 
