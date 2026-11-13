@@ -250,17 +250,41 @@ export async function accountReach(env, { login, uid = null } = {}) {
 // An answer about GitHub is kept for three seconds for the account, so several
 // open tabs of the dashboard cost one ask. KV keeps nothing for less than a
 // minute, so the entry carries its own time and is believed for three seconds.
-// An answer GitHub did not give in full is never kept.
+// An answer GitHub did not give in full is never kept. `keptMs` may name a
+// longer time for an answer: a "no" about one named repository is believed for
+// a minute (REACH_NO_KEPT_MS), so a dashboard that looks every four seconds
+// for a repository that is not there yet asks GitHub once a minute.
 const REACH_KEPT_MS = 3000;
-async function keptReach(env, key, settled, ask) {
+const REACH_NO_KEPT_MS = 60000;
+async function keptReach(env, key, settled, ask, keptMs = () => REACH_KEPT_MS) {
   try {
     const kept = await env.KILN.get(key, 'json');
     const age = kept ? Date.now() - Number(kept.at) : NaN;
-    if (kept && kept.answer && age >= 0 && age < REACH_KEPT_MS) return kept.answer;
+    if (kept && kept.answer && age >= 0 && age < keptMs(kept.answer)) return kept.answer;
   } catch { /* an entry that cannot be read is asked for again */ }
   const answer = await ask();
-  if (settled(answer)) { try { await env.KILN.put(key, JSON.stringify({ at: Date.now(), answer }), { expirationTtl: 60 }); } catch { /* the answer still goes out */ } }
+  if (settled(answer)) { try { await env.KILN.put(key, JSON.stringify({ at: Date.now(), answer }), { expirationTtl: Math.max(60, 2 * Math.ceil(keptMs(answer) / 1000)) }); } catch { /* the answer still goes out */ } }
   return answer;
+}
+
+// One account may ask about thirty different repositories in an hour. Every
+// new name costs a request to GitHub, and the ones made as Kiln's App come out
+// of one allowance that every customer's saving shares, so one account must
+// not be able to spend it. The names asked this hour are kept under
+// `cghn:<account id>:<hour>`; a name that is already among them is not counted
+// again. False when this name would be the thirty-first. KV has no way to add
+// one in a single step, so two requests at the same instant can both be let
+// through: the limit is close to thirty, and the count per network address in
+// index.js is the hard stop.
+const REPO_NAMES_AN_HOUR = 30;
+async function mayAskAbout(env, accountId, name) {
+  const key = `cghn:${accountId}:${Math.floor(Date.now() / 3600000)}`;
+  let names = [];
+  try { const kept = await env.KILN.get(key, 'json'); if (Array.isArray(kept)) names = kept; } catch { /* a list that cannot be read starts again */ }
+  if (names.includes(name)) return true;
+  if (names.length >= REPO_NAMES_AN_HOUR) return false;
+  try { await env.KILN.put(key, JSON.stringify([...names, name]), { expirationTtl: 7200 }); } catch { /* the question is still answered */ }
+  return true;
 }
 
 /** Does the signed-in user (via their stored OAuth token) have push on the repo? */
@@ -1896,7 +1920,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   // memory. It reads and changes nothing. The list is for the person's own
   // account; `?repo=owner/name` asks about one repository, their own or an
   // organization's. `installed: null` means GitHub did not answer, so the
-  // dashboard leaves what it shows as it is.
+  // dashboard leaves what it shows as it is; for one named repository it is
+  // also the answer when the repository is not the person's (`yours` is not
+  // true), whatever is the case at GitHub.
   if (path === '/cloud/github' && request.method === 'GET') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     // A person signed in with Google has no GitHub account for the App to be on.
@@ -1908,12 +1934,20 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       if (inKeepOrg(env, one)) return json({ error: keepSentence('in_keep_org'), code: 'in_keep_org' }, 403);
       // `yours` follows the rule of POST /cloud/sites below: a repository under
       // the person's own login is theirs, and any other is asked about with
-      // their own GitHub sign-in.
+      // their own GitHub sign-in. That question comes first, and GitHub is
+      // asked as Kiln's App only for a repository that is the person's: a
+      // made-up name under somebody else's login costs the asker's allowance
+      // at GitHub and none of Kiln's, and nobody learns whether a stranger's
+      // private repository exists or has Kiln on it (`installed` stays null).
       const mine = one.split('/')[0].toLowerCase() === String(sess.login || '').toLowerCase();
-      const answer = await keptReach(env, `cgh:${sess.account_id}:${one.toLowerCase()}`, (a) => a.installed !== null && a.yours !== null, async () => {
-        const [installed, push] = await Promise.all([repoReach(env, one), mine ? 'yes' : userPushAnswer(sess.gh, one)]);
-        return { installed, yours: push === 'yes' ? true : push === 'no' ? false : null };
-      });
+      const name = one.toLowerCase();
+      const answer = await keptReach(env, `cgh:${sess.account_id}:${name}`, (a) => !a.many && (a.yours === false || (a.yours === true && a.installed !== null)), async () => {
+        if (!(await mayAskAbout(env, sess.account_id, name))) return { many: true };
+        const push = mine ? 'yes' : await userPushAnswer(sess.gh, one);
+        if (push !== 'yes') return { installed: null, yours: push === 'no' ? false : null };
+        return { installed: await repoReach(env, one), yours: true };
+      }, (a) => (a.yours === false || a.installed === false ? REACH_NO_KEPT_MS : REACH_KEPT_MS));
+      if (answer.many) return json({ error: 'You have asked about many repositories in a short time. Wait a few minutes, then try again.', code: 'too_many' }, 429);
       return json({ ok: true, repo: one, installed: answer.installed, yours: answer.yours });
     }
     const reach = await keptReach(env, `cgh:${sess.account_id}`, (a) => a.installed !== null, () => accountReach(env, { login: sess.login, uid: sess.uid ?? null }));

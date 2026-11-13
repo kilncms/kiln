@@ -84,6 +84,21 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The route the copying job answers on is counted for each address**, like
   the dashboard's other routes. It takes no sign-in (its answer is signed
   instead), so until now a stranger could send it requests without limit.
+- **One account cannot use up what GitHub allows Kiln's App by asking about
+  one repository after another.** The service's answer about one named
+  repository asks GitHub as Kiln's App, and the App has one allowance at
+  GitHub that every customer's saving shares. One account may now ask about
+  thirty different repositories in an hour. After that the service answers
+  "You have asked about many repositories in a short time. Wait a few minutes,
+  then try again." A "no" (Kiln's App is not on the repository, or the
+  repository is not yours) is kept for one minute, so a dashboard that looks
+  every four seconds asks GitHub once a minute. A "yes" is kept for three
+  seconds as before.
+- **Nobody learns whether somebody else's private repository exists or has
+  Kiln on it.** For a repository that is not yours, the service no longer
+  says whether Kiln's App is installed on it, and it no longer asks GitHub as
+  the App about it at all. It asks GitHub with your own sign-in first whether
+  the repository is yours, and asks as the App only when it is.
 
 ## [0.6.8] - 2026-11-13
 
