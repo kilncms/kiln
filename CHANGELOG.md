@@ -37,6 +37,37 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`KEEP_ORG`, `KEEP_APP_ID`, `KEEP_APP_KEY`, the key as GitHub hands it out),
   and needs Kiln's hosting; `KEEP_STARTER` names another starter site than
   `kilncms/kiln-demo`. Without them nothing changes.
+- **A site can be brought in from somewhere else: the service side of "Bring
+  my site in".** The dashboard has no button yet. `POST /cloud/sites/bring`
+  with the old site's address, a name if the person gave one, and `mine: true`
+  (the tick that says the site is theirs to copy) starts a site Kiln keeps the
+  files of, with an empty repository, and starts a job on a GitHub Actions
+  runner that copies the old site into it with `kiln rescue`. The service
+  itself never reads the address: only the runner does. The address must be
+  one anyone can open on the web: an IP address, `localhost`, a name with no
+  dot, an ending such as `.local` or `.internal`, a port other than 80 or 443,
+  a name and password, and any address of Kiln's own are each refused with one
+  sentence. The limits of starting a site hold here too, and accounts that pay
+  for no site get one copy of a given site in 30 days. The runner answers on
+  `POST /cloud/convert/done` and signs its answer with a shared secret
+  (`X-Kiln-Signature`, the HMAC-SHA256 of the body). A wrong or missing
+  signature changes nothing, and an answer that arrives twice is taken once.
+  When the copy worked, the service writes the site's own settings file and
+  its owner gets the mail "Your site is copied": how many pages, the temporary
+  address, what did not come across, how the editor opens, and the free days.
+  When it did not, the owner gets "The copy of (the address) did not work"
+  with the reason, what to try, and that nothing was charged, and `POST
+  /cloud/sites/bring/again` starts the copy once more, three tries for a site
+  at most. A copy whose job says nothing for 30 minutes is given up on, and
+  its owner and the operator are told. `/cloud/me` and `/healthz` say `brings`
+  when the service can do this, a site that was brought in carries `bring` on
+  `/cloud/me`, and `GET /cloud/sites/bring?site=<id>` adds the report of what
+  was left out. It is switched on with `CONVERT_SECRET` where sites can be
+  started, and needs migration `0009_conversions.sql`; `CONVERT_REPO` and
+  `CONVERT_WORKFLOW` name another job than `convert.yml` in `kiln-converter`
+  in the organization where Kiln keeps files. The service does not put the
+  copied site on Kiln's hosting by itself yet: the dashboard's own step does
+  that. Nothing here deletes, renames or hands over a repository.
 
 - **The owner of a site Kiln keeps the files of can edit it, with no GitHub
   account.** The service now answers for it, though the dashboard has no
