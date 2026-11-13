@@ -62,6 +62,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   content files, naming a version in History, "Make this whole page
   editable" and adding the first reusable block. The demo sends nothing and
   asks nothing, as before.
+- **No Publish button on a page you cannot change.** An invited editor who
+  may change only some pages opened one that is not theirs. The status line
+  said so, but the Kiln menu still showed a greyed Publish button that never
+  woke, with no word of why. On a page they cannot change at all, the menu no
+  longer shows Publish, Discard edits or Schedule for later. Everything that
+  takes them to a page they can work on stays, with changes they already
+  scheduled and Sign out. On a page where some parts are theirs, nothing
+  changes.
 
 ## [0.6.5] - 2026-11-13
 

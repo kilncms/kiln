@@ -81,3 +81,16 @@ export function limitsSaid(who = {}) {
   if (who.anyPart === false) return `No part of this page is one you can ${change}.`;
   return `You can ${change} the outlined parts of this page.`;
 }
+
+/**
+ * Whether there is nothing on this page the person can change: the page is
+ * outside their pages, or they were given only some parts of pages and none
+ * of them is here. The menu then leaves out Publish, Discard edits and
+ * Schedule for later, which could do nothing, and the sentence above says
+ * why. On a page with a part of theirs all three are offered as before.
+ *
+ * Takes what limitsSaid takes.
+ */
+export function nothingToChange(who = {}) {
+  return who.pageMine === false || (!!who.partsLimited && who.anyPart === false);
+}

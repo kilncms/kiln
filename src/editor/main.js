@@ -46,7 +46,7 @@ import { publishLabel, editCommitMessage, goingLiveLabel, initGuide, guideSync, 
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
-import { limitsSaid } from './your-pages.js';
+import { limitsSaid, nothingToChange } from './your-pages.js';
 import { addedSectionLine, scheduleHow, scheduledWhen } from './said-plainly.js';
 import { scheduleItem, scheduledRow, mergeScheduled, keepRecent, readRecent, cancelQuestion, cancelledLine, scheduledLine, LIST_TITLE, NOTHING_SCHEDULED, PUBLISH_FIRST, CANCEL_YES, CANCEL_NO } from './scheduled-changes.js';
 import { makeSending, asksBeforeLeaving } from './sending.js';
@@ -1043,16 +1043,29 @@ function keyInScope(key) {
  * only its outlined parts are. '' for the owner, the demo, someone who only
  * comments (they have a line of their own) and a page the site builds from
  * content files (what is theirs there is decided field by field).
+ * `tell` is what is asked of those facts: the sentence, or whether there is
+ * nothing on this page for them to change (nothingToChangeHere).
  */
-function limitsHere() {
+function limitsHere(tell = limitsSaid) {
   if (mode !== 'editor' || cfg.sandbox || !state.page?.path || state.scope?.mode === 'review') return '';
   const partsLimited = !!state.scope?.keys?.length;
   // A part inside a list goes by the list's name, as it does when it is outlined.
   const nameOf = (el) => (el.closest('[data-cms-repeat]') || el).getAttribute('data-cms-repeat') || el.getAttribute('data-cms');
-  return limitsSaid({
+  return tell({
     pageMine: pageInScope(), paths: state.scope?.paths, root: cfg.root, suggest: state.scope?.mode === 'suggest', partsLimited,
     anyPart: !partsLimited || [...document.querySelectorAll('[data-cms],[data-cms-repeat]')].some(el => keyInScope(nameOf(el) || '')),
   });
+}
+
+/**
+ * An invited editor on a page they cannot change at all (your-pages.js
+ * nothingToChange). Publish, Discard edits and Schedule for later could do
+ * nothing there, so the menu leaves them out (refreshPublishButton), and the
+ * status line says which pages are theirs. Asked of the same facts as the
+ * sentence, so the two cannot disagree.
+ */
+function nothingToChangeHere() {
+  return limitsHere(nothingToChange) === true;
 }
 
 /** Suggest-mode editor: their Publish proposes instead of committing (worker-enforced). */
@@ -9769,8 +9782,13 @@ function refreshPublishButton() {
   // The number of things the publish sheet lists: every change to a list is one, as every edit to a field is.
   const n = changeCount();
   state.shownCount = n;   // kept with the saved copy of the edits, so the offer to bring them back says this number too
+  // An invited editor on a page they cannot change at all has nothing to
+  // publish, discard or schedule here. A greyed Publish that never wakes said
+  // nothing of why: those three are left out of the menu, and the status line
+  // says which pages are theirs. The rest of the menu stays, with Sign out.
+  const closed = nothingToChangeHere();
   // A queued upload with no field edit still needs a Publish to commit it.
-  const anything = n || state.pendingBinaries.size || state.pendingStructural.length || !!state.restoring;
+  const anything = !closed && !!(n || state.pendingBinaries.size || state.pendingStructural.length || state.restoring);
   const btn = document.getElementById('kiln-publish');
   // The same action, always in sight beside the pencil while something is unpublished.
   const quick = document.getElementById('kiln-publish-quick');
@@ -9789,6 +9807,7 @@ function refreshPublishButton() {
     // A suggest-only editor on a page the site builds from content files has
     // nothing a suggestion can carry: the button is not in the menu there.
     btn.hidden = isSuggestMode() && !!state.page && !state.page.path && !anything;
+    if (closed) btn.hidden = true;
   }
   if (quick) {
     quick.textContent = label;
@@ -9806,7 +9825,7 @@ function refreshPublishButton() {
   // Draft + Schedule + Share preview need actual PAGE edits (not just an uploaded
   // binary — and not source-file edits, which none of them can carry), and an
   // editor must be granted them (dataset.gated set by applyFeatureGating).
-  const nHtml = state.pending.size;
+  const nHtml = closed ? 0 : state.pending.size;
   const sched = document.getElementById('kiln-schedule');
   if (sched) {
     // There while there is an edit to schedule or something scheduled to see (scheduled-changes.js).
