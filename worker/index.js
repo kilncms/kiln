@@ -175,7 +175,9 @@ async function routeRequest(request, env, ctx) {
       // What the dashboard does to a site's repository reads every page from
       // GitHub (and the checklist visits the site itself), so one address cannot
       // ask for it over and over: the same limit as the sign-in routes.
-      if (path.startsWith('/cloud/sites/')) {
+      // The route the copying job answers on takes no sign-in (the answer is signed instead), so a stranger could
+      // hammer it: it is counted for the address like the others.
+      if (path.startsWith('/cloud/sites/') || path === '/cloud/convert/done') {
         const limited = await rateLimited(request, env);
         if (limited) return limited;
       }

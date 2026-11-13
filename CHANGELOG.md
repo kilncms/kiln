@@ -79,6 +79,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   whose site was removed before the migration ran has no account on record,
   so for that one the old answer stands and info@kilncms.com sets it up.
 
+### Security
+
+- **The route the copying job answers on is counted for each address**, like
+  the dashboard's other routes. It takes no sign-in (its answer is signed
+  instead), so until now a stranger could send it requests without limit.
+
 ## [0.6.8] - 2026-11-13
 
 ### Added

@@ -449,6 +449,14 @@ test('prepare: the service adds what the setup tool adds (the same two lines, th
   assert.equal(half.html, `<body>\n${KILN_TAGS[0]}\n${KILN_TAGS[1]}\n</body>`, 'the settings line is not repeated');
 });
 
+test('the route the copying job answers on is counted for the address too, since it takes no sign-in', async () => {
+  let asked = 0;
+  const env = { KILN: fakeKV(), RL: { limit: async ({ key }) => { asked++; assert.equal(key, '203.0.113.9'); return { success: false }; } } };
+  const res = await worker.fetch(new Request('https://worker.example/cloud/convert/done', { method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.9', 'Content-Type': 'application/json' }, body: '{}' }), env);
+  assert.equal(res.status, 429);
+  assert.equal(asked, 1);
+});
+
 test('prepare: one address cannot ask the dashboard\'s repository routes over and over', { skip: d1Skip }, async () => {
   const { gh, env, handler } = world({ 'index.html': page('Home') });
   let left = 2;
