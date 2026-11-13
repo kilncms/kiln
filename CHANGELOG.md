@@ -254,6 +254,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   schedule it again." A change of that kind that was already waiting is
   dropped when its time comes and is never written. An owner who signed in
   with GitHub schedules exactly as before.
+- **The editor of a site whose files Kiln keeps makes branches and named
+  versions, and no other kind of ref.** The service passed on a request to
+  make a ref of any name. It now passes on a branch (`refs/heads/...`) and the
+  tag a named version is kept as (`refs/tags/kiln/<time>-<name>`), and refuses
+  the rest before GitHub is asked.
 
 ## [0.6.6] - 2026-11-13
 

@@ -3698,10 +3698,16 @@ const KEPT_WRITES = [
   ['PATCH', /^\/git\/refs\/heads\/.+/],
 ];
 const underDotGithub = (p) => String(p || '').split('/').some(part => part.toLowerCase() === '.github');
+// The refs the editor makes: a branch (`kiln-drafts`, a suggestion's
+// `kiln/...`), and the tag a named version is kept as,
+// `refs/tags/kiln/<seconds>-<slug>` (the editor's slugifyVersionName). No other
+// kind of ref is made with the service's token.
+const KEPT_NEW_REF = /^refs\/(?:heads\/.+|tags\/kiln\/\d{1,15}-[a-z0-9][a-z0-9-]{0,39})$/;
 function keptWriteAllowed(method, rest, parsed) {
   let p = rest.split('?')[0];
   try { p = decodeURIComponent(p); } catch { return false; }
   if (!KEPT_WRITES.some(([m, re]) => m === method && re.test(p))) return false;
+  if (p === '/git/refs' && !(parsed && typeof parsed.ref === 'string' && KEPT_NEW_REF.test(parsed.ref))) return false;
   if (p.startsWith('/contents/') && underDotGithub(p.slice('/contents/'.length))) return false;
   if (p === '/git/trees' && (!parsed || !Array.isArray(parsed.tree) || parsed.tree.some(e => underDotGithub(e && e.path)))) return false;
   return true;

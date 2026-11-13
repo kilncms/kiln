@@ -491,3 +491,33 @@ test('an owner who signed in with GitHub schedules a change under .github exactl
   assert.equal(stored.path, '.github/dependabot.yml');
   assert.equal(stored.kept, undefined);
 });
+
+test('a kept owner makes the refs the editor makes, a branch and a named version\'s tag, and no other kind of ref', { skip: d1Skip }, async () => {
+  const w = world();
+  const { session } = await open(w);
+  const sent = [];
+  const inner = w.hub.handler;
+  w.hub.handler = async (url, init) => {
+    if (url === `https://api.github.com/repos/${REPO}/git/refs` && init.method === 'POST') { sent.push(JSON.parse(init.body).ref); return jsonRes({ ref: JSON.parse(init.body).ref }, 201); }
+    return inner(url, init);
+  };
+  // What the editor sends: the drafts branch, a suggestion's branch, and a named version.
+  const made = ['refs/heads/kiln-drafts', 'refs/heads/kiln/suggest-rosa-1731500000', 'refs/tags/kiln/1731500000-summer-menu', 'refs/tags/kiln/1731500000-a'];
+  for (const ref of made) {
+    const r = await site(w, 'POST', `/gh/repos/${REPO}/git/refs`, { session, body: { ref, sha: 'c0ffee' } });
+    assert.equal(r.status, 201, ref);
+  }
+  assert.deepEqual(sent, made, 'each went to GitHub as it was sent');
+
+  const refused = [
+    'refs/tags/v1.0.0', 'refs/tags/kiln/summer-menu', 'refs/tags/kiln/1731500000-', 'refs/tags/kiln/1731500000-Summer', 'refs/tags/kiln/1731500000-a/b',
+    'refs/notes/commits', 'refs/pull/1/head', 'refs/remotes/origin/main', 'refs/heads/', 'heads/main', 'refs/heads', '', undefined, 7, ['refs/heads/main'],
+  ];
+  for (const ref of refused) {
+    const r = await site(w, 'POST', `/gh/repos/${REPO}/git/refs`, { session, body: { ref, sha: 'c0ffee' } });
+    assert.equal(r.status, 403, String(ref));
+    assert.equal(r.json.code, 'owner_scope', String(ref));
+    assert.equal(beyondIdentity(r.calls).length, 0, `${String(ref)} never reached GitHub`);
+  }
+  assert.deepEqual(sent, made, 'nothing more was made');
+});
