@@ -99,7 +99,7 @@ formatting is left as it was and each commit's diff is small.
 | `kiln-editor.js` | The editor, loaded only after sign-in | about 710 KB, 225 KB compressed |
 | Sign-in service (`kiln-auth`) | A Cloudflare Worker: GitHub and Google sign-in, and the commit pipeline every invited editor's change goes through | Cloudflare's free Workers plan for a few editors (see [self-hosting](docs/self-hosting.md)) |
 | Your repository | The content, with every earlier version | free |
-| Your host | Serves the site; Cloudflare Pages also runs the members area | free on Cloudflare Pages or GitHub Pages |
+| Your host | Serves the site; Cloudflare Pages and Kiln's own hosting also run the members area | free on Cloudflare Pages or GitHub Pages |
 
 </details>
 
@@ -462,7 +462,7 @@ or write to info@kilncms.com. [SECURITY.md](SECURITY.md) lists what matters most
 - **Renaming a page means making a new one.** There is no change of address with a
   redirect.
 - **The first-pass tagger skips tables.** Mark those by hand or in the browser.
-- **The members area needs Cloudflare Pages**, because its gate is a Pages Function.
+- **The members area needs Cloudflare Pages or Kiln's own hosting.** On Cloudflare Pages its gate is a Pages Function that you add to the site. On Kiln's hosting there is nothing to set up beyond the sign-in page: put pages under `members/` and Kiln guards them.
 - **The AI writing helper is self-hosted only**, with your own Anthropic key.
 
 ## Development

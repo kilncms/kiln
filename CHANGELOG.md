@@ -6,6 +6,22 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A site on Kiln's hosting can have a members area.** Put pages under
+  `members/` and add the sign-in page (`members-login.html`) to the top of the
+  site, and only the people on the site's list of members can open those pages,
+  after they sign in with Google. There are no functions and no secrets to set
+  up: Kiln uploads the gate with the site's files the next time it publishes
+  the site, and the gate works at the site's temporary address and at its own
+  domain. Every other page is still served as a plain file. "Check this site"
+  says in a line of its own whether the members area is on. For whoever runs
+  the service: the members area is switched on by one new secret,
+  `HOSTING_MEMBER_KEY`, together with the new variable `HOSTING_SERVICE_URL`
+  (both are in ENVIRONMENTS.md). Until the secret is set, a hosted site's pages
+  under `members/` are open to anyone, as they were before, and "Check this
+  site" says so and asks the owner to write to info@kilncms.com.
+
 ## [0.6.7] - 2026-11-13
 
 ### Added

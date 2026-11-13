@@ -11,7 +11,13 @@ responses are sent `private, no-store`, so neither a shared cache nor the browse
 a copy after a member signs out. There is no database and no per-seat price: members
 are entries in the site's People list.
 
-The members area needs Cloudflare Pages, because the gate is a Pages Function. Members
+The members area needs Cloudflare Pages or Kiln's own hosting. On Cloudflare Pages the
+gate is a Pages Function that you add to the site, and the rest of this page says how.
+On Kiln's hosting (the Kiln Cloud + hosting plan) there are no functions and no secrets
+to set up: put the pages under `members/`, copy `templates/members-login.html` to the
+top of the site, and Kiln guards those pages by itself the next time it publishes the
+site, at the site's temporary address and at its own domain. Then press "Check this
+site" in the dashboard: its last line says whether the members area is on. Members
 sign in with Google, so the sign-in service needs [Google sign-in](google-sign-in.md)
 (sites on Kiln Cloud, with or without hosting, have it already).
 

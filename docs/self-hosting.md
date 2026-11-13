@@ -108,7 +108,8 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET --config wrangler.self.toml
 ## Members area (optional)
 
 Gates everything under `/members/` — pages and files — at the edge, on Cloudflare
-Pages. Copy the entire `templates/functions/` directory (4 files) into your site's
+Pages. (A site on Kiln's own hosting needs none of the steps below: Kiln guards its
+pages under `members/` by itself.) Copy the entire `templates/functions/` directory (4 files) into your site's
 `functions/`, and `templates/_routes.json` and `templates/members-login.html` to the
 site root, then set the two Pages secrets ([members-area.md](members-area.md) has the
 details):
