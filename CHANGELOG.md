@@ -245,6 +245,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   address reads "Kiln writes to the address you signed in with. To use another
   address, sign in with that Google account." Nothing changes for an account
   that signed in with GitHub.
+- **The owner of a site whose files Kiln keeps cannot schedule a change to a
+  file under `.github`.** Saving such a file was already refused, but a
+  scheduled change was not checked, and it went out with the service's own
+  token. Scheduling one is now refused with "Kiln does not change this file,
+  so nothing was scheduled. It changes the pages and files of your site, and
+  never anything in the .github folder. Choose another page or file and
+  schedule it again." A change of that kind that was already waiting is
+  dropped when its time comes and is never written. An owner who signed in
+  with GitHub schedules exactly as before.
 
 ## [0.6.6] - 2026-11-13
 

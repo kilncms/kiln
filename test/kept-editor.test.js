@@ -420,3 +420,74 @@ test('what a kept owner scheduled goes out with the installation token and in th
   assert.equal(after.filter(c => c.method !== 'GET').length, 0, 'nothing is written for a site that is gone');
   assert.equal(await w.env.KILN.get(second), null, 'and the change is not left waiting');
 });
+
+// ─── Security review of 0.6.7 ────────────────────────────────────────────────
+
+const KEPT_FILE = 'Kiln does not change this file, so nothing was scheduled. It changes the pages and files of your site, and never anything in the .github folder. Choose another page or file and schedule it again.';
+const scheduled = (env) => [...env.KILN.map.keys()].filter(k => k.startsWith('sched:'));
+const soon = () => new Date(Date.now() + 3600 * 1000).toISOString();
+
+test('a kept owner cannot schedule a change to a file under .github, as a whole file or as a content file: they are told in a sentence, nothing is stored and GitHub is not asked', { skip: d1Skip }, async () => {
+  const w = world();
+  const { session } = await open(w);
+  const refused = [
+    { repo: REPO, path: '.github/dependabot.yml', branch: 'main', content: b64('version: 2'), at: soon() },
+    { repo: REPO, path: '.GitHub/workflows/build.yml', branch: 'main', content: b64('on: push'), at: soon() },
+    { repo: REPO, path: '/.github/CODEOWNERS', branch: 'main', content: b64('* @somebody'), at: soon() },
+    { repo: REPO, path: 'docs/.github/page.html', branch: 'main', edits: [{ key: 'title', html: 'Hello' }], at: soon() },
+    { repo: REPO, path: 'pages/../.github/dependabot.yml', branch: 'main', content: b64('version: 2'), at: soon() },
+    { repo: REPO, branch: 'main', at: soon(), source: { file: '.github/notes.md', adapter: 'markdown', edits: [{ pointer: '/body', value: 'Hello' }] } },
+  ];
+  for (const body of refused) {
+    const said = body.path || body.source.file;
+    const r = await site(w, 'POST', '/schedule', { session, body });
+    assert.equal(r.status, 403, said);
+    assert.equal(r.json.code, 'kept_file', said);
+    assert.equal(r.json.error, KEPT_FILE, said);
+    assert.equal(beyondIdentity(r.calls).length, 0, `${said} never reached GitHub`);
+  }
+  plain(KEPT_FILE);
+  assert.deepEqual(scheduled(w.env), [], 'nothing waits to go out');
+
+  const ok = await site(w, 'POST', '/schedule', { session, body: { repo: REPO, path: 'menu/index.html', branch: 'main', content: b64('<h1>Soon</h1>'), at: soon() } });
+  assert.equal(ok.status, 200, 'a page of the site is scheduled as before');
+  assert.equal(scheduled(w.env).length, 1);
+});
+
+test('a change under .github that a kept owner had waiting from before is dropped when its time comes, and nothing is written', { skip: d1Skip }, async () => {
+  const w = world();
+  const { session } = await open(w);
+  await site(w, 'POST', '/schedule', { session, body: { repo: REPO, path: 'index.html', branch: 'main', content: b64('version: 2'), at: soon() } });
+  const [key] = scheduled(w.env);
+  const stored = await w.env.KILN.get(key, 'json');
+  assert.ok(stored.kept, 'filed under the kept owner');
+  await w.env.KILN.put(key, JSON.stringify({ ...stored, path: '.github/dependabot.yml', at: Date.now() - 1000 }));   // as one stored before the rule, its time come
+  const calls = await withFetch(w.hub.handler, async (seen) => { await worker.scheduled({}, w.env, { waitUntil() {} }); return seen; });
+  assert.deepEqual(github(calls).filter(c => c.method !== 'GET').map(c => `${c.method} ${c.url}`), [], 'nothing is written');
+  assert.deepEqual(github(calls).filter(c => /\.github\b/.test(new URL(c.url).pathname)).map(c => c.url), [], 'and the file is not even read');
+  assert.equal(await w.env.KILN.get(key), null, 'and the change is not left waiting');
+});
+
+test('an owner who signed in with GitHub schedules a change under .github exactly as before', { skip: d1Skip }, async () => {
+  const w = world();
+  const hub = async (url, init) => {
+    const u = new URL(url);
+    if (u.hostname !== 'api.github.com') return undefined;
+    if (!/gho_ada$/.test((init.headers && init.headers.Authorization) || '')) return jsonRes({ message: 'Bad credentials' }, 401);
+    if (u.pathname === '/user') return jsonRes({ login: 'ada', id: 5 });
+    if (u.pathname === '/repos/ada/club') return jsonRes({ id: 4242, full_name: 'ada/club', permissions: { push: true, admin: true } });
+    return jsonRes({ message: 'Not Found' }, 404);
+  };
+  const r = await withFetch(hub, async () => {
+    const res = await worker.fetch(new Request('https://worker.example/schedule', {
+      method: 'POST', headers: { Authorization: 'Bearer gho_ada', Origin: 'https://club.example', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: 'ada/club', path: '.github/dependabot.yml', branch: 'main', content: b64('version: 2'), at: soon() }),
+    }), w.env);
+    return { status: res.status, json: await res.json().catch(() => null) };
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  const [key] = scheduled(w.env);
+  const stored = await w.env.KILN.get(key, 'json');
+  assert.equal(stored.path, '.github/dependabot.yml');
+  assert.equal(stored.kept, undefined);
+});

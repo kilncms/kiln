@@ -1217,6 +1217,9 @@ async function scheduleCreate(request, env) {
   if (typeof branch !== 'string' || branch.includes('..') || !/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
   const actor = await authActor(request, env, repo);
   if (!actor) return json({ error: 'forbidden' }, 403);
+  // The owner of a site whose files Kiln keeps: what they schedule is written
+  // with the service's own token, so it is held to what their /gh proxy writes.
+  if (actor.kept && !keptFileWriteAllowed(path)) return json({ error: KEPT_FILE_NOT_SCHEDULED, code: 'kept_file' }, 403);
   // A schedule fires as a DIRECT commit (runDueSchedules, installation token) —
   // letting a suggest-mode editor schedule would sidestep the proxy's
   // suggest guard entirely. Same door, same lock.
@@ -1281,6 +1284,7 @@ async function scheduleSourceCreate(request, env, body) {
   if (!/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
   const actor = await authActor(request, env, repo);
   if (!actor) return json({ error: 'forbidden' }, 403);
+  if (actor.kept && !keptFileWriteAllowed(source.file)) return json({ error: KEPT_FILE_NOT_SCHEDULED, code: 'kept_file' }, 403);   // as in scheduleCreate
   const v = validateSourceRequest({ file: source.file, edits: source.edits, adapter: source.adapter, actor }, { isSensitivePath, pathInScope });
   if (v.error) return json({ error: v.error, ...(v.detail !== undefined && { detail: v.detail }) }, v.status);
   if (!hasGrant(actor, 'schedule')) return grantRefusal('schedule');
@@ -1368,6 +1372,9 @@ async function runDueSchedules(env) {
       // row is gone it never goes out, and when the database cannot be asked
       // it waits for the next run.
       if (v.kept) {
+        // Held to what their /gh proxy writes, here as when it was made: a
+        // schedule stored before that rule was asked at /schedule never goes out.
+        if (!keptFileWriteAllowed(v.path)) { console.log(`[kiln-cron] ${k.name} not published: Kiln does not change that file for the owner of a site it keeps`); await env.KILN.delete(k.name); continue; }
         const stands = await keptStands(env, { repo: v.repo, account_id: v.kept });
         if (stands === null) continue;
         if (!stands) { console.log(`[kiln-cron] ${k.name} not published: the site it was scheduled for is no longer on Kiln`); await env.KILN.delete(k.name); continue; }
@@ -3699,6 +3706,19 @@ function keptWriteAllowed(method, rest, parsed) {
   if (p === '/git/trees' && (!parsed || !Array.isArray(parsed.tree) || parsed.tree.some(e => underDotGithub(e && e.path)))) return false;
   return true;
 }
+/**
+ * Whether the owner of a site whose files Kiln keeps may have this file
+ * written for them. It is the proxy's own rule for a contents write, asked by
+ * the places that write a file with the service's token and not through the
+ * proxy: a scheduled change, when it is made and again when it goes out.
+ */
+function keptFileWriteAllowed(path) {
+  if (typeof path !== 'string' || !path) return false;
+  const rest = '/contents/' + path.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/');
+  return !proxyPathTraverses(rest) && keptWriteAllowed('PUT', rest, null);
+}
+/** Said at /schedule to the owner of a site Kiln keeps, for a file Kiln does not change for them. */
+const KEPT_FILE_NOT_SCHEDULED = 'Kiln does not change this file, so nothing was scheduled. It changes the pages and files of your site, and never anything in the .github folder. Choose another page or file and schedule it again.';
 
 /**
  * The /gh proxy for the owner of a site whose files Kiln keeps. They have no
