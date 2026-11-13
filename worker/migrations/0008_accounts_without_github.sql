@@ -18,6 +18,15 @@
 -- And for a site: `kept` is 1 while the site's files are in Kiln's own GitHub
 -- organization, and empty for a site in its owner's own repository. Nothing
 -- sets it yet.
+-- The two columns of `sites` come first. If this file is ever run a second
+-- time by hand, it stops here, because the columns are there already, and
+-- `accounts` is not built again from its five old columns.
+ALTER TABLE sites ADD COLUMN kept INTEGER;
+
+-- What its owner called a site whose files Kiln keeps ("Oak Bakery"), as they
+-- typed it. The dashboard shows it where another site shows its repository.
+ALTER TABLE sites ADD COLUMN name TEXT;
+
 PRAGMA defer_foreign_keys = true;
 
 DROP TABLE IF EXISTS accounts_new;
@@ -38,9 +47,3 @@ INSERT INTO accounts_new (id, github_login, email, ls_customer_id, created_at)
 DROP TABLE accounts;
 
 ALTER TABLE accounts_new RENAME TO accounts;
-
-ALTER TABLE sites ADD COLUMN kept INTEGER;
-
--- What its owner called a site whose files Kiln keeps ("Oak Bakery"), as they
--- typed it. The dashboard shows it where another site shows its repository.
-ALTER TABLE sites ADD COLUMN name TEXT;

@@ -40,3 +40,18 @@ test('KLR-24 migrations: every file applies in order on an empty database, and e
     assert.equal(d1.row('SELECT COUNT(*) n FROM sites').n, 1, names[upTo - 1]);
   }
 });
+
+test('migration 0008 run a second time by hand stops at its first line and leaves every Google account as it was', { skip: d1Skip }, () => {
+  const d1 = fakeD1({ upTo: 8 });
+  d1.exec("INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES ('g1', NULL, 'rosa@example.com', 'Rosa Diaz', 'g-1001', 1)");
+  d1.exec("INSERT INTO accounts (id, github_login, email, created_at) VALUES ('a1', 'ada', 'ada@example.com', 1)");
+  const file = files.find(f => path.basename(f).startsWith('0008_'));
+  const sql = readFileSync(file, 'utf8');
+  // the two columns of `sites` are added before anything names `accounts`
+  const statements = sql.split('\n').filter(l => !l.startsWith('--')).join('\n');
+  assert.ok(statements.indexOf('ALTER TABLE sites ADD COLUMN name') < statements.search(/accounts/), 'sites first');
+  assert.throws(() => d1.db.exec(sql), /duplicate column name: kept/);
+  assert.deepEqual({ ...d1.row("SELECT email, name, google_sub FROM accounts WHERE id = 'g1'") }, { email: 'rosa@example.com', name: 'Rosa Diaz', google_sub: 'g-1001' });
+  assert.equal(d1.row('SELECT COUNT(*) n FROM accounts').n, 2);
+  assert.equal(d1.row("SELECT name FROM sqlite_master WHERE name = 'accounts_new'"), null, 'nothing was half built');
+});

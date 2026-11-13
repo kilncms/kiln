@@ -201,6 +201,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   after the dialog was closed. The status line now says the same sentence as
   the dialog as soon as the cancel is taken.
 
+### Security
+
+- **The database change for accounts with no GitHub login is safer to run by
+  hand.** `worker/migrations/0008_accounts_without_github.sql` now adds its
+  two columns to `sites` first. If the file is ever run a second time by hand,
+  it stops at that first line, and no Google account loses its name or its
+  sign-in. Nothing changes for a database the file has already been applied
+  to.
+
 ## [0.6.6] - 2026-11-13
 
 ### Added
