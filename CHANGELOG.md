@@ -6,6 +6,25 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A domain can be set up again after its set-up was put away or the domain
+  was moved away.** The emails for both say the owner can set the domain up
+  again, and pressing the button was refused with "Kiln's hosting already has
+  the domain set up". Cloudflare keeps the earlier zone for a while (about a
+  week after the name servers move away), and Kiln asked it for a second one.
+  Now the set-up takes up the site's own earlier zone where Cloudflare still
+  holds it, and makes no new one. The website records at the bare name and
+  `www` are deleted again, every other record is set to DNS only, the two
+  names are attached to the site's Worker where they are not, and Cloudflare
+  is asked to look at the name servers again. The owner gets the same two
+  name servers as before, in the dashboard and in a new email. While the name
+  servers still point elsewhere the set-up waits, and the five-minute job does
+  not put it away as one that was changed away again. When they already point
+  back, the job makes the domain live as usual, and the owner is written to
+  that it is live. A zone that is not this site's own earlier one is refused
+  as before, and a zone taken up again is never deleted, whatever fails.
+
 ## [0.6.4] - 2026-11-12
 
 ### Added

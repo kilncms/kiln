@@ -591,11 +591,16 @@ async function lookAtDomain(env, site, typed) {
   return { name, look, stop: whatStops(look) };
 }
 
+// One set-up of a domain, for a mail that goes once for it: the zone, and the
+// moment the set-up began. A set-up that takes up the zone its last try left
+// (domain.js prepareDomain) is a set-up of its own, and is written about again.
+const oneSetUp = (row) => `${row.zone_id}:${Number(row.created_at) || 0}`;
+
 /**
  * The owner is written to with the two name servers to enter (mail.js), where
  * this service writes to customers and the account has an address. Once for
- * one set-up: the key holds the zone, so a set-up that is started again
- * later is written about again. Never throws.
+ * one set-up: the key holds the zone and when the set-up began, so a set-up
+ * that is started again later is written about again. Never throws.
  */
 async function tellNameServers(env, accountId, site, row) {
   try {
@@ -603,7 +608,7 @@ async function tellNameServers(env, accountId, site, row) {
     const account = await env.kiln_cloud.prepare('SELECT email FROM accounts WHERE id = ?').bind(accountId).first();
     if (!mailAddress(account?.email)) return;
     const d = publicDomain(row);
-    await sendOnce(env, `domain-ns:${site.id}:${row.zone_id}`, account.email, domainNameServersMail({
+    await sendOnce(env, `domain-ns:${site.id}:${oneSetUp(row)}`, account.email, domainNameServersMail({
       origin: site.origin, name: d.name, nameServers: d.name_servers, seller: d.seller, helpUrl: d.seller?.help_url || sellerHelp(null).url,
       records: d.records, givesUpAt: d.gives_up_at, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com',
     }));
@@ -632,7 +637,7 @@ async function siteForDomain(env, siteId) {
 async function tellAboutDomain(env, kind, s, row, mail) {
   try {
     if (!customerMailOn(env) || !mailAddress(s?.email)) return { ok: false, reason: 'not sent' };
-    return await sendOnce(env, `domain-${kind}:${s.id}:${row.zone_id}`, s.email, mail);
+    return await sendOnce(env, `domain-${kind}:${s.id}:${oneSetUp(row)}`, s.email, mail);
   } catch { return { ok: false, reason: 'send failed' }; }
 }
 
@@ -727,6 +732,9 @@ const DOMAIN_LIVE_LOOK_EVERY_MS = 60 * 60 * 1000;   // a live domain is looked a
  *   - it has waited 25 days (domain.js LIMITS.waitDays): the waiting zone is
  *     removed, the row is `put_away` with reason `not_changed`, and the owner
  *     is written to;
+ *   - the zone was moved away before this set-up began (the set-up took up
+ *     the zone its last try left, and the name servers have not come back
+ *     yet): it goes on waiting;
  *   - it has waited DOMAIN_REMIND_AFTER_DAYS and nobody was reminded: one
  *     reminder, and `reminded_at`. Where the owner cannot be written to, or
  *     the mail did not go, `reminded_at` stays empty.
@@ -761,7 +769,7 @@ export async function sweepDomains(env, { now = Date.now() } = {}) {
       const s = { id: r.site_id, repo: r.repo, origin: r.origin, email: r.email, temp_url: r.temp_url };
       const name = r.name;
       const looked = () => saveDomain(env, s.id, { checked_at: now });
-      const { status } = await domainStatus(env, { zoneId: r.zone_id });
+      const { status, activatedOn } = await domainStatus(env, { zoneId: r.zone_id });
 
       if (r.state === 'live') {
         if (status !== 'moved' && status !== 'gone') { await looked(); continue; }
@@ -785,6 +793,10 @@ export async function sweepDomains(env, { now = Date.now() } = {}) {
         console.log(JSON.stringify({ evt: 'domain_put_away', repo: s.repo, name, reason }));
         out.putAway++;
       };
+      // A set-up that took up the zone its last try left can find that zone still "moved": the name servers moved away
+      // before this set-up began, and the owner has not pointed them back yet. That is a set-up that waits, not one that
+      // was changed away again. Cloudflare drops such a zone after about a week, and then it is put away as gone.
+      if (status === 'moved' && activatedOn && activatedOn < Number(r.created_at || 0)) { await looked(); continue; }
       if (status === 'gone' || status === 'moved') { await putAway(status); continue; }
 
       const waited = now - Number(r.created_at || now);
@@ -1435,9 +1447,14 @@ export async function handleCloud(request, env, url, path, tools = {}) {
           return refuse(code, code === 'cloudflare' ? 502 : code === 'not_set_up' ? 503 : 409, { name, seller });
         };
         const host = await hostingRow(env, site.id);
+        // The site's own last set-up of this same name, put away with its zone: Cloudflare may still hold that zone, and
+        // would refuse a second one for the name. domain.js takes it up again where it is there, and makes a new one where it is not.
+        const before = await domainRow(env, site.id);
+        const earlier = before && before.zone_id && before.name === name && before.state !== 'waiting' && before.state !== 'live' ? before.zone_id : null;
         let made;
-        try { made = await prepareDomain(env, { name, worker: host.name, look }); }
+        try { made = await prepareDomain(env, { name, worker: host.name, look, earlier }); }
         catch (e) { return failed(e, 'prepare'); }   // domain.js has taken away again whatever it made
+        const again = !!earlier && made.zoneId === earlier;
         try {
           const saved = await saveDomain(env, site.id, {
             name, zone_id: made.zoneId, state: 'waiting', ns1: made.nameServers[0], ns2: made.nameServers[1], old_name_servers: made.oldNameServers,
@@ -1446,14 +1463,15 @@ export async function handleCloud(request, env, url, path, tools = {}) {
           if (!saved) throw new DomainError('not_set_up');
         } catch (e) {
           // A zone nobody remembers would wait in the hosting account with the site's two names on it: it is taken away again.
-          try { await removeWaitingDomain(env, { zoneId: made.zoneId }); }
+          // One that was taken up again is still remembered by the row that was put away, so it stays.
+          try { if (!again) await removeWaitingDomain(env, { zoneId: made.zoneId }); }
           catch (left) { console.warn(JSON.stringify({ evt: 'domain_cleanup_failed', name, zone: made.zoneId, detail: detail(left) })); }
           return failed(e, 'record');
         }
         const fresh = await domainRow(env, site.id);
         await tellNameServers(env, sess.account_id, site, fresh);
         await notifyOwner(env, `Kiln is setting up ${name} for ${site.repo}`, [
-          `By: ${sess.login}`, `Name servers to enter: ${made.nameServers.join(', ')}`, `Bought at: ${seller || 'not known'}`, `Records kept: ${made.records.length}`,
+          `By: ${sess.login}`, ...(again ? ['This is the zone from its last set-up, taken up again. No new zone was made.'] : []), `Name servers to enter: ${made.nameServers.join(', ')}`, `Bought at: ${seller || 'not known'}`, `Records kept: ${made.records.length}`,
           'The site goes live at the domain once its owner has changed the name servers.']);
         return json({ ok: true, domain: publicDomain(fresh) });
       } finally {

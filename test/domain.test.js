@@ -410,7 +410,7 @@ test('domain: the status follows what Cloudflare has seen of the name servers, a
   const w = world();
   await withFetch(w.cf.handler, async () => {
     const { zoneId, nameServers } = await prepareDomain(w.env, { name: N, worker: WORKER });
-    assert.deepEqual(await domainStatus(w.env, { zoneId }), { status: 'waiting', nameServers });
+    assert.deepEqual(await domainStatus(w.env, { zoneId }), { status: 'waiting', nameServers, activatedOn: null }, 'a zone that never took hold has no such moment');
     assert.equal(w.cf.zoneOf(N).checks, 0, 'no check is asked for unless it is wanted');
 
     w.cf.calls.length = 0;
@@ -419,14 +419,16 @@ test('domain: the status follows what Cloudflare has seen of the name servers, a
     assert.deepEqual(w.cf.calls.map(c => `${c.method} ${c.path}`), [`PUT /zones/${zoneId}/activation_check`, `GET /zones/${zoneId}`], 'the check comes first');
 
     w.cf.setStatus(N, 'active');
-    assert.deepEqual(await domainStatus(w.env, { zoneId }), { status: 'active', nameServers });
+    const since = Date.parse(w.cf.zoneOf(N).activated_on);
+    assert.ok(since > 0);
+    assert.deepEqual(await domainStatus(w.env, { zoneId }), { status: 'active', nameServers, activatedOn: since }, 'with the moment Cloudflare saw the name servers change');
     // Cloudflare takes a check only so often: its refusal is not a failure.
     w.cf.failOn((method, path) => path.endsWith('/activation_check'));
     assert.equal((await domainStatus(w.env, { zoneId, recheck: true })).status, 'active');
     w.cf.failOn(null);
 
     w.cf.setStatus(N, 'moved');
-    assert.equal((await domainStatus(w.env, { zoneId })).status, 'moved');
+    assert.deepEqual(await domainStatus(w.env, { zoneId }), { status: 'moved', nameServers, activatedOn: since }, 'a zone that was moved away is still there, and still says when it last took hold');
     w.cf.setStatus(N, 'deleted');
     assert.equal((await domainStatus(w.env, { zoneId })).status, 'gone');
     w.cf.setStatus(N, 'deactivated');
@@ -435,7 +437,7 @@ test('domain: the status follows what Cloudflare has seen of the name servers, a
     w.cf.zones.clear();
     const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}`, { headers: { Authorization: `Bearer ${w.cf.token}` } });
     assert.deepEqual([res.status, (await res.json()).errors[0].code], [400, 1001]);
-    assert.deepEqual(await domainStatus(w.env, { zoneId }), { status: 'gone', nameServers: [] });
+    assert.deepEqual(await domainStatus(w.env, { zoneId }), { status: 'gone', nameServers: [], activatedOn: null });
     assert.deepEqual(await removeWaitingDomain(w.env, { zoneId }), { removed: true, status: 'gone' });
     await assert.rejects(() => exportRecords(w.env, { zoneId }), code('no_records'), 'and there is nothing left to hand over');
   });
@@ -757,4 +759,123 @@ test('domain: the registry and the public DNS are told who asks, because the reg
   assert.equal(refused.status, 403);
   const unnamed = (url, init = {}) => { const headers = { ...(init.headers || {}) }; delete headers['user-agent']; return dns.fetchImpl(url, { ...init, headers }); };
   assert.equal((await lookUp(N, { fetchImpl: unnamed })).seller, null);
+});
+
+// ─── Setting a domain up again ────────────────────────────────────────────────
+
+const callsOf = (cf) => cf.calls.map(c => `${c.method} ${c.path}`);
+const siteRecords = (cf) => own(cf).filter(r => ['A', 'AAAA', 'CNAME'].includes(r.type) && [N, `www.${N}`].includes(r.name));
+
+test('domain: a set-up that starts again takes up the zone its last try left, and makes no second one', async () => {
+  const w = world();
+  const seen = await look();
+  await withFetch(w.cf.handler, async () => {
+    const first = await prepareDomain(w.env, { name: N, worker: WORKER, look: seen });
+    const zone = w.cf.zoneOf(N);
+
+    // Nothing has changed since: the zone still waits, as one does that Cloudflare could not be asked to remove.
+    w.cf.calls.length = 0;
+    const same = await prepareDomain(w.env, { name: N, worker: WORKER, look: seen, earlier: first.zoneId });
+    assert.deepEqual([same.zoneId, same.nameServers, same.records, same.attached], [first.zoneId, first.nameServers, first.records, first.attached], 'the same answer as a new set-up, with that zone and its two name servers');
+    assert.deepEqual(same.oldNameServers, ['ns51.domaincontrol.com', 'ns52.domaincontrol.com'], 'the name servers to replace are the ones the registry shows now');
+    assert.deepEqual(callsOf(w.cf), [`GET /zones/${zone.id}`, `GET /zones/${zone.id}/dns_records`, 'GET /workers/domains', `PUT /zones/${zone.id}/activation_check`],
+      'no zone is made, nothing is copied in again, no record is touched, no name is attached twice, and Cloudflare is asked to look again');
+
+    // The domain was live and was moved away. Since then www was taken off its Worker, a website record came back,
+    // one record goes through Cloudflare, and one of the email records is missing.
+    const api = `https://api.cloudflare.com/client/v4`, auth = { Authorization: `Bearer ${w.cf.token}`, 'Content-Type': 'application/json' };
+    const www = [...w.cf.workerDomains.values()].find(d => d.hostname === `www.${N}`);
+    await fetch(`${api}/accounts/${w.cf.account}/workers/domains/${www.id}`, { method: 'DELETE', headers: auth });
+    await fetch(`${api}/zones/${zone.id}/dns_records`, { method: 'POST', headers: auth, body: JSON.stringify({ type: 'A', name: `www.${N}`, content: '203.0.113.99', proxied: true }) });
+    own(w.cf).find(r => r.name === `shop.${N}`).proxied = true;
+    zone.records.delete(own(w.cf).find(r => r.name === `_dmarc.${N}`).id);
+    w.cf.setStatus(N, 'active');
+    w.cf.setStatus(N, 'moved');
+    assert.equal(siteRecords(w.cf).length, 1);
+
+    w.cf.calls.length = 0;
+    const out = await prepareDomain(w.env, { name: N, worker: WORKER, look: seen, earlier: first.zoneId });
+    assert.equal(w.cf.zones.size, 1, 'still the one zone');
+    assert.deepEqual([out.zoneId, out.nameServers], [first.zoneId, first.nameServers]);
+    assert.ok(!callsOf(w.cf).some(c => c === 'POST /zones' || c.endsWith('/scan')), 'no zone is made and nothing is copied in');
+    assert.deepEqual(siteRecords(w.cf), [], 'the website record that came back is gone again');
+    assert.deepEqual(own(w.cf).filter(r => r.proxied), [], 'every other record is DNS only');
+    assert.ok(own(w.cf).some(r => r.type === 'TXT' && r.name === `_dmarc.${N}`), 'the email record the public DNS shows is added again');
+    assert.deepEqual(out.records, first.records, 'the owner is shown the same kept records');
+    assert.deepEqual([...w.cf.workerDomains.values()].map(d => [d.hostname, d.service]).sort(), [[N, WORKER], [`www.${N}`, WORKER]], 'both names are on the site\'s Worker');
+    assert.deepEqual(callsOf(w.cf).filter(c => c === 'PUT /workers/domains').length, 1, 'only the name that was not attached is attached');
+    assert.deepEqual(out.attached.map(a => a.hostname), [N, `www.${N}`]);
+    assert.ok(out.attached.every(a => a.id));
+    assert.equal(callsOf(w.cf).at(-1), `PUT /zones/${zone.id}/activation_check`, 'and Cloudflare is asked to look at the name servers again');
+    assert.equal(zone.status, 'moved', 'the zone stands where Cloudflare says it stands');
+
+    // The owner pointed the name servers back before pressing the button: the zone is active, and is taken up all the same.
+    w.cf.setStatus(N, 'active');
+    const back = await prepareDomain(w.env, { name: N, worker: WORKER, look: seen, earlier: first.zoneId });
+    assert.deepEqual([back.zoneId, back.nameServers, w.cf.zones.size, zone.status], [first.zoneId, first.nameServers, 1, 'active']);
+    // A look that shows the zone's own name servers says nothing about the ones that were replaced.
+    const here = await prepareDomain(w.env, { name: N, worker: WORKER, look: { ...seen, nameServers: zone.name_servers }, earlier: first.zoneId });
+    assert.deepEqual(here.oldNameServers, ['ns1.old-host.example', 'ns2.old-host.example'], 'what Cloudflare read when the zone was made is what is known');
+    // Cloudflare takes a check only so often: its refusal does not stop the set-up.
+    w.cf.failOn((method, path) => path.endsWith('/activation_check'));
+    assert.equal((await prepareDomain(w.env, { name: N, worker: WORKER, earlier: first.zoneId })).zoneId, first.zoneId);
+    w.cf.failOn(null);
+  });
+});
+
+test('domain: an earlier zone that is gone gives way to a new one, a zone that is not the site\'s own earlier one is refused as before, and a zone taken up again is never deleted', async () => {
+  const w = world();
+  await withFetch(w.cf.handler, async () => {
+    // Cloudflare no longer has the earlier zone: a new one is made, as for a first set-up.
+    const first = await prepareDomain(w.env, { name: N, worker: WORKER });
+    await removeWaitingDomain(w.env, { zoneId: first.zoneId });
+    const next = await prepareDomain(w.env, { name: N, worker: WORKER, earlier: first.zoneId });
+    assert.notEqual(next.zoneId, first.zoneId);
+    assert.deepEqual([w.cf.zones.size, w.cf.zoneOf(N).id, w.cf.zoneOf(N).status, w.cf.workerDomains.size], [1, next.zoneId, 'pending', 2]);
+    // The zone that holds the name now is not the one this site had: refused, and left as it is.
+    await assert.rejects(() => prepareDomain(w.env, { name: N, worker: WORKER, earlier: first.zoneId }), code('already_here'));
+    assert.deepEqual([w.cf.zones.size, w.cf.zoneOf(N).id, w.cf.workerDomains.size, own(w.cf).length], [1, next.zoneId, 2, 5]);
+    // So is one Cloudflare calls deleted.
+    w.cf.setStatus(N, 'deleted');
+    await assert.rejects(() => prepareDomain(w.env, { name: N, worker: WORKER, earlier: next.zoneId }), code('already_here'));
+    assert.equal(w.cf.zoneOf(N).id, next.zoneId);
+  });
+
+  // An id that belongs to a zone for another name is never taken up.
+  const o = world();
+  o.cf.scanFinds('other.test', [{ type: 'MX', name: 'other.test', content: 'mx.other.test', priority: 10 }]);
+  await withFetch(o.cf.handler, async () => {
+    const other = await prepareDomain(o.env, { name: 'other.test', worker: WORKER });
+    await prepareDomain(o.env, { name: N, worker: WORKER });
+    o.cf.calls.length = 0;
+    await assert.rejects(() => prepareDomain(o.env, { name: N, worker: WORKER, earlier: other.zoneId }), code('already_here'));
+    assert.deepEqual(callsOf(o.cf), [`GET /zones/${other.zoneId}`, 'POST /zones'], 'the other zone was read and nothing in it was touched');
+    assert.equal(o.cf.zones.size, 2);
+  });
+
+  // Whatever fails while a zone is taken up again, the zone stays, waiting, active or moved away.
+  const f = world();
+  await withFetch(f.cf.handler, async () => {
+    const first = await prepareDomain(f.env, { name: N, worker: WORKER });
+    for (const status of ['pending', 'active', 'moved']) {
+      f.cf.setStatus(N, status);
+      for (const broken of [(method, path) => method === 'GET' && path.endsWith('/dns_records'), (method, path) => method === 'GET' && path === '/workers/domains']) {
+        f.cf.failOn(broken);
+        await assert.rejects(() => prepareDomain(f.env, { name: N, worker: WORKER, earlier: first.zoneId }), code('cloudflare'));
+        f.cf.failOn(null);
+        assert.deepEqual([f.cf.zoneOf(N).id, f.cf.zoneOf(N).status, f.cf.workerDomains.size, own(f.cf).length], [first.zoneId, status, 2, 5], `a zone that is ${status} is left as it was`);
+      }
+    }
+    assert.ok(!callsOf(f.cf).some(c => c.startsWith('DELETE ')), 'nothing was deleted');
+    // Cloudflare cannot be asked about the earlier zone: nothing is made on a guess.
+    f.cf.calls.length = 0;
+    f.cf.failOn((method, path) => method === 'GET' && path === `/zones/${first.zoneId}`);
+    await assert.rejects(() => prepareDomain(f.env, { name: N, worker: WORKER, earlier: first.zoneId }), code('cloudflare'));
+    f.cf.failOn(null);
+    assert.deepEqual(callsOf(f.cf), [`GET /zones/${first.zoneId}`]);
+    // A status this module has no word for decides nothing.
+    f.cf.setStatus(N, 'deactivated');
+    await assert.rejects(() => prepareDomain(f.env, { name: N, worker: WORKER, earlier: first.zoneId }), code('cloudflare'));
+    assert.equal(f.cf.zones.size, 1);
+  });
 });

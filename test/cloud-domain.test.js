@@ -1200,3 +1200,117 @@ test('removing a site: what Cloudflare refuses is logged, and the site is remove
     });
   }
 });
+
+// ─── Setting a domain up again ────────────────────────────────────────────────
+
+const cfAsked = (w) => w.cf.calls.map(c => `${c.method} ${c.path}`);
+/** A live domain whose owner pointed its name servers elsewhere a while ago: the row is put away and keeps its zone. */
+async function movedAway(w) {
+  await goLive(w);
+  const zone = w.cf.zoneOf(N);
+  w.cf.setStatus(N, 'moved');
+  w.answers();
+  assert.equal((await sweep(w.env, Date.now() + 61 * 60000)).out.moved, 1);
+  zone.activated_on = new Date(Date.now() - 3 * DAY).toISOString();   // it last took hold days ago
+  assert.deepEqual([(await where(w.env)).state, (await domainRow(w.env, 'site1')).zone_id], ['put_away', zone.id]);
+  return zone;
+}
+
+test('own domain: a domain that was moved away is set up again on the zone Kiln still has, waits while the name servers are elsewhere, and goes live once they point back', { skip: d1Skip }, async () => {
+  const w = world({ env: { NOTIFY_TO: 'ops@example.com' } });
+  await withFetch(w.handler, async () => {
+    const zone = await movedAway(w);
+    const mails = w.mails().length;
+    w.cf.calls.length = 0;
+    const res = await setup(w.env);
+    const body = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(body));
+    assert.deepEqual([body.domain.state, body.domain.name_servers, body.domain.error], ['waiting', zone.name_servers, undefined], 'the same answer as a new set-up, with the zone\'s two name servers');
+    assert.ok(body.domain.gives_up_at > Date.now() + 24 * DAY, 'and its clock starts again');
+    assert.deepEqual([(await domainRow(w.env, 'site1')).zone_id, w.cf.zones.size], [zone.id, 1], 'the zone it had is taken up again and no second one is made');
+    assert.ok(!cfAsked(w).includes('POST /zones'));
+    assert.ok(cfAsked(w).includes(`PUT /zones/${zone.id}/activation_check`), 'Cloudflare is asked to look at the name servers again');
+    assert.ok(!cfAsked(w).some(c => c.startsWith('DELETE /zones')));
+    assert.match(w.notes().at(-1).raw, /Kiln is setting up oakbakery\.test[\s\S]*This is the zone from its last set-up, taken up again\. No new zone was made\./);
+    assert.equal(w.mails().length, mails + 1, 'the owner is written to with the two name servers again');
+    assert.ok(w.mails().at(-1).text.includes(zone.name_servers[0]));
+
+    // The name servers are still elsewhere: the set-up waits. It is not put away as one that was changed away again.
+    for (const minutes of [5, 10]) assert.deepEqual((await sweep(w.env, Date.now() + minutes * 60000)).out, tally({ looked: 1 }));
+    assert.deepEqual([(await where(w.env)).state, w.mails().length], ['waiting', mails + 1]);
+    // The owner points them back, and the five-minute job makes the domain live as usual.
+    w.cf.setStatus(N, 'active');
+    w.answers(N);
+    assert.deepEqual((await sweep(w.env, Date.now() + 15 * 60000)).out, tally({ looked: 1, live: 1 }));
+    assert.deepEqual([(await where(w.env)).state, await originOf(w.env)], ['live', `https://${N}`]);
+    assert.equal(w.mails().length, mails + 2, 'and the owner hears that the site is live at the domain again');
+  });
+
+  // The name servers already point back when the owner presses the button: the row waits, and the job makes it live.
+  const v = world();
+  await withFetch(v.handler, async () => {
+    const zone = await movedAway(v);
+    v.cf.setStatus(N, 'active');
+    zone.activated_on = new Date(Date.now() - 2 * 60000).toISOString();
+    v.answers(N);
+    const res = await setup(v.env);
+    assert.deepEqual([res.status, (await res.json()).domain.state, (await domainRow(v.env, 'site1')).zone_id, v.cf.zones.size, zone.status], [200, 'waiting', zone.id, 1, 'active']);
+    assert.deepEqual((await sweep(v.env, Date.now() + 5 * 60000)).out, tally({ looked: 1, live: 1 }));
+    assert.deepEqual([(await where(v.env)).state, await originOf(v.env)], ['live', `https://${N}`]);
+  });
+
+  // A set-up whose zone took hold after it began and then moved away is still put away, as before.
+  const u = world();
+  await withFetch(u.handler, async () => {
+    await setup(u.env);
+    u.cf.setStatus(N, 'active');
+    u.cf.zoneOf(N).activated_on = new Date(Date.now() + 60000).toISOString();
+    u.cf.setStatus(N, 'moved');
+    assert.deepEqual((await sweep(u.env, Date.now() + 5 * 60000)).out, tally({ looked: 1, putAway: 1 }));
+    assert.deepEqual([(await where(u.env)).state, (await where(u.env)).reason], ['put_away', 'moved']);
+  });
+});
+
+test('own domain: a zone that is there and is not this site\'s own earlier one is refused as before, and a zone taken up again is never removed when the set-up fails', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await setup(w.env);
+    const zone = w.cf.zoneOf(N);
+    // The row that was put away remembers another zone, or none, or another name: the zone that holds the name is not its own.
+    for (const fields of [{ zone_id: 'zone-of-long-ago' }, { zone_id: null }, { name: 'other.test', zone_id: zone.id }]) {
+      await saveDomain(w.env, 'site1', { name: N, state: 'put_away', reason: 'not_changed', ...fields });
+      w.cf.calls.length = 0;
+      let res;
+      const lines = await quiet(async () => { res = await setup(w.env); });
+      assert.deepEqual([res.status, await res.json()], [409, { error: domainSentence('already_here', { name: N, seller: 'GoDaddy' }), code: 'already_here' }], JSON.stringify(fields));
+      assert.equal(JSON.parse(lines[0]).reason, 'already_here');
+      assert.ok(!cfAsked(w).some(c => c.startsWith('DELETE ') || c.startsWith('PUT ') || c.endsWith('/batch')), 'nothing in the zone is touched');
+      assert.deepEqual([w.cf.zoneOf(N).id, w.cf.workerDomains.size, (await where(w.env)).state], [zone.id, 2, 'put_away']);
+    }
+  });
+
+  // Another site takes the name while this site's own waiting zone is taken up again (its set-up clears away the row that
+  // was put away, as saveDomain does): the row cannot be written, and the zone stays.
+  const v = world();
+  let taken = false;
+  await withFetch(v.handler, async () => {
+    await setup(v.env);
+    const zone = v.cf.zoneOf(N);
+    await saveDomain(v.env, 'site1', { state: 'put_away', reason: 'not_changed' });
+    v.cf.failOn((method, path) => {
+      if (method === 'PUT' && path.endsWith('/activation_check') && !taken) {
+        taken = true;
+        v.env.kiln_cloud.exec("DELETE FROM domains WHERE site_id = 'site1'");
+        v.env.kiln_cloud.exec("INSERT INTO domains (site_id, name, zone_id, state, created_at, updated_at) VALUES ('site-other', ?, 'z-other', 'waiting', 1, 1)", N);
+      }
+      return false;
+    });
+    v.cf.calls.length = 0;
+    let res;
+    const lines = await quiet(async () => { res = await setup(v.env); });
+    assert.deepEqual([res.status, (await res.json()).code, JSON.parse(lines[0]).stage], [409, 'taken', 'record']);
+    assert.ok(taken);
+    assert.ok(!cfAsked(v).some(c => c.startsWith('DELETE ')), 'nothing is deleted');
+    assert.deepEqual([v.cf.zoneOf(N).id, v.cf.zoneOf(N).status, v.cf.workerDomains.size], [zone.id, 'pending', 2]);
+  });
+});

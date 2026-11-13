@@ -420,6 +420,22 @@ async function dropZone(env, zoneId) {
 // ─── Making everything ready ──────────────────────────────────────────────────
 
 /**
+ * The zone an earlier set-up left, as Cloudflare holds it now, or null when
+ * Cloudflare no longer has it (or holds something else under that id: a zone
+ * for another name is never taken up). Waiting, active or moved away, it is
+ * the same zone and can be taken up again. A status this module has no word
+ * for is a failure, so that nothing is decided on a guess.
+ */
+async function earlierZone(env, { zoneId, name }) {
+  let zone;
+  try { zone = (await cloudflare(env, 'GET', `/zones/${encodeURIComponent(zoneId)}`)).result || {}; }
+  catch (e) { if (isGone(e)) return null; throw new DomainError('cloudflare', e?.detail || e?.message || '', e?.codes || []); }
+  if (zone.id !== zoneId || bare(zone.name) !== name || STATUS[zone.status] === 'gone') return null;
+  if (!STATUS[zone.status]) throw new DomainError('cloudflare', `zone status ${zone.status}`);
+  return zone;
+}
+
+/**
  * Make a domain ready for its site, before its owner changes anything:
  *
  *   1. make the zone (it waits until the name servers change);
@@ -441,26 +457,49 @@ async function dropZone(env, zoneId) {
  * after the zone was made fails, the zone is deleted again first, so a failed
  * try leaves nothing behind. A zone that was already there is never deleted:
  * it may be a domain that is live.
+ *
+ * `earlier` is the id of the zone this same site's last set-up of this same
+ * name made (its row was put away and kept the id). Cloudflare holds such a
+ * zone for a while: about a week after the name servers moved away, and for
+ * as long as a zone it could not be asked to remove stays. While it does, a
+ * second zone for the name is refused, so the earlier one is taken up again
+ * and no zone is made: nothing is copied in again, steps 3 and 4 are done
+ * to the records as they stand (a record a Worker's name brought with it is
+ * left alone), the two names are attached where they are not, and
+ * Cloudflare is asked to look at the name servers again. The answer has the
+ * same shape, with that zone's id and its two name servers. A zone taken up
+ * again is never deleted, whatever fails. When Cloudflare no longer has the
+ * earlier zone, a new one is made as if `earlier` had not been given.
  */
-export async function prepareDomain(env, { name, worker, look = null }) {
+export async function prepareDomain(env, { name, worker, look = null, earlier = null }) {
   need(env);
   const stop = whatStops(look);
   if (stop) throw new DomainError(stop);
 
-  let zone;
-  try { zone = (await cloudflare(env, 'POST', '/zones', { json: { name, account: { id: env.HOSTING_ACCOUNT_ID }, type: 'full' } })).result || {}; }
-  catch (e) { throw new DomainError(zoneRefusal(e), e?.detail || e?.message || '', e?.codes || []); }
+  let zone = earlier ? await earlierZone(env, { zoneId: earlier, name }) : null;
+  const again = !!zone;
+  if (!again) {
+    try { zone = (await cloudflare(env, 'POST', '/zones', { json: { name, account: { id: env.HOSTING_ACCOUNT_ID }, type: 'full' } })).result || {}; }
+    catch (e) { throw new DomainError(zoneRefusal(e), e?.detail || e?.message || '', e?.codes || []); }
+  }
   const zoneId = zone.id;
 
   try {
     const nameServers = (zone.name_servers || []).map(bare).filter(Boolean).slice(0, 2);
     if (!zoneId || nameServers.length < 2) throw new DomainError('cloudflare', 'the new zone came without an id or without two name servers');
     const records = `/zones/${zoneId}/dns_records`;
-    await cloudflare(env, 'POST', `${records}/scan`);
+    if (!again) await cloudflare(env, 'POST', `${records}/scan`);
 
     // The name servers the domain has now, as Cloudflare read them when it made the zone (or as the look read them).
-    const oldNameServers = ((zone.original_name_servers || []).length ? zone.original_name_servers : (look && look.nameServers) || []).map(bare).filter(Boolean);
-    const copied = await allRecords(env, zoneId);
+    // For a zone taken up again the look is the newer of the two, unless it shows this zone's own name servers:
+    // then the owner has pointed the domain here already, and what Cloudflare read at the start is all that is known.
+    const seenNow = ((look && look.nameServers) || []).map(bare).filter(Boolean);
+    const atStart = (zone.original_name_servers || []).map(bare).filter(Boolean);
+    const oldNameServers = again
+      ? (seenNow.length && !seenNow.some(ns => nameServers.includes(ns)) ? seenNow : atStart.filter(ns => !nameServers.includes(ns)))
+      : (atStart.length ? atStart : seenNow);
+    // A record a Worker's name brought with it belongs to that name: it cannot be changed here, and it is not the owner's to compare.
+    const copied = (await allRecords(env, zoneId)).filter(r => !(again && r.meta && r.meta.origin_worker_id));
     // Where the website's records at the bare name point: the old host.
     const oldHost = new Set(copied.filter(r => isSiteRecord(r, name) && bare(r.name) === name).map(r => bare(r.content)));
     const goes = (r) => isSiteRecord(r, name) || isDomainConnect(r) || isOldDns(r, oldNameServers) || isOldCatchAll(r, name, oldHost);
@@ -496,14 +535,22 @@ export async function prepareDomain(env, { name, worker, look = null }) {
     }
 
     const attached = [];
+    const there = again ? await workerNames(env, zoneId) : [];
     for (const hostname of [name, `www.${name}`]) {
+      const has = there.find(d => bare(d.hostname) === hostname && d.service === worker);
+      if (has) { attached.push({ hostname, id: has.id }); continue; }
       const made = (await cloudflare(env, 'PUT', `${account(env)}/workers/domains`, { json: { hostname, service: worker, zone_id: zoneId, environment: 'production' } })).result || {};
       attached.push({ hostname, id: made.id || null });
+    }
+    if (again) {
+      // Cloudflare takes this request only so often. When it will not, it still looks by itself in its own time.
+      try { await cloudflare(env, 'PUT', `/zones/${zoneId}/activation_check`); } catch { /* see above */ }
     }
     return { zoneId, nameServers, oldNameServers, records: shown(kept, name), attached };
   } catch (e) {
     const detail = e instanceof DomainError ? e.detail : String(e?.message || e);
-    if (zoneId) {
+    // Only a zone this call made is taken away again. One that was taken up again may be answering for the domain.
+    if (zoneId && !again) {
       try { await dropZone(env, zoneId); }
       catch (gone) { console.warn(JSON.stringify({ evt: 'domain_cleanup_failed', name, zone: zoneId, detail: String(gone?.detail || gone?.message || gone).slice(0, 200) })); }
     }
@@ -516,10 +563,12 @@ export async function prepareDomain(env, { name, worker, look = null }) {
 const STATUS = { pending: 'waiting', initializing: 'waiting', active: 'active', moved: 'moved', deleted: 'gone' };
 
 /**
- * Where a domain stands: { status, nameServers }. 'waiting' until its name
+ * Where a domain stands: { status, nameServers, activatedOn }. 'waiting' until its name
  * servers are changed, 'active' once they are, 'moved' when they were changed
- * away again, 'gone' when Cloudflare no longer has the zone. With `recheck`,
- * Cloudflare is first asked to look at the name servers again now.
+ * away again, 'gone' when Cloudflare no longer has the zone. `activatedOn` is
+ * the moment Cloudflare last saw the name servers point at it (the zone's own
+ * `activated_on`, in milliseconds), or null for a zone that never took hold.
+ * With `recheck`, Cloudflare is first asked to look at the name servers again now.
  */
 export async function domainStatus(env, { zoneId, recheck = false }) {
   need(env);
@@ -529,11 +578,11 @@ export async function domainStatus(env, { zoneId, recheck = false }) {
   }
   let zone;
   try { zone = (await cloudflare(env, 'GET', `/zones/${zoneId}`)).result || {}; }
-  catch (e) { if (isGone(e)) return { status: 'gone', nameServers: [] }; throw e; }
+  catch (e) { if (isGone(e)) return { status: 'gone', nameServers: [], activatedOn: null }; throw e; }
   const status = STATUS[zone.status];
   // A status this module has no word for is a failure, so that nothing is decided on a guess.
   if (!status) throw new DomainError('cloudflare', `zone status ${zone.status}`);
-  return { status, nameServers: (zone.name_servers || []).map(bare).filter(Boolean).slice(0, 2) };
+  return { status, nameServers: (zone.name_servers || []).map(bare).filter(Boolean).slice(0, 2), activatedOn: Date.parse(zone.activated_on || '') || null };
 }
 
 /**
