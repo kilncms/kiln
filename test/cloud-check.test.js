@@ -678,7 +678,7 @@ const noRepository = (checks) => {
   for (const c of checks) assert.equal(/repositor|github|ada\/club|—|–|undefined/i.test(JSON.stringify(c)), false, JSON.stringify(c));
 };
 
-test('check: a site Kiln keeps the files of has no line about installing the app, and says "your site\'s files" where another site\'s list says the repository', async () => {
+test('check: a site Kiln keeps the files of has no line about installing the app, and says "your site\'s files" where another site\'s list says the repository', { skip: d1Skip }, async () => {
   const plain = await lines(world(withKiln()));
   const kept = await lines(world(withKiln()), { kept: true });
   assert.deepEqual(kept.checks.map(c => c.id), KEPT_IDS);
@@ -693,7 +693,7 @@ test('check: a site Kiln keeps the files of has no line about installing the app
   for (const id of ['address', 'live', 'signin']) assert.deepEqual(kept.by[id], plain.by[id]);
 });
 
-test('check: a site that is not kept reads exactly as before, with the flag off or not given', async () => {
+test('check: a site that is not kept reads exactly as before, with the flag off or not given', { skip: d1Skip }, async () => {
   const a = await lines(world(withKiln()));
   const b = await lines(world(withKiln()), { kept: false });
   assert.deepEqual(a.checks, b.checks);
@@ -707,7 +707,7 @@ test('check: a site that is not kept reads exactly as before, with the flag off 
   assert.equal(none.by.files.detail, 'Not checked, because Kiln cannot read the repository yet.');
 });
 
-test('check: what a kept site\'s owner reads when something is wrong never sends them to GitHub or asks them to change a file by hand', async () => {
+test('check: what a kept site\'s owner reads when something is wrong never sends them to GitHub or asks them to change a file by hand', { skip: d1Skip }, async () => {
   const UNREAD = "Not checked, because Kiln could not read your site's files just now. Please check again in a minute.";
   // Kiln could not read the files: nothing to install, only to try again.
   const none = await lines(world(withKiln()), { kept: true, token: null });
