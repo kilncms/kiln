@@ -17,6 +17,7 @@
  * up top are exported for node unit tests and must stay DOM-free.
  */
 
+import { ownerWords } from './kept-words.js';
 import { notDone } from './plain-failure.js';
 import { demoSays } from './tryout.js';
 
@@ -420,7 +421,7 @@ async function openPicker(anchor) {
   const m = modal(`
     <h3>Add a section</h3>
     <p class="kiln-dim" id="kiln-blk-sub">Ready-made sections from this site's block library
-    (<code>_blocks/</code> in the repo) — the one you pick lands where you clicked.</p>
+    ${ownerWords('(<code>_blocks/</code> in the repo)', deps.state.kept)} — the one you pick lands where you clicked.</p>
     <div id="kiln-blk-list" class="kiln-inv-list"><p class="kiln-dim">Loading blocks…</p></div>
     <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Cancel</button></div>`);
   m.querySelector('.kiln-modal-card').classList.add('kiln-blk-card');
@@ -535,7 +536,7 @@ function renderEmptyState(m, anchor) {
     <p class="kiln-dim">No block library yet. A block is a ready-made, on-brand section anyone
     editing the site can drop between sections — no code involved. Whoever builds the site (a
     developer, or an AI given <code>KILN_PROMPT.md</code>) creates them: each <code>.html</code>
-    file in <code>_blocks/</code> at the repo root is one block — a single top-level element
+    file in <code>_blocks/</code> ${ownerWords('at the repo root', deps.state.kept)} is one block — a single top-level element
     with <code>data-cms</code> fields, named by an optional first-line manifest comment.
     Blocks are content-only: scripts and event handlers are stripped on insert.</p>
     <pre class="kiln-blk-ex">${escapeHtml(EXAMPLE_BLOCK)}</pre>

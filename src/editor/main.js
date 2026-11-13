@@ -95,6 +95,7 @@ import { fabSpot, isHiddenBox } from './fab-place.js';
 import { whereTo, coveredBy, nudge } from './in-view.js';
 import { findTwin, notHereWords } from './not-here.js';
 import { missingEvent, missingPerson, scheduleTitle, pickBarWords, removedHold, PEOPLE_WORDS, tooBigForDemo, headingVars, ADDED_CSS } from './first-edits.js';
+import { ownerWords } from './kept-words.js';
 import { demoSays, demoShort, DEMO_DRAFT_SAVED, DEMO_HISTORY_EMPTY, DEMO_HISTORY_NOTE,
   historyEntry, withEntry, undoChanges, goBackChanges, partVersions, hasPublished, HISTORY_MAX, DEMO_HISTORY_CAP } from './tryout.js';
 import { commitPager, addPartRows, OLDER_LABEL, OLDER_LOADING, OLDER_FAILED, FIRST_OF_PAGE, FIRST_OF_PART } from './older-versions.js';
@@ -355,7 +356,7 @@ async function init() {
         return;
       }
       console.warn('[kiln] could not verify session (offline?)', err);
-      setStatus('Can’t reach GitHub right now. Check your connection and reload.', 'error');
+      setStatus(ownerWords('Can’t reach GitHub right now. Check your connection and reload.', state.kept), 'error');
       return;
     }
   } else {
@@ -923,7 +924,7 @@ async function loadPageSource() {
       // The URL doesn't map to an HTML file in the repo — almost always a site
       // built by a generator (Hugo/Jekyll/11ty/Next export) where the served
       // page has no matching source file. Explain it instead of a dead console error.
-      err.kilnFriendly = `Kiln edits the HTML file for this page in your repo, but couldn't find one`
+      err.kilnFriendly = ownerWords("Kiln edits the HTML file for this page in your repo, but couldn't find one", state.kept)
         + ` (looked for: ${candidates.join(', ')}). This usually means the site is produced by a`
         + ` build tool, so the page you see isn't committed as-is. Kiln works on sites whose pages`
         + ` are committed as HTML. See the docs.`;
@@ -3994,7 +3995,7 @@ async function publishNow(opts = {}) {
     console.warn('[kiln] the lists could not be read before publishing', err);
   }
 
-  setStatus('Publishing: saving to GitHub…', 'saving');
+  setStatus(ownerWords('Publishing: saving to GitHub…', state.kept), 'saving');
   disablePublish(true);
   // Once the page's commit is made, nothing that stops afterwards is a failed
   // publish, and nothing may say "not published" (went-live.js).
@@ -6059,7 +6060,7 @@ function sourceBuildFailedBanner(committed, sha) {
   bar.id = 'kiln-srcfail';
   bar.innerHTML = `
     <div class="kiln-srcfail-head"><strong>Build failed.</strong> The site still shows the version from before.
-      ${mode === 'admin' ? `<a class="kiln-status-link" href="https://github.com/${escapeHtml(cfg.repo)}/commit/${escapeHtml(sha)}"
+      ${state.kept ? 'Undo your change here.' : mode === 'admin' ? `<a class="kiln-status-link" href="https://github.com/${escapeHtml(cfg.repo)}/commit/${escapeHtml(sha)}"
         target="_blank" rel="noopener">See what happened</a>` : 'Undo your change here, or ask the site’s owner to look.'}</div>
     ${committed.map((c, i) => `<div class="kiln-srcfail-row"><span>${escapeHtml((c.refs || []).length ? c.refs.map(r => sourceName(r.ref)).join(', ') : c.file)}</span>
       <button class="kiln-btn-ghost" data-i="${i}">${UNDO_ICON} Undo this change</button></div>`).join('')}
@@ -6474,8 +6475,8 @@ function runJournal() {
         try {
           const ds = await deployState(state.gh, cfg.repo, e.sha);
           if (ds === 'failure' || ds === 'error') {
-            setStatus('Build failed: open commit', 'error',
-              { href: `https://github.com/${cfg.repo}/commit/${e.sha}` });
+            setStatus(ownerWords('Build failed: open commit', state.kept), 'error',
+              state.kept ? undefined : { href: `https://github.com/${cfg.repo}/commit/${e.sha}` });
             failed = true;
             continue;                       // drop the entry — it will never go live
           }
@@ -6564,7 +6565,7 @@ function watchDeploy(sha, committedText, desc = 'Your page edit') {
   if (committedText) {
     journalAdd({ type: 'compare', target: location.pathname, expect: djb2(committedText), desc, sha });
   } else {
-    setStatus('Published to GitHub ✓', 'saved');
+    setStatus(ownerWords('Published to GitHub ✓', state.kept), 'saved');
     setStatusIdle();
   }
 }
@@ -6613,7 +6614,7 @@ function newContent() {
     form.style.display = 'none';
     body.style.display = '';
     body.innerHTML = `<h3>Publishing “${escapeHtml(title)}”</h3>
-      <p class="kiln-np-step" id="kiln-np-status">Committing to GitHub…</p>
+      <p class="kiln-np-step" id="kiln-np-status">${ownerWords('Committing to GitHub…', state.kept)}</p>
       <div class="kiln-modal-actions">
         <button class="kiln-btn-ghost" data-close>Close</button>
         <button class="kiln-btn-publish" id="kiln-np-open" disabled>Open it →</button>
@@ -6647,7 +6648,7 @@ function newContent() {
         if (!fillable.length) return html;
         status.textContent = 'Drafting the content with AI…';
         const r = await draftFill(brief, fillable);
-        status.textContent = 'Committing to GitHub…';
+        status.textContent = ownerWords('Committing to GitHub…', state.kept);
         if (r.error) { draftFailed = r.error; return html; }
         const edits = Object.entries(r.fields).map(([key, text]) => ({ key, html: escapeHtml(text) }));
         return edits.length ? applyEdits(html, edits).html : html;
@@ -6896,7 +6897,7 @@ async function invitePanel() {
         <label class="kiln-role"><input type="radio" name="kiln-p-role" value="editor" checked>
           <span><strong>Editor</strong><br><small>Edits pages, images, posts. Signs in with their Google account.</small></span></label>
         <label class="kiln-role"><input type="radio" name="kiln-p-role" value="member">
-          <span><strong>Member</strong><br><small>Views the members-only area and documents. Cannot edit. ${escapeHtml(PEOPLE_WORDS.membersRead)}</small></span></label>
+          <span><strong>Member</strong><br><small>Views the members-only area and documents. Cannot edit. ${escapeHtml(ownerWords(PEOPLE_WORDS.membersRead, state.kept))}</small></span></label>
       </div>
       <label id="kiln-p-paths-wrap">${PEOPLE_WORDS.pagesLabel}
         <input type="text" id="kiln-p-paths" placeholder="${PEOPLE_WORDS.pagesPlaceholder}"></label>
@@ -8361,7 +8362,7 @@ function settingsPanel() {
         <span><strong>Publish without the preview</strong><br><small>Publish goes live at once, without first showing what will change.</small></span></label>
     </div>
     ${isAdmin ? `
-    <h4>This site (applies to everyone, committed to the repo)</h4>
+    <h4>${ownerWords('This site (applies to everyone, committed to the repo)', state.kept)}</h4>
     <label class="kiln-role"><input type="checkbox" id="kiln-set-google" ${auth.google !== false ? 'checked' : ''}>
       <span><strong>Google sign-in</strong><br><small>Invited editors and members sign in with their Google account at yoursite.com/kiln.</small></span></label>` : ''}
     <div class="kiln-modal-actions">

@@ -127,6 +127,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   deployed: it rebuilds the `accounts` table so that a login may be empty,
   keeping every row, and adds `accounts.google_sub`, `accounts.name` and
   `sites.kept`. Signing in with GitHub is unchanged.
+### Changed
+
+- **The editor reads right for an owner who has no GitHub account.** The
+  owner of a site whose files Kiln keeps comes in from the Kiln dashboard or
+  with Google, and can open no repository and no page on github.com. When
+  the sign-in service says so (`kept: true` in its answer to
+  `GET /auth/session`), the editor leaves out its links to a commit on
+  github.com, says "Publishing: saving…", "Published ✓" and "Saving…" where
+  it named GitHub, and speaks of "your site's files" where it said "your
+  repo". When their sign-in has ended, "Sign in again" leads to the Google
+  sign-in, and where an invited editor is told to ask the site's owner, this
+  owner is told to open the editor again from their Kiln dashboard at
+  app.kilncms.com. Everybody else reads every sentence exactly as before.
 
 ## [0.6.6] - 2026-11-13
 
