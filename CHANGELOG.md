@@ -160,6 +160,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nothing when clicked, because the menu's own style for a button won over
   the mark that hides it. A menu button marked hidden is no longer drawn. On
   a site that has collections the button is there as before.
+- **The notice of a newer editor no longer covers "Make this whole page
+  editable".** With "A newer Kiln editor is available" on screen, Kiln menu >
+  Make text/images editable put its bar under the notice, so the button
+  "Make this whole page editable" could not be pressed, and the ✕ of the
+  notice did nothing there, because the mode took the click for itself.
+  While that bar is up, or the bar that asks where a new section should go,
+  the notice is put away, and it comes back when the bar goes. Neither mode
+  takes a click on the notice any more.
 
 ## [0.6.6] - 2026-11-13
 

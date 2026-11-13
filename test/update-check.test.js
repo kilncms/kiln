@@ -76,6 +76,28 @@ test('KLR-07 editor: the notice uses the helper and names the released tool', ()
   assert.doesNotMatch(main, /npx github:kilncms\/kiln(?!#release)/);
 });
 
+test('the notice of a newer editor: put away while a pick bar is up, and no pick mode takes a click on its ✕', () => {
+  const main = readFileSync(path.join(ROOT, 'src', 'editor', 'main.js'), 'utf8');
+  // One of the editor's own controls: nothing to make editable, and not counted among the page's elements.
+  const chrome = main.slice(main.indexOf('const KILN_CHROME = '), main.indexOf('function isKilnChrome('));
+  assert.ok(chrome.includes('#kiln-update-note'));
+  // The two modes that take every click on the page leave a click on the notice alone, as they do the bar's.
+  assert.match(main, /const PICK_LEAVES = '#kiln-pickbar, #kiln-modal, #kiln-update-note';/);
+  const make = main.slice(main.indexOf('function makeEditableMode('), main.indexOf('function offersWholePageHere('));
+  const spot = main.slice(main.indexOf('function pickSectionSpot('), main.indexOf('function insertNewSection('));
+  for (const fn of [make, spot]) {
+    assert.match(fn, /if \(e\.target\.closest\(PICK_LEAVES\)\) return;\s+e\.preventDefault\(\);/);
+    assert.doesNotMatch(fn, /closest\('#kiln-pickbar/);
+    assert.match(fn, /document\.body\.appendChild\(bar\);\s+pickBarChanged\(\);/);
+  }
+  // While a bar is up the notice is put away, also one that arrives after the bar; it comes back when the bar goes.
+  assert.match(main, /'\.kiln-picking #kiln-update-note\{display:none\}'/);
+  assert.match(main, /classList\.toggle\('kiln-picking', !!document\.getElementById\('kiln-pickbar'\)\)/);
+  const exit = main.slice(main.indexOf('function exitPickMode('), main.indexOf('function pickCandidate('));
+  assert.match(exit, /pickMode\.bar\.remove\(\);\s+pickBarChanged\(\);/);
+  assert.match(spot, /bar\.remove\(\);\s+pickBarChanged\(\);/);
+});
+
 test('KLR-07 guides: every install and update command names the release branch', () => {
   // Everything a site owner reads or is shown: the guides, the CLI's messages,
   // the worker's own pages, the editor, the templates.

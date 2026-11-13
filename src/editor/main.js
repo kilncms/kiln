@@ -793,6 +793,13 @@ async function checkForUpdate() {
   } catch { /* offline / rate-limited — never bother the user */ }
 }
 
+/**
+ * The notice sits at the top of the screen, in the middle, which is where the
+ * bar of "Make text/images editable" and of "click where it should go" sits
+ * too. While such a bar is up (html.kiln-picking, pickBarChanged) the notice is
+ * put away, and it comes back when the bar goes. Its ✕ is one of the editor's
+ * own controls (KILN_CHROME), so no mode takes the click meant for it.
+ */
 function showUpdateNotice(latest) {
   if (document.getElementById('kiln-update-note')) return;
   const st = document.createElement('style');
@@ -801,7 +808,8 @@ function showUpdateNotice(latest) {
     + 'padding:9px 10px 9px 15px;font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.32)}'
     + '#kiln-update-note code{background:rgba(255,255,255,.14);padding:1px 6px;border-radius:5px;font-size:12px}'
     + '#kiln-update-note button{background:transparent;color:#fff;border:0;font-size:15px;cursor:pointer;padding:2px 4px;opacity:.7}'
-    + '#kiln-update-note button:hover{opacity:1}';
+    + '#kiln-update-note button:hover{opacity:1}'
+    + '.kiln-picking #kiln-update-note{display:none}';
   document.head.appendChild(st);
   const el = document.createElement('div');
   el.id = 'kiln-update-note';
@@ -8431,7 +8439,7 @@ const PICKABLE = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'a', 
   'em', 'td', 'th', 'tr', 'tbody', 'table', 'time', 'dl', 'dt', 'dd', 'caption', 'address']);
 
 const KILN_CHROME = '#kiln-fab-wrap,#kiln-topbar,#kiln-toolbar,#kiln-modal,#kiln-imgpop,#kiln-previewbar,#kiln-notices,'
-  + '#kiln-presence,#kiln-pickbar,#kiln-sandbox-banner,#kiln-scope-note,.kiln-item-ctl,.kiln-ctl-cell,.kiln-repeat-add,'
+  + '#kiln-presence,#kiln-pickbar,#kiln-update-note,#kiln-sandbox-banner,#kiln-scope-note,.kiln-item-ctl,.kiln-ctl-cell,.kiln-repeat-add,'
   + '.kiln-filterbar,.kiln-filterbar-preview,.kiln-evbar,.kiln-img-handle,'
   + '#kiln-cmt-layer,#kiln-cmt-hint,#kiln-cmt-pop,#kiln-cmt-composer,#kiln-blocks-layer';
 
@@ -8445,6 +8453,16 @@ function domNth(el) {
 
 let pickMode = null;
 
+/**
+ * A bar of a pick mode has gone up at the top of the screen, or come down.
+ * While one is up, the "newer Kiln editor" notice, which sits in the same
+ * place, is put away (showUpdateNotice), so it cannot lie over the bar's buttons.
+ */
+function pickBarChanged() { document.documentElement.classList.toggle('kiln-picking', !!document.getElementById('kiln-pickbar')); }
+
+/** A click on one of these is the editor's own business: a pick mode leaves it alone. */
+const PICK_LEAVES = '#kiln-pickbar, #kiln-modal, #kiln-update-note';
+
 function exitPickMode() {
   if (!pickMode) return;
   document.removeEventListener('mouseover', pickMode.over, true);
@@ -8452,6 +8470,7 @@ function exitPickMode() {
   document.removeEventListener('keydown', pickMode.esc, true);
   document.querySelectorAll('.kiln-pick-hover').forEach(n => n.classList.remove('kiln-pick-hover'));
   pickMode.bar.remove();
+  pickBarChanged();
   // Restore the Kiln button/bar that we hid on entry.
   document.getElementById('kiln-fab-wrap')?.style.removeProperty('display');
   document.getElementById('kiln-topbar')?.style.removeProperty('display');
@@ -8503,6 +8522,7 @@ function pickSectionSpot(kind) {
   bar.innerHTML = `<span>${pickBarWords({ touch: isTouch() })}</span> <button id="kiln-spot-end">Put it at the end</button>
     <button id="kiln-spot-cancel" class="kiln-pick-cancel">Cancel</button>`;
   document.body.appendChild(bar);
+  pickBarChanged();
   let hovered = null;
   const mark = (el) => {
     hovered?.classList.remove('kiln-spot-hover');
@@ -8510,7 +8530,7 @@ function pickSectionSpot(kind) {
     el?.classList.add('kiln-spot-hover');
   };
   const over = (e) => {
-    if (e.target.closest('#kiln-pickbar')) { mark(null); return; }
+    if (e.target.closest(PICK_LEAVES)) { mark(null); return; }
     mark(anchors.find(a => a.contains(e.target)) || null);
   };
   const done = (anchor) => {
@@ -8518,7 +8538,7 @@ function pickSectionSpot(kind) {
     insertNewSection(kind, anchor);   // null anchor = end of page
   };
   const click = (e) => {
-    if (e.target.closest('#kiln-pickbar')) return;
+    if (e.target.closest(PICK_LEAVES)) return;
     e.preventDefault(); e.stopPropagation();
     const a = anchors.find(x => x.contains(e.target));
     if (a) done(a);
@@ -8527,6 +8547,7 @@ function pickSectionSpot(kind) {
   function cleanup() {
     mark(null);
     bar.remove();
+    pickBarChanged();
     document.removeEventListener('mouseover', over, true);
     document.removeEventListener('click', click, true);
     document.removeEventListener('keydown', key, true);
@@ -8634,6 +8655,7 @@ function makeEditableMode() {
     ${offersWholePageHere() ? `<button id="kiln-pick-all" class="kiln-pick-cancel">${WHOLE_PAGE_BUTTON}</button>` : ''}
     <button id="kiln-pick-exit">Done</button>`;
   document.body.appendChild(bar);
+  pickBarChanged();
   const all = bar.querySelector('#kiln-pick-all');
   if (all) all.onclick = () => wholePage(all);
   const over = (e) => {
@@ -8642,7 +8664,7 @@ function makeEditableMode() {
     if (c) c.classList.add('kiln-pick-hover');
   };
   const click = (e) => {
-    if (e.target.closest('#kiln-pickbar, #kiln-modal')) return;
+    if (e.target.closest(PICK_LEAVES)) return;
     e.preventDefault();
     e.stopPropagation();
     const el = pickCandidate(e.target);
