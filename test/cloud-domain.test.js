@@ -1500,3 +1500,44 @@ test('leaving: removing a site that is live at its own domain is not refused, an
     assert.equal((await records(w.env)).status, 404, 'the site is off the account, so the file is no longer here');
   });
 });
+
+// ─── Fair use: a domain's own free days ──────────────────────────────────────
+
+const DOMAIN_MARK = `firstseen:domain:${N}`;
+const siteNow = (env) => env.kiln_cloud.prepare("SELECT status, created_at FROM sites WHERE id = 'site1'").first();
+
+test('own domain, fair use: a site set up on a domain whose free days are over is not held back, is told so, and is brought in line at once', { skip: d1Skip }, async () => {
+  const w = world();
+  const began = Date.now() - 8 * DAY;
+  w.env.KILN.map.set(DOMAIN_MARK, String(began));
+  await withFetch(w.handler, async () => {
+    let res; await hush(async () => { res = await setup(w.env); });
+    const body = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(body));
+    assert.equal(body.free_days, `${N} has had its free days on Kiln, and they are over. Subscribe on the site's row to keep this site up at ${N}.`);
+    assert.equal((await domainRow(w.env, 'site1')).state, 'waiting', 'the set-up went ahead');
+    assert.deepEqual({ ...(await siteNow(w.env)) }, { status: 'canceled', created_at: began });
+  });
+});
+
+test('own domain, fair use: the domain is marked when a site that is not paid for goes live on it, and a site that is paid for is left alone', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    const row = await changed(w);
+    assert.equal(w.env.KILN.map.has(DOMAIN_MARK), false, 'a set-up alone writes no mark');
+    w.answers(N);
+    await hush(async () => assert.equal((await took(w.env, row)).live, true));
+    const site = await siteNow(w.env);
+    assert.deepEqual([w.env.KILN.map.get(DOMAIN_MARK), site.status], [String(site.created_at), 'trialing']);
+  });
+  const p = world();
+  p.env.kiln_cloud.exec("UPDATE sites SET status = 'active', ls_subscription_id = 'sub-1' WHERE id = 'site1'");
+  p.env.KILN.map.set(DOMAIN_MARK, String(Date.now() - 30 * DAY));
+  await withFetch(p.handler, async () => {
+    let res; await hush(async () => { res = await setup(p.env); });
+    const body = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(body));
+    assert.equal('free_days' in body, false);
+    assert.equal((await siteNow(p.env)).status, 'active');
+  });
+});

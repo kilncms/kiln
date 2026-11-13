@@ -83,6 +83,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A domain has its free days once.** When a site on Kiln's hosting that is
+  not paid for goes live on its own domain, Kiln remembers when that site's
+  free days began. A later site that is set up on the same domain has its
+  free days counted from that day, and is told so when they are over.
+  Setting a domain up is not held back, and a site that is paid for is not
+  affected.
 - **Free days cannot be started again by adding the same repository at a
   new address.** A site's seven free days were counted from the address that
   was typed, so removing a site and adding its repository again at another

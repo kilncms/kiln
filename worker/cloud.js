@@ -491,6 +491,7 @@ async function editorPerson(env, sess) {
 const REPO_HAD_ITS_DAYS = "This repository has had its free days on Kiln, and they are over, so this site has none. Subscribe on the site's row to edit it.";
 const ACCOUNT_HAD_ITS_DAYS = "Your free days began with the first site you added here, and they are over, so this site has none. Subscribe on the site's row to edit it.";
 const accountDaysLeft = (much) => `Your free days began with the first site you added here, so this site has ${much} left. Subscribe on the site's row before they end to keep editing it.`;
+export const domainHadItsDays = (domain) => `${domain} has had its free days on Kiln, and they are over. Subscribe on the site's row to keep this site up at ${domain}.`;
 
 /** GitHub's permanent number for the person who is signed in, or null (a session from before the number was kept, or a person signed in with Google). */
 const githubNumber = (sess) => (sess && sess.uid != null && /^[1-9]\d*$/.test(String(sess.uid)) ? Number(sess.uid) : null);
@@ -558,6 +559,39 @@ export async function freeDayClock(env, { accountId, origin, repoId = null, ghId
     sentence = accountDaysLeft(whole >= 2 ? `${whole} free days` : 'less than one free day');
   }
   return { began, over, sentence };
+}
+
+/**
+ * A domain's own free days, for a site on Kiln's hosting that is not paid for.
+ * The mark `firstseen:domain:<name, lower case>` is written, for good, when a
+ * site that is not paid for goes live on the domain (`goesLive`), and holds
+ * when that site's free days began. A later site that sets the domain up, or
+ * goes live on it, has its free days counted from the mark: its row is brought
+ * in line at once, and when the days are over the answer is the sentence its
+ * owner reads. A site that is paid for is left alone and writes no mark.
+ */
+export async function domainFreeDays(env, siteId, name, { now = Date.now(), goesLive = false } = {}) {
+  const domain = String(name || '').trim().toLowerCase();
+  if (!domain) return null;
+  try {
+    const s = await env.kiln_cloud.prepare('SELECT id, status, created_at, ls_subscription_id FROM sites WHERE id = ?').bind(siteId).first();
+    if (!s || s.ls_subscription_id || s.status === 'active') return null;
+    const key = `firstseen:domain:${domain}`;
+    const mark = Number(await env.KILN.get(key)) || null;
+    if (!mark) {
+      if (goesLive) await env.KILN.put(key, String(Math.min(Number(s.created_at) || now, now)));   // no expiry
+      return null;
+    }
+    const over = mark + TRIAL_GRACE_DAYS * 86400 * 1000 <= now;
+    if (s.status === 'trialing' && mark < Number(s.created_at)) {
+      await env.kiln_cloud.prepare("UPDATE sites SET created_at = ?, status = ? WHERE id = ? AND status = 'trialing' AND ls_subscription_id IS NULL")
+        .bind(mark, over ? 'canceled' : 'trialing', siteId).run();
+    }
+    return over ? domainHadItsDays(domain) : null;
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'domain_free_days_not_read', site: siteId, name: domain, detail: String(e?.message || e).slice(0, 200) }));
+    return null;
+  }
 }
 
 /**
@@ -1186,6 +1220,8 @@ export async function domainTookHold(env, { site, row, now = Date.now() } = {}) 
     }
     if (!(await saveDomain(env, s.id, { state: 'live', reason: null, live_at: now, checked_at: now }))) return { live };
     live = true;
+    // The domain's own free days (domainFreeDays): the mark is written here, and a site that goes live on a domain that has had them gets no fresh ones.
+    if (await domainFreeDays(env, s.id, name, { now, goesLive: true })) console.log(JSON.stringify({ evt: 'domain_free_days_over', repo: s.repo, name }));
     const www = hostName(s.origin) === `www.${name}`;
     const address = `https://${www ? 'www.' : ''}${name}`;
     await setAddressOnRecord(env, s, address, name);
@@ -2543,7 +2579,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         await notifyOwner(env, `Kiln is setting up ${name} for ${site.repo}`, [
           `By: ${signedInAs(sess)}`, ...(again ? ['This is the zone from its last set-up, taken up again. No new zone was made.'] : []), `Name servers to enter: ${made.nameServers.join(', ')}`, `Bought at: ${seller || 'not known'}`, `Records kept: ${made.records.length}`,
           'The site goes live at the domain once its owner has changed the name servers.']);
-        return json({ ok: true, domain: publicDomain(fresh) });
+        // The domain's own free days: a site set up on a domain that has had them gets no fresh ones, and is told so.
+        const hadDays = await domainFreeDays(env, site.id, name);
+        return json({ ok: true, domain: publicDomain(fresh), ...(hadDays ? { free_days: hadDays } : {}) });
       } finally {
         try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ }
       }

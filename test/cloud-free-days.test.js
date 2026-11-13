@@ -6,6 +6,8 @@
 // GitHub account by its permanent number (`firstseen:gh:<number>`, counted
 // only for an account that pays for no site). A site added when its days are
 // over is written `canceled` at once, and the answer says why in `free_days`.
+// A domain has a mark of its own (`firstseen:domain:<name>`), written when a
+// site that is not paid for goes live on it.
 //
 // Time passes here by writing a mark back in time: the service has no clock
 // to turn. A site is taken off by deleting its row, which is all of Remove
@@ -14,7 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import worker from '../worker/index.js';
-import { freeDayClock } from '../worker/cloud.js';
+import { freeDayClock, domainFreeDays } from '../worker/cloud.js';
 import { fakeKV, withFetch, jsonRes } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 
@@ -23,6 +25,7 @@ const APP_KEY = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.e
 const REPO_OVER = "This repository has had its free days on Kiln, and they are over, so this site has none. Subscribe on the site's row to edit it.";
 const ACCOUNT_OVER = "Your free days began with the first site you added here, and they are over, so this site has none. Subscribe on the site's row to edit it.";
 const left = (much) => `Your free days began with the first site you added here, so this site has ${much} left. Subscribe on the site's row before they end to keep editing it.`;
+const domainOver = (d) => `${d} has had its free days on Kiln, and they are over. Subscribe on the site's row to keep this site up at ${d}.`;
 
 /**
  * A service with Ada (GitHub's number 101, token 'ada') and Bo (202, token
@@ -174,4 +177,33 @@ test('free days: the clock starts at the earliest mark, whichever it is', { skip
   env.KILN.map.set('firstseen:gh:9', String(now - 20 * DAY));
   assert.deepEqual(await ask(), { began: now - 20 * DAY, over: true, sentence: REPO_OVER });
   assert.deepEqual(await ask({ repoId: null }), { began: now - 20 * DAY, over: true, sentence: ACCOUNT_OVER });
+});
+
+test('free days: a domain is marked when a site that is not paid for goes live on it, and a later site on that domain gets no fresh days', { skip: d1Skip }, async () => {
+  const env = cloudEnv(fakeKV());
+  const now = Date.now();
+  const KEY = 'firstseen:domain:oakbakery.test';
+  addSite(env, { id: 's1', repo: 'k/s1', origin: 'https://s1.example', status: 'trialing', created_at: now - 2 * DAY });
+  // setting a domain up only reads; going live writes when that site's free days began, under the name in lower case
+  assert.equal(await domainFreeDays(env, 's1', 'OakBakery.Test', { now }), null);
+  assert.equal(env.KILN.map.has(KEY), false);
+  assert.equal(await domainFreeDays(env, 's1', 'OakBakery.Test', { now, goesLive: true }), null);
+  assert.equal(env.KILN.map.get(KEY), String(now - 2 * DAY));
+  assert.deepEqual({ ...(await row(env, 's1')) }, { status: 'trialing', created_at: now - 2 * DAY });
+  // a day later, a new site on the same domain: its days are the domain's, with six left of them
+  addSite(env, { id: 's3', repo: 'k/s3', origin: 'https://s3.example', status: 'trialing', created_at: now + DAY });
+  assert.equal(await domainFreeDays(env, 's3', 'oakbakery.test', { now: now + DAY, goesLive: true }), null);
+  assert.deepEqual({ ...(await row(env, 's3')) }, { status: 'trialing', created_at: now - 2 * DAY });
+  // six days later the domain's days are over: a new site is brought in line at once, and its owner is told
+  const later = now + 6 * DAY;
+  addSite(env, { id: 's2', repo: 'k/s2', origin: 'https://s2.example', status: 'trialing', created_at: later });
+  assert.equal(await domainFreeDays(env, 's2', 'oakbakery.test', { now: later }), domainOver('oakbakery.test'));
+  assert.deepEqual({ ...(await row(env, 's2')) }, { status: 'canceled', created_at: now - 2 * DAY });
+  // a site that is paid for is left alone, and writes no mark
+  addSite(env, { id: 's4', repo: 'k/s4', origin: 'https://s4.example', status: 'active', ls_subscription_id: 'sub-4', created_at: later });
+  assert.equal(await domainFreeDays(env, 's4', 'oakbakery.test', { now: later, goesLive: true }), null);
+  assert.deepEqual({ ...(await row(env, 's4')) }, { status: 'active', created_at: later });
+  assert.equal(await domainFreeDays(env, 's4', 'paid.test', { now: later, goesLive: true }), null);
+  assert.equal(env.KILN.map.has('firstseen:domain:paid.test'), false);
+  assert.equal(env.KILN.map.get(KEY), String(now - 2 * DAY), 'the mark is never written again');
 });
