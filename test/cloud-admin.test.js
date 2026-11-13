@@ -29,7 +29,7 @@ test('KLR-08 without an id configured, the login is compared as before; with nei
 
 test('KLR-08 end to end: sign-in records the numeric id, and /admin/cloud/* answers by it', async () => {
   const kv = fakeKV({ 'app:creds': { client_id: 'cid', client_secret: 'cs' }, 'cstate:n1': '1', 'cstate:n2': '1' });
-  const d1 = { prepare: () => ({ bind: () => ({ first: async () => ({ id: 'acct', github_login: 'x' }), run: async () => ({}), all: async () => ({ results: [] }) }) }) };
+  const d1 = { prepare: () => ({ bind: () => ({ first: async () => ({ id: 'acct', github_login: 'x' }), run: async () => ({}), all: async () => ({ results: [] }) }) }), batch: async () => [] };
   const env = { KILN: kv, kiln_cloud: d1, CLOUD_ADMIN: 'erikkwilder', CLOUD_ADMIN_ID: '4242', CLOUD_DASHBOARD: 'https://app.example' };
   const signIn = async (state, user) => withFetch(async (url) => {
     if (url.includes('/login/oauth/access_token')) return jsonRes({ access_token: 'gho_x' });
