@@ -83,6 +83,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Free days cannot be started again by adding the same repository at a
+  new address.** A site's seven free days were counted from the address that
+  was typed, so removing a site and adding its repository again at another
+  address began them again. They are now counted from the earliest of three
+  things Kiln remembers: the address, the repository itself (by GitHub's
+  permanent number for it, so a new name or a new owner does not change it)
+  and the GitHub account (for an account that pays for no site). A site
+  added when its free days are already over is closed for editing at once,
+  and the dashboard says why. An account that pays for a site still gets
+  seven fresh days on each new repository.
 - **A busy GitHub is no longer read as "This site is not yours to sign in
   to".** When an owner signs in, Kiln asks GitHub whether their account may
   change the site's repository. If GitHub did not answer (it was down, or it

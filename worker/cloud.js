@@ -486,25 +486,99 @@ async function editorPerson(env, sess) {
   return { name: name.slice(0, 60), email: email || null };
 }
 
+// ─── Fair use of the free days ───────────────────────────────────────────────
+// What a person reads when a site they add gets no free days of its own.
+const REPO_HAD_ITS_DAYS = "This repository has had its free days on Kiln, and they are over, so this site has none. Subscribe on the site's row to edit it.";
+const ACCOUNT_HAD_ITS_DAYS = "Your free days began with the first site you added here, and they are over, so this site has none. Subscribe on the site's row to edit it.";
+const accountDaysLeft = (much) => `Your free days began with the first site you added here, so this site has ${much} left. Subscribe on the site's row before they end to keep editing it.`;
+
+/** GitHub's permanent number for the person who is signed in, or null (a session from before the number was kept, or a person signed in with Google). */
+const githubNumber = (sess) => (sess && sess.uid != null && /^[1-9]\d*$/.test(String(sess.uid)) ? Number(sess.uid) : null);
+
+/**
+ * A repository's permanent number at GitHub, or null when GitHub does not
+ * give it. Asked with the app's own token for the repository first, since a
+ * person's token is often past its time while their dashboard is still open,
+ * and then with the person's.
+ */
+async function repoNumber(env, tools, sess, repo) {
+  const ask = async (token) => {
+    if (!token) return null;
+    const r = await ghAsk(`${GH}/repos/${repo}`, token);
+    if (!r || !r.ok) return null;
+    const j = await r.json().catch(() => null);
+    return j && Number.isInteger(j.id) && j.id > 0 ? j.id : null;
+  };
+  let token = null;
+  if (tools && typeof tools.installationToken === 'function') { try { token = await tools.installationToken(env, repo); } catch { token = null; } }
+  try { return (await ask(token)) || (await ask(sess && sess.gh)); } catch { return null; }
+}
+
+/**
+ * When a new site's free days began, and the sentence its owner reads about
+ * them (null when the days start with this site). The days are counted from
+ * the EARLIEST of three marks, each kept in KV for good, written the first
+ * time the thing is seen and never written again:
+ *   firstseen:<address>       the site's address, as it was typed
+ *   firstseen:repo:<number>   the repository, by GitHub's permanent number for
+ *                             it, so a new name or a new address is the same
+ *                             repository
+ *   firstseen:gh:<number>     the GitHub account, by GitHub's permanent number
+ *                             for it. It is written for every account and
+ *                             counted only for one that pays for no site (the
+ *                             rule keeps.js follows for the sites Kiln keeps).
+ * A number that is not known (GitHub did not give the repository's, or the
+ * session is from before the account's was kept) is left out, and the other
+ * marks count. No rule starts the days again: a person at Kiln deletes a mark
+ * by hand when someone asks.
+ */
+export async function freeDayClock(env, { accountId, origin, repoId = null, ghId = null, now = Date.now() }) {
+  const day = 86400 * 1000;
+  const mark = async (key) => {
+    const was = Number(await env.KILN.get(key)) || null;
+    if (!was) await env.KILN.put(key, String(now));   // no expiry: the mark stays
+    return was;
+  };
+  const address = await mark(`firstseen:${origin}`);
+  const repository = Number.isInteger(repoId) && repoId > 0 ? await mark(`firstseen:repo:${repoId}`) : null;
+  let account = Number.isInteger(ghId) && ghId > 0 ? await mark(`firstseen:gh:${ghId}`) : null;
+  if (account) {
+    let paying = false;
+    try { paying = !!(await env.kiln_cloud.prepare("SELECT id FROM sites WHERE account_id = ? AND status = 'active' LIMIT 1").bind(accountId).first()); } catch { paying = false; }
+    if (paying) account = null;
+  }
+  const began = Math.min(now, ...[address, repository, account].filter(Boolean));
+  const ends = (t) => t + TRIAL_GRACE_DAYS * day;
+  const over = ends(began) <= now;
+  let sentence = null;
+  if (over) sentence = repository && ends(repository) <= now ? REPO_HAD_ITS_DAYS : account && ends(account) <= now ? ACCOUNT_HAD_ITS_DAYS : null;
+  else if (account && account === began) {
+    // Counted as keeps.js freeDaysSentence counts them: part of a day is a day, and the last day is "less than one".
+    const whole = Math.ceil((ends(began) - now) / day);
+    sentence = accountDaysLeft(whole >= 2 ? `${whole} free days` : 'less than one free day');
+  }
+  return { began, over, sentence };
+}
+
 /**
  * Writes a new site's row, on the free trial every new site gets, and answers
  * it. `kept` marks a site whose files Kiln keeps (keeps.js), which is the only
  * caller that names an `id`.
  */
-async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, kept = false, name = null, since = null }) {
-  // Anti-abuse: the 7-day self-serve trial clock is anchored to the FIRST time
-  // this origin was ever registered, so removing + re-adding a site can't farm
-  // a fresh trial indefinitely. (First registration records the timestamp.)
-  const firstSeenKey = `firstseen:${origin}`;
-  let createdAt = Date.now();
-  const prior = await env.KILN.get(firstSeenKey);
-  if (prior) createdAt = Number(prior) || createdAt;
-  else await env.KILN.put(firstSeenKey, String(createdAt));   // no TTL: a permanent trial marker
+async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, kept = false, name = null, since = null, days = null }) {
+  // Fair use: the free days are counted from the first time this address was
+  // added, so removing a site and adding it again cannot start them again.
+  // `days` is the clock of a site in a person's own repository, which counts
+  // the repository and the GitHub account as well (freeDayClock).
+  const now = Date.now();
+  let createdAt = (days || await freeDayClock(env, { accountId, origin, now })).began;
   // A site Kiln keeps has a new address every time it is started, so the address cannot say whether
   // the free days were had before. They are counted for the account instead (keeps.js): `since` is
   // when the account's first kept site was started, for an account that pays for nothing.
   if (kept && Number(since) > 0 && Number(since) < createdAt) createdAt = Number(since);
-  const site = { id, account_id: accountId, repo, origin, plan: plan === 'managed' ? 'managed' : 'cloud', status: 'trialing', created_at: createdAt };
+  // A site whose free days are already over is written as ended at once, so it is never open for editing until the next sweep.
+  const over = createdAt + TRIAL_GRACE_DAYS * 86400 * 1000 <= now;
+  const site = { id, account_id: accountId, repo, origin, plan: plan === 'managed' ? 'managed' : 'cloud', status: over ? 'canceled' : 'trialing', created_at: createdAt };
   // `kept` arrives with migration 0008, so only a kept site's row names the column.
   // A kept site also keeps the name its owner typed for it.
   if (kept) {
@@ -2123,19 +2197,24 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     }
     const dupe = await env.kiln_cloud.prepare('SELECT id FROM sites WHERE origin = ?').bind(o).first();
     if (dupe) return json({ error: 'That site address is already on Kiln Cloud. If it is yours and you cannot see it here, write to info@kilncms.com.' }, 409);
-    const site = await registerSite(env, { accountId: sess.account_id, repo, origin: o, plan });
+    // Fair use of the free days: counted from the first time this address, this repository or this GitHub account
+    // was seen here (freeDayClock). When GitHub does not give the repository's number the site is added all the same.
+    const days = await freeDayClock(env, { accountId: sess.account_id, origin: o, repoId: await repoNumber(env, tools, sess, repo), ghId: githubNumber(sess) });
+    const site = await registerSite(env, { accountId: sess.account_id, repo, origin: o, plan, days });
     // An address given with the form becomes the account's address for notices.
     if (mailAddress(email)) { try { await env.kiln_cloud.prepare('UPDATE accounts SET email = ? WHERE id = ?').bind(mailAddress(email), sess.account_id).run(); } catch { /* the site is added either way */ } }
     const to = await accountEmail(env, sess.account_id);
     const checkout = await lsCheckout(env, site, { email: to });
-    await sendOnce(env, `added:${site.id}`, to, siteAddedMail({ origin: site.origin, plan: site.plan, endsAt: trialEndsAt(site.created_at, TRIAL_GRACE_DAYS), dashboard: dash }));
+    // The mail about the free trial is for a site that has one.
+    if (site.status === 'trialing') await sendOnce(env, `added:${site.id}`, to, siteAddedMail({ origin: site.origin, plan: site.plan, endsAt: trialEndsAt(site.created_at, TRIAL_GRACE_DAYS), dashboard: dash }));
     await notifyOwner(env, `New Kiln site: ${site.repo}`, [
-      `Plan: ${site.plan} (trialing)`,
+      `Plan: ${site.plan} (${site.status === 'trialing' ? 'trialing' : 'its free days were already over'})`,
       `Origin: ${site.origin}`,
       `Registered by: ${signedInAs(sess)}`,
       checkout ? 'A checkout link was issued.' : 'No checkout: billing is not configured.',
     ]);
-    return json({ ok: true, site, checkout });   // checkout null until LS is configured
+    // `free_days`: one sentence for the dashboard to show when this site got no free days of its own, or fewer than seven.
+    return json({ ok: true, site, checkout, ...(days.sentence ? { free_days: days.sentence } : {}) });   // checkout null until LS is configured
   }
 
   // Start a site whose files Kiln keeps (keeps.js), for someone with no GitHub
