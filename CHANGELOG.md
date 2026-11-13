@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-11-13
+
 ### Added
 
 - **A site on Kiln's hosting can have a members area.** Put pages under
