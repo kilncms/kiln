@@ -485,6 +485,12 @@ export async function forwardsReady(env) {
  *     beside an address that works) and Cloudflare wrote to the inbox at
  *     that row's asking (the row has its `asked_at`), so the button was
  *     pressed in an email this account had sent.
+ * A row is the account's when the row itself names the account (`account_id`,
+ * migration 0011), or when its site belongs to the account. The first holds
+ * after the site was removed: the row and its rule stay then, so mail keeps
+ * arriving, and the inbox is still the same person's when they ask for it on
+ * a new site. The second is for a row written before the row named its
+ * account, and for a database migration 0011 has not reached.
  * The address typed on the Kiln account (`accounts.email`) is no proof: it is
  * whatever its owner typed in the dashboard, and nobody checked it.
  * Never throws: what cannot be read is not shown.
@@ -496,11 +502,19 @@ export async function ownsInbox(env, { accountId, inbox }) {
     const account = await env.kiln_cloud.prepare('SELECT google_sub, google_email FROM accounts WHERE id = ?').bind(accountId).first();
     if (account?.google_sub && String(account.google_email || '').trim().toLowerCase() === want) return true;
   } catch { /* a database the two columns have not reached: no account signs in with Google there */ }
+  // What a row has to say about the inbox: it is `on` to it, or it waits for it at its own asking.
+  const shown = `((f.inbox = ? AND (f.state = 'on' OR (f.state = 'confirming' AND f.asked_at IS NOT NULL)))
+           OR (f.state = 'on' AND f.want_inbox = ? AND f.want_asked_at IS NOT NULL))`;
+  try {
+    // The row's own account first: it is still there after the row's site was removed. Then the account of the row's site, as before.
+    return !!(await env.kiln_cloud.prepare(
+      `SELECT f.site_id FROM forwards f LEFT JOIN sites s ON s.id = f.site_id
+        WHERE (f.account_id = ? OR s.account_id = ?) AND ${shown} LIMIT 1`).bind(accountId, accountId, want, want).first());
+  } catch { /* a database migration 0011 has not reached: no row has an account of its own, and the site says whose it is */ }
   try {
     return !!(await env.kiln_cloud.prepare(
       `SELECT f.site_id FROM forwards f JOIN sites s ON s.id = f.site_id
-        WHERE s.account_id = ? AND ((f.inbox = ? AND (f.state = 'on' OR (f.state = 'confirming' AND f.asked_at IS NOT NULL)))
-           OR (f.state = 'on' AND f.want_inbox = ? AND f.want_asked_at IS NOT NULL)) LIMIT 1`).bind(accountId, want, want).first());
+        WHERE s.account_id = ? AND ${shown} LIMIT 1`).bind(accountId, want, want).first());
   } catch { return false; }
 }
 
@@ -589,6 +603,10 @@ const COLUMNS = ['address', 'inbox', 'inbox_id', 'rule_id', 'state', 'reason', '
  * inbox, and starts as 'confirming'), changed otherwise. A row whose state
  * changes loses its reason unless the same write gives one; one that becomes
  * 'on' gets its `on_at`, and one that goes back to 'confirming' loses it.
+ * `account_id` is the account the row belongs to (migration 0011). It is
+ * written to a row that has none and never changed after: a write that gives
+ * another account, or none, leaves the one that is there. On a database
+ * migration 0011 has not reached, the row is written without it.
  * Returns true when it was written and false when the table is not there yet.
  */
 export async function saveForward(env, siteId, fields = {}) {
@@ -596,6 +614,13 @@ export async function saveForward(env, siteId, fields = {}) {
   let f = {};
   for (const c of COLUMNS) if (fields[c] !== undefined) f[c] = fields[c];
   for (const c of ['address', 'inbox', 'want_address', 'want_inbox']) if (typeof f[c] === 'string') f[c] = f[c].trim().toLowerCase();
+  const account = String(fields.account_id ?? '').trim() || null;
+  // With the row's account, and once more without it where the table has no column for one.
+  const withAccount = async (write) => {
+    if (!account) return write(null);
+    try { return await write(account); }
+    catch (e) { if (!/no (?:such )?column[^\n]*account_id/i.test(String(e?.message || e))) throw e; return write(null); }
+  };
   try {
     const db = env.kiln_cloud;
     const was = await db.prepare('SELECT state FROM forwards WHERE site_id = ?').bind(siteId).first();
@@ -603,13 +628,18 @@ export async function saveForward(env, siteId, fields = {}) {
       if (!f.address || !f.inbox) throw new MailError('not_an_address');
       f = { state: 'confirming', created_at: now, ...f, updated_at: now };
       if (f.state === 'on' && !f.on_at) f.on_at = now;
-      const cols = Object.keys(f);
-      await db.prepare(`INSERT INTO forwards (site_id, ${cols.join(', ')}) VALUES (?${', ?'.repeat(cols.length)})`).bind(siteId, ...cols.map(c => f[c])).run();
+      await withAccount((mine) => {
+        const row = mine ? { ...f, account_id: mine } : f;
+        const cols = Object.keys(row);
+        return db.prepare(`INSERT INTO forwards (site_id, ${cols.join(', ')}) VALUES (?${', ?'.repeat(cols.length)})`).bind(siteId, ...cols.map(c => row[c])).run();
+      });
     } else {
       // A row that moves on leaves the last state's reason behind, unless this write gives one.
       if (f.state && f.state !== was.state) f = { reason: null, ...(f.state === 'on' ? { on_at: now } : f.state === 'confirming' ? { on_at: null } : {}), ...f };
       const cols = Object.keys(f);
-      await db.prepare(`UPDATE forwards SET ${cols.map(c => `${c} = ?`).join(', ')}${cols.length ? ', ' : ''}updated_at = ? WHERE site_id = ?`).bind(...cols.map(c => f[c]), now, siteId).run();
+      // The account goes only to a row that has none: the database keeps the one that is there, whatever this write gives.
+      await withAccount((mine) => db.prepare(`UPDATE forwards SET ${cols.map(c => `${c} = ?`).join(', ')}${cols.length ? ', ' : ''}${mine ? "account_id = COALESCE(NULLIF(account_id, ''), ?), " : ''}updated_at = ? WHERE site_id = ?`)
+        .bind(...cols.map(c => f[c]), ...(mine ? [mine] : []), now, siteId).run());
     }
     return true;
   } catch (e) {

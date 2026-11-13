@@ -2280,9 +2280,11 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         const again = !!waits && waits.address === address && waits.inbox === inbox;
         const sameInbox = !!waits && waits.inbox === inbox;
         // An address that works is not rewritten: the change is kept beside it until the new inbox confirms, and the old rule goes on forwarding.
-        const saved = await saveForward(env, site.id, works
+        // The row names the account it is saved for, so the inbox is still this account's own after the site is removed (domain-mail.js
+        // ownsInbox). It is written to a row that has none, and saveForward never changes one that is there.
+        const saved = await saveForward(env, site.id, { account_id: sess.account_id, ...(works
           ? { want_address: address, want_inbox: inbox, want_inbox_id: box.id, ...(again ? {} : { want_since: now }), ...(box.sent ? { want_asked_at: now } : sameInbox ? {} : { want_asked_at: null }) }
-          : { address, inbox, inbox_id: box.id, state: 'confirming', reason: null, ...(again ? {} : { created_at: now }), ...(box.sent ? { asked_at: now } : sameInbox ? {} : { asked_at: null }) });
+          : { address, inbox, inbox_id: box.id, state: 'confirming', reason: null, ...(again ? {} : { created_at: now }), ...(box.sent ? { asked_at: now } : sameInbox ? {} : { asked_at: null }) }) });
         if (!saved) return refuse('not_set_up', 503);
         // An inbox of this account's that confirmed earlier gets no second email: the rule is made at once.
         if (box.verified) {

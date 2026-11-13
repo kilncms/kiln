@@ -15,17 +15,18 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import worker from '../worker/index.js';
 import { fakeKV, withFetch } from './worker-harness.js';
-import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
+import { cloudEnv, addSite, d1Skip, schemaFiles } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare, fakeLookups } from './cloudflare-fake.js';
 import { domainRow } from '../worker/domain.js';
-import { addInbox, forwardRow, saveForward, publicForward, mailSentence, MAIL_LIMITS } from '../worker/domain-mail.js';
+import { addInbox, forwardRow, saveForward, ownsInbox, publicForward, mailSentence, MAIL_LIMITS } from '../worker/domain-mail.js';
 import { domainTookHold, sweepForwards, hostingEndedNote } from '../worker/cloud.js';
 import { sweepHosting } from '../worker/hosted.js';
 import { forwardOnMail, forwardWaitingMail, dayWords } from '../worker/mail.js';
 
 const N = 'oakbakery.test';
 const HELLO = `hello@${N}`;
+const N2 = 'oakcafe.test';                // the domain of a second site (secondSite)
 const INBOX = 'ada@example.com';       // the account's own address, and the inbox the mail is to reach
 const OTHER = 'bea@example.net';
 const WORKER = 'club-site1';
@@ -41,7 +42,7 @@ function world({ mail = false, env: extra = {} } = {}) {
   const dns = fakeLookups({ [N]: {
     seller: { name: 'GoDaddy.com, LLC', id: 146 }, nameServers: ['ns51.domaincontrol.com', 'ns52.domaincontrol.com'], dnssec: false,
     dns: mail === 'none' ? [{ name: N, type: 'MX', data: '0 .' }, { name: N, type: 'TXT', data: '"v=spf1 -all"' }] : mail ? [{ name: N, type: 'MX', data: '1 aspmx.l.google.com.' }, { name: N, type: 'TXT', data: '"v=spf1 include:_spf.google.com ~all"' }] : [],
-  } }, {});
+  }, [N2]: { seller: { name: 'GoDaddy.com, LLC', id: 146 }, nameServers: ['ns51.domaincontrol.com', 'ns52.domaincontrol.com'], dnssec: false, dns: [] } }, {});
   cf.scanFinds(N, [{ type: 'A', name: N, content: '203.0.113.10' }, { type: 'CNAME', name: `www.${N}`, content: N }, ...(mail === 'none' ? NO_MAIL : mail ? OWN_MAIL : [])]);
   const sent = [];
   const env = cloudEnv(fakeKV({ 'itok:ada/club': 'inst-token' }), {
@@ -274,6 +275,128 @@ test('forwarding: an inbox that another site of the same account already forward
     assert.deepEqual(w.cf.confirmations, [OTHER], 'the inbox was written to once, for the first site');
     assert.deepEqual(rules(w), [`${HELLO} > ${OTHER}`]);
     assert.deepEqual(w.mails().map(m => [m.to, m.subject]), [[INBOX, `${HELLO} now reaches ${OTHER}`]]);
+  });
+});
+
+// ─── Whose a row is, after its site was removed ───────────────────────────────
+
+const askAs = (env, token, pathname, body) => worker.fetch(new Request(`https://worker.example${pathname}`, {
+  method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+}), env);
+const rulesAt = (w, name) => w.cf.rulesOf(name).map(r => `${r.matchers[0].value} > ${r.actions[0].value.join(',')}`);
+const owns = (env, accountId, inbox) => ownsInbox(env, { accountId, inbox });
+/** A second hosted site ('site2') on a live domain of its own, with nothing forwarded: this account's, or another customer's who is signed in with `token`. */
+async function secondSite(w, { account = 'acct-1', token = 'tok' } = {}) {
+  if (account !== 'acct-1') {
+    w.env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, created_at) VALUES (?,?,?,?)', account, 'bea', OTHER, 1);
+    w.env.KILN.map.set(`csess:${token}`, JSON.stringify({ account_id: account, login: 'bea', gh: 'gho_y' }));
+  }
+  // This account's second site is the repository it removed, added again: the one repository GitHub lets it reach here.
+  addSite(w.env, { id: 'site2', account_id: account, repo: account === 'acct-1' ? 'ada/club' : 'bea/cafe', origin: 'https://cafe.example', plan: 'managed', status: 'active' });
+  w.cf.addScript('cafe-site2');
+  w.env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, deployed_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'site2', 'cafe-site2', 'https://cafe-site2.kiln-sites.workers.dev', 'live', 1, 1, 1);
+  w.cf.scanFinds(N2, [{ type: 'A', name: N2, content: '203.0.113.10' }]);
+  await hush(async () => {
+    assert.equal((await askAs(w.env, token, '/cloud/sites/domain', { id: 'site2', action: 'setup', name: N2 })).status, 200);
+    w.cf.setStatus(N2, 'active');
+    w.answers(N2);
+    assert.deepEqual(await domainTookHold(w.env, { site: { id: 'site2' }, row: await domainRow(w.env, 'site2') }), { live: true });
+  });
+}
+/** hello@ reaches the inbox, and then its owner removes the site. The row and the rule stay, as they are meant to. */
+async function removedWhileForwarding(w) {
+  await forwarding(w);
+  const row = await rowOf(w.env);
+  assert.equal(row.account_id, 'acct-1', 'the row names the account it was set up for');
+  await hush(async () => assert.equal((await ask(w.env, 'POST', '/cloud/sites/remove', { id: 'site1' })).status, 200));
+  assert.equal(w.env.kiln_cloud.row("SELECT id FROM sites WHERE id = 'site1'"), null, 'the site is gone from the account');
+  assert.deepEqual([await rowOf(w.env), rules(w)], [row, [`${HELLO} > ${INBOX}`]], 'and its address goes on forwarding');
+  return row;
+}
+
+test('forwarding: after a site is removed, its owner asks for the same inbox on a new site and it is on at once, with no email to the inbox', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    const left = await removedWhileForwarding(w);
+    await secondSite(w);
+    const before = { confirmations: [...w.cf.confirmations], mails: w.mails().length };
+    let res, body;
+    await hush(async () => { res = await askAs(w.env, 'tok', '/cloud/sites/mail', { id: 'site2', action: 'setup', local: 'hello', inbox: INBOX }); body = await res.json(); });
+    assert.deepEqual([res.status, body.ok, body.sent, body.forward.state, body.forward.address, body.forward.inbox], [200, true, false, 'on', `hello@${N2}`, INBOX]);
+    assert.deepEqual(w.cf.confirmations, before.confirmations, 'Cloudflare wrote to the inbox once, for the first site, and not again');
+    assert.deepEqual(rulesAt(w, N2), [`hello@${N2} > ${INBOX}`]);
+    assert.deepEqual(w.mails().slice(before.mails).map(m => m.subject), [`hello@${N2} now reaches ${INBOX}`]);
+    assert.equal((await forwardRow(w.env, 'site2')).account_id, 'acct-1');
+    assert.deepEqual([await rowOf(w.env), rules(w)], [left, [`${HELLO} > ${INBOX}`]], 'the removed site\'s row and rule are untouched');
+  });
+});
+
+test('forwarding: after a site is removed, another customer who asks for its inbox is still refused, and nothing is made at Cloudflare', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    const left = await removedWhileForwarding(w);
+    await secondSite(w, { account: 'acct-2', token: 'tok2' });
+    const before = { calls: w.cf.calls.length, confirmations: [...w.cf.confirmations], mails: w.mails().length };
+    const res = await askAs(w.env, 'tok2', '/cloud/sites/mail', { id: 'site2', action: 'setup', local: 'hello', inbox: INBOX });
+    const body = await res.json();
+    assert.deepEqual([res.status, body.code, body.forward], [409, 'inbox_elsewhere', null]);
+    assert.equal(body.error, 'Kiln cannot confirm that inbox by itself. Write to info@kilncms.com and we will set it up with you.');
+    assert.deepEqual(w.cf.calls.slice(before.calls).filter(c => c.method !== 'GET').map(c => `${c.method} ${c.path}`), [], 'Cloudflare was only read');
+    assert.deepEqual([await forwardRow(w.env, 'site2'), rulesAt(w, N2), w.cf.confirmations, w.mails().length], [null, [], before.confirmations, before.mails], 'no row, no rule and no email');
+    assert.deepEqual([await owns(w.env, 'acct-1', INBOX), await owns(w.env, 'acct-2', INBOX)], [true, false]);
+    assert.deepEqual([await rowOf(w.env), rules(w)], [left, [`${HELLO} > ${INBOX}`]], 'the removed site\'s row is still its first owner\'s, and still forwards');
+  });
+});
+
+test('forwarding: a row written before rows named their account counts for its site\'s account as before, and the migration gives it that account', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await otherSite(w, { account: 'acct-1' });   // saved with no account, as every row was
+    assert.equal((await forwardRow(w.env, 'site9')).account_id, null);
+    assert.deepEqual([await owns(w.env, 'acct-1', OTHER), await owns(w.env, 'acct-2', OTHER)], [true, false]);
+    // What migration 0011 does to the rows it finds: each takes its site's account. A row whose site is gone already stays
+    // without one and shows nothing for anybody, as before.
+    await saveForward(w.env, 'gone', { address: 'hi@gone.test', inbox: 'cy@example.org', state: 'on', rule_id: 'rule-0' });
+    const fill = readFileSync(schemaFiles().find(f => f.endsWith('0011_forward_account.sql')), 'utf8').match(/^UPDATE forwards[^;]+;/m)[0];
+    w.env.kiln_cloud.db.exec(fill);
+    assert.deepEqual([(await forwardRow(w.env, 'site9')).account_id, (await forwardRow(w.env, 'gone')).account_id], ['acct-1', null]);
+    assert.deepEqual([await owns(w.env, 'acct-1', OTHER), await owns(w.env, 'acct-2', OTHER), await owns(w.env, 'acct-1', 'cy@example.org')], [true, false, false]);
+  });
+});
+
+test('forwarding: the account a row names is written once, to a row that has none, and no later write replaces it', { skip: d1Skip }, async () => {
+  const { env } = world();
+  const named = async (id) => (await forwardRow(env, id)).account_id;
+  await saveForward(env, 'site1', { address: HELLO, inbox: INBOX, account_id: 'acct-1' });
+  assert.equal(await named('site1'), 'acct-1');
+  await saveForward(env, 'site1', { state: 'on', rule_id: 'rule-1', account_id: 'acct-2' });
+  await saveForward(env, 'site1', { account_id: null });
+  await saveForward(env, 'site1', { account_id: '' });
+  await saveForward(env, 'site1', {});
+  assert.deepEqual([await named('site1'), (await rowOf(env)).state, (await rowOf(env)).rule_id], ['acct-1', 'on', 'rule-1']);
+  // A row that has none takes the first account it is given, and keeps that one.
+  await saveForward(env, 'site9', { address: 'hi@beashop.test', inbox: OTHER });
+  assert.equal(await named('site9'), null);
+  await saveForward(env, 'site9', { account_id: 'acct-2' });
+  await saveForward(env, 'site9', { state: 'on', account_id: 'acct-1' });
+  assert.deepEqual([await named('site9'), (await forwardRow(env, 'site9')).state], ['acct-2', 'on']);
+});
+
+test('forwarding: on a database where rows cannot name their account yet, an inbox is an account\'s own through its site as before, and nothing throws', { skip: d1Skip }, async () => {
+  const w = world({ env: { d1: { upTo: schemaFiles().findIndex(f => f.endsWith('0011_forward_account.sql')) } } });
+  await withFetch(w.handler, async () => {
+    assert.throws(() => w.env.kiln_cloud.row('SELECT account_id FROM forwards LIMIT 1'), /no such column/, 'migration 0011 has not reached this database');
+    await otherSite(w, { account: 'acct-1' });
+    assert.deepEqual([await owns(w.env, 'acct-1', OTHER), await owns(w.env, 'acct-2', OTHER), await owns(w.env, 'acct-1', INBOX)], [true, false, false]);
+    // A write that names the account is made without it there, for a new row and for one that stands.
+    assert.equal(await saveForward(w.env, 'site8', { address: 'yo@elsewhere.test', inbox: 'cy@example.org', account_id: 'acct-1' }), true);
+    assert.equal(await saveForward(w.env, 'site8', { state: 'on', rule_id: 'rule-8', account_id: 'acct-1' }), true);
+    assert.deepEqual([(await forwardRow(w.env, 'site8')).state, (await forwardRow(w.env, 'site8')).rule_id], ['on', 'rule-8']);
+    // The dashboard's set-up works there as it did: an inbox another site of the account forwards to is on at once.
+    await withDomain(w);
+    let body;
+    await hush(async () => { body = await (await setup(w.env, 'hello', OTHER)).json(); });
+    assert.deepEqual([body.ok, body.sent, body.forward.state, rules(w)], [true, false, 'on', [`${HELLO} > ${OTHER}`]]);
   });
 });
 

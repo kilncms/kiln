@@ -53,6 +53,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   owner the site was not theirs. Now the page says "GitHub did not answer just
   now", that nothing is wrong with the account or the site, and to sign in
   again in a few minutes. A real no from GitHub is still a no.
+- **Removing a site no longer costs you the inbox its address forwarded to.**
+  A forwarded address stays on after its site is removed, so mail to that
+  domain keeps arriving. But Kiln then lost track of whose address it was, and
+  the same person, asking for the same inbox on a new site, was told "Kiln
+  cannot confirm that inbox by itself". Each forwarded address now remembers
+  the account it was set up for, so the inbox is still yours: on a new site it
+  is switched on at once, with no second email to confirm. Anybody else who
+  asks for that inbox is refused as before, and the removed site's address
+  goes on forwarding untouched. It needs migration `0011_forward_account.sql`.
+  Until that has run, everything works as it did before this fix. An address
+  whose site was removed before the migration ran has no account on record,
+  so for that one the old answer stands and info@kilncms.com sets it up.
 
 ## [0.6.8] - 2026-11-13
 
