@@ -980,7 +980,7 @@ function rescueHelpText() {
     --try                also set the copy up so you can try editing on this computer
     --render             for a site that draws its pages with JavaScript (see below)
     --browser <path>     with --render: the browser to use, if it is not found by itself
-    --menu-shim          with --render: add a small script so the phone menu still opens
+    --menu-shim          add a small script so the phone menu still opens (with or without --render)
 
   A site that draws its pages with JavaScript (Lovable, v0, Bolt and other apps)
     The server of such a site sends a page with no words on it, and a script

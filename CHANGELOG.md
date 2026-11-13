@@ -216,6 +216,46 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   editable parts, and is told that the rest stays
   (`src/editor/restore-page.js`).
 
+- **Rescue copies a WordPress site that uses plain addresses.** Many WordPress
+  sites never turned on "pretty" addresses, so their pages are `?p=14`,
+  `?page_id=2`, `?cat=5`, `?author=1`, `?tag=x`, `?m=202401` and `?paged=2`.
+  Rescue dropped everything after the question mark, so it copied the home
+  page and nothing else, and said nothing about it. Each of these addresses is
+  now a page of its own: it is followed, saved as its own file (`/?p=14`
+  becomes `p-14/index.html`), and every link to it in every copied page points
+  at that file. Any other ending after a question mark (a sort order, a
+  filter) is still not followed, and the report now counts those links and
+  shows up to five of them. Sign-in and admin addresses (`wp-login.php`,
+  `wp-admin`) and feeds are never opened, and the report says they were left
+  out.
+- **A site that lives in a folder of its host is copied as a site of its
+  own.** A copy of `https://host/shop-demo/` used to put every page inside a
+  folder named `shop-demo` with the styles outside it, so the folder had no
+  home page at its top, and the sitemap of the whole host was read: a shop of
+  31 products was told about 8,779 more pages. Now the folder is the top of
+  the copy: the home page is `index.html`, links and files agree with that,
+  only pages under the folder are tried or counted, and links to the rest of
+  the host keep going to the old site. The report says so, and names the
+  command that copies the whole host. The link-preview picture of such a site
+  is named by its place in the copy, with a line in the report about putting
+  the new address in front once the copy is live. An address that is one page
+  of a bigger site (`https://host/about/`) is still copied whole, as before.
+- **`--menu-shim` works without `--render`.** On a plain copy the button that
+  opens the menu on a phone did nothing, because the script that ran it is
+  taken out. `--menu-shim` now marks the button and what it opens for
+  WordPress block themes, Astra's slide-in menu, Bootstrap and the classic
+  WordPress themes, and adds the same small script `--render` uses. Without
+  it, the report says the menu does not open and gives the command to run.
+- **The rescue report's numbers and words.** The count of forms is the number
+  of forms listed. A file the old site had already lost (it answered "not
+  found") is listed as already missing, not as one that "will disappear when
+  you switch the old site off". The picture named by `msapplication-TileImage`
+  is copied like the other head pictures. When the site is a shop, one
+  paragraph near the top says that the cart, checkout, filters and stock do
+  not come across, and what to do. The log no longer prints two different
+  counts of files, and the dry run and the real run describe the next steps
+  in the same words.
+
 ### Changed
 
 - **The browser check passes on the test demo with nothing left failing.**

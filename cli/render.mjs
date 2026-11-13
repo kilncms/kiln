@@ -405,7 +405,7 @@ function walk(node, fn) {
 }
 
 /** The script a frozen page loads to make its phone menu open and close. */
-export const MENU_SHIM = `/* Kiln menu: opens and closes the phone menu on a page frozen by "kiln rescue --render". */
+export const MENU_SHIM = `/* Kiln menu: opens and closes the phone menu on a page copied by "kiln rescue --menu-shim". */
 (function () {
   var toggles = document.querySelectorAll('[data-kiln-menu-toggle]');
   if (!toggles.length) return;
@@ -427,6 +427,7 @@ export const MENU_SHIM = `/* Kiln menu: opens and closes the phone menu on a pag
     if (!t || !t.closest) return;
     if (t.closest('[data-kiln-menu-toggle]')) { ev.preventDefault(); set(!open); return; }
     if (!open) return;
+    if (t.closest('[data-kiln-menu-close]')) { ev.preventDefault(); set(false); return; }
     var panel = t.closest('[data-kiln-menu-panel]');
     if (!panel) return;
     var btn = t.closest('button');

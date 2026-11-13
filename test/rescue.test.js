@@ -519,12 +519,12 @@ test('rescue: --max-pages counts every address tried, each skipped one says why,
 });
 
 test('rescue: an address that answers with an error or is not a page says so in plain words', async (t) => {
-  const home = '<html><head><title>Home</title></head><body><h1>Home</h1><p>Some words here for the page.</p><a href="/gone">Gone</a><a href="/feed">Feed</a></body></html>';
-  const s = await tableSite(t, { '/': ['text/html', home], '/feed': ['application/rss+xml', '<rss/>'] });
+  const home = '<html><head><title>Home</title></head><body><h1>Home</h1><p>Some words here for the page.</p><a href="/gone">Gone</a><a href="/updates">Updates</a></body></html>';
+  const s = await tableSite(t, { '/': ['text/html', home], '/updates': ['application/rss+xml', '<rss/>'] });
   const r = await rescueRun([s.url, `--out=${s.out}`, '--delay=0']);
   assert.equal(r.code, 0, r.stdout);
   assert.match(r.stdout, /\/gone\n\s+skipped: the site answered with an error \(HTTP 404\)/);
-  assert.match(r.stdout, /\/feed\n\s+skipped: it is not a page \(application\/rss\+xml\)/);
+  assert.match(r.stdout, /\/updates\n\s+skipped: it is not a page \(application\/rss\+xml\)/);
   assert.doesNotMatch(r.stdout, /have moved to/, 'nothing moved, so no such sentence');
 });
 
@@ -563,4 +563,295 @@ test('rescue: the written report names the kinds of script and the preview pictu
   const html = readFileSync(path.join(s.out, 'index.html'), 'utf8');
   assert.match(html, new RegExp(`<meta property="og:image" content="${s.url.replace(/[.:/]/g, '\\$&')}/assets/rescued/[0-9a-f]{8}-og\\.png">`));
   assert.ok(!html.includes('webmanifest'));
+});
+
+// ─── WordPress with plain addresses, a site in a folder, the phone menu, the report's words ───
+
+import { existsSync } from 'node:fs';
+import { splitSearch, siteFolder, inFolder, plainMenu, plainMenuLine, againCommand, shopOf, shopLines, queryLinksLine, leftOutLine, folderLines } from '../cli/rescue.mjs';
+
+test('rescue: an address with a WordPress page ending is a page of its own', () => {
+  assert.equal(pageIdentity('/?p=14', SITE), '/?p=14');
+  assert.equal(pageIdentity('https://site.com/blog/?page_id=2#top', SITE), '/blog?page_id=2');
+  assert.equal(pageIdentity('/?paged=2&cat=5', SITE), '/?cat=5&paged=2', 'one fixed order, however the link wrote it');
+  assert.equal(pageIdentity('/?p=14&utm_source=x', SITE), '/?p=14');
+  assert.equal(pageIdentity('/?tag=slow%20food', SITE), '/?tag=slow%20food');
+  for (const q of ['?add-to-cart=349', '?replytocom=5', '?s=tea', '?orderby=price', '?p=']) assert.equal(pageIdentity('/shop/' + q, SITE), '/shop', q);
+  assert.deepEqual(splitSearch(new URL('https://site.com/?p=14&orderby=price')), { page: 'p=14', rest: '?orderby=price', other: true });
+  assert.deepEqual(splitSearch(new URL('https://site.com/?add-to-cart=3')), { page: '', rest: '?add-to-cart=3', other: false });
+  assert.deepEqual(splitSearch(new URL('https://site.com/x')), { page: '', rest: '', other: false });
+});
+
+test('rescue: mapUrls gives a page ending its own file, and makes the folder a site lived in the top of the copy', () => {
+  const m = mapUrls(['/', '/?p=14', '/?cat=5&paged=2', '/blog?page_id=2', '/old.html?p=3', '/?tag=slow%20food']);
+  assert.equal(m.get('/'), 'index.html');
+  assert.equal(m.get('/?p=14'), 'p-14/index.html');
+  assert.equal(m.get('/?cat=5&paged=2'), 'cat-5-paged-2/index.html');
+  assert.equal(m.get('/blog?page_id=2'), 'blog/page_id-2/index.html');
+  assert.equal(m.get('/old.html?p=3'), 'old-p-3.html');
+  assert.equal(m.get('/?tag=slow%20food'), 'tag-slow-food/index.html');
+  const f = mapUrls(['/shop-demo', '/shop-demo/store', '/shop-demo?p=8', '/shop-demo/a.html', '/elsewhere'], '/shop-demo');
+  assert.equal(f.get('/shop-demo'), 'index.html');
+  assert.equal(f.get('/shop-demo/store'), 'store/index.html');
+  assert.equal(f.get('/shop-demo?p=8'), 'p-8/index.html');
+  assert.equal(f.get('/shop-demo/a.html'), 'a.html');
+  assert.equal(f.get('/elsewhere'), 'elsewhere/index.html');
+  assert.equal(fileToHref(f.get('/shop-demo?p=8')), '/p-8/');
+});
+
+test('rescue: extractRefs follows page endings, leaves sign-in and feeds out, and notes links whose ending is dropped', () => {
+  const html = `<meta name="msapplication-TileImage" content="/tile.png">
+    <a href="/?p=14">Post</a><a href="/?page_id=2">Page</a><a href="/?cat=5">Cat</a><a href="/?author=1">A</a><a href="/?m=202401">M</a><a href="/?paged=2">2</a><a href="/?tag=x">T</a>
+    <a href="/shop/?orderby=price">Sort</a><a href="/shop/?add-to-cart=349">Add</a><a href="/?p=14&replytocom=3#respond">Reply</a><a href="/?s=tea">Search</a>
+    <a href="/wp-login.php?redirect_to=x">Log in</a><a href="/wp-login.php?redirect_to=y">Log in</a><a href="/wp-admin/">Admin</a><a href="/feed/">Feed</a><a href="/comments/feed/">CF</a><a href="/?feed=rss2">F2</a>
+    <a href="/cdn-cgi/l/email-protection#0b">[email&#160;protected]</a>`;
+  const r = extractRefs(html, SITE + '/');
+  assert.deepEqual([...r.pages].sort(), ['/', '/?author=1', '/?cat=5', '/?m=202401', '/?p=14', '/?page_id=2', '/?paged=2', '/?tag=x', '/shop'].sort());
+  assert.deepEqual(r.signin, ['/wp-login.php', '/wp-admin/'], 'one sign-in page is counted once, whatever follows its question mark');
+  assert.ok(!r.pages.some(p => p.includes('cdn-cgi')), "Cloudflare's email-hiding address is not a page");
+  assert.deepEqual(r.feeds, ['/feed/', '/comments/feed/', '/?feed=rss2']);
+  assert.deepEqual(r.queryLinks, ['/shop/?orderby=price'], 'a cart action, a reply and a search are not counted');
+  assert.ok(r.assets.includes('https://site.com/tile.png'), 'the tile picture named in the head is copied too');
+});
+
+test('rescue: cleanPage points every link to a numbered page at its file, and drops only the part that named the page', () => {
+  const pageMap = mapUrls(['/', '/?p=14', '/?cat=5']);
+  const r = cleanPage('<a href="/?p=14">a</a><a href="https://site.com/?p=14&x=1#c">b</a><a href="?cat=5">c</a><a href="/?p=99">d</a><a href="/?add-to-cart=3">e</a>', { baseUrl: SITE + '/', pageMap });
+  assert.ok(r.html.includes('<a href="/p-14/">a</a>'), r.html);
+  assert.ok(r.html.includes('<a href="/p-14/?x=1#c">b</a>'), r.html);
+  assert.ok(r.html.includes('<a href="/cat-5/">c</a>'), r.html);
+  assert.ok(r.html.includes('<a href="/?p=99">d</a>'), 'a page that was not copied keeps its address');
+  assert.ok(r.html.includes('<a href="/?add-to-cart=3">e</a>'), r.html);
+});
+
+test('rescue: a site that lived in a folder is copied with that folder as its top', () => {
+  assert.equal(siteFolder('https://host.com/shop-demo/', ['/shop-demo', '/shop-demo/store', '/shop-demo?p=8', '/']), '/shop-demo');
+  assert.equal(siteFolder('https://host.com/shop-demo/index.html', []), '/shop-demo');
+  assert.equal(siteFolder('https://host.com/', ['/about']), '');
+  assert.equal(siteFolder('https://host.com/home', ['/about', '/contact']), '', 'a page at the top of its host');
+  assert.equal(siteFolder('https://host.com/about/', ['/', '/blog', '/contact', '/about']), '', 'one page of a bigger site: most of its links lead out of the folder');
+  assert.equal(inFolder('/shop-demo/store', '/shop-demo'), true);
+  assert.equal(inFolder('/shop-demo?p=8', '/shop-demo'), true);
+  assert.equal(inFolder('/shop-demonstration', '/shop-demo'), false);
+  assert.equal(inFolder('/anything', ''), true);
+
+  const folder = '/shop-demo';
+  const pageMap = mapUrls(['/shop-demo', '/shop-demo/store', '/shop-demo?p=8'], folder);
+  const assetMap = new Map([['https://host.com/shop-demo/wp-content/logo.png', 'assets/rescued/aaaa-logo.png'], ['https://host.com/shop-demo/tile.png', 'assets/rescued/bbbb-tile.png']]);
+  const html = `<html><head><meta property="og:image" content="https://host.com/shop-demo/wp-content/logo.png"><meta name="msapplication-TileImage" content="https://host.com/shop-demo/tile.png"><meta name="msapplication-square150x150logo" content="/shop-demo/gone.png"><link rel="canonical" href="https://host.com/shop-demo/"><meta property="og:url" content="https://host.com/shop-demo/"></head><body>
+    <a href="/shop-demo/">Home</a><a href="https://host.com/shop-demo/store/">Store</a><a href="/shop-demo/?p=8">Post</a><a href="/shop-demo/cart/">Cart</a><a href="/other-demo/">Other</a><a href="/">Host</a><img src="/shop-demo/wp-content/logo.png"><form action="/shop-demo/store/"></form></body></html>`;
+  const r = cleanPage(html, { baseUrl: 'https://host.com/shop-demo/', pageMap, assetMap, folder });
+  for (const want of ['<a href="/">Home</a>', '<a href="/store/">Store</a>', '<a href="/p-8/">Post</a>', '<a href="/cart/">Cart</a>',
+    '<a href="https://host.com/other-demo/">Other</a>', '<a href="https://host.com/">Host</a>', '<img src="/assets/rescued/aaaa-logo.png">', '<form action="/store/">',
+    '<meta property="og:image" content="/assets/rescued/aaaa-logo.png">', '<meta name="msapplication-TileImage" content="/assets/rescued/bbbb-tile.png">',
+    '<meta name="msapplication-square150x150logo" content="https://host.com/shop-demo/gone.png">']) assert.ok(r.html.includes(want), `${want}\n${r.html}`);
+  assert.deepEqual(r.leftBehind, ['https://host.com/shop-demo/gone.png'], 'a head picture that was not copied is listed');
+  assert.equal(r.previews, 1);
+  assert.equal(r.oldHead, 2, 'the canonical link and og:url still name the old address');
+  // a site at the top of its host: the preview picture keeps the site name in front, the tile does not need it
+  const top = cleanPage('<meta property="og:image" content="/logo.png"><meta name="msapplication-TileImage" content="/tile.png">',
+    { baseUrl: 'https://host.com/', assetMap: new Map([['https://host.com/logo.png', 'assets/rescued/c-logo.png'], ['https://host.com/tile.png', 'assets/rescued/d-tile.png']]) });
+  assert.ok(top.html.includes('content="https://host.com/assets/rescued/c-logo.png"'), top.html);
+  assert.ok(top.html.includes('content="/assets/rescued/d-tile.png"'), top.html);
+});
+
+test('rescue: a host\'s sitemap counts only the pages under the folder the site lives in', () => {
+  const xml = '<urlset><url><loc>https://host.com/shop-demo/</loc></url><url><loc>https://host.com/shop-demo/store/</loc></url><url><loc>https://host.com/other-demo/</loc></url><url><loc>https://host.com/</loc></url><url><loc>https://host.com/shop-demo/wp-login.php</loc></url><url><loc>https://host.com/shop-demo/?p=8</loc></url></urlset>';
+  assert.deepEqual(sitemapPages(xml, 'https://host.com', '/shop-demo'), ['/shop-demo', '/shop-demo/store', '/shop-demo?p=8']);
+  assert.equal(sitemapPages(xml, 'https://host.com').length, 5, 'with no folder every page of the host counts, the sign-in address left out');
+});
+
+const BLOCK_NAV = '<html><head></head><body><header><nav class="wp-block-navigation"><button aria-haspopup="dialog" aria-label="Open menu" class="wp-block-navigation__responsive-container-open"><svg></svg></button><div class="wp-block-navigation__responsive-container" id="modal-1"><div class="wp-block-navigation__responsive-dialog"><button aria-label="Close menu" class="wp-block-navigation__responsive-container-close"></button><ul><li><a href="/about/">About</a></li></ul></div></div></nav></header></body></html>';
+
+test('rescue: plainMenu finds the phone menu button of a plain copy and marks what it opens', () => {
+  const seen = plainMenu(BLOCK_NAV);
+  assert.deepEqual({ found: seen.found, known: seen.known, label: seen.label }, { found: true, known: true, label: 'Open menu' });
+  assert.equal(seen.html, BLOCK_NAV, 'looking changes nothing');
+  const m = plainMenu(BLOCK_NAV, { apply: true });
+  assert.match(m.html, /<button [^>]*class="wp-block-navigation__responsive-container-open" data-kiln-menu-toggle="">/);
+  assert.match(m.html, /<div class="wp-block-navigation__responsive-container" id="modal-1" data-kiln-menu-swap="wp-block-navigation__responsive-container has-modal-open is-menu-open">/);
+  assert.match(m.html, /class="wp-block-navigation__responsive-container-close" data-kiln-menu-close="">/);
+  assert.equal(plainMenu(m.html, { apply: true }).html, m.html, 'marking twice changes nothing');
+
+  const astra = '<html><body><div id="ast-mobile-popup" class="ast-mobile-popup-drawer"><div class="ast-mobile-popup-overlay"></div><div class="ast-mobile-popup-inner"><button id="menu-toggle-close" class="menu-toggle-close" aria-label="Close menu"></button><a href="/a/">A</a></div></div><header><button type="button" class="menu-toggle main-header-menu-toggle" aria-expanded="false" aria-label="Main menu toggle"></button></header></body></html>';
+  const a = plainMenu(astra, { apply: true });
+  assert.equal(a.label, 'Main menu toggle');
+  assert.match(a.html, /id="ast-mobile-popup" class="ast-mobile-popup-drawer" data-kiln-menu-swap="ast-mobile-popup-drawer active show"/);
+  assert.equal(a.html.split('data-kiln-menu-close').length, 3, 'the close button and the dimmed background both close it');
+
+  const boot = '<html><body><nav class="navbar"><button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav" aria-label="Toggle navigation"></button><div class="collapse navbar-collapse" id="nav"><a href="/a/">A</a></div></nav></body></html>';
+  assert.match(plainMenu(boot, { apply: true }).html, /id="nav" data-kiln-menu-swap="collapse navbar-collapse show"/);
+
+  const classic = (htmlClass) => `<html class="${htmlClass}"><body><nav id="site-navigation" class="main-navigation"><button class="menu-toggle" aria-controls="top-menu" aria-expanded="false">Menu</button><ul id="top-menu"><li><a href="/a/">A</a></li></ul></nav></body></html>`;
+  assert.match(plainMenu(classic('js'), { apply: true }).html, /class="main-navigation" data-kiln-menu-swap="main-navigation toggled toggled-on"/);
+  assert.equal(plainMenu(classic('no-js')).found, false, 'a theme with a fallback for no script shows its menu already');
+
+  const odd = '<html><body><header><button class="hamburger" aria-label="Menu" aria-expanded="false"></button></header></body></html>';
+  const o = plainMenu(odd, { apply: true });
+  assert.deepEqual({ found: o.found, known: o.known, html: o.html }, { found: true, known: false, html: odd }, 'a button it does not know is found and left alone');
+  assert.equal(plainMenu('<html><body><button class="buy">Buy</button></body></html>').found, false);
+});
+
+test('rescue: the report offers --menu-shim for a plain copy, and says when it was added', () => {
+  const menus = [{ href: '/', found: true, known: true, label: 'Open menu' }, { href: '/about/', found: true, known: true, label: 'Open menu' }, { href: '/thanks/', found: false }];
+  const cmds = { shim: againCommand('https://site.com/', { out: 'copy', 'max-pages': '12' }, ['menu-shim']), render: againCommand('https://site.com/', {}, ['render', 'menu-shim']) };
+  assert.equal(cmds.shim, 'npx github:kilncms/kiln#release rescue https://site.com/ --out=copy --max-pages=12 --menu-shim');
+  assert.equal(cmds.render, 'npx github:kilncms/kiln#release rescue https://site.com/ --render --menu-shim');
+  const offer = plainMenuLine(menus, false, cmds);
+  assert.match(offer, /^- Phone menu: the button "Open menu" does not open the menu on a phone \(on \/, \/about\/\)\. One of the old site's scripts ran it/);
+  assert.ok(offer.includes('`' + cmds.shim + '`'), offer);
+  assert.match(plainMenuLine(menus, true, cmds), /opens the menu through assets\/kiln-menu\.js, a small script of Kiln's own, on \/, \/about\/\. Open a page on a phone/);
+  const odd = plainMenuLine([{ href: '/', found: true, known: false, label: 'Menu' }], true, cmds);
+  assert.match(odd, /could not tell from the page alone what the button "Menu" opens\. Run it with `--render --menu-shim`/);
+  assert.equal(plainMenuLine([{ href: '/', found: false }], false, cmds), '');
+  assert.doesNotMatch(offer + odd, /—/);
+  const L = staticLostLines([{ href: '/', html: '<p>Hi</p>' }], SITE, { menuLine: offer }).join('\n');
+  assert.match(L, /## What freezing cost/);
+  assert.ok(L.includes(offer), 'the menu line is reported even when nothing else stopped working');
+});
+
+test('rescue: the count of forms is the number of forms listed', () => {
+  const form = '<form class="woocommerce-ordering" method="get"><select name="orderby"></select></form>';
+  const pages = ['/store/', '/women/', '/men/'].map(href => ({ href, html: form }));
+  pages.push({ href: '/contact/', html: '<form id="contact" action="/contact/"><input name="email"></form>' });
+  const L = staticLostLines(pages, SITE).join('\n');
+  assert.match(L, /- Forms that posted into the old site: 2, on 4 pages\./);
+  assert.equal(L.split('\n').filter(l => l.startsWith('  - "')).length, 2);
+});
+
+test('rescue: a file the old site no longer has is listed as already missing, not as one that will disappear', () => {
+  const gone = { url: 'https://site.com/app.png', reason: 'the old site no longer has it (HTTP 404)', missing: true };
+  const film = { url: 'https://site.com/film.mp4', reason: 'a kind of file the rescue does not copy' };
+  const again = { url: 'https://site.com', args: {}, totalBytes: 0, maxAssetBytes: 20 * 1024 * 1024, maxTotalBytes: 250 * 1024 * 1024, capped: false };
+  const only = notCopiedLines([gone], again).join('\n');
+  assert.match(only, /## Files already missing on the old site\n\n1 file these pages ask for is already missing on the old site: it answered "not found" for it\./);
+  assert.doesNotMatch(only, /## Files not copied|will disappear/);
+  assert.ok(only.includes('- app.png: https://site.com/app.png'));
+  const both = notCopiedLines([gone, film], again).join('\n');
+  assert.match(both, /## Files not copied\n\n1 file used by these pages was not copied/);
+  assert.ok(both.indexOf('film.mp4') < both.indexOf('## Files already missing on the old site'));
+  assert.ok(both.indexOf('app.png') > both.indexOf('## Files already missing on the old site'));
+});
+
+test('rescue: a shop is recognised, and the report says in plain words that the shop does not come across', () => {
+  assert.equal(shopOf([{ href: '/', html: '<p>Hello</p><form class="cart-notes"></form>' }]), null);
+  const woo = shopOf([{ href: '/', html: '<a href="/?add-to-cart=349">Add</a>' }, { href: '/about/', html: '<p>x</p>' }, { href: '/product/shoes/', html: '<form class="variations_form cart"></form>' }]);
+  assert.deepEqual(woo, { kind: 'WooCommerce', on: ['/', '/product/shoes/'] });
+  assert.equal(shopOf([{ href: '/p/', html: '<form action="/cart/add" method="post"></form>' }]).kind, 'Shopify');
+  assert.equal(shopOf([{ href: '/p/', html: '<div class="sqs-add-to-cart-button">Add</div>' }]).kind, 'Squarespace');
+  const text = shopLines(woo).join('\n');
+  assert.match(text, /^## This site is a shop\n\nThe shop itself does not come across\./);
+  for (const w of ['cart', 'checkout', 'filters', 'stock', 'Keep the shop where it is', 'payment link', 'WooCommerce', '/, /product/shoes/']) assert.ok(text.includes(w), w);
+  assert.doesNotMatch(text, /—/);
+  assert.deepEqual(shopLines(null), []);
+});
+
+test('rescue: the report counts links whose ending was dropped, names what was left out on purpose, and says where a folder site\'s home page is', () => {
+  assert.equal(queryLinksLine([]), '');
+  const one = queryLinksLine(['/store/?orderby=price']);
+  assert.match(one, /^- Links not followed: 1 address ends in a question mark and more, like \?orderby=price\./);
+  assert.ok(one.endsWith('The address: /store/?orderby=price'), one);
+  const many = queryLinksLine(['/a?x=1', '/b?x=2', '/c?x=3', '/d?x=4', '/e?x=5', '/f?x=6', '/g?x=7']);
+  assert.match(many, /^- Links not followed: 7 addresses end /);
+  assert.ok(many.endsWith('The first five: /a?x=1, /b?x=2, /c?x=3, /d?x=4, /e?x=5'), many);
+  assert.doesNotMatch(one + many, /query string|—/);
+  assert.equal(leftOutLine([], []), '');
+  assert.match(leftOutLine(['/wp-login.php'], ['/feed/', '/comments/feed/']), /^- Left out on purpose: 1 sign-in or admin address of the old site \(wp-login, wp-admin\) and 2 feeds\./);
+  const f = folderLines({ origin: 'https://host.com', folder: '/shop-demo', outside: ['/', '/other-demo'] });
+  assert.match(f[0], /^- This is a copy of the part of https:\/\/host\.com that lives in the folder \/shop-demo\/\. .*its home page is index\.html at the top of this folder/);
+  assert.match(f[1], /^- Links to pages of host\.com outside \/shop-demo\/: 2 \(\/, \/other-demo\)\. .*run the rescue on https:\/\/host\.com\/ instead\./);
+  assert.deepEqual(folderLines({ origin: 'https://host.com', folder: '', outside: [] }), []);
+});
+
+/** A site that picks its page by what follows the question mark, the way WordPress does with plain addresses. */
+async function querySite(t, answer) {
+  const server = createServer((req, res) => {
+    const f = answer(new URL(req.url, 'http://x'));
+    if (!f) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('no'); }
+    res.writeHead(f[2] || 200, { 'content-type': f[0], ...(f[3] || {}) });
+    res.end(f[1]);
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(() => new Promise(r => { server.closeAllConnections?.(); server.close(r); }));
+  const dir = mkdtempSync(path.join(tmpdir(), 'kiln-rescue-wp-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return { url: `http://127.0.0.1:${server.address().port}`, dir };
+}
+
+test('rescue: a WordPress shop with plain addresses, living in a folder, comes out as a site that works by itself', async (t) => {
+  const page = (title, links = '') => `<!doctype html><html><head><title>${title}</title></head><body><h1>${title}</h1><p>Some words here for the page.</p><a href="/demo/">Home</a>${links}</body></html>`;
+  const home = `<!doctype html><html><head><title>Demo shop</title><meta property="og:image" content="/demo/logo.png"><meta name="msapplication-TileImage" content="/demo/tile.png"></head><body>
+<header><nav class="wp-block-navigation"><button aria-haspopup="dialog" aria-label="Open menu" class="wp-block-navigation__responsive-container-open"></button><div class="wp-block-navigation__responsive-container" id="modal-1"><button aria-label="Close menu" class="wp-block-navigation__responsive-container-close"></button><ul><li><a href="/demo/?page_id=2">About</a></li></ul></div></nav></header>
+<h1>Demo shop</h1><p>Some words here for the page.</p>
+<a href="/demo/?p=14">A post</a> <a href="/demo/?cat=5">News</a> <a href="/demo/?orderby=price">Sort by price</a> <a href="/demo/?add-to-cart=7">Add to cart</a>
+<a href="/demo/wp-login.php">Log in</a> <a href="/demo/feed/">Feed</a> <a href="/other/">Another demo</a>
+<img src="/demo/gone.png" alt="Gone"><form class="woocommerce-ordering" method="get"><select name="orderby"><option>Price</option></select></form>
+<script src="/demo/wp-includes/nav.js"></script></body></html>`;
+  const s = await querySite(t, (u) => {
+    if (u.pathname === '/demo') return ['text/plain', '', 301, { location: '/demo/' + u.search }];
+    if (u.pathname === '/demo/') {
+      if (u.searchParams.get('p') === '14') return ['text/html', page('A post', '<a href="/demo/?page_id=2">About</a>')];
+      if (u.searchParams.get('page_id') === '2') return ['text/html', page('About')];
+      if (u.searchParams.get('cat') === '5') return ['text/html', page('News', '<a href="/demo/?p=14">A post</a>')];
+      return ['text/html', home];
+    }
+    if (u.pathname === '/demo/logo.png' || u.pathname === '/demo/tile.png') return ['image/png', Buffer.alloc(300, 1)];
+    // the host's sitemap lists every site on the host
+    if (u.pathname === '/sitemap.xml') return sitemapOf('', ['/other/', '/other/a', '/other/b', '/other/c', '/demo/', '/demo/?p=14']);
+    if (u.pathname.startsWith('/other/')) return ['text/html', page('Another demo')];
+    return null;
+  });
+  const out = path.join(s.dir, 'copy');
+  const r = await rescueRun([`${s.url}/demo/`, `--out=${out}`, '--delay=0', '--max-pages', '12']);
+  assert.equal(r.code, 0, r.stdout);
+  assert.match(r.stdout, /\/demo\/ is a site in a folder of its own/);
+  assert.match(r.stdout, /crawled 4 pages\n/, 'the home page and its three numbered pages, and nothing of the rest of the host');
+  assert.doesNotMatch(r.stdout, /\] \/demo\/wp-login\.php|\] \/demo\/feed|\] \/other|more found beyond/);
+  assert.match(r.stdout, /━━ Localizing assets ━/);
+  for (const f of ['index.html', 'p-14/index.html', 'page_id-2/index.html', 'cat-5/index.html']) assert.ok(existsSync(path.join(out, f)), `${f} is written`);
+  assert.ok(!existsSync(path.join(out, 'demo')) && !existsSync(path.join(out, 'other')), 'the folder name is gone and no other site was copied');
+  const html = readFileSync(path.join(out, 'index.html'), 'utf8');
+  for (const want of ['href="/p-14/"', 'href="/page_id-2/"', 'href="/cat-5/"', `href="${s.url}/other/"`, 'href="/?orderby=price"']) assert.ok(html.includes(want), `${want}\n${html}`);
+  assert.match(html, /<meta property="og:image" content="\/assets\/rescued\/[0-9a-f]{8}-logo\.png">/);
+  assert.match(html, /<meta name="msapplication-TileImage" content="\/assets\/rescued\/[0-9a-f]{8}-tile\.png">/);
+  assert.ok(readFileSync(path.join(out, 'p-14/index.html'), 'utf8').includes('<a href="/">Home</a>'), 'a link back to the home page goes to the top of the copy');
+  assert.ok(!html.includes('kiln-menu'), 'no menu script unless it was asked for');
+
+  const report = readFileSync(path.join(out, 'RESCUE-REPORT.md'), 'utf8');
+  assert.match(report, /^# Rescue report: http:\/\/127\.0\.0\.1:\d+\/demo\/\n/);
+  assert.match(report, /- Pages crawled: 4, written: 4\.\n/);
+  assert.match(report, /- This is a copy of the part of http:\/\/127\.0\.0\.1:\d+ that lives in the folder \/demo\/\./);
+  assert.match(report, /- Links to pages of 127\.0\.0\.1:\d+ outside \/demo\/: 1 \(\/other\)\./);
+  assert.match(report, /- Sitemap \/sitemap\.xml: 2 pages listed/, 'only the two entries under /demo/ count');
+  assert.match(report, /- The picture for link previews \(og:image, twitter:image\) is in the copy, and the pages name it by its place there/);
+  assert.match(report, /- Left out on purpose: 1 sign-in or admin address of the old site \(wp-login, wp-admin\) and 1 feed\./);
+  assert.match(report, /- Links not followed: 1 address ends in a question mark and more, like \?orderby=price\./);
+  assert.match(report, /## This site is a shop\n\nThe shop itself does not come across\./);
+  assert.match(report, /- Files already missing on the old site: 1 /);
+  assert.match(report, /## Files already missing on the old site\n\n1 file these pages ask for is already missing[^\n]+\n\n- gone\.png: /);
+  assert.doesNotMatch(report, /## Files not copied|will disappear|no home page/);
+  assert.match(report, /- Forms that posted into the old site: 1\. /);
+  assert.match(report, /- Phone menu: the button "Open menu" does not open the menu on a phone \(on \/\)\.[^\n]+ --out=[^\n]+ --max-pages=12 --delay=0 --menu-shim`/);
+  assert.ok(report.indexOf('## This site is a shop') < report.indexOf('## What freezing cost'), 'the shop paragraph is near the top');
+
+  // asked for, the menu script is added and the button and its box are marked
+  const out2 = path.join(s.dir, 'copy-menu');
+  const r2 = await rescueRun([`${s.url}/demo/`, `--out=${out2}`, '--delay=0', '--menu-shim']);
+  assert.equal(r2.code, 0, r2.stdout);
+  const html2 = readFileSync(path.join(out2, 'index.html'), 'utf8');
+  assert.ok(existsSync(path.join(out2, 'assets', 'kiln-menu.js')), 'the menu script is in the copy');
+  assert.ok(html2.includes('<script src="/assets/kiln-menu.js" defer></script>'), html2);
+  assert.match(html2, /class="wp-block-navigation__responsive-container-open" data-kiln-menu-toggle=""/);
+  assert.match(html2, /data-kiln-menu-swap="wp-block-navigation__responsive-container has-modal-open is-menu-open"/);
+  assert.ok(!readFileSync(path.join(out2, 'p-14/index.html'), 'utf8').includes('kiln-menu'), 'a page with no menu button is left alone');
+  assert.match(readFileSync(path.join(out2, 'RESCUE-REPORT.md'), 'utf8'), /- Phone menu: the button "Open menu" opens the menu through assets\/kiln-menu\.js, a small script of Kiln's own, on \/\./);
+
+  // the dry run uses the same words for the same things
+  const r3 = await rescueRun([`${s.url}/demo/`, `--out=${path.join(s.dir, 'never')}`, '--delay=0', '--dry']);
+  assert.equal(r3.code, 0, r3.stdout);
+  assert.match(r3.stdout, /- Pages crawled: 4 \(dry run, nothing written\)\./);
+  assert.match(r3.stdout, /- Assets to localize: at least 3\./);
+  assert.match(r3.stdout, /3\. Connect Kiln: /);
+  assert.match(r3.stdout, /## This site is a shop/);
+  assert.ok(!existsSync(path.join(s.dir, 'never')), 'a dry run writes nothing');
 });

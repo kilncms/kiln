@@ -9,7 +9,7 @@
  *   npx github:kilncms/kiln#release rescue <url> [--out=dir] [--max-pages=N]
  *        [--delay=ms] [--max-asset-mb=N] [--max-total-mb=N]
  *        [--keep-scripts] [--no-tag] [--dry]
- *        [--render [--browser=path] [--menu-shim]] [--try]
+ *        [--menu-shim] [--render [--browser=path]] [--try]
  *
  * --render is for sites drawn by JavaScript (Lovable, v0, Bolt and other React
  * apps): each page is opened in a browser already on this machine and saved as
@@ -82,7 +82,75 @@ function walkTree(node, fn) {
 
 // ─── pure: URL → file mapping ────────────────────────────────────────────────
 
-/** Page identity: same-origin pathname, ?query and #fragment stripped, trailing
+/** Endings WordPress uses, when its addresses are left "plain", to name a
+ *  page: ?p=14 is a post, ?page_id=2 a page, ?cat=5 a category, ?paged=2 the
+ *  second page of a list. An address that carries one is a page of its own. */
+const PAGE_PARAMS = ['p', 'page_id', 'cat', 'tag', 'author', 'm', 'paged'];
+/** Endings that never make a page of their own, and that the report does not
+ *  count as links it failed to follow: a cart action, a reply to a comment, a
+ *  search, and the labels visitor counters hang on links. */
+const NO_PAGE_PARAM_RE = /^(add-to-cart|remove_item|replytocom|s|utm_\w+|fbclid|gclid)$/i;
+const SIGN_IN_RE = /\/(wp-login\.php|wp-signup\.php|wp-register\.php|wp-admin)(\/|$)/i;
+const FEED_RE = /(^|\/)feed(\/(rss2?|atom|rdf))?\/?$/i;
+
+/**
+ * The part of an address after the question mark, split in two. `page` is
+ * what names a WordPress page ("p=14", in a fixed order; '' when nothing
+ * does). `rest` is everything else, question mark included ('' when nothing
+ * is left). `other` is true when the rest holds something the old site would
+ * have acted on, such as a sort order or a filter.
+ */
+export function splitSearch(u) {
+  if (!u.search) return { page: '', rest: '', other: false };
+  const page = [], rest = [];
+  let other = false;
+  for (const k of PAGE_PARAMS) { const v = u.searchParams.get(k); if (v) page.push(`${k}=${encodeURIComponent(v)}`); }
+  for (const [k, v] of u.searchParams) {
+    if (PAGE_PARAMS.includes(k) && v) continue;
+    rest.push(encodeURIComponent(k) + (v === '' ? '' : '=' + encodeURIComponent(v)));
+    if (!NO_PAGE_PARAM_RE.test(k)) other = true;
+  }
+  return { page: page.join('&'), rest: !page.length ? u.search : (rest.length ? '?' + rest.join('&') : ''), other };
+}
+
+/** An address the rescue never opens: 'signin' for the old site's sign-in and
+ *  admin pages, 'feeds' for a feed, '' for everything else. */
+export function leftOutKind(u) {
+  if (SIGN_IN_RE.test(u.pathname)) return 'signin';
+  if (FEED_RE.test(u.pathname) || u.searchParams.has('feed')) return 'feeds';
+  return '';
+}
+
+/** True when a page identity (or a path) is inside `folder` ('/shop-demo').
+ *  With no folder, everything is. */
+export function inFolder(id, folder) {
+  return !folder || id === folder || id.startsWith(folder + '/') || id.startsWith(folder + '?');
+}
+const stripFolder = (pathname, folder) => !folder ? pathname
+  : pathname === folder ? '/'
+  : pathname.startsWith(folder + '/') ? pathname.slice(folder.length) : pathname;
+
+/**
+ * The folder a site lives in when it is not at the top of its host:
+ * '/shop-demo' for https://host/shop-demo/, '' for a site at the top.
+ * firstUrl is the address the first page was read from, links the page
+ * identities it links to. An address inside a folder is taken at its word,
+ * unless most of what its page links to lies outside that folder: then it is
+ * one page of a bigger site (https://host/about/), and that site is copied
+ * whole, as before.
+ */
+export function siteFolder(firstUrl, links = []) {
+  let u; try { u = new URL(firstUrl); } catch { return ''; }
+  const folder = u.pathname.slice(0, u.pathname.lastIndexOf('/')).replace(/\/+$/, '');
+  if (!folder) return '';
+  const self = pageIdentity(u.href);
+  let inside = 0, outside = 0;
+  for (const id of links) { if (id === self) continue; if (inFolder(id, folder)) inside++; else outside++; }
+  return inside >= outside ? folder : '';
+}
+
+/** Page identity: same-origin pathname, #fragment and ?query stripped (all but a
+ *  WordPress page ending such as ?p=14, which stays: it names its own page), trailing
  *  slash and /index.html dropped (so /about, /about/ and /about/index.html are
  *  one page). null = not a page URL. */
 export function pageIdentity(href, base) {
@@ -90,7 +158,9 @@ export function pageIdentity(href, base) {
   if (!/^https?:$/.test(u.protocol)) return null;
   if (base && !sameSite(u, new URL(base))) return null;
   const p = u.pathname.replace(/\/index\.html?$/i, '/');
-  return p.length > 1 ? (p.replace(/\/+$/, '') || '/') : p;
+  const id = p.length > 1 ? (p.replace(/\/+$/, '') || '/') : p;
+  const q = splitSearch(u).page;
+  return q ? `${id}?${q}` : id;
 }
 
 const fileSeg = (s) => {
@@ -105,16 +175,27 @@ const fileSeg = (s) => {
  * /a.html keeps its name. Collisions (two paths sanitizing to the same file) are
  * resolved deterministically: the first claimant in crawl order keeps the clean
  * name, later ones get -2, -3… before /index.html (or the extension).
+ * A WordPress page ending becomes a folder of its own: /?p=14 → p-14/index.html,
+ * /blog?cat=5 → blog/cat-5/index.html. With `folder` (the folder the site
+ * lived in on its host), that folder is the top of the copy:
+ * /shop-demo → index.html, /shop-demo/about → about/index.html.
  */
-export function mapUrls(identities) {
+export function mapUrls(identities, folder = '') {
   const map = new Map(), taken = new Set();
   for (const p of identities) {
     if (map.has(p)) continue;
+    const at = p.indexOf('?');
+    const where = stripFolder(at === -1 ? p : p.slice(0, at), folder);
+    const q = at === -1 ? '' : fileSeg(p.slice(at + 1).replace(/[=&]+/g, '-'));
+    const segs = where === '/' ? [] : where.replace(/^\/+|\/+$/g, '').split('/').map(fileSeg);
+    const last = segs.length - 1;
     let file;
-    if (p === '/') file = 'index.html';
-    else {
-      const segs = p.replace(/^\/+|\/+$/g, '').split('/').map(fileSeg);
-      file = /\.html?$/i.test(segs[segs.length - 1]) ? segs.join('/') : segs.join('/') + '/index.html';
+    if (last >= 0 && /\.html?$/i.test(segs[last])) {
+      if (q) segs[last] = segs[last].replace(/(\.html?)$/i, `-${q}$1`);
+      file = segs.join('/');
+    } else {
+      if (q) segs.push(q);
+      file = segs.length ? segs.join('/') + '/index.html' : 'index.html';
     }
     const want = file;
     for (let i = 2; taken.has(file); i++) {
@@ -138,6 +219,11 @@ export function fileToHref(file) {
 // ─── pure: reference extraction (crawler feed) ───────────────────────────────
 
 const ICON_RELS = ['icon', 'shortcut', 'apple-touch-icon', 'mask-icon'];
+// pictures a page names in its head: the ones link previews draw, and the tile Windows pins
+const PREVIEW_METAS = ['og:image', 'og:image:url', 'og:image:secure_url', 'twitter:image', 'twitter:image:src'];
+const TILE_RE = /^msapplication-(tileimage|square\d+x\d+logo|wide\d+x\d+logo)$/;
+// not pages: files, and Cloudflare's own addresses under /cdn-cgi/ (its email-hiding links)
+const isFileId = (id) => NON_PAGE_RE.test(id.split('?')[0]) || /^\/cdn-cgi\//.test(id);
 const relsOf = (node) => (getAttr(node, 'rel') || '').toLowerCase().split(/\s+/).filter(Boolean);
 
 function baseOf(doc, pageUrl) {
@@ -156,12 +242,16 @@ const cssUrls = (css) => {
   return out;
 };
 
-/** One parse per fetched page: same-origin page links + every asset reference
+/** One parse per fetched page: same-origin page links + every asset reference,
+ *  and the links that are not opened: signin and feeds (addresses of the old
+ *  site's machinery) and queryLinks (addresses whose ending after the question
+ *  mark is dropped, so the report can count them).
  *  (any origin — the crawler decides later what to localize). */
 export function extractRefs(html, pageUrl) {
   const doc = parse(html);
   const base = baseOf(doc, pageUrl);
   const pages = new Set(), assets = new Set();
+  const left = { signin: new Set(), feeds: new Set() }, queryLinks = new Set();
   const asset = (val) => {
     if (!val || /^(data:|blob:|#)/i.test(String(val).trim())) return;
     try { const u = new URL(String(val).trim(), base); if (/^https?:$/.test(u.protocol)) assets.add(siteKey(u, base)); } catch { /* skip */ }
@@ -170,8 +260,16 @@ export function extractRefs(html, pageUrl) {
   walkTree(doc, n => {
     switch (n.tagName) {
       case 'a': {
-        const id = pageIdentity(getAttr(n, 'href') || '', base);
-        if (id && !NON_PAGE_RE.test(id)) pages.add(id);
+        const href = getAttr(n, 'href') || '';
+        const id = pageIdentity(href, base);
+        if (!id || isFileId(id)) break;
+        const u = new URL(href, base);
+        const kind = leftOutKind(u);
+        // one sign-in page is one address, however many "come back to" endings its links carry
+        if (kind) { left[kind].add(kind === 'signin' ? u.pathname : u.pathname + u.search); break; }
+        pages.add(id);
+        const s = splitSearch(u);
+        if (!s.page && s.other) queryLinks.add(u.pathname + u.search);
         break;
       }
       case 'img': case 'source':
@@ -185,7 +283,7 @@ export function extractRefs(html, pageUrl) {
       }
       case 'meta': {
         const key = (getAttr(n, 'property') || getAttr(n, 'name') || '').toLowerCase();
-        if (['og:image', 'og:image:secure_url', 'twitter:image', 'twitter:image:src'].includes(key)) asset(getAttr(n, 'content'));
+        if (PREVIEW_METAS.includes(key) || TILE_RE.test(key)) asset(getAttr(n, 'content'));
         break;
       }
       case 'use': asset(getAttr(n, 'href') || getAttr(n, 'xlink:href')); break;   // svg sprites
@@ -193,7 +291,7 @@ export function extractRefs(html, pageUrl) {
     }
     if (n.attrs && getAttr(n, 'style')?.includes('url(')) cssUrls(getAttr(n, 'style')).forEach(asset);
   });
-  return { pages: [...pages], assets: [...assets] };
+  return { pages: [...pages], assets: [...assets], signin: [...left.signin], feeds: [...left.feeds], queryLinks: [...queryLinks] };
 }
 
 // ─── pure: CSS url() rewriting ───────────────────────────────────────────────
@@ -235,7 +333,11 @@ export function rewriteCssUrls(css, opts = {}) {
  * address on the old site, so it keeps showing until that site is switched off.
  *
  * opts: { baseUrl, pageMap (identity → file), assetMap (assetKey → local path),
- *         keepScripts }.
+ *         keepScripts, folder }. folder ('/shop-demo') is the folder the site
+ * lived in on its host: it becomes the top of the copy, so addresses inside
+ * it lose its name, and a link to a page of the host outside it keeps its
+ * full address on the old site. oldHead (returned) counts the canonical link
+ * and og:url, which still name the old address.
  * Returns { html, scripts, cruft, kinds, previews, offOrigin, leftBehind } —
  * scripts/cruft = removal counts, kinds = what the removed scripts were
  * ({ own, inline, visitors: { host: n }, outside: { host: n } }), previews =
@@ -246,10 +348,11 @@ export function rewriteCssUrls(css, opts = {}) {
 export function cleanPage(html, opts = {}) {
   const pageMap = opts.pageMap || new Map();
   const assetMap = opts.assetMap || new Map();
+  const folder = opts.folder || '';
   const doc = parse(html);
   const base = baseOf(doc, opts.baseUrl || 'http://localhost/');
   const offOrigin = new Set(), leftBehind = new Set();
-  let scripts = 0, cruft = 0, previews = 0;
+  let scripts = 0, cruft = 0, previews = 0, oldHead = 0;
   const removals = [];
   // what each script taken out was: the site's own, written into the page,
   // a visitor counter, or something loaded from another site (a chat box, a
@@ -281,7 +384,7 @@ export function cleanPage(html, opts = {}) {
     }
     if (kind === 'page') {
       const file = pageMap.get(pageIdentity(u.href, base));
-      if (file) return fileToHref(file) + u.search + u.hash;
+      if (file) return fileToHref(file) + splitSearch(u).rest + u.hash;
     }
     // a file of this site that was not copied: a root-relative path would find
     // nothing in the copy, so point at it where it still is
@@ -289,6 +392,8 @@ export function cleanPage(html, opts = {}) {
       leftBehind.add(siteKey(u, base));
       return base.origin + u.pathname + u.search + u.hash;
     }
+    if (folder && inFolder(u.pathname, folder)) return stripFolder(u.pathname, folder) + u.search + u.hash;
+    if (folder && kind === 'page') return base.origin + u.pathname + u.search + u.hash;
     return u.pathname + u.search + u.hash;
   };
   const rwAttr = (n, name, kind) => { const r = rw(getAttr(n, name), kind); if (r !== null) setAttr(n, name, r); };
@@ -333,7 +438,7 @@ export function cleanPage(html, opts = {}) {
         // copied: left in, every page would ask for it and get a 404
         else if (rels.includes('manifest')) { removals.push(n); cruft++; }
         // the canonical address is a full address, like og:url: left as it is
-        else if (rels.includes('canonical')) break;
+        else if (rels.includes('canonical')) { oldHead++; break; }
         else if (rels.includes('stylesheet') || rels.some(r => ICON_RELS.includes(r))) rwAttr(n, 'href', 'asset');
         else rwAttr(n, 'href', 'plain');
         break;
@@ -341,12 +446,17 @@ export function cleanPage(html, opts = {}) {
       case 'meta': {
         const key = (getAttr(n, 'property') || getAttr(n, 'name') || '').toLowerCase();
         if (key === 'generator') { removals.push(n); cruft++; }
-        else if (['og:image', 'og:image:secure_url', 'twitter:image', 'twitter:image:src'].includes(key)) {
+        else if (PREVIEW_METAS.includes(key)) {
           // the services that draw link previews need the picture's full
-          // address, so a copied one keeps the site's name in front of it
+          // address, so a copied one keeps the site's name in front of it.
+          // A site that lived in a folder has no such address yet (the old
+          // host never had /assets/rescued/), so its pages name the picture
+          // by its place in the copy and the report says what to do.
           const r = rw(getAttr(n, 'content'), 'asset');
-          if (r !== null) { setAttr(n, 'content', r.startsWith('/') ? base.origin + r : r); if (r.startsWith('/')) previews++; }
+          if (r !== null) { setAttr(n, 'content', r.startsWith('/') && !folder ? base.origin + r : r); if (r.startsWith('/')) previews++; }
         }
+        else if (TILE_RE.test(key)) rwAttr(n, 'content', 'asset');
+        else if (key === 'og:url') oldHead++;
         break;
       }
       case 'iframe':
@@ -382,7 +492,7 @@ export function cleanPage(html, opts = {}) {
     const i = kids ? kids.indexOf(n) : -1;
     if (i >= 0) kids.splice(i, 1);
   }
-  return { html: serialize(doc), scripts, cruft, kinds, previews, offOrigin: [...offOrigin], leftBehind: [...leftBehind] };
+  return { html: serialize(doc), scripts, cruft, kinds, previews, oldHead, offOrigin: [...offOrigin], leftBehind: [...leftBehind] };
 }
 
 // ─── pure: sitemap, Kiln wiring, the "what was lost" report ──────────────────
@@ -390,11 +500,16 @@ export function cleanPage(html, opts = {}) {
 /** Same-origin page paths listed in one sitemap file. A sitemap INDEX (a sitemap
  *  of sitemaps, the WordPress and Yoast default) lists only .xml files, which
  *  NON_PAGE_RE filters out — read its children with sitemapIndexChildren. */
-export function sitemapPages(xml, origin) {
+export function sitemapPages(xml, origin, folder = '') {
   const out = [];
   for (const m of String(xml).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) {
-    const id = pageIdentity(m[1].replace(/&amp;/g, '&'), origin);
-    if (id && !NON_PAGE_RE.test(id) && !out.includes(id)) out.push(id);
+    const loc = m[1].replace(/&amp;/g, '&');
+    const id = pageIdentity(loc, origin);
+    // a host's sitemap lists every site on it: only the pages under the
+    // folder this site lives in are this site's pages
+    if (!id || isFileId(id) || !inFolder(id, folder) || out.includes(id)) continue;
+    if (leftOutKind(new URL(loc, origin))) continue;
+    out.push(id);
   }
   return out;
 }
@@ -478,6 +593,14 @@ export function renderCommand(url, args = {}) {
   return `npx github:kilncms/kiln#release rescue ${quoteArg(String(url))} --render${flags.length ? ' ' + flags.join(' ') : ''}`;
 }
 
+/** The same rescue again, with the options it was run with and the ones in `add` (names without dashes). */
+export function againCommand(url, args = {}, add = []) {
+  const flags = [];
+  for (const k of ['out', 'max-pages', 'delay', 'max-asset-mb', 'max-total-mb', 'browser']) if (typeof args[k] === 'string' || typeof args[k] === 'number') flags.push(`--${k}=${quoteArg(String(args[k]))}`);
+  for (const k of ['render', 'menu-shim', 'keep-scripts', 'no-tag', 'try']) if (args[k] === true || add.includes(k)) flags.push(`--${k}`);
+  return `npx github:kilncms/kiln#release rescue ${quoteArg(String(url))}${flags.length ? ' ' + flags.join(' ') : ''}`;
+}
+
 /**
  * When more than half of the addresses tried have moved to one other site:
  * { host, count, tried, command, sentence }, else null. failedPages entries
@@ -549,6 +672,189 @@ export function appScripts(html) {
   return n;
 }
 
+const whereList = (hrefs) => { const u = [...new Set(hrefs)]; return u.length > 4 ? `${u.slice(0, 4).join(', ')} and ${u.length - 4} more` : u.join(', '); };
+const deepText = (node) => { let t = ''; walkTree(node, c => { if (c.nodeName === '#text') t += c.value; }); return t; };
+
+/**
+ * The phone menu of a plain copy. On a narrow screen a button opens the menu,
+ * and the script that ran the button is one of those taken out. This looks
+ * for the button in the ways the common themes write it. With opts.apply it
+ * also marks the button, what it opens and what closes it, with the marks
+ * assets/kiln-menu.js reads (the ones render.mjs writes after watching a
+ * browser): data-kiln-menu-toggle, data-kiln-menu-swap (the classes of the
+ * open state) and data-kiln-menu-close.
+ *
+ * Returns { html, found, known, label }: found says a menu button is there,
+ * known says the rescue knows what opening it means. Known today: WordPress
+ * block themes, Astra's slide-in drawer, Bootstrap's navbar, and the classic
+ * WordPress themes' .menu-toggle. A theme whose page says it has a fallback
+ * for no script (class "no-js" on <html>) is left alone.
+ */
+export function plainMenu(html, opts = {}) {
+  const src = String(html);
+  if (/\sdata-kiln-menu-toggle[\s=>]/.test(src)) return { html: src, found: true, known: true, label: 'menu' };
+  const doc = parse(src);
+  const cls = (n) => (getAttr(n, 'class') || '').split(/\s+/).filter(Boolean);
+  const has = (n, c) => cls(n).includes(c);
+  const byId = new Map(), buttons = [];
+  let root = null;
+  walkTree(doc, n => {
+    if (!n.attrs) return;
+    const id = getAttr(n, 'id');
+    if (id && !byId.has(id)) byId.set(id, n);
+    if (n.tagName === 'html') root = n;
+    if (n.tagName === 'button' || (n.tagName === 'a' && getAttr(n, 'role') === 'button')) buttons.push(n);
+  });
+  const up = (n, test) => { for (let p = n.parentNode; p; p = p.parentNode) if (p.attrs && test(p)) return p; return null; };
+  const all = (from, test) => { const out = []; walkTree(from, n => { if (n.attrs && test(n)) out.push(n); }); return out; };
+  const open = (n, add) => [n, [...cls(n), ...add.filter(c => !has(n, c))].join(' ')];
+  const fallback = !!root && has(root, 'no-js');
+  let toggles, swaps = [], closers = [];
+
+  // WordPress block themes: the menu's box is in the page, and two classes show it
+  toggles = buttons.filter(b => has(b, 'wp-block-navigation__responsive-container-open'));
+  if (toggles.length) {
+    swaps = all(doc, n => has(n, 'wp-block-navigation__responsive-container')).map(n => open(n, ['has-modal-open', 'is-menu-open']));
+    closers = all(doc, n => has(n, 'wp-block-navigation__responsive-container-close'));
+  }
+  // Astra: a drawer that slides in from the side
+  if (!toggles.length) {
+    toggles = buttons.filter(b => has(b, 'main-header-menu-toggle'));
+    const drawer = byId.get('ast-mobile-popup');
+    if (toggles.length && drawer) {
+      swaps = [open(drawer, ['active', 'show'])];
+      closers = all(drawer, n => has(n, 'menu-toggle-close') || has(n, 'ast-mobile-popup-overlay'));
+    }
+  }
+  // Bootstrap: the button names what it opens, and "show" opens it
+  if (!toggles.length) {
+    toggles = buttons.filter(b => has(b, 'navbar-toggler'));
+    for (const b of toggles) {
+      const t = byId.get(String(getAttr(b, 'data-bs-target') || getAttr(b, 'data-target') || '').replace(/^#/, ''));
+      if (t && !swaps.some(s => s[0] === t)) swaps.push(open(t, ['show']));
+    }
+  }
+  // classic WordPress themes: the navigation around the button is marked as toggled
+  if (!toggles.length && !fallback) {
+    toggles = buttons.filter(b => has(b, 'menu-toggle') && getAttr(b, 'aria-controls'));
+    for (const b of toggles) {
+      const nav = up(b, p => p.tagName === 'nav' || has(p, 'main-navigation'));
+      if (nav && !swaps.some(s => s[0] === nav)) swaps.push(open(nav, ['toggled', 'toggled-on']));
+    }
+  }
+  // any other button in the header that says it opens a menu: found, not known
+  if (!toggles.length && !fallback) {
+    toggles = buttons.filter(b => {
+      const words = `${getAttr(b, 'aria-label') || ''} ${getAttr(b, 'class') || ''} ${getAttr(b, 'aria-controls') || ''}`;
+      return /menu|navigation|hamburger|burger/i.test(words) && !/close|sub-?menu|search|cart|account|language|dropdown/i.test(words)
+        && (getAttr(b, 'aria-expanded') !== undefined || getAttr(b, 'aria-controls') || getAttr(b, 'aria-haspopup'))
+        && !!up(b, p => p.tagName === 'header' || p.tagName === 'nav');
+    }).slice(0, 1);
+  }
+  if (!toggles.length) return { html: src, found: false, known: false, label: '' };
+  const label = (getAttr(toggles[0], 'aria-label') || deepText(toggles[0]) || getAttr(toggles[0], 'title') || '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'menu';
+  const known = swaps.length > 0;
+  if (!opts.apply || !known) return { html: src, found: true, known, label };
+  for (const b of toggles) b.attrs.push({ name: 'data-kiln-menu-toggle', value: '' });
+  for (const [n, to] of swaps) n.attrs.push({ name: 'data-kiln-menu-swap', value: to });
+  for (const n of closers) n.attrs.push({ name: 'data-kiln-menu-close', value: '' });
+  return { html: serialize(doc), found: true, known, label };
+}
+
+/**
+ * The report's line about the phone menu of a plain copy, '' when no page has
+ * a menu button. menus: [{ href, found, known, label }] (plainMenu per page),
+ * asked: --menu-shim was given, cmds: { shim, render } the commands to offer.
+ */
+export function plainMenuLine(menus, asked, cmds = {}) {
+  const found = menus.filter(m => m.found);
+  if (!found.length) return '';
+  const known = found.filter(m => m.known), unknown = found.filter(m => !m.known);
+  if (!asked) return `- Phone menu: the button "${found[0].label}" does not open the menu on a phone (on ${whereList(found.map(m => m.href))}). One of the old site's scripts ran it, and those were taken out. Run the rescue again with \`--menu-shim\` added, from the same folder you ran it in, to add a small script that opens it: \`${cmds.shim}\``;
+  const cannot = (list) => `the rescue could not tell from the page alone what the button "${list[0].label}" opens. Run it with \`--render --menu-shim\`, which opens each page in a browser and watches what the button does (\`${cmds.render}\`), or add the links to the page by hand.`;
+  if (!unknown.length) return `- Phone menu: the button "${known[0].label}" opens the menu through assets/kiln-menu.js, a small script of Kiln's own, on ${whereList(known.map(m => m.href))}. Open a page on a phone and press the button to check it.`;
+  if (!known.length) return `- Phone menu: the button does not open the menu on a phone, and ${cannot(unknown)}`;
+  return `- Phone menu: the button "${known[0].label}" opens the menu through assets/kiln-menu.js on ${whereList(known.map(m => m.href))}. Open a page on a phone and press the button to check it. On ${whereList(unknown.map(m => m.href))}, ${cannot(unknown)}`;
+}
+
+/**
+ * A shop, recognised from its pages: WooCommerce (an add-to-cart link or
+ * button, the cart or checkout form), Shopify (a form that posts to
+ * /cart/add) or Squarespace (its add-to-cart button). pages: [{ href, html }].
+ * Returns { kind, on: [href] } or null.
+ */
+export function shopOf(pages) {
+  const on = [];
+  let kind = '';
+  for (const { href, html } of pages) {
+    let k = '';
+    walkTree(parse(String(html)), n => {
+      if (k || !n.attrs) return;
+      const c = ` ${getAttr(n, 'class') || ''} `;
+      if (n.tagName === 'a' && /[?&]add-to-cart=/.test(getAttr(n, 'href') || '')) k = 'WooCommerce';
+      else if (/ (add_to_cart_button|single_add_to_cart_button) /.test(c)) k = 'WooCommerce';
+      else if (n.tagName === 'form' && / (woocommerce-cart-form|woocommerce-checkout|variations_form) /.test(c)) k = 'WooCommerce';
+      else if (n.tagName === 'form' && /\/cart\/add(\.js)?\/?$/.test(String(getAttr(n, 'action') || '').split('?')[0])) k = 'Shopify';
+      else if (/ sqs-add-to-cart-button /.test(c)) k = 'Squarespace';
+    });
+    if (k) { on.push(href); kind = kind || k; }
+  }
+  return on.length ? { kind, on } : null;
+}
+
+/** The report's paragraph for a shop (from shopOf): what does not come across and what to do. */
+export function shopLines(shop) {
+  if (!shop) return [];
+  return ['## This site is a shop', '',
+    `The shop itself does not come across. The copy keeps the shop's pages as they looked on the day of the copy, with their words, pictures and prices. The cart, the checkout, the filters and the stock count were worked out by the old site (${shop.kind}) each time a visitor asked, and a folder of plain pages cannot do that: the buttons are still drawn, and they do nothing. There are two ways forward. Keep the shop where it is, and link to it from the new pages. Or put a payment link (from Stripe, PayPal or a similar service) on each product page in place of its button. Shop parts were found on ${whereList(shop.on)}.`, ''];
+}
+
+/** The report's line for links whose ending after the question mark was dropped. '' when there are none. */
+export function queryLinksLine(links = []) {
+  const n = links.length;
+  if (!n) return '';
+  const ending = (links[0].match(/\?[^=&#]+(=[^&#]*)?/) || ['?…'])[0];
+  return `- Links not followed: ${n} ${n === 1 ? 'address ends' : 'addresses end'} in a question mark and more, like ${ending}. An ending like that told the old site to draw the page another way (sorted, filtered, in another language), and the copy has no old site behind it to do that. Each of these links now opens the page as it was copied, without the ending. Open ${n === 1 ? 'it' : 'them'} on the old site: if ${n === 1 ? 'it' : 'one'} shows something you need that the copy lacks, add that page by hand, or take the link out. ${n > 5 ? 'The first five' : (n === 1 ? 'The address' : 'The addresses')}: ${links.slice(0, 5).join(', ')}`;
+}
+
+/** The report's line for addresses the rescue never opens. '' when none were linked. */
+export function leftOutLine(signin = [], feeds = []) {
+  const parts = [];
+  if (signin.length) parts.push(`${signin.length} sign-in or admin address${signin.length === 1 ? '' : 'es'} of the old site (wp-login, wp-admin)`);
+  if (feeds.length) parts.push(`${feeds.length} feed${feeds.length === 1 ? '' : 's'}`);
+  if (!parts.length) return '';
+  return `- Left out on purpose: ${parts.join(' and ')}. These belong to the machinery of the old site and are not pages to read, so the rescue did not open them. Take the links to them out of the pages.`;
+}
+
+/**
+ * The report's lines for a site that lived in a folder of its host.
+ * f: { origin, folder, outside } where outside lists the pages of the host
+ * outside the folder that the copied pages link to. [] for a site at the top.
+ */
+export function folderLines(f) {
+  if (!f?.folder) return [];
+  const host = new URL(f.origin).host, name = f.folder + '/';
+  const L = [`- This is a copy of the part of ${f.origin} that lives in the folder ${name}. The copy is a site of its own: its home page is index.html at the top of this folder, and every link and file address in it starts from there. Serve or deploy this folder as the top of a site, not inside a folder named ${f.folder.split('/').pop()}.`];
+  const out = f.outside || [];
+  if (out.length) L.push(`- Links to pages of ${host} outside ${name}: ${out.length} (${out.slice(0, 5).join(', ')}${out.length > 5 ? ` and ${out.length - 5} more` : ''}). Those pages were not copied, and the links to them still go to the old site. To copy the whole of ${host}, run the rescue on ${f.origin}/ instead.`);
+  return L;
+}
+
+/** The report section for files that were already gone from the old site (it answered 404 or 410). */
+export function missingLines(gone) {
+  if (!gone.length) return [];
+  const n = gone.length;
+  const L = ['## Files already missing on the old site', '',
+    `${n} file${n === 1 ? '' : 's'} these pages ask for ${n === 1 ? 'is' : 'are'} already missing on the old site: it answered "not found" for ${n === 1 ? 'it' : 'each one'}. ${n === 1 ? 'It was' : 'They were'} broken before the copy was made, and switching the old site off changes nothing for ${n === 1 ? 'it' : 'them'}. A missing picture shows as a broken picture, and a missing font is replaced by another one. Put each file back if you have it, or take it out of the page.`, ''];
+  for (const f of gone.slice(0, 15)) {
+    let name = f.url; try { name = decodeURIComponent(new URL(f.url).pathname.split('/').pop()) || f.url; } catch { /* keep the address */ }
+    L.push(`- ${name}: ${f.url}`);
+  }
+  if (n > 15) L.push(`- and ${n - 15} more`);
+  L.push('');
+  return L;
+}
+
 /**
  * What stopped working when the pages were frozen, as report lines.
  * pages: [{ href, rendered }] where rendered is what render.mjs returned.
@@ -615,7 +921,7 @@ export function lostLines(pages) {
  * the old sign-in. pages: [{ href, html }] with href the pretty output URL.
  * Returns report lines, or [] when there is nothing to say.
  */
-export function staticLostLines(pages, origin) {
+export function staticLostLines(pages, origin, opts = {}) {
   let base = null; try { base = new URL(origin); } catch { /* relative actions stay dead-ish */ }
   const dead = [], outside = [], searches = [], comments = [], logins = new Set();
   for (const { href, html } of pages) {
@@ -646,14 +952,17 @@ export function staticLostLines(pages, origin) {
       else dead.push(rec);
     });
   }
-  if (!dead.length && !outside.length && !searches.length && !comments.length && !logins.size) return [];
+  if (!dead.length && !outside.length && !searches.length && !comments.length && !logins.size && !opts.menuLine) return [];
   const where = (hrefs) => { const u = [...new Set(hrefs)]; return u.length > 4 ? `${u.slice(0, 4).join(', ')} and ${u.length - 4} more` : u.join(', '); };
   const group = (items, keyOf) => { const m = new Map(); for (const it of items) { const k = keyOf(it); if (!m.has(k)) m.set(k, []); m.get(k).push(it.href); } return m; };
   const L = ['## What freezing cost', '',
     'These pages are plain HTML now, with nothing running behind them. Check each item below.', ''];
   if (dead.length) {
-    L.push(`- Forms that posted into the old site: ${dead.length}. They now send nowhere. Point each one at a form service, or replace it with an email link.`);
-    for (const [k, hrefs] of group(dead, f => `"${f.label}" (${f.fields} field${f.fields === 1 ? '' : 's'}${f.action ? `, posted to ${f.action}` : ''})`)) L.push(`  - ${k} on ${where(hrefs)}`);
+    // the number is the number of lines under it: one form on four pages is one form
+    const forms = group(dead, f => `"${f.label}" (${f.fields} field${f.fields === 1 ? '' : 's'}${f.action ? `, posted to ${f.action}` : ''})`);
+    const onPages = new Set(dead.map(f => f.href)).size;
+    L.push(`- Forms that posted into the old site: ${forms.size}${onPages > 1 ? `, on ${onPages} pages` : ''}. They now send nowhere. Point each one at a form service, or replace it with an email link.`);
+    for (const [k, hrefs] of forms) L.push(`  - ${k} on ${where(hrefs)}`);
   } else L.push('- Forms that posted into the old site: none.');
   if (outside.length) {
     L.push(`- Forms that post to an outside service, which should still work — send one test from the new site:`);
@@ -662,6 +971,7 @@ export function staticLostLines(pages, origin) {
   if (searches.length) L.push(`- Search boxes on ${where(searches)}: the old server answered them, and it is gone. Remove them, or point them at a search service.`);
   if (comments.length) L.push(`- Comment threads on ${where(comments)}: what was said is kept as shown, and new comments cannot be left.`);
   if (logins.size) L.push(`- Links to the old sign-in (wp-login, wp-admin) on ${where([...logins])}: remove them. Editing happens through Kiln now.`);
+  if (opts.menuLine) L.push(opts.menuLine);
   L.push('');
   return L;
 }
@@ -684,7 +994,11 @@ const quoteArg = (v) => /^[\w@%+=:,./-]+$/.test(v) ? v : `'${String(v).replace(/
  * notCopiedOf; again: { url, args, totalBytes, maxAssetBytes, maxTotalBytes,
  * capped }. [] when everything was copied.
  */
-export function notCopiedLines(notCopied, again) {
+export function notCopiedLines(all, again) {
+  // a file the old site no longer has is not one that "will disappear": it gets its own words
+  return [...stillThereLines(all.filter(f => !f.missing), again), ...missingLines(all.filter(f => f.missing))];
+}
+function stillThereLines(notCopied, again) {
   if (!notCopied.length) return [];
   const n = notCopied.length;
   const L = ['## Files not copied', '',
@@ -743,7 +1057,7 @@ export async function rescueCmd(startUrl, args = {}) {
   try {
     if (!startUrl) throw new Error('missing url');
     start = new URL(/^https?:\/\//i.test(startUrl) ? startUrl : `https://${startUrl}`);
-  } catch { fail('Usage: kiln rescue <url> [--out=dir] [--max-pages=N] [--delay=ms] [--max-asset-mb=N] [--max-total-mb=N] [--keep-scripts] [--no-tag] [--dry] [--render [--browser=path] [--menu-shim]] [--try]'); info('What each option does: npx github:kilncms/kiln#release rescue --help'); process.exit(1); }
+  } catch { fail('Usage: kiln rescue <url> [--out=dir] [--max-pages=N] [--delay=ms] [--max-asset-mb=N] [--max-total-mb=N] [--keep-scripts] [--no-tag] [--dry] [--menu-shim] [--render [--browser=path]] [--try]'); info('What each option does: npx github:kilncms/kiln#release rescue --help'); process.exit(1); }
   let origin = start.origin;
   const out = args.out || `rescued-${start.hostname}`;
   const maxPages = Math.max(1, Number(args['max-pages']) || 50);
@@ -768,7 +1082,7 @@ export async function rescueCmd(startUrl, args = {}) {
 
   // ── crawl: same-origin BFS, sequential + polite ──
   hr(`${renderer ? 'Rendering' : 'Crawling'} ${origin} (max ${maxPages} pages, ${delay}ms delay)`);
-  const startId = pageIdentity(start.href, origin) || '/';
+  let startId = pageIdentity(start.href, origin) || '/';
   const queue = [startId], seen = new Set(queue);
   const pages = new Map();          // identity → { html, url }
   const aliases = new Map();        // redirect-target identity → crawled identity
@@ -787,21 +1101,33 @@ export async function rescueCmd(startUrl, args = {}) {
   // usual addresses, follow an index into its children politely, and feed every
   // page found into the crawl queue. Capped so a huge archive cannot stall a run.
   let sitemapNote = null;
+  // A site that lives in a folder of its host (https://host/shop-demo/) is
+  // copied with that folder as the top of the copy, and nothing outside it is
+  // tried. Decided once, from the first page (see siteFolder).
+  let folder = '';
+  const outside = new Set();        // pages of the host outside the folder: linked, not copied
+  const leftOut = { signin: new Set(), feeds: new Set(), queryLinks: new Set() };
   const SITEMAP_PATHS = ['/sitemap.xml', '/sitemap_index.xml', '/wp-sitemap.xml'];
   const MAX_CHILD_SITEMAPS = 20;
   const sitemapSweep = async () => {
-    for (const p of SITEMAP_PATHS) {
+    // a site in a folder may publish its own sitemap there: that one first.
+    // The host's sitemap lists every site on the host, so only the entries
+    // under the folder count, and only a few of its child files are read.
+    for (const at of folder ? [folder, ''] : ['']) for (const p of SITEMAP_PATHS) {
       let xml;
-      try { const res = await get(origin + p); if (!res.ok) continue; xml = await res.text(); } catch { continue; }
+      try { const res = await get(origin + at + p); if (!res.ok) continue; xml = await res.text(); } catch { continue; }
       if (!/<(urlset|sitemapindex)[\s>]/i.test(xml)) continue;
-      const children = sitemapIndexChildren(xml, origin);
-      const found = sitemapPages(xml, origin);
+      let children = sitemapIndexChildren(xml, origin);
+      const under = (c) => { try { return inFolder(new URL(c).pathname, folder); } catch { return false; } };
+      if (folder) children = [...children.filter(under), ...children.filter(c => !under(c))];
+      const cap = folder && !at ? 5 : MAX_CHILD_SITEMAPS;
+      const found = sitemapPages(xml, origin, folder);
       let read = 1;
-      for (const c of children.slice(0, MAX_CHILD_SITEMAPS)) {
+      for (const c of children.slice(0, cap)) {
         await sleep(delay);
-        try { const r = await get(c); if (r.ok) { found.push(...sitemapPages(await r.text(), origin)); read++; } } catch { /* skip this child */ }
+        try { const r = await get(c); if (r.ok) { found.push(...sitemapPages(await r.text(), origin, folder)); read++; } } catch { /* skip this child */ }
       }
-      return { path: p, read, skipped: Math.max(0, children.length - MAX_CHILD_SITEMAPS), pages: [...new Set(found)] };
+      return { path: at + p, read, skipped: Math.max(0, children.length - cap), pages: [...new Set(found)] };
     }
     return null;
   };
@@ -812,7 +1138,8 @@ export async function rescueCmd(startUrl, args = {}) {
   const skip = (id, reason, more = {}) => { failedPages.push({ path: id, reason, ...more }); console.log(`         skipped: ${reason}`); };
   const movedAway = (id, to) => skip(id, `it has moved to another site, ${new URL(to).host}`, { movedTo: new URL(to).origin });
   while (queue.length && tried < maxPages) {
-    const id = queue.shift();
+    let id = queue.shift();
+    if (pages.has(id)) continue;   // already kept under this address (a numbered address forwarded to it)
     if (tried) await sleep(delay);
     tried++;
     console.log(`  [${tried}/${maxPages}] ${id}`);
@@ -853,17 +1180,31 @@ export async function rescueCmd(startUrl, args = {}) {
     if (finalId && finalId !== id) {
       // redirected within the origin: same page under two paths — keep one copy
       if (pages.has(finalId)) { aliases.set(id, finalId); console.log(`         the same page as ${finalId}, already read`); continue; }
-      aliases.set(finalId, id);
+      // an address that names a page by number (?p=14) and forwards to the
+      // page's proper address: keep the page under the proper one
+      if (id.includes('?') && !finalId.includes('?')) { aliases.set(id, finalId); seen.add(finalId); id = finalId; }
+      else aliases.set(finalId, id);
     }
     const firstPage = !pages.size;
+    const refs = extractRefs(html, landedUrl);
+    if (firstPage) {
+      folder = siteFolder(landedUrl, refs.pages);
+      // the address given forwarded into the folder the site lives in: keep
+      // the page under the address it landed on, so it becomes the home page
+      if (folder && finalId && finalId !== id && !inFolder(id, folder)) {
+        aliases.delete(finalId); aliases.set(id, finalId); seen.add(finalId);
+        if (id === startId) startId = finalId;
+        id = finalId;
+      }
+      if (folder) info(`${origin}${folder}/ is a site in a folder of its own: copying what is under ${folder}/, with its home page at the top of the copy`);
+    }
     // a plain request to a site drawn by JavaScript gets the empty shell
     const blank = !renderer && looksBlank(html);
     if (blank) console.log('         blank: nothing is on this page until its JavaScript runs');
     pages.set(id, { html, url: landedUrl, rendered, blank });
-    const refs = extractRefs(html, landedUrl);
     const found = [...refs.pages];
     // addresses the app moved to by script, and (after the first page) the sitemap
-    for (const r of rendered?.routes || []) { const p = pageIdentity(r, origin); if (p && !NON_PAGE_RE.test(p)) found.push(p); }
+    for (const r of rendered?.routes || []) { const p = pageIdentity(r, origin); if (p && !isFileId(p)) found.push(p); }
     if (firstPage) {
       const sm = await sitemapSweep();
       if (sm) {
@@ -872,7 +1213,12 @@ export async function rescueCmd(startUrl, args = {}) {
         found.push(...sm.pages);
       }
     }
-    for (const p of found) if (!seen.has(p)) { seen.add(p); queue.push(p); }
+    for (const p of found) {
+      if (seen.has(p)) continue;
+      if (!inFolder(p, folder)) { outside.add(p); continue; }
+      seen.add(p); queue.push(p);
+    }
+    for (const k of Object.keys(leftOut)) for (const a of refs[k]) if (inFolder(a.split('?')[0], folder)) leftOut[k].add(a);
     for (const a of refs.assets) assetRefs.add(a);
   }
   if (renderer) await renderer.close();
@@ -923,25 +1269,37 @@ export async function rescueCmd(startUrl, args = {}) {
   });
 
   // page identity → output file (aliases: both sides of a redirect are one page)
-  const pageMap = mapUrls([...pages.keys()]);
+  const pageMap = mapUrls([...pages.keys()], folder);
   for (const [from, to] of aliases) if (!pageMap.has(from) && pageMap.has(to)) pageMap.set(from, pageMap.get(to));
 
   // what stopped working, read from the pages themselves; --render builds a richer one
-  const plainLost = renderer ? [] : staticLostLines([...pages].map(([id, p]) => ({ href: fileToHref(pageMap.get(id)), html: p.html })), origin);
+  const hrefPages = [...pages].map(([id, p]) => ({ href: fileToHref(pageMap.get(id)), html: p.html }));
+  // the phone menu of a plain copy: the script that ran its button is taken out
+  const menus = renderer || keepScripts ? [] : hrefPages.map(p => { const m = plainMenu(p.html); return { href: p.href, found: m.found, known: m.known, label: m.label }; });
+  const menuLine = plainMenuLine(menus, !!args['menu-shim'], { shim: againCommand(startUrl, args, ['menu-shim']), render: againCommand(startUrl, args, ['render', 'menu-shim']) });
+  const plainLost = renderer ? [] : staticLostLines(hrefPages, origin, { menuLine });
+  // what the dry run and the real run both say
+  const shared = {
+    folder, outside: [...outside], maxPages, wantKiln: !args['no-tag'], shop: shopOf(hrefPages),
+    leftOut: { signin: [...leftOut.signin], feeds: [...leftOut.feeds], queryLinks: [...leftOut.queryLinks] },
+    noHome: !new Set(pageMap.values()).has('index.html'), firstHref: fileToHref(pageMap.get([...pages.keys()][0])),
+  };
 
   if (dry) {
     let scripts = 0;
     const kinds = { own: 0, inline: 0, visitors: {}, outside: {} };
-    for (const [, p] of pages) { const c = cleanPage(p.html, { baseUrl: p.url, pageMap, keepScripts }); scripts += c.scripts; addKinds(kinds, c.kinds); }
+    for (const [, p] of pages) { const c = cleanPage(p.html, { baseUrl: p.url, pageMap, keepScripts, folder }); scripts += c.scripts; addKinds(kinds, c.kinds); }
     printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry, scripts, cruft: 0, kinds,
       localized: [], localizedBytes: 0, planned: localize.length, offOrigin: [...assetRefs].filter(k => !localize.includes(k)),
-      skippedAssets: [], tally: null, firstTitle, sitemapNote, plainLost, blank, elsewhere });
+      skippedAssets: [], tally: null, firstTitle, sitemapNote, plainLost, blank, elsewhere, ...shared });
     sayBlank();
     process.exit(blank.drawn ? 1 : 0);
   }
 
   // ── download assets (incl. url() refs one level deep inside downloaded CSS) ──
-  hr(`Localizing ${localize.length} asset${localize.length === 1 ? '' : 's'}`);
+  // no number here: style sheets bring in more files than the pages name, so
+  // it never agreed with the count printed when the copying is done
+  hr('Localizing assets');
   const downloads = new Map();      // assetKey → { buf, ct }
   const skippedAssets = [];         // { url, reason }
   let totalBytes = 0, capped = false;
@@ -959,6 +1317,8 @@ export async function rescueCmd(startUrl, args = {}) {
       let res;
       try { res = await get(key); }
       catch (e) { skippedAssets.push({ url: key, reason: e.name === 'TimeoutError' ? 'timeout' : String(e.cause?.code || e.message) }); continue; }
+      // a file the old site itself no longer has was broken before the copy: the report says so in its own words
+      if (res.status === 404 || res.status === 410) { skippedAssets.push({ url: key, reason: `the old site no longer has it (HTTP ${res.status})`, missing: true }); continue; }
       if (!res.ok) { skippedAssets.push({ url: key, reason: `HTTP ${res.status}` }); continue; }
       const len = Number(res.headers.get('content-length') || 0);
       if (len > maxAssetBytes) { skippedAssets.push({ url: key, reason: 'bigger than the limit for one file', bytes: len, tooBig: true }); res.body?.cancel?.(); continue; }
@@ -1015,12 +1375,12 @@ export async function rescueCmd(startUrl, args = {}) {
   ok(`localized ${downloads.size} assets (${mb(totalBytes)}) into ${path.join(out, 'assets', 'rescued')}/`);
 
   hr('Cleaning pages');
-  let scripts = 0, cruft = 0, previews = 0;
+  let scripts = 0, cruft = 0, previews = 0, oldHead = 0;
   const kinds = { own: 0, inline: 0, visitors: {}, outside: {} };
   const offOrigin = new Set(skippedAssets.map(s => s.url));
   for (const [id, p] of pages) {
-    const cleaned = cleanPage(p.html, { baseUrl: p.url, pageMap, assetMap, keepScripts });
-    scripts += cleaned.scripts; cruft += cleaned.cruft; previews += cleaned.previews; addKinds(kinds, cleaned.kinds);
+    const cleaned = cleanPage(p.html, { baseUrl: p.url, pageMap, assetMap, keepScripts, folder });
+    scripts += cleaned.scripts; cruft += cleaned.cruft; previews += cleaned.previews; oldHead += cleaned.oldHead; addKinds(kinds, cleaned.kinds);
     cleaned.offOrigin.forEach(u => offOrigin.add(u));
     cleaned.leftBehind.forEach(u => leftBehind.add(u));
     const file = pageMap.get(id);
@@ -1047,7 +1407,8 @@ export async function rescueCmd(startUrl, args = {}) {
 
   // ── Kiln's script tags and bundles, so the copy is ready to edit once pushed ──
   const wantKiln = !args['no-tag'];
-  const shimmed = [...pages.values()].some(p => p.rendered?.menu?.shimmed);
+  const plainShim = !!args['menu-shim'] && menus.some(m => m.known);
+  const shimmed = plainShim || [...pages.values()].some(p => p.rendered?.menu?.shimmed);
   let menuStyle = '', left = 0;
   if (shimmed) {
     const { MENU_SHIM, MENU_STYLE } = await import('./render.mjs');
@@ -1057,10 +1418,13 @@ export async function rescueCmd(startUrl, args = {}) {
   for (const [id, p] of pages) {
     const fp = path.join(out, pageMap.get(id));
     const raw = readFileSync(fp, 'utf8');
-    const wired = wireKiln(raw, { kiln: wantKiln, menuStyle: p.rendered?.menu?.shimmed ? menuStyle : '' });
+    // a plain copy: mark the menu button and what it opens, for assets/kiln-menu.js
+    const marked = plainShim ? plainMenu(raw, { apply: true }) : null;
+    const wired = wireKiln(marked?.known ? marked.html : raw, { kiln: wantKiln, menuStyle: p.rendered?.menu?.shimmed || marked?.known ? menuStyle : '' });
     if (wired !== raw) writeFileSync(fp, wired);
     if (!keepScripts) left += appScripts(wired);
   }
+  if (plainShim) ok('added a small script that opens the phone menu (assets/kiln-menu.js)');
   let tryOut = false;
   if (wantKiln) {
     const bundles = ['kiln.js', 'kiln-editor.js', 'kiln-features.js'];
@@ -1079,7 +1443,7 @@ export async function rescueCmd(startUrl, args = {}) {
   printReport({ origin, out, pages, pageMap, failedPages, unvisited, dry: false, scripts, cruft, kinds, previews,
     localized: [...downloads.keys()], localizedBytes: totalBytes, planned: localize.length,
     offOrigin: [...offOrigin], skippedAssets, tally, rendered: !!args.render, left, wantKiln, tryOut, firstTitle,
-    requests: renderer?.requests, sitemapNote, plainLost, blank, elsewhere,
+    requests: renderer?.requests, sitemapNote, plainLost, blank, elsewhere, ...shared, oldHead,
     notCopied: notCopiedOf(skippedAssets, leftBehind),
     again: { url: startUrl, args, totalBytes, maxAssetBytes, maxTotalBytes, capped } });
   sayBlank();
@@ -1102,16 +1466,20 @@ window.KILN = {
 function printReport(r) {
   const written = new Set(r.pageMap.values()).size;
   const lines = [];
-  lines.push(`# Rescue report — ${r.origin}`);
+  lines.push(`# Rescue report: ${r.origin}${r.folder ? r.folder + '/' : ''}`);
   lines.push('');
-  lines.push(`- Pages crawled: ${r.pages.size}${r.dry ? ' (dry run — nothing written)' : `, written: ${written}`}${r.unvisited ? ` — ${r.unvisited} more links found beyond --max-pages` : ''}`);
+  const more = r.unvisited ? ` ${r.unvisited} more address${r.unvisited === 1 ? ' was' : 'es were'} found and not tried, because --max-pages stopped the run at ${r.maxPages}. To copy ${r.unvisited === 1 ? 'it' : 'them'} too, run again with a bigger --max-pages.` : '';
+  lines.push(`- Pages crawled: ${r.pages.size}${r.dry ? ' (dry run, nothing written)' : `, written: ${written}`}.${more}`);
+  lines.push(...folderLines(r));
+  if (r.noHome) lines.push(`- Check this: the copy has no home page. A site opens the file index.html at its top first, and this copy has none there, because the address given was not the site's home page. The first page copied is at ${r.firstHref}. Run the rescue on the address of the home page, or copy the file of the page you want as the home page to index.html at the top of this folder.`);
   lines.push(r.dry
-    ? `- Assets to localize: ${r.planned}`
+    ? `- Assets to localize: at least ${r.planned}. Style sheets usually bring in more (fonts, background pictures), and those are counted when they are copied.`
     : `- Assets localized: ${r.localized.length} (${mb(r.localizedBytes)})`);
   if (r.sitemapNote) lines.push(`- Sitemap ${r.sitemapNote.path}: ${r.sitemapNote.found} pages listed (${r.sitemapNote.read} sitemap file${r.sitemapNote.read === 1 ? '' : 's'} read${r.sitemapNote.skipped ? `; ${r.sitemapNote.skipped} more beyond the cap` : ''})`);
   const kindsLine = r.scripts ? scriptKindsLine(r.kinds) : '';
   lines.push(`- Scripts stripped: ${r.scripts}${r.cruft ? ` (+ ${r.cruft} builder cruft tags removed)` : ''}${kindsLine ? `. ${kindsLine}` : ''}`);
-  if (r.previews) lines.push(`- The picture for link previews (og:image, twitter:image) is written with this site's full address, ${r.origin}/assets/rescued/…, because the services that draw previews need a full address. If the copy goes live at a different address, change it on each page.`);
+  if (r.previews && r.folder) lines.push(`- The picture for link previews (og:image, twitter:image) is in the copy, and the pages name it by its place there, /assets/rescued/…. The services that draw previews need a full address, and the copy has none yet: the old site lived in the folder ${r.folder}/, and this copy is made to be the top of a site. When the copy is live, put its address in front on each page, like https://your-address/assets/rescued/….`);
+  else if (r.previews) lines.push(`- The picture for link previews (og:image, twitter:image) is written with this site's full address, ${r.origin}/assets/rescued/…, because the services that draw previews need a full address. If the copy goes live at a different address, change it on each page.`);
   if (r.firstTitle) lines.push(`- Check this first: the first page is titled "${r.firstTitle}". If that is an error page, the address is wrong or the site is not published, and this is a copy of the error.`);
   if (r.rendered && !r.dry) lines.push(`- Rendered in a browser: every page was opened, scrolled to the end and saved as it looked. App scripts left in the pages: ${r.left}. Requests the browser made to do it: ${r.requests}`);
   if (r.tally) lines.push(`- Kiln-tagged: ${r.tally.fields} text fields · ${r.tally.images} images · ${r.tally.repeats} block lists · ${r.tally.menu} menus`);
@@ -1137,7 +1505,9 @@ function printReport(r) {
     if (!r.dry) (r.blank?.drawn ? info : ok)(`full report saved to ${path.join(r.out, 'RESCUE-REPORT.md')}`);
   };
   const notCopied = r.notCopied || [];
-  if (notCopied.length) lines.push(`- Files not copied, still loading from the old site: ${notCopied.length} (see "Files not copied" below)`);
+  const gone = notCopied.filter(f => f.missing).length, stillThere = notCopied.length - gone;
+  if (stillThere) lines.push(`- Files not copied, still loading from the old site: ${stillThere} (see "Files not copied" below)`);
+  if (gone) lines.push(`- Files already missing on the old site: ${gone} (see "Files already missing on the old site" below)`);
   const left = r.offOrigin.filter(u => !r.localized.includes(u) && !notCopied.some(f => f.url === u));
   if (left.length) {
     lines.push(`- Off-origin references left as-is: ${left.length}`);
@@ -1145,7 +1515,12 @@ function printReport(r) {
     if (left.length > 30) lines.push(`  - …and ${left.length - 30} more`);
   }
   if (r.blank?.ids.length) lines.splice(3, 0, `- Blank pages left out: ${r.blank.ids.length} of the ${r.blank.read} read (see "${r.blank.drawn ? 'This copy is not finished' : 'Blank pages left out'}" below)`);
+  if (r.folder && r.oldHead) lines.push(`- The head of each page still names the page's old address under ${r.origin}${r.folder}/ (the canonical link and og:url, ${r.oldHead} in all). When the copy is live at its own address, change them to it, or search engines will go on pointing at the old one.`);
+  const leftOutSays = leftOutLine(r.leftOut?.signin, r.leftOut?.feeds), queriesSay = queryLinksLine(r.leftOut?.queryLinks);
+  if (leftOutSays) lines.push(leftOutSays);
+  if (queriesSay) lines.push(queriesSay);
   lines.push('');
+  lines.push(...shopLines(r.shop));
   lines.push(...blankLines(r.blank));
   if (!r.dry) lines.push(...notCopiedLines(notCopied, r.again));
   if (r.rendered) {
