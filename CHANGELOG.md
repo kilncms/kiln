@@ -83,6 +83,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The same old site can be copied in three times in 30 days.** "Bring my
+  site in" already let one account copy a site once in 30 days. Accounts
+  that pay for nothing can now have the same old address copied three times
+  in 30 days between them, and the next one is asked to write to
+  info@kilncms.com. An account that pays for a site is not held back.
 - **A domain has its free days once.** When a site on Kiln's hosting that is
   not paid for goes live on its own domain, Kiln remembers when that site's
   free days began. A later site that is set up on the same domain has its

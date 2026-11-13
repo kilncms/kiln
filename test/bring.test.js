@@ -854,3 +854,29 @@ test('an answer of the right size is read the same whether or not it says its le
   const bad = await worker.fetch(new Request('https://worker.example/cloud/convert/done', { method: 'POST', headers: { 'X-Kiln-Signature': sig }, body: raw + ' ' }), w.env);
   assert.equal(bad.status, 401);
 });
+
+test('bring my site in, fair use: the same old site is copied three times in 30 days between the accounts that pay for nothing, the next one is told why, and an account that pays for a site is not held back', { skip: d1Skip }, async () => {
+  const w = world();
+  for (const n of [2, 3, 4, 5, 6]) person(w.env, `p${n}`, { sub: `g-900${n}`, email: `p${n}@example.com`, name: `Person ${n}` }, `acct-p${n}`);
+  // three accounts, the address typed three ways
+  const typed = [['rosa', 'https://www.oakbakery.com/'], ['p2', 'http://oakbakery.com/about'], ['p3', 'www.oakbakery.com']];
+  for (const [token, address] of typed) { const r = await bring(w, { address, mine: true }, token); assert.equal(r.status, 200, JSON.stringify(r.json)); }
+  assert.equal(JSON.parse(w.env.KILN.map.get('copied:oakbakery.com')).length, 3, 'one key for the address, without www.');
+  // a fourth account is told why, before anything is made or asked
+  const fourth = await bring(w, { address: 'oakbakery.com', mine: true }, 'p4');
+  assert.deepEqual([fourth.status, fourth.json], [429, { error: 'This site has been copied to Kiln several times in the last 30 days. If it is yours, write to info@kilncms.com and we will set it up with you.', code: 'copied_often' }]);
+  assert.deepEqual([w.hub.made.length, w.hub.jobs.length, sites(w.env).length, fourth.calls.length], [3, 3, 3, 0]);
+  // an account that pays for a site is not held back, and its copy is not counted
+  w.env.kiln_cloud.exec("INSERT INTO sites (id, account_id, repo, origin, plan, status, ls_subscription_id, created_at, kept, name) VALUES ('paid-5', 'acct-p5', 'kiln-sites/paid-5', 'https://paid5.example', 'managed', 'active', 'sub-5', 1, 1, 'Paid')");
+  const paid = await bring(w, { address: 'oakbakery.com', mine: true }, 'p5');
+  assert.equal(paid.status, 200, JSON.stringify(paid.json));
+  assert.equal(JSON.parse(w.env.KILN.map.get('copied:oakbakery.com')).length, 3);
+  // another site is nobody's business here
+  const other = await bring(w, { address: 'elmbakery.com', mine: true }, 'p4');
+  assert.equal(other.status, 200, JSON.stringify(other.json));
+  // and copies older than 30 days are not counted
+  w.env.KILN.map.set('copied:oakbakery.com', JSON.stringify([1, 2, 3].map(() => Date.now() - 31 * 86400 * 1000)));
+  const next = await bring(w, { address: 'oakbakery.com', mine: true }, 'p6');
+  assert.equal(next.status, 200, JSON.stringify(next.json));
+  assert.equal(JSON.parse(w.env.KILN.map.get('copied:oakbakery.com')).length, 1);
+});

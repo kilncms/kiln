@@ -71,6 +71,7 @@ const SENTENCES = {
   kiln_own: "That address is one of Kiln's own, so there is nothing to bring in. Type the address of the site you have somewhere else.",
   bad_name: 'Give your site a name of 2 to 60 characters, such as Oak Bakery, or leave the name empty, then try again.',
   not_now: 'Kiln cannot copy that site during the free days just now. Write to info@kilncms.com and we will help you bring it in.',
+  copied_often: 'This site has been copied to Kiln several times in the last 30 days. If it is yours, write to info@kilncms.com and we will set it up with you.',
   no_job: "Kiln could not start copying the site just now. Wait a few minutes, then press Try again on the site's row.",
   no_such_site: 'That site is not on this account. Reload this page to see your sites.',
   no_copy: 'This site was not brought in from another address, so there is no copy to try again. Reload this page.',
@@ -80,7 +81,7 @@ const SENTENCES = {
   busy: 'Kiln is already starting the copy. Give it a minute, then reload this page.',
 };
 const STATUS = { not_set_up: 409, not_mine: 400, no_address: 400, bad_address: 400, not_web: 400, has_login: 400, not_public: 400, bad_port: 400, kiln_own: 400, bad_name: 400,
-  not_now: 429, no_job: 502, no_such_site: 404, no_copy: 404, copied: 409, still_copying: 409, no_more_tries: 409, busy: 409 };
+  not_now: 429, copied_often: 429, no_job: 502, no_such_site: 404, no_copy: 404, copied: 409, still_copying: 409, no_more_tries: 409, busy: 409 };
 
 export const bringSentence = (code) => SENTENCES[code] || SENTENCES.no_job;
 const refusal = (code) => ({ ok: false, code, status: STATUS[code] || 502, error: bringSentence(code) });
@@ -186,6 +187,18 @@ const newJob = () => crypto.randomUUID().replace(/-/g, '');
 const changed = (r) => Number(r && r.meta && r.meta.changes) > 0;
 // The mark is one account's own: it never stands in the way of anybody else who asks for the same site.
 const broughtKey = (accountId, source) => `brought:${accountId}:${source}`;
+// The same old site, whoever asks for it: accounts that pay for nothing may have it copied MOST_COPIES_OF_ONE
+// times in 30 days between them. One key for an address, `copied:<address without www.>`, holds the times of
+// its last copies as a JSON list, and goes by itself 30 days after the last of them. KV has no step that reads
+// and writes at once, so two copies asked for in the same moment may both be let through.
+export const MOST_COPIES_OF_ONE = 3;
+const copiedKey = (source) => `copied:${source}`;
+async function copiedTimes(env, source, now) {
+  try {
+    const list = JSON.parse((await env.KILN.get(copiedKey(source))) || '[]');
+    return Array.isArray(list) ? list.map(Number).filter(t => t > now - BROUGHT_DAYS * 86400 * 1000) : [];
+  } catch { return []; }
+}
 const base64 = (text) => btoa(String.fromCharCode(...bytesOf(text)));
 const stale = (row, now) => row.state === 'copying' && now - Number(row.asked_at || 0) > COPY_MINUTES * 60000;
 
@@ -314,12 +327,16 @@ export async function bringIn(env, { accountId, address, name, mine, worker, das
       // The mark holds that account alone: whoever else asks for the site is not held by it, and what one
       // account may start over time is counted in startKept. An account that pays for a site is not held to it.
       paid = await hasPaidSite(env, accountId);
-      return !paid && await env.KILN.get(broughtKey(accountId, at.source)) ? refusal('not_now') : null;
+      if (paid) return null;
+      if (await env.KILN.get(broughtKey(accountId, at.source))) return refusal('not_now');
+      // And across all accounts that pay for nothing: the same old site is copied three times in 30 days at most.
+      return (await copiedTimes(env, at.source, now)).length >= MOST_COPIES_OF_ONE ? refusal('copied_often') : null;
     },
     onMade: ({ id, branch }) => writeRow(env, { job, siteId: id, accountId, address: at.address, branch, tries: 1, now }),
   });
   if (!out.ok) return out;
   if (!paid) { try { await env.KILN.put(broughtKey(accountId, at.source), String(now), { expirationTtl: BROUGHT_DAYS * 86400 }); } catch { /* the copy goes on */ } }
+  if (!paid) { try { await env.KILN.put(copiedKey(at.source), JSON.stringify([...(await copiedTimes(env, at.source, now)), now].slice(-10)), { expirationTtl: BROUGHT_DAYS * 86400 }); } catch { /* the copy goes on */ } }
   const started = await startJob(env, { job, address: at.address, repo: out.repo, worker, sign, pkcs1, note, now });
   const bring = shownCopy(await lastCopy(env, out.site.id), { now });
   return started ? { ok: true, site: out.site, bring } : { ...refusal('no_job'), site: out.site, bring };
