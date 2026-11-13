@@ -70,10 +70,13 @@ export function hostingOn(env) {
  */
 const idStart = (id) => String(id || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || '0';
 
+// What stands before every name this service gives a Worker (staging: "stg-"), so the test service's sites and previews can be told from the live ones in the one hosting account.
+const namePrefix = (env) => String((env && env.HOSTING_PREFIX) || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 8);
+
 export function siteName(env, { repo, id }) {
   const words = String(repo || '').split('/').pop().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'site';
   const tail = idStart(id);
-  const prefix = String((env && env.HOSTING_PREFIX) || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 8);
+  const prefix = namePrefix(env);
   // A site whose files Kiln keeps already carries those eight characters at the end of its repository's name
   // (keeps.js), so they are not said twice in its address.
   return `${prefix}${words.endsWith(`-${tail}`) ? words : `${words}-${tail}`}`.replace(/^-+/, '').slice(0, 63);
@@ -106,9 +109,9 @@ export function previewAlias(branch) {
 }
 
 /** The name of the Worker a branch's preview is served from, or null for a branch with no usable name. */
-export function previewName(site, branch) {
+export function previewName(env, site, branch) {
   const alias = previewAlias(branch);
-  return alias ? `pv-${idStart(site?.id)}-${alias}` : null;
+  return alias ? `${namePrefix(env)}pv-${idStart(site?.id)}-${alias}` : null;
 }
 
 /**
@@ -117,7 +120,7 @@ export function previewName(site, branch) {
  * the branch. Null when this service hosts nothing.
  */
 export function previewPattern(env, site) {
-  return hostingOn(env) && site?.id ? siteAddress(env, `pv-${idStart(site.id)}-{branch}`) : null;
+  return hostingOn(env) && site?.id ? siteAddress(env, `${namePrefix(env)}pv-${idStart(site.id)}-{branch}`) : null;
 }
 
 /** What every preview's `_headers` ends with: no search engine lists any of its pages. */

@@ -400,14 +400,19 @@ test('previews: the pattern for a site\'s settings file gives the address the ed
     'kiln-drafts': 'pv-3f9a1c2e-kiln-drafts',
     'kiln/suggest-Jean-Luc.O\'Neil_the_Second': 'pv-3f9a1c2e-kiln-suggest-jean-luc-o-neil',
   })) {
-    assert.equal(previewName(site, branch), name, branch);
+    assert.equal(previewName(env, site, branch), name, branch);
     assert.equal(previewUrl(branch, pattern), `https://${name}.kiln-sites.workers.dev`, branch);
     assert.equal(previewUrl(branch, '{branch}'), previewAlias(branch), branch);
     assert.ok(name.length <= 63 && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name), `${name} can be a Worker's name`);
   }
   // The longest name there can be: 3 + 8 + 1 + 28.
-  assert.equal(previewName(site, `kiln/suggest-${'x'.repeat(80)}`).length, 40);
-  assert.equal(previewName(site, '///'), null);
+  assert.equal(previewName(env, site, `kiln/suggest-${'x'.repeat(80)}`).length, 40);
+  assert.equal(previewName(env, site, '///'), null);
+  // The test service marks its previews as it marks its sites, so the two services' Workers can be told apart in the one hosting account.
+  const staging = { ...env, HOSTING_PREFIX: 'stg-' };
+  assert.equal(previewName(staging, site, 'kiln/suggest-Ana'), 'stg-pv-3f9a1c2e-kiln-suggest-ana');
+  assert.equal(previewUrl('kiln/suggest-Ana', previewPattern(staging, site)), 'https://stg-pv-3f9a1c2e-kiln-suggest-ana.kiln-sites.workers.dev');
+  assert.ok(previewName(staging, site, `kiln/suggest-${'x'.repeat(80)}`).length <= 63);
   assert.equal(previewAlias('--'), '');
   assert.deepEqual(['kiln-drafts', 'kiln/suggest-a', 'kiln/suggest-', 'main', 'kiln-drafts/x', 'Kiln-drafts', null].map(isPreviewBranch), [true, true, true, false, false, false, false]);
   // Hosting is off: there is no pattern.

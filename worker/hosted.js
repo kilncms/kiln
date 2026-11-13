@@ -214,7 +214,7 @@ export async function forgetPreviews(env, siteId, why = 'site_removed') {
  * first. Never throws.
  */
 async function putPreview(env, { site, token, branch, sha = null }) {
-  const alias = previewAlias(branch), name = previewName(site, branch);
+  const alias = previewAlias(branch), name = previewName(env, site, branch);
   const lock = previewLock(site.id, alias), want = previewWant(site.id, alias);
   try {
     if (await env.KILN.get(lock)) {
