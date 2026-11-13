@@ -41,6 +41,8 @@ const PER_PAGE = 50;                              // the most inboxes or rules C
 
 export const MAIL_LIMITS = {
   againMs: 10 * 60 * 1000,   // "Send it again" at most this often
+  remindDays: 7,             // an inbox that has not confirmed by then: the owner is reminded, once
+  giveUpDays: 30,            // and by then Kiln stops asking about it
   addressPages: 20,          // pages of 50 inboxes read from the account's list
   recordPages: 20,           // pages of 100 records read from a zone, as worker/domain.js reads them
   local: 64,                 // the longest part before the @
@@ -402,6 +404,13 @@ export function mailSentence(code, { address = null, inbox = null, name = null }
     case 'has_own_mail': return `${startDomain} has email of its own, which keeps working as it is. Kiln changes nothing there. To forward an address, set that up with the company that runs that email.`;
     case 'not_live': return `${startDomain} is not live on Kiln yet. Finish setting up the domain first, then come back here to forward an address.`;
     case 'not_set_up': return 'Forwarding an address is not switched on for this service yet. Write to Kiln and it will be set up for you by hand.';
+    case 'says_no_mail': return `${startDomain} says today that it takes no email. When you forward an address, Kiln replaces the two records that say so, and the domain takes email for that one address.`;
+    case 'no_domain': return 'This site does not have a domain of its own on Kiln yet. Set up the domain on the site\'s row first, then come back here to forward an address.';
+    case 'plan_ended': return 'Editing is switched off for this site, so Kiln cannot set up a forwarded address for it. Subscribe on the site\'s row, then try again.';
+    case 'busy': return 'Kiln is already working on the forwarded address for this site. Wait a minute, then look at the site\'s row again.';
+    case 'no_forward': return 'No address is forwarded for this site yet. To set one up, press "Forward an address" on the site\'s row.';
+    case 'bad_action': return 'Kiln did not understand that request. Reload the dashboard and try again.';
+    case 'never_confirmed': return `${theInbox} did not confirm within ${MAIL_LIMITS.giveUpDays} days, so Kiln stopped waiting. Nothing of yours was changed. To try again, press "Forward an address" on the site's row.`;
     default: return `Kiln could not finish this with Cloudflare just now. Your site and any email you already have are as they were. Try again in a few minutes.`;
   }
 }

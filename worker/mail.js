@@ -205,6 +205,37 @@ export function domainLiveMail({ name, address, tempUrl = null, oneAddress = fal
 }
 
 /**
+ * Sent once when an address at a hosted site's own domain has begun to reach
+ * its owner's inbox: the inbox confirmed, and the rule is made. `address` is
+ * the forwarded one (hello@<name>) and `inbox` where its mail arrives.
+ */
+export function forwardOnMail({ address, inbox, dashboard }) {
+  return message(`${address} now reaches ${inbox}`, [
+    'Hello,',
+    `Mail sent to ${address} now arrives in the inbox ${inbox}. The inbox has confirmed, so there is nothing more for you to do.`,
+    `The address only receives mail. To answer a message, reply from ${inbox} as you always do. Your reply is sent from that inbox.`,
+    'To send the mail to a different inbox, to change the address, or to stop the forwarding, open your dashboard and use the email line on the site\'s row.',
+    dashboard,
+  ], whyLine(String(address).split('@')[1]));
+}
+
+/**
+ * Sent once, 7 days after an address was asked for whose inbox has still not
+ * confirmed: whose inbox must press the button, where "Send it again" is, and
+ * the day Kiln stops waiting (`givesUpAt`).
+ */
+export function forwardWaitingMail({ address, inbox, givesUpAt = null, dashboard }) {
+  return message(`${address} is waiting for ${inbox} to confirm`, [
+    'Hello,',
+    `You asked Kiln to forward ${address} to the inbox ${inbox}. That has not started yet, because the inbox has not confirmed.`,
+    `Cloudflare, the company that carries the mail, sent an email to ${inbox}. Whoever reads that inbox needs to open that email and press the button in it. That is the only step. Kiln then switches the forwarding on by itself and writes to you when it has.`,
+    'If the email is not there, look in the spam folder. To have it sent again, open your dashboard and press "Send it again" on the site\'s row.',
+    dashboard,
+    ...(givesUpAt ? [`If the inbox has not confirmed by ${dayWords(givesUpAt)}, Kiln stops waiting. Nothing of yours is changed by that, and you can ask again from the dashboard any time.`] : []),
+  ], whyLine(String(address).split('@')[1]));
+}
+
+/**
  * Sent once, 14 days into a set-up whose name servers have not been changed:
  * the two name servers again, the seller's page, and the day the set-up is
  * put away. The fields are the ones domainNameServersMail takes.
