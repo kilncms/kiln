@@ -21,7 +21,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mail records stay). The rule is made only once Cloudflare says the inbox has
   confirmed, by "check now" or by the five-minute job, and the owner is then
   written to: "hello@yourdomain.com now reaches you@inbox". An inbox that
-  confirmed earlier gets no second email, and the address is on at once. When
+  confirmed earlier gets no second email, and the address is on at once, but
+  only when the Kiln account has shown that the inbox is its own: it is the
+  address on the account, or another of the account's sites already forwards
+  to it. Every customer's domain is in one Cloudflare account, where an inbox
+  that confirmed for one customer counts as confirmed for all of them, so an
+  inbox that confirmed at somebody else's asking is refused (`inbox_elsewhere`)
+  with one sentence that says to use the address on the account or to write to
+  info@kilncms.com, and nothing is made at Cloudflare. "Check now", "Send it
+  again" and the five-minute job hold to the same rule before a rule is made
+  or an email is sent. When
   an inbox has not confirmed after 7 days its owner gets one reminder, and
   after 30 days Kiln stops waiting and says so on the site's row. A domain
   with email of its own is never touched, and a parked domain that says "no

@@ -411,6 +411,7 @@ export function mailSentence(code, { address = null, inbox = null, name = null }
     case 'no_forward': return 'No address is forwarded for this site yet. To set one up, press "Forward an address" on the site\'s row.';
     case 'bad_action': return 'Kiln did not understand that request. Reload the dashboard and try again.';
     case 'never_confirmed': return `${theInbox} did not confirm within ${MAIL_LIMITS.giveUpDays} days, so Kiln stopped waiting. Nothing of yours was changed. To try again, press "Forward an address" on the site's row.`;
+    case 'inbox_elsewhere': return 'Kiln cannot confirm that inbox by itself. Use the address on your Kiln account, or write to info@kilncms.com and we will set it up with you.';
     default: return `Kiln could not finish this with Cloudflare just now. Your site and any email you already have are as they were. Try again in a few minutes.`;
   }
 }
@@ -446,6 +447,37 @@ export async function forwardsConfirming(env, limit = 10) {
 export async function forwardsReady(env) {
   try { await env.kiln_cloud.prepare('SELECT site_id FROM forwards LIMIT 1').first(); return true; }
   catch { return false; }
+}
+
+/**
+ * Whether a Kiln account has shown that an inbox is its own. All the hosted
+ * domains are in one Cloudflare account, so "this inbox has confirmed" there
+ * is true for every customer at once, whoever asked. Kiln has to know for
+ * itself whose asking the inbox agreed to. An inbox is the account's own when
+ *   - it is the address on the Kiln account, or
+ *   - a site of the account forwards to it with a row that is `on`, or
+ *   - a site of the account waits for it and Cloudflare wrote to the inbox at
+ *     that row's asking (the row has its `asked_at`), so the button was
+ *     pressed in an email this account had sent.
+ * Never throws: what cannot be read is not shown.
+ */
+export async function ownsInbox(env, { accountId, inbox }) {
+  const want = String(inbox ?? '').trim().toLowerCase();
+  if (!accountId || !want) return false;
+  try {
+    const account = await env.kiln_cloud.prepare('SELECT email FROM accounts WHERE id = ?').bind(accountId).first();
+    if (String(account?.email || '').trim().toLowerCase() === want) return true;
+    return !!(await env.kiln_cloud.prepare(
+      `SELECT f.site_id FROM forwards f JOIN sites s ON s.id = f.site_id
+        WHERE s.account_id = ? AND f.inbox = ? AND (f.state = 'on' OR (f.state = 'confirming' AND f.asked_at IS NOT NULL)) LIMIT 1`).bind(accountId, want).first());
+  } catch { return false; }
+}
+
+/** True when a row of any account still waits for this inbox to confirm. Never throws: what cannot be read counts as waited for. */
+export async function inboxAwaited(env, inbox) {
+  const want = String(inbox ?? '').trim().toLowerCase();
+  try { return !!(await env.kiln_cloud.prepare("SELECT site_id FROM forwards WHERE inbox = ? AND state = 'confirming' LIMIT 1").bind(want).first()); }
+  catch { return true; }
 }
 
 const COLUMNS = ['address', 'inbox', 'inbox_id', 'rule_id', 'state', 'reason', 'asked_at', 'on_at', 'created_at'];

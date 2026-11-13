@@ -49,7 +49,7 @@ import {
 } from './domain.js';
 import {
   mailStop, saysNoMail, switchMailOn, inboxState, addInbox, askAgain, canAskAgain, forward, stopForwarding, cleanLocal, cleanInbox, mailSentence,
-  forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, MailError, MAIL_LIMITS,
+  forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, inboxAwaited, MailError, MAIL_LIMITS,
 } from './domain-mail.js';
 
 const GH = 'https://api.github.com';
@@ -893,7 +893,7 @@ const FORWARD_LOCK_S = 120;      // one change at a time for a site's forwarded 
 const FORWARDS_PER_RUN = 10;     // the five-minute job asks about this many waiting inboxes at most
 const forwardLock = (siteId) => `forwardlock:${siteId}`;
 // The refusals a person can do something about, and the status each is answered with. Anything else is "cloudflare".
-const FORWARD_STATUS = { cloudflare: 502, not_set_up: 503, no_domain: 409, not_live: 409, has_own_mail: 409, not_confirmed: 409, not_an_address: 400, same_domain: 400 };
+const FORWARD_STATUS = { cloudflare: 502, not_set_up: 503, no_domain: 409, not_live: 409, has_own_mail: 409, not_confirmed: 409, inbox_elsewhere: 409, not_an_address: 400, same_domain: 400 };
 const whyMail = (e) => (e instanceof MailError ? e.detail || e.code : String(e?.message || e)).slice(0, 300);
 
 /** True when this service can forward an address at a site's own domain: it can put sites on their domains, and the database has the table. */
@@ -943,6 +943,9 @@ async function forwardingOn(env, { s, row, zoneId, inboxId = null, now = Date.no
  *   - not after 30 days: the row becomes `off` with the reason
  *     `never_confirmed`, and nothing more is asked. Nothing at Cloudflare is
  *     changed by that.
+ * An inbox that has confirmed, though not at this account's asking
+ * (domain-mail.js ownsInbox), gets no rule: its row becomes `failed` with the
+ * reason `inbox_elsewhere`, and is counted with the ones given up on.
  * A site whose domain is no longer live is not asked about (no rule could be
  * made for it), and its row is given up on after the same 30 days. A row the
  * dashboard is at work on (its lock) is left for the next run. It never
@@ -967,13 +970,22 @@ export async function sweepForwards(env, { now = Date.now() } = {}) {
     try {
       if (await env.KILN.get(forwardLock(r.site_id))) continue;   // a press in the dashboard is at work on this one
       const s = await env.kiln_cloud.prepare(
-        `SELECT s.id, s.repo, a.email, d.name, d.zone_id, d.state AS domain_state FROM sites s
+        `SELECT s.id, s.repo, s.account_id, a.email, d.name, d.zone_id, d.state AS domain_state FROM sites s
            LEFT JOIN accounts a ON a.id = s.account_id LEFT JOIN domains d ON d.site_id = s.id WHERE s.id = ?`).bind(r.site_id).first();
       const waited = now - Number(r.created_at || now);
       const live = !!s && s.domain_state === 'live' && !!s.zone_id;
       if (live) {
         const box = await inboxState(env, { email: r.inbox, id: r.inbox_id });
-        if (box?.verified) { await forwardingOn(env, { s, row: r, zoneId: s.zone_id, inboxId: box.id, now }); out.on++; continue; }
+        if (box?.verified) {
+          // Confirmed at Cloudflare is confirmed for every customer at once: the rule is made only for an inbox this account has shown to be its own.
+          if (!(await ownsInbox(env, { accountId: s.account_id, inbox: r.inbox }))) {
+            await saveForward(env, r.site_id, { state: 'failed', reason: 'inbox_elsewhere' });
+            console.log(JSON.stringify({ evt: 'forward_gave_up', repo: s.repo, address: r.address, reason: 'inbox_elsewhere' }));
+            out.gaveUp++;
+            continue;
+          }
+          await forwardingOn(env, { s, row: r, zoneId: s.zone_id, inboxId: box.id, now }); out.on++; continue;
+        }
       }
       if (!s || waited >= MAIL_LIMITS.giveUpDays * day) {
         const reason = s ? 'never_confirmed' : 'site_removed';
@@ -1749,6 +1761,15 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         await forwardingOn(env, { s: { id: site.id, repo: site.repo, email: account?.email }, row: waiting, zoneId: domain.zone_id, inboxId, now });
       };
 
+      // All the hosted domains share one Cloudflare account, so an inbox that confirmed there confirmed for every customer at once.
+      // A rule is made only for an inbox this Kiln account has shown to be its own (domain-mail.js ownsInbox). A waiting row that fails that stops here.
+      const mine = (inbox) => ownsInbox(env, { accountId: sess.account_id, inbox });
+      const elsewhere = async () => {
+        await saveForward(env, site.id, { state: 'failed', reason: 'inbox_elsewhere' });
+        console.warn(JSON.stringify({ evt: 'forward_failed', repo: site.repo, action, stage: 'inbox', reason: 'inbox_elsewhere' }));
+        return refuse('inbox_elsewhere', 409, { name, forward: publicForward(await forwardRow(env, site.id)) });
+      };
+
       if (action === 'setup') {
         if (!(await forwardingAvailable(env))) return refuse('not_set_up', 503);
         const stop = forwardStop(domain);
@@ -1758,19 +1779,33 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         catch (e) { return refuse(e instanceof MailError && e.code === 'same_domain' ? 'same_domain' : 'not_an_address', 400, { address: null, inbox: null, name }); }
         const same = !!row && row.address === address && row.inbox === inbox;
         if (same && row.state === 'on') return json({ ok: true, forward: publicForward(row), sent: false });   // it stands as asked
+        // An inbox this account has not shown to be its own is taken only when Cloudflare writes to it at this asking. One that has
+        // confirmed already (at somebody else's asking), or that somebody else still waits for, is refused before anything is made.
+        const ours = await mine(inbox);
+        const notOurs = () => refuse('inbox_elsewhere', 409, { address, inbox, name, forward: publicForward(row) });
+        let left = false;   // on Cloudflare's list, not confirmed, and nobody waits for it any more: the email is sent afresh
+        if (!ours) {
+          let there;
+          try { there = await inboxState(env, { email: inbox }); }
+          catch (e) { return failed(e, 'inbox', { address, inbox }); }
+          if (there && (there.verified || await inboxAwaited(env, inbox))) return notOurs();
+          left = !!there;
+        }
         let box;
         try { await switchMailOn(env, { zoneId: domain.zone_id, name }); }
         catch (e) { return failed(e, 'switch', { address, inbox }); }
-        try { box = await addInbox(env, { email: inbox }); }
+        try { box = left ? await askAgain(env, { email: inbox }) : await addInbox(env, { email: inbox }); }
         catch (e) { return failed(e, 'inbox', { address, inbox }); }
+        if (!ours && !box.sent) return notOurs();   // somebody else asked for it in the same moment
         // Asking for the same again while it waits keeps its clock: the reminder and the day Kiln stops waiting count from the first asking.
         const again = same && row.state === 'confirming';
         const saved = await saveForward(env, site.id, {
           address, inbox, inbox_id: box.id, state: 'confirming', reason: null,
-          ...(again ? (box.sent ? { asked_at: now } : {}) : { created_at: now, asked_at: box.sent ? now : null }),
+          // A row that waits for the same inbox keeps the time Cloudflare last wrote there, which is also the mark that it wrote at this row's asking.
+          ...(again ? {} : { created_at: now }), ...(box.sent ? { asked_at: now } : row?.state === 'confirming' && row.inbox === inbox ? {} : { asked_at: null }),
         });
         if (!saved) return refuse('not_set_up', 503);
-        // An inbox that confirmed earlier (for this site or another of the hosting account's) gets no second email: the rule is made at once.
+        // An inbox of this account's that confirmed earlier gets no second email: the rule is made at once.
         if (box.verified) {
           try { await switchOn(await forwardRow(env, site.id), box.id); }
           catch (e) { return failed(e, 'rule'); }   // the row waits, and the five-minute job tries the rule again
@@ -1785,6 +1820,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         try { box = await inboxState(env, { email: row.inbox, id: row.inbox_id }); }
         catch (e) { return failed(e, 'inbox'); }
         if (box?.verified) {
+          if (!(await mine(row.inbox))) return elsewhere();
           try { await switchOn(row, box.id); }
           catch (e) { return failed(e, 'rule'); }
         }
@@ -1794,6 +1830,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       if (action === 'again') {
         if (row.state !== 'confirming') return json({ ok: true, forward: publicForward(row), sent: false });
         if (!canAskAgain(row, now)) return refuse('too_soon', 429, { forward: publicForward(row) });
+        if (!(await mine(row.inbox))) return elsewhere();   // nobody is written to at the asking of an account the inbox never agreed to
         let box;
         try { box = await askAgain(env, { email: row.inbox }); }
         catch (e) { return failed(e, 'inbox'); }

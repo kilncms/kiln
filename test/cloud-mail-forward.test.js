@@ -86,6 +86,15 @@ async function withDomain(w, { live = true } = {}) {
 }
 /** A live domain with hello@ asked for and its inbox still to confirm. */
 async function waiting(w) { await withDomain(w); assert.equal((await setup(w.env)).status, 200); }
+/** A site of another Kiln customer (or, with `account: 'acct-1'`, a second site of this one) that forwards to an inbox: confirmed and on, or still waiting. */
+async function otherSite(w, { account = 'acct-2', inbox = OTHER, confirmed = true } = {}) {
+  if (account !== 'acct-1') w.env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, created_at) VALUES (?,?,?,?)', account, 'bea', inbox, 1);
+  addSite(w.env, { id: 'site9', account_id: account, repo: 'bea/shop', origin: 'https://shop.example', plan: 'managed' });
+  const box = await addInbox(w.env, { email: inbox });
+  if (confirmed) w.cf.confirm(inbox);
+  await saveForward(w.env, 'site9', { address: 'hi@beashop.test', inbox, inbox_id: box.id, state: confirmed ? 'on' : 'confirming', rule_id: confirmed ? 'rule-9' : null, asked_at: Date.now() });
+}
+const NONE = { looked: 0, on: 0, reminded: 0, gaveUp: 0, failed: 0 };
 /** A live domain with hello@ reaching the inbox. */
 async function forwarding(w) { await waiting(w); w.cf.confirm(INBOX); await hush(async () => assert.equal((await post(w.env, 'check')).status, 200)); assert.equal((await rowOf(w.env)).state, 'on'); }
 
@@ -208,7 +217,7 @@ test('forwarding: a set-up switches mail on for the domain, has Cloudflare write
   });
 });
 
-test('forwarding: an inbox that has confirmed before gets no second email, and the address is on at once', { skip: d1Skip }, async () => {
+test('forwarding: the account\'s own address, confirmed before, gets no second email, and the address is on at once', { skip: d1Skip }, async () => {
   const w = world();
   await withFetch(w.handler, async () => {
     await withDomain(w);
@@ -225,6 +234,81 @@ test('forwarding: an inbox that has confirmed before gets no second email, and t
     assert.deepEqual([again.forward.state, again.sent], ['on', false]);
     assert.equal(w.mails().length, 1);
   });
+});
+
+test('forwarding: an inbox that confirmed for another customer is refused in one sentence that gives nothing away, and nothing is made at Cloudflare', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await withDomain(w);
+    await otherSite(w);
+    const before = { mx: routed(w), calls: w.cf.calls.length };
+    const res = await setup(w.env, 'hello', OTHER);
+    const body = await res.json();
+    assert.deepEqual([res.status, body.code, body.forward], [409, 'inbox_elsewhere', null]);
+    assert.equal(body.error, 'Kiln cannot confirm that inbox by itself. Use the address on your Kiln account, or write to info@kilncms.com and we will set it up with you.');
+    assert.equal(body.error, mailSentence('inbox_elsewhere', { address: HELLO, inbox: OTHER, name: N }), 'the sentence names nobody and nothing');
+    for (const s of sentences(body.error)) plain(s);
+    assert.equal(await rowOf(w.env), null);
+    assert.deepEqual([rules(w), routed(w), w.cf.confirmations], [[], before.mx, [OTHER]], 'no rule, no mail records, and no email to the inbox');
+    assert.deepEqual(w.cf.calls.slice(before.calls).filter(c => c.method !== 'GET').map(c => `${c.method} ${c.path}`), [], 'Cloudflare was only read');
+    assert.equal(w.mails().length, 0);
+  });
+});
+
+test('forwarding: an inbox that another site of the same account already forwards to is on at once, with no email to it', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await withDomain(w);
+    await otherSite(w, { account: 'acct-1' });
+    let body;
+    await hush(async () => { body = await (await setup(w.env, 'hello', OTHER)).json(); });
+    assert.deepEqual([body.ok, body.sent, body.forward.state, body.forward.inbox], [true, false, 'on', OTHER]);
+    assert.deepEqual(w.cf.confirmations, [OTHER], 'the inbox was written to once, for the first site');
+    assert.deepEqual(rules(w), [`${HELLO} > ${OTHER}`]);
+    assert.deepEqual(w.mails().map(m => [m.to, m.subject]), [[INBOX, `${HELLO} now reaches ${OTHER}`]]);
+  });
+});
+
+test('forwarding: an inbox another customer still waits for is refused, and one that nobody waits for any more is written to afresh', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await withDomain(w);
+    await otherSite(w, { confirmed: false });
+    const res = await setup(w.env, 'hello', OTHER);
+    assert.deepEqual([res.status, (await res.json()).code], [409, 'inbox_elsewhere']);
+    assert.deepEqual([await rowOf(w.env), w.cf.confirmations], [null, [OTHER]]);
+    // The other customer gave up on it: the inbox is still on Cloudflare's list, and nobody waits for it.
+    w.env.kiln_cloud.exec("DELETE FROM forwards WHERE site_id = 'site9'");
+    const body = await (await setup(w.env, 'hello', OTHER)).json();
+    assert.deepEqual([body.sent, body.forward.state], [true, 'confirming']);
+    assert.deepEqual(w.cf.confirmations, [OTHER, OTHER], 'Cloudflare writes to the inbox at this account\'s asking');
+    w.cf.confirm(OTHER);
+    await hush(async () => { await post(w.env, 'check'); });
+    assert.deepEqual([(await rowOf(w.env)).state, rules(w)], ['on', [`${HELLO} > ${OTHER}`]]);
+  });
+});
+
+test('forwarding: a row left waiting for an inbox that confirmed for another customer gets no rule from "check now", "Send it again" or the five-minute job', { skip: d1Skip }, async () => {
+  for (const how of ['check', 'again', 'job']) {
+    const w = world();
+    await withFetch(w.handler, async () => {
+      await withDomain(w);
+      await otherSite(w);
+      const box = await addInbox(w.env, { email: OTHER });
+      await saveForward(w.env, 'site1', { address: HELLO, inbox: OTHER, inbox_id: box.id, state: 'confirming' });   // as a set-up saved it before this was guarded
+      let res;
+      await hush(async () => { res = how === 'job' ? await sweepForwards(w.env) : await post(w.env, how); });
+      if (how === 'job') assert.deepEqual(res, { ...NONE, looked: 1, gaveUp: 1 });
+      else {
+        const body = await res.json();
+        assert.deepEqual([res.status, body.code, body.error, body.forward.state, body.forward.error], [409, 'inbox_elsewhere', mailSentence('inbox_elsewhere'), 'failed', mailSentence('inbox_elsewhere')], how);
+      }
+      const row = await rowOf(w.env);
+      assert.deepEqual([row.state, row.reason, row.rule_id], ['failed', 'inbox_elsewhere', null], how);
+      assert.deepEqual([rules(w), w.cf.confirmations, w.mails().length], [[], [OTHER], 0], how);
+      assert.deepEqual(await sweepForwards(w.env), NONE, 'it is not asked about again');
+    });
+  }
 });
 
 // ─── Check now ────────────────────────────────────────────────────────────────
