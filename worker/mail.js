@@ -84,7 +84,7 @@ export function siteAddedMail({ origin, plan, endsAt, dashboard }) {
 }
 
 // The same for a site whose files Kiln keeps: it is always on Kiln's hosting, and its owner has no repository of their own.
-const KEPT_AFTER_TRIAL = 'The site then stays up at its temporary address for three more days and comes down after that. Kiln keeps every file, and subscribing puts the site back up.';
+const KEPT_AFTER_TRIAL = 'The site then stays up at its temporary address for three more days and comes down after that. Kiln keeps its files for 30 days after that, and subscribing in that time puts the site back up.';
 
 /**
  * Sent once when a person starts a site whose files Kiln keeps (cloud.js,

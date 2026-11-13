@@ -456,7 +456,7 @@ test('the welcome mail for a site Kiln keeps: its name, that Kiln keeps its file
     "Its temporary address is https://oak-bakery-1a2b3c4d.kiln-sites.workers.dev. The site is up there about a minute after your dashboard has put it on Kiln's hosting. If the site's row in your dashboard has a button that says Put it on Kiln's hosting, press it.",
     "To edit the site, open your dashboard and press Open the editor on the site's row. There is no password. Click any outlined words or picture, change them, and press Publish.",
     "The site is free until Friday, November 20, and no card is needed for that time. To keep it after Friday, November 20, press Subscribe on the site's row. Kiln Cloud + hosting is $14.99 a month for the site, and you can cancel any time.",
-    'If you do not subscribe by Friday, November 20, editing is switched off. The site then stays up at its temporary address for three more days and comes down after that. Kiln keeps every file, and subscribing puts the site back up.',
+    'If you do not subscribe by Friday, November 20, editing is switched off. The site then stays up at its temporary address for three more days and comes down after that. Kiln keeps its files for 30 days after that, and subscribing in that time puts the site back up.',
     'To use a domain of your own for the site, add it from the same row in your dashboard and follow the steps there.',
     'Your dashboard:',
     'https://app.example',
