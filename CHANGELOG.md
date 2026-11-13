@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-11-13
+
 ### Fixed
 
 - **A domain can be set up again after its set-up was put away or the domain
