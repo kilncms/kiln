@@ -285,10 +285,10 @@ function renderItem(item, deps, rerender) {
   const head = el('div', 'kiln-ps-head');
   head.append(el('strong', null, item.label));
   if (item.drop) {
-    const drop = el('button', 'kiln-ps-drop', 'Drop');
+    const drop = el('button', 'kiln-ps-drop', 'Discard this edit');
     drop.type = 'button';
-    drop.setAttribute('aria-label', `Drop the edit to ${item.label}`);
-    drop.title = 'Leave this edit out and put the page back';
+    drop.setAttribute('aria-label', `Discard the edit to ${item.label}`);
+    drop.title = 'This edit is taken off the page, and that part goes back to what it said before. Your other edits stay.';
     drop.addEventListener('click', () => { item.drop(); rerender(); });
     head.append(drop);
   }

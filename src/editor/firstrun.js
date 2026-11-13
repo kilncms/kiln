@@ -29,9 +29,13 @@ export function goingLiveLabel(waiting) {
   return `${what} going live… usually under a minute`;
 }
 
-/** The commit message a page publish gets; `keys` are the edited fields, in order. */
+/**
+ * The commit message a page publish gets; `keys` are the edited fields, in
+ * order. A part changed more than once is named once: a picture changed four
+ * times read "Edit index.html: story_img, story_img, story_img, story_img".
+ */
 export function editCommitMessage(path, keys) {
-  return `Edit ${path}: ${keys.join(', ')} (via Kiln)`;
+  return `Edit ${path}: ${[...new Set(keys)].join(', ')} (via Kiln)`;
 }
 
 /**

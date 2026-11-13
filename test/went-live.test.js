@@ -62,7 +62,7 @@ test('what is said when the editor cannot tell is plain, says the change is save
 test('the editor asks several times before it says live, keeps the line, and never calls a made commit a failed publish', () => {
   assert.match(main, /live = await served\(\) && await stillThere\(served\);/);
   assert.match(main, /state\.lastLive = \{ at: Date\.now\(\)/);
-  assert.match(main, /setStatus\(`\$\{e\.desc\} — live ✓`, 'saved', \{ hold, rest: true \}\)/);
+  assert.match(main, /setStatus\(`\$\{e\.desc\}: live ✓`, 'saved', \{ hold, rest: true \}\)/);
   assert.match(main, /const hold = isMobileEditor\(\) \? LIVE_STAYS_PHONE : LIVE_STAYS;/);
   assert.match(main, /setStatus\(restLine\(state\.user, state\.lastLive, \{ limits: limitsHere\(\) \}\), 'idle', state\.lastLive \? \{ hold: LIVE_STAYS \} : undefined\)/);
   assert.match(main, /if \(leaves\.then === 'sign-in'\) setStatus\(withLastLive\(signInLine\[0\], state\.lastLive\), signInLine\[1\], signInLine\[2\]\);/);
@@ -124,7 +124,7 @@ function statusLine({ own, phone = false }) {
 function publish(line, { undo, liveAt, phone = false }) {
   const hold = phone ? LIVE_STAYS_PHONE : LIVE_STAYS;
   if (undo) line.offerUndo(); else line.say('Going live…', 'saving');
-  line.at(liveAt, () => line.say('Your page edit — live ✓', 'saved', { hold, rest: true }));
+  line.at(liveAt, () => line.say('Your page edit: live ✓', 'saved', { hold, rest: true }));
   const stop = Math.ceil((liveAt + 1) / 6000) * 6000;
   line.at(stop, () => line.idleIn(Math.max(4000, hold - (stop - liveAt))));
   line.runTo(5 * 60000);
@@ -134,18 +134,18 @@ function publish(line, { undo, liveAt, phone = false }) {
 test('after an ordinary publish the line moves on from "live ✓" to the resting line, however quick the site was', () => {
   const RESTS = 'Signed in as rosa. Your last publish went live at 3:52 PM.';
   // New post, Find & replace: no "Published. Undo", and the line always moved on
-  assert.deepEqual(publish(statusLine({ own: false }), { undo: false, liveAt: 4500 }), ['0s Going live…', '4.5s Your page edit — live ✓', '34.5s (put away)', `34.5s ${RESTS}`, '64.5s (put away)'],
+  assert.deepEqual(publish(statusLine({ own: false }), { undo: false, liveAt: 4500 }), ['0s Going live…', '4.5s Your page edit: live ✓', '34.5s (put away)', `34.5s ${RESTS}`, '64.5s (put away)'],
     'two timers went off together there: one put "live ✓" away and the other showed the resting line');
   // an ordinary publish, live while "Published. Undo" still had the line: before, the resting line never came
-  assert.deepEqual(publish(statusLine({ own: false }), { undo: true, liveAt: 4500 }), ['0s Published.', '10s Your page edit — live ✓', '40s (put away)'],
+  assert.deepEqual(publish(statusLine({ own: false }), { undo: true, liveAt: 4500 }), ['0s Published.', '10s Your page edit: live ✓', '40s (put away)'],
     'the fault: the timer for the resting line was set at 6s, saw a newer line when it went off, and did nothing');
   // now "live ✓" moves on by itself, thirty seconds after it is really shown
-  assert.deepEqual(publish(statusLine({ own: true }), { undo: true, liveAt: 4500 }), ['0s Published.', '10s Your page edit — live ✓', `40s ${RESTS}`, '70s (put away)']);
+  assert.deepEqual(publish(statusLine({ own: true }), { undo: true, liveAt: 4500 }), ['0s Published.', '10s Your page edit: live ✓', `40s ${RESTS}`, '70s (put away)']);
   // and on every other path it is as it was: said once, at the same moment
-  assert.deepEqual(publish(statusLine({ own: true }), { undo: false, liveAt: 4500 }), ['0s Going live…', '4.5s Your page edit — live ✓', `34.5s ${RESTS}`, '64.5s (put away)']);
-  assert.deepEqual(publish(statusLine({ own: true }), { undo: true, liveAt: 47000 }), ['0s Published.', '47s Your page edit — live ✓', `77s ${RESTS}`, '107s (put away)']);
+  assert.deepEqual(publish(statusLine({ own: true }), { undo: false, liveAt: 4500 }), ['0s Going live…', '4.5s Your page edit: live ✓', `34.5s ${RESTS}`, '64.5s (put away)']);
+  assert.deepEqual(publish(statusLine({ own: true }), { undo: true, liveAt: 47000 }), ['0s Published.', '47s Your page edit: live ✓', `77s ${RESTS}`, '107s (put away)']);
   // a phone: ten seconds, then the line is put away and rests on nothing
-  assert.deepEqual(publish(statusLine({ own: true, phone: true }), { undo: true, liveAt: 4500, phone: true }), ['0s Published.', '10s Your page edit — live ✓', '20s (put away)']);
+  assert.deepEqual(publish(statusLine({ own: true, phone: true }), { undo: true, liveAt: 4500, phone: true }), ['0s Published.', '10s Your page edit: live ✓', '20s (put away)']);
 });
 
 test('the editor settles what follows a line where the line is shown, and says "live ✓" with what follows it', () => {
@@ -154,6 +154,6 @@ test('the editor settles what follows a line where the line is shown, and says "
   assert.match(set, /else if \(leaves\.then === 'rest'\) restStatus\(\);\n    else el\.hidden = true;\n  \}, leaves\.after\);/);
   // a line kept back by "Published. Undo" has no timer until it is shown: the offer returns before any is set
   assert.ok(set.indexOf('undoOffer.held = [text, kind, opts]; return;') < set.indexOf('const leaves = lineLeaves('));
-  assert.match(main, /setStatus\('Live ✓ — view site', 'saved', \{ href: e\.target, hold, rest: true \}\);/);
+  assert.match(main, /setStatus\('Live ✓ View site', 'saved', \{ href: e\.target, hold, rest: true \}\);/);
   assert.match(main, /function restStatus\(\) \{\n  setStatus\(restLine\(state\.user, state\.lastLive, \{ limits: limitsHere\(\) \}\), 'idle', state\.lastLive \? \{ hold: LIVE_STAYS \} : undefined\);\n\}/);
 });

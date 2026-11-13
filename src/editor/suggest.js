@@ -85,14 +85,14 @@ export function suggestChanges() {
   // queued image upload or added section can't ride a suggestion, and silently
   // dropping them would publish a broken half. Make the user unwind those first.
   if (state.pendingBinaries.size || state.pendingStructural.length) {
-    setStatus('Suggestions carry text edits only — undo new images / added sections first (⌘Z)', 'error');
+    setStatus('Suggestions carry text edits only. Undo new images / added sections first (⌘Z)', 'error');
     return;
   }
   if (!state.pending.size) return;
   const n = state.pending.size;
   const m = modal(`
     <h3>Suggest ${n} change${n > 1 ? 's' : ''}</h3>
-    <p class="kiln-dim">Nothing goes live yet — the site owner reviews and approves your suggestion.</p>
+    <p class="kiln-dim">Nothing goes live yet. The site owner reviews and approves your suggestion.</p>
     <label>Note for the reviewer (optional) <input type="text" id="kiln-sug-note" maxlength="200" placeholder="What you changed, in a line"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
@@ -110,8 +110,8 @@ export function suggestChanges() {
       deps.noteDone();
       m.remove();
       setStatus(r.previewSkipped
-        ? 'Suggested ✓ — awaiting approval (preview skipped)'
-        : 'Suggested ✓ — awaiting approval', 'saved');
+        ? 'Suggested ✓ Awaiting approval (preview skipped)'
+        : 'Suggested ✓ Awaiting approval', 'saved');
     } catch (err) {
       console.error('[kiln] suggest', err);
       m.querySelector('#kiln-sug-go').disabled = false;
@@ -196,8 +196,8 @@ export async function suggestionsPanel() {
   const { cfg, modal } = deps;
   const m = modal(`
     <h3>Suggestions</h3>
-    <p class="kiln-dim">Approving merges a suggestion into the live page — it re-applies on top of anything
-    published since, and the editor keeps authorship. Declining just records your call.</p>
+    <p class="kiln-dim">Approving a suggestion publishes the suggested change on top of the page as it is
+    now, saved in the name of the person who suggested it. Declining publishes nothing.</p>
     <div id="kiln-sug-list" class="kiln-inv-list">Loading…</div>
     <div id="kiln-sug-decided"></div>
     <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
@@ -226,7 +226,7 @@ async function renderSuggestions(m) {
   const open = all.filter(s => s.status === 'open');
   const decided = all.filter(s => s.status !== 'open').slice(0, 20);
 
-  list.innerHTML = open.length ? '' : '<p class="kiln-dim">Nothing waiting — editors’ suggestions show up here.</p>';
+  list.innerHTML = open.length ? '' : '<p class="kiln-dim">Nothing waiting. Editors’ suggestions show up here.</p>';
   for (const sug of open) list.appendChild(suggestionRow(m, sug));
 
   decidedBox.innerHTML = '';
@@ -305,10 +305,10 @@ function suggestionRow(m, sug) {
       if (e.attr !== undefined) {
         let cur = null;
         try { cur = doc?.querySelector(`[data-cms="${CSS.escape(e.key)}"]`)?.getAttribute(e.attr); } catch { /* bad key */ }
-        before = cur ?? '—';
+        before = cur ?? '(nothing)';
         after = String(e.value);
       } else {
-        before = values[e.key] === undefined ? '—' : textOf(values[e.key]);
+        before = values[e.key] === undefined ? '(nothing)' : textOf(values[e.key]);
         after = textOf(e.html);
         // A markup-only change reads as "no change" in plain text — fall back to
         // the raw source so the reviewer still sees WHAT differs (still inert:
@@ -342,7 +342,7 @@ function suggestionRow(m, sug) {
         // inline explanation.
         // a note typed for the editor (in a dialog, now closed) is offered as a copy
         err.textContent = stopped(e2, approve ? 'approved' : 'declined', note ? { name: 'your note', text: note } : null) || (e2.status === 409
-          ? 'The page changed while approving — try again.'
+          ? 'The page changed while approving. Try again.'
           : `Could not ${approve ? 'approve' : 'decline'}: ${e2.data.error || e2.status}${e2.data.detail ? ` (${e2.data.detail})` : ''}`);
         err.hidden = false;
         approveBtn.disabled = declineBtn.disabled = false;
@@ -350,10 +350,10 @@ function suggestionRow(m, sug) {
       }
       if (approve) {
         const commit = data.suggestion?.commit;
-        if (commit?.url) setStatus('Approved ✓ — view the commit', 'saved', { href: commit.url });
-        else setStatus('Approved ✓ — the page already matched', 'saved');
+        if (commit?.url) setStatus('Approved ✓ View the commit', 'saved', { href: commit.url });
+        else setStatus('Approved ✓ The page already matched', 'saved');
       } else {
-        setStatus('Declined — nothing changed', 'idle');
+        setStatus('Declined. Nothing changed', 'idle');
       }
       await renderSuggestions(m);
       refreshSuggestBadge();
@@ -398,7 +398,7 @@ export async function sharePreviewPanel() {
   if (state.pending.size) return;  // draft failed — saveDraft already said why; no stale link
   const url = previewUrl('kiln-drafts', cfg.preview);
   const m = modal(`<h3>Preview link</h3>
-    <p class="kiln-dim">Saved to the draft branch — nothing is live. Your host builds the preview in
+    <p class="kiln-dim">Saved to the draft branch. Nothing is live. Your host builds the preview in
     about a minute; the status line reports when it's up.</p>
     <p><a class="kiln-sug-preview-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a></p>
     <label id="kiln-prev-byhand" hidden>This browser did not let Kiln copy it. The link is selected here, to copy by hand:

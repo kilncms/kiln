@@ -71,7 +71,7 @@ test('names: a theme setting is named without the stylesheet\'s dashes, or the w
 
 test('names: nothing stored is changed, only what is shown', () => {
   // the commit message, the saved copy and what is sent to the worker are built from the key itself
-  assert.match(read('firstrun.js'), /return `Edit \$\{path\}: \$\{keys\.join\(', '\)\} \(via Kiln\)`;/);
+  assert.match(read('firstrun.js'), /return `Edit \$\{path\}: \$\{\[\.\.\.new Set\(keys\)\]\.join\(', '\)\} \(via Kiln\)`;/);
   assert.match(main, /editCommitMessage\(file, \[\.\.\.flattenPending\(\)\.map\(e => e\.key\)/);
   assert.equal(/readableName\([^)]*\)[^;\n]*(stagePending|state\.pending\.set|localStorage\.setItem)/.test(main), false);
   // and what a readable name is made from is still on screen for the owner

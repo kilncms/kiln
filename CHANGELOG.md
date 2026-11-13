@@ -99,6 +99,26 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   site on the hosting plan that its owner never put on Kiln's hosting is
   checked at its own address, as before. The answer carries `looked_at`, the
   address that was asked (`worker/sitecheck.js`, `worker/cloud.js`).
+- **What the editor says is said plainly.** Adding an events list read "Added
+  a events — click “+ Add event”, then Publish"; it reads "Added an events
+  list. Click “+ Add event”, then Publish.", and a gallery "Added a gallery.
+  Click “+ Add photos”, then Publish." In the publish sheet the button beside
+  each change said "Drop" and nothing more. It takes that one edit off the
+  page and puts that part back as it was, so it is named "Discard this edit"
+  and says so when pointed at. A commit message names each part once: "Edit
+  index.html: story_img, story_img, story_img, story_img" is "Edit
+  index.html: story_img". Every "Committed ✓" is "Saved ✓" with a plain
+  sentence after it, such as "Saved ✓ You can close this. Kiln will say when
+  it is live." The suggestions dialog says that approving a suggestion
+  publishes the suggested change on top of the page as it is now, saved in
+  the name of the person who suggested it, and that declining publishes
+  nothing. A schedule dialog says "Kiln publishes it at the time you pick,
+  give or take five minutes." A scheduled time is said to the minute:
+  "Scheduled for 11/12/2026, 8:38 PM ✓ You can close this." And no line in
+  the editor's own files touched here has a dash in it any more: each is two
+  sentences, or has a comma or a colon. The line by the Kiln button once a
+  change is on the site reads "Your page edit: live ✓".
+
 - **Sign out says that you are signed out, and where to sign in again.** After
   Kiln menu > Sign out the page came back with no Kiln button and not a word.
   For eight seconds it now reads "You are signed out. To edit again, sign in

@@ -26,8 +26,8 @@ test('editCommitMessage: the message a page publish has always had', () => {
   assert.equal(editCommitMessage('index.html', ['hero_headline']), 'Edit index.html: hero_headline (via Kiln)');
   assert.equal(editCommitMessage('blog/post.html', ['post_title', 'post_body', '+gallery_1']),
     'Edit blog/post.html: post_title, post_body, +gallery_1 (via Kiln)');
-  // A field with both a text and a link change is named once per change, as before.
-  assert.equal(editCommitMessage('about.html', ['cta', 'cta']), 'Edit about.html: cta, cta (via Kiln)');
+  // A part with more than one change (its words and its link) is named once.
+  assert.equal(editCommitMessage('about.html', ['cta', 'cta']), 'Edit about.html: cta (via Kiln)');
 });
 
 test('goingLiveLabel: after "Published." the wait for the host is not called publishing again', () => {

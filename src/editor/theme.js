@@ -314,7 +314,7 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
   --brand-primary: #b8472a;
   --font-display: 'Fraunces', serif;
 }</pre>
-<p class="kiln-dim">Use them via <code>var(--brand-primary)</code> —
+<p class="kiln-dim">Use them via <code>var(--brand-primary)</code>. See the
 <a href="https://github.com/kilncms/kiln/blob/main/docs/for-site-owners.md#theme-tokens" target="_blank" rel="noopener">docs</a>.</p>`;
       applyBtn.disabled = true;
       revertBtn.style.display = 'none';
@@ -430,11 +430,11 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
           appliedNames = attempt.applied;
           return attempt.css;
         }, `Theme: ${edits.length} token${edits.length === 1 ? '' : 's'} (via Kiln)`);
-        for (const nm of skipped) notices.push(`${nm} vanished — skipped`);
+        for (const nm of skipped) notices.push(`${nm} is gone, so it was skipped`);
         if (!result.unchanged) {
           committed += appliedNames.length;
           // Mirror menuEditor: the journal probes the live file and reports in the
-          // status line ("Theme — live ✓") even after this modal closes.
+          // status line ("Theme: live ✓") even after this modal closes.
           journalAdd({ type: 'compare', target: '/' + path, expect: djb2(result.text), desc: 'Theme', sha: result.commit?.sha });
           const entry = { path, text: result.text, tokens: discoverTokens(result.text, path) };
           sheetCache.set(path, entry);
@@ -458,7 +458,7 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
     updateButtons();
     revertBtn.disabled = false;
     const parts = committed
-      ? [`Committed ${committed} token${committed > 1 ? 's' : ''} ✓ — live in about a minute.`]
+      ? [`Saved ${committed} token${committed > 1 ? 's' : ''} ✓ Live in about a minute.`]
       : failures.length || halted ? [] : ['Nothing to change.'];
     parts.push(...notices);
     if (halted) parts.push(halted);

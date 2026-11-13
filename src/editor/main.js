@@ -47,6 +47,7 @@ import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
 import { limitsSaid } from './your-pages.js';
+import { addedSectionLine, scheduleHow, scheduledWhen } from './said-plainly.js';
 import { findEverywhere, replaceEverywhere, changedSinceText, previewText, noMatchText, replacedText } from './find-replace.js';
 import { aiAfter, aiOffered, noAiKey } from './ai-offered.js';
 import { DRAFT_BRANCH, draftSaveMessage, draftDeleteMessage, draftPublishedMessage, blobSha, draftOfPage, draftWords, DRAFT_DELETE_REFUSED } from './draft-state.js';
@@ -341,7 +342,7 @@ async function init() {
         return;
       }
       console.warn('[kiln] could not verify session (offline?)', err);
-      setStatus('Can’t reach GitHub right now — check your connection and reload.', 'error');
+      setStatus('Can’t reach GitHub right now. Check your connection and reload.', 'error');
       return;
     }
   } else {
@@ -399,7 +400,7 @@ async function init() {
   // blocking explanation instead of edit handles — editing it is silent data
   // loss (the next build erases the edit). Nothing else is withheld.
   if (await wrongModeGuard()) {
-    setStatus('Editing is off — this page is build output (see the notice)', 'error');
+    setStatus('Editing is off: this page is build output (see the notice)', 'error');
   } else {
     decorateFields();
     await initSourceFields();
@@ -1167,7 +1168,7 @@ function updatePresenceUI(others) {
     chip.id = 'kiln-presence';
     document.body.appendChild(chip);
   }
-  chip.innerHTML = `<span class="kiln-presence-dot"></span>${escapeHtml(label)} — your edits merge unless you change the same text`;
+  chip.innerHTML = `<span class="kiln-presence-dot"></span>${escapeHtml(label)}. Your edits merge unless you change the same text`;
 }
 
 // ─── Field decoration + inline editing ───────────────────────────────────────
@@ -1699,7 +1700,7 @@ function setupRepeat(container, key) {
     clone.scrollIntoView({ behavior: 'smooth', block: 'center' });
     clone.classList.add('kiln-flash');
     setTimeout(() => clone.classList.remove('kiln-flash'), 1600);
-    setStatus('Block added — click its text to edit, then Publish', 'saved');
+    setStatus('Block added. Click its text to edit, then Publish', 'saved');
   };
   // Galleries and event lists are specialized repeats: adding gets a native
   // flow (multi-photo picker / structured event form) instead of clone-the-last.
@@ -1743,7 +1744,7 @@ function attachItemControls(container, key, item) {
   ctl.innerHTML = `<button title="Move up">↑</button><button title="Move down">↓</button>`
     + `<button title="Duplicate this block">＋</button>`
     + (isEvents ? '<button title="Edit event details (date, time, location…)">📅</button>' : '')
-    + `<button title="Tags — visitors get filter buttons for tagged lists">🏷</button>`
+    + `<button title="Tags: visitors get filter buttons for tagged lists">🏷</button>`
     + `<button title="Remove this block">✕</button>`;
   // A block is often a link (a product card that opens its page). Pressing one
   // of its buttons must not follow that link too: stopping the click on its
@@ -1922,7 +1923,7 @@ function editItemTags(container, key, item) {
   const m = modal(`
     <h3>Tags for this block</h3>
     <p class="kiln-dim">Comma-separated, e.g. <code>new, used, upcoming</code>. As soon as any block
-    in this list has tags, visitors see filter buttons above the list — “All” plus one per tag.</p>
+    in this list has tags, visitors see filter buttons above the list: “All” plus one per tag.</p>
     <label>Tags <input type="text" id="kiln-tags-in" value="${escapeHtml(cur)}" placeholder="new, used, upcoming"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
@@ -1935,7 +1936,7 @@ function editItemTags(container, key, item) {
     stageContainer(container, key);
     renderTagPreview(container);   // pills appear/update immediately
     m.remove();
-    setStatus(v ? `Tagged “${v}” — filter buttons preview above the list. Publish to make them live for visitors.` : 'Tags removed — Publish to make it live', 'saved');
+    setStatus(v ? `Tagged “${v}”. Filter buttons preview above the list. Publish to make them live for visitors.` : 'Tags removed. Publish to make it live', 'saved');
   };
 }
 
@@ -1997,7 +1998,7 @@ function galleryOptionsPanel(container, key) {
   ];
   const m = modal(`
     <h3>Gallery options</h3>
-    <p class="kiln-dim">Photos always show as a grid of thumbnails — visitors click one to open it
+    <p class="kiln-dim">Photos always show as a grid of thumbnails. Visitors click one to open it
     full-screen with next/previous arrows.</p>
     <div class="kiln-roles">
       ${SIZES.map(s => `<label class="kiln-role"><input type="radio" name="kiln-gal-thumb" value="${s.v}" ${s.v === cur ? 'checked' : ''}>
@@ -2016,7 +2017,7 @@ function galleryOptionsPanel(container, key) {
     applyGalleryThumb(container);
     if (!cfg.sandbox) stagePending(key, { attrs: { 'data-kiln-thumb': v } });
     m.remove();
-    setStatus(cfg.sandbox ? 'Thumbnail size changed' : 'Thumbnail size changed — Publish to make it live', 'saved');
+    setStatus(cfg.sandbox ? 'Thumbnail size changed' : 'Thumbnail size changed. Publish to make it live', 'saved');
   };
 }
 
@@ -2059,7 +2060,7 @@ function addGalleryPhotos(container, key, add) {
         attachItemControls(container, key, fig);
       }
       stageContainer(container, key);
-      setStatus(`${files.length} photo${files.length > 1 ? 's' : ''} added — Publish to put them live`, 'saved');
+      setStatus(`${files.length} photo${files.length > 1 ? 's' : ''} added. Publish to put them live`, 'saved');
     } catch (err) {
       console.error('[kiln] gallery upload', err);
       setStatus('Photo upload failed', 'error');
@@ -2093,7 +2094,7 @@ function eventForm(container, key, item) {
       <label>End time (optional) <input type="time" id="kiln-ev-end" value="${cur.end}"></label>
       <label>Location <input type="text" id="kiln-ev-loc" value="${escapeHtml(cur.loc)}" placeholder="Where?"></label>
     </div>
-    <label>Link (tickets, Zoom, details — optional) <input type="text" id="kiln-ev-link" value="${escapeHtml(cur.link)}" placeholder="https://…"></label>
+    <label>Link (optional: tickets, Zoom, details) <input type="text" id="kiln-ev-link" value="${escapeHtml(cur.link)}" placeholder="https://…"></label>
     <label>Details (optional) <input type="text" id="kiln-ev-desc" value="${escapeHtml(cur.desc)}"></label>
     <p class="kiln-np-step" id="kiln-ev-status" role="status"></p>
     <div class="kiln-modal-actions">
@@ -2152,7 +2153,7 @@ function eventForm(container, key, item) {
     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     target.classList.add('kiln-flash');
     setTimeout(() => target.classList.remove('kiln-flash'), 1600);
-    setStatus(`Event ${item ? 'updated' : 'added'} — Publish to make it live`, 'saved');
+    setStatus(`Event ${item ? 'updated' : 'added'}. Publish to make it live`, 'saved');
   };
 }
 
@@ -2410,7 +2411,7 @@ function stageContainer(container, key) {
   // than publish flattened text that would permanently destroy the block.
   if (html === null) {
     console.error('[kiln] refusing to stage: sanitizing flattened block structure', { key, html });
-    setStatus('This block uses markup Kiln couldn’t safely keep — edit NOT staged. Please report this.', 'error');
+    setStatus('This block uses markup Kiln couldn’t safely keep, so the edit was not kept. Please report this.', 'error');
     return;
   }
 
@@ -2917,7 +2918,7 @@ function enableImageDragResize(img, key, stage = true) {
   document.querySelectorAll('.kiln-img-handle').forEach(h => h.remove());   // one at a time
   const handle = document.createElement('div');
   handle.className = 'kiln-img-handle';
-  handle.title = 'Drag to resize — the file is re-sampled to fit';
+  handle.title = 'Drag to resize. The file is re-sampled to fit';
   document.body.appendChild(handle);
   const place = () => {
     const r = img.getBoundingClientRect();
@@ -2987,7 +2988,7 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
       img.style.height = 'auto';
       img.removeAttribute('data-kiln-master');
       if (stage) stageImageEl(img, key);
-      setStatus(`Sized to ${cssWidth}px — Publish to keep it`, 'saved');
+      setStatus(`Sized to ${cssWidth}px. Publish to keep it`, 'saved');
       return;
     }
     img.setAttribute('data-kiln-master', master);
@@ -3012,7 +3013,7 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     // upload from pendingBinaries (publishing a page that references a file
     // that never gets committed). Bail instead.
     if (!img.isConnected) {
-      setStatus('That image changed while re-sampling — click it and resize again', 'error');
+      setStatus('That image changed while re-sampling. Click it and resize again', 'error');
       return;
     }
 
@@ -3022,7 +3023,7 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     if (cfg.sandbox) {
       img.src = `data:${scaled.type};base64,${base64}`;
       if (stage) stageImageEl(img, key);
-      setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB) — Publish to keep it`, 'saved');
+      setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB). Publish to keep it`, 'saved');
       return;
     }
     // Repeated drag-resizes supersede each other: drop the previous (uncommitted)
@@ -3039,7 +3040,7 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     img.src = URL.createObjectURL(blob);
     img.setAttribute('data-kiln-src', `/assets/uploads/${name}`);
     if (stage) stageImageEl(img, key);
-    setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB) — Publish to put it live`, 'saved');
+    setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB). Publish to put it live`, 'saved');
   } catch (err) {
     console.error('[kiln] resize', err);
     setStatus(notDone('The picture was not resized.', err), 'error');
@@ -3213,7 +3214,7 @@ async function addImageWithMaster(img, key, file) {
     if (rpt) stageContainer(rpt, rpt.getAttribute('data-cms-repeat'));
     else stagePending(key, { attrs: { src: img.src } });
     showResizeNow(img, key);
-    setStatus('Image added — drag its ● corner to resize, then Publish', 'saved');
+    setStatus('Image added. Drag its ● corner to resize, then Publish', 'saved');
     return true;
   }
 
@@ -3236,7 +3237,7 @@ async function addImageWithMaster(img, key, file) {
   if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
   else stageImageEl(img, key);
   showResizeNow(img, key);
-  setStatus('Image added — drag its ● corner to resize, then Publish', 'saved');
+  setStatus('Image added. Drag its ● corner to resize, then Publish', 'saved');
   return true;
 }
 
@@ -3299,7 +3300,7 @@ async function resampleImage(img, key, maxDim) {
     const baseName = (src.split('/').pop() || 'image').split('?')[0];
     const scaled = await downscale(new File([blob0], baseName, { type: blob0.type }), maxDim);
     await stageImageSwap(img, key, scaled, baseName);
-    setStatus(`Resampled to max ${maxDim}px (${Math.round(scaled.blob.size / 1024)} KB) — Publish to put it live`, 'saved');
+    setStatus(`Resampled to max ${maxDim}px (${Math.round(scaled.blob.size / 1024)} KB). Publish to put it live`, 'saved');
   } catch (err) {
     console.error('[kiln] resample', err);
     setStatus(notDone('The picture was not made smaller.', err), 'error');
@@ -3319,7 +3320,7 @@ async function stageImageSwap(img, key, { blob, base64, ext }, originalName) {
     // visitor's own browser (repeats capture it inside the container HTML).
     if (rpt) stageContainer(rpt, rpt.getAttribute('data-cms-repeat'));
     else stagePending(key, { attrs: { src: dataUrl } });
-    setStatus('Image added — hit Publish to save it to your demo', 'saved');
+    setStatus('Image added. Hit Publish to save it to your demo', 'saved');
     return;
   }
   const slug = (String(originalName).replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'image');
@@ -3335,7 +3336,7 @@ async function stageImageSwap(img, key, { blob, base64, ext }, originalName) {
   const repeat = img.closest('[data-cms-repeat]');
   if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
   else stagePending(key, { attrs: { src: safeUrl(urlPath) } });
-  setStatus('Image staged — hit Publish to put it live', 'saved');
+  setStatus('Image added. Hit Publish to put it live', 'saved');
 }
 
 /** Display-size change (how big it LOOKS — the file is untouched). */
@@ -3347,7 +3348,7 @@ function applyImageSize(img, key, val) {
   if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
   else stagePending(key, { attrs: { style: ownStyle(img) || '' } });
   settleOn(img);
-  setStatus(val === 'orig' ? 'Size reset — Publish to save' : `Width set to ${val} — Publish to save`, 'saved');
+  setStatus(val === 'orig' ? 'Size reset. Publish to save' : `Width set to ${val}. Publish to save`, 'saved');
 }
 
 async function downscale(file, maxDim = 1600) {
@@ -3382,7 +3383,7 @@ function insertInlineImage(el) {
           `<img src="data:${type};base64,${base64}" alt="" style="max-width:100%">`);
         const ins = [...el.querySelectorAll('img')].find(i => i.getAttribute('src')?.startsWith(`data:${type};base64,`));
         if (ins) inlineImgPopover(ins);
-        setStatus('Image added — resize it now if you like, then Save and Publish', 'saved');
+        setStatus('Image added. Resize it now if you like, then Save and Publish', 'saved');
         return;
       }
       const slug = (file.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'image');
@@ -3397,7 +3398,7 @@ function insertInlineImage(el) {
         `<img src="${blobUrl}" data-kiln-src="${urlPath}" alt="" style="max-width:100%">`);
       const ins = el.querySelector(`img[src="${blobUrl}"]`);
       if (ins) inlineImgPopover(ins);
-      setStatus('Image inserted — resize it now if you like, then Save and Publish', 'saved');
+      setStatus('Image inserted. Resize it now if you like, then Save and Publish', 'saved');
     } catch (err) {
       console.error('[kiln] inline image', err);
       await sayPictureNotAdded(file, err);
@@ -3438,7 +3439,7 @@ function uploadAnyFile() {
         const dir = gated ? 'members/files' : 'assets/files';
         const repoPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + `${dir}/${safe}`;
         stageBinary(repoPath, btoa(bin));   // committed with Publish, not now
-        setStatus(`${file.name} added ✓ ${gated ? '(members-only)' : ''} — goes live with your next Publish`, 'saved');
+        setStatus(`${file.name} added ✓${gated ? ' (members-only)' : ''} It goes live with your next Publish`, 'saved');
         resolve({ path: `/${dir}/${safe}`, name: file.name, size: file.size });
       } catch (err) {
         console.error('[kiln] file upload', err);
@@ -3508,7 +3509,7 @@ async function insertDocument(el, savedRange) {
     if (repeat) stageContainer(repeat, repeat.getAttribute('data-cms-repeat'));
     else stagePending(key, { html: committedHtml(el, false) });
     el.classList.add('kiln-modified');
-    setStatus('Document inserted — Publish when ready', 'saved');
+    setStatus('Document inserted. Publish when ready', 'saved');
   };
 }
 
@@ -3864,7 +3865,7 @@ async function publish(opts = {}) {
   // Content-file edits and the pictures they name: the pictures first, in
   // one commit, so that no content file names a picture that is not there yet.
   if (!state.pending.size && !state.pendingStructural.length && !state.restoring) {
-    setStatus('Publishing — adding the pictures…', 'saving');
+    setStatus('Publishing: adding the pictures…', 'saving');
     disablePublish(true);
     try {
       await commitStagedFiles(sourceHaystack());
@@ -3923,7 +3924,7 @@ async function publish(opts = {}) {
     console.warn('[kiln] the lists could not be read before publishing', err);
   }
 
-  setStatus('Publishing — committing to GitHub…', 'saving');
+  setStatus('Publishing: saving to GitHub…', 'saving');
   disablePublish(true);
   // Once the page's commit is made, nothing that stops afterwards is a failed
   // publish, and nothing may say "not published" (went-live.js).
@@ -4040,7 +4041,7 @@ async function publish(opts = {}) {
     // still pending because the section it targeted is gone from the page.
     const keptSkipped = [...skippedKeys].filter(k => !appliedKeys.has(k) && state.pending.has(k));
     if (keptSkipped.length) {
-      setStatus(`${keptSkipped.length} edit${keptSkipped.length > 1 ? 's' : ''} couldn't be applied — that section no longer exists on the page. Still pending.`, 'error');
+      setStatus(`${keptSkipped.length} edit${keptSkipped.length > 1 ? 's' : ''} couldn't be applied: that section no longer exists on the page. Still pending.`, 'error');
       return;
     }
     if (result && result.unchanged && !partialEdits.length && !state.pendingSource.size) { setStatus(restoring ? 'The page already matches that version.' : 'Nothing changed', 'idle'); return; }
@@ -4196,7 +4197,7 @@ async function confirmOverwrites(localEdits) {
       const m = modal(`
         <h3>Someone else changed this page</h3>
         <p class="kiln-dim">While you were editing, another editor published changes to
-        <strong>${conflicted.map(escapeHtml).join(', ')}</strong> — the same content you're about to publish.
+        <strong>${conflicted.map(escapeHtml).join(', ')}</strong>, the same content you're about to publish.
         Publishing now replaces their version with yours.</p>
         <div class="kiln-modal-actions">
           <button class="kiln-btn-ghost" id="kiln-conf-reload">Reload &amp; review (keeps your edits)</button>
@@ -5187,7 +5188,7 @@ function scheduleEntry(file, title, rule, over) {
   const inOneHour = new Date(Date.now() + 3600000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   const m = modal(`
     <h3>Put “${escapeHtml(title)}” on the site later</h3>
-    <p class="kiln-dim">At the time you pick, Kiln takes off its draft mark and the site rebuilds with it. Kiln checks every 5 minutes.</p>
+    <p class="kiln-dim">Kiln takes off its draft mark at the time you pick, give or take five minutes, and the site rebuilds with it.</p>
     <label>On the site from <input type="datetime-local" id="kiln-es-at" value="${inOneHour}"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
@@ -6403,7 +6404,7 @@ function runJournal() {
         try {
           const ds = await deployState(state.gh, cfg.repo, e.sha);
           if (ds === 'failure' || ds === 'error') {
-            setStatus('Build failed — open commit', 'error',
+            setStatus('Build failed: open commit', 'error',
               { href: `https://github.com/${cfg.repo}/commit/${e.sha}` });
             failed = true;
             continue;                       // drop the entry — it will never go live
@@ -6432,8 +6433,8 @@ function runJournal() {
         // It stays long enough to be read by someone who had looked away (went-live.js).
         const hold = isMobileEditor() ? LIVE_STAYS_PHONE : LIVE_STAYS;
         // What follows it is said with it (rest): the line may be shown later than now, after "Published. Undo" has had its ten seconds.
-        if (e.deployed) setStatus('Live ✓ — view site', 'saved', { href: e.target, hold, rest: true });
-        else setStatus(`${e.desc} — live ✓`, 'saved', { hold, rest: true });
+        if (e.deployed) setStatus('Live ✓ View site', 'saved', { href: e.target, hold, rest: true });
+        else setStatus(`${e.desc}: live ✓`, 'saved', { hold, rest: true });
         if (e.target === location.pathname || e.target === location.pathname + location.search) swapImagePreviews();
       } else if (Date.now() - e.started > 6 * 60 * 1000) {
         // Saved, and not showing: the editor cannot tell why, and says so, with how to check.
@@ -6507,7 +6508,7 @@ function newContent() {
         <span><strong>Page</strong><br><small>A standalone page (e.g. /services.html). Add it to the menu afterwards.</small></span></label>
     </div>
     <label>Title <input type="text" id="kiln-np-title" placeholder="What's it called?"></label>
-    ${!cfg.sandbox && hasFeature('ai') ? `<label>Brief — let AI draft the content (optional)
+    ${!cfg.sandbox && hasFeature('ai') ? `<label>Brief: let AI draft the content (optional)
       <textarea id="kiln-np-brief" rows="2" maxlength="2000" style="width:100%;font:inherit;resize:vertical"
         placeholder="One line on what it should say, e.g. 'Announcing our fall pie menu'"></textarea></label>` : ''}
     <div class="kiln-modal-actions">
@@ -6610,17 +6611,17 @@ function newContent() {
         `New ${kind}: ${title} (via Kiln)`);
 
       journalAdd({ type: 'url', target: href, desc: `New ${kind} “${title}”`, sha: commit.sha });
-      status.innerHTML = `Committed ✓ — the site is rebuilding (usually under a minute).<br>
+      status.innerHTML = `Saved ✓ The site is rebuilding, which usually takes under a minute.<br>
         ${draftFailed ? `<small>The AI did not write a draft, so the ${kind} was created without one. ${escapeHtml(draftFailed)}</small><br>` : ''}
         <small>Safe to close this window: Kiln keeps watching in the background and the link below
-        starts working the moment the ${kind} is live${kind === 'page' ? ' — then add it to your navigation via <strong>Site menu</strong>' : ''}.</small>`;
+        starts working the moment the ${kind} is live${kind === 'page' ? ', then add it to your navigation via <strong>Site menu</strong>' : ''}.</small>`;
       const started = Date.now();
       const poll = async () => {
         if (!document.body.contains(m)) return;
         try {
           const r = await fetch(`${href}?kilncb=${Date.now()}`, { method: 'HEAD', cache: 'no-store' });
           if (r.ok) {
-            status.innerHTML = `<strong>Live ✓</strong> — open it and click into the text to write.${
+            status.innerHTML = `<strong>Live ✓</strong> Open it and click into the text to write.${
               kind === 'page' ? ' Then add it to your navigation via <strong>Site menu</strong>.' : ''}`;
             openBtn.disabled = false;
             openBtn.onclick = () => { window.location.assign(href); };
@@ -6628,7 +6629,7 @@ function newContent() {
           }
         } catch { /* keep polling */ }
         if (Date.now() - started > 5 * 60 * 1000) {
-          status.textContent = 'Still building — Kiln keeps watching in the background. The page WILL appear; check the journal/menu in a minute.';
+          status.textContent = 'Still building. Kiln keeps watching in the background. The page WILL appear; check the journal/menu in a minute.';
           return;
         }
         setTimeout(poll, 5000);
@@ -6730,10 +6731,10 @@ function menuEditor() {
         status.textContent = `The menu is saved on ${changed.length} other page${changed.length === 1 ? '' : 's'}. This page already had it, so it was left as it is.`;
         return;
       }
-      status.innerHTML = `Step 2 of 3 · Committed ✓ — the site is rebuilding.
+      status.innerHTML = `Step 2 of 3 · Saved ✓ The site is rebuilding.
         ${skippedPages ? skippedPages + ' page(s) had no managed menu and were left alone.' : ''}<br>
-        <small><strong>Safe to close this window</strong> — Kiln keeps watching in the background and
-        will say “Menu update — live ✓” by the Kiln button when it's done.</small>`;
+        <small><strong>You can close this window.</strong> Kiln keeps watching in the background and
+        will say “Menu update: live ✓” by the Kiln button when it's done.</small>`;
       const started = Date.now();
       const poll = async () => {
         if (!document.body.contains(m)) return;
@@ -6747,7 +6748,7 @@ function menuEditor() {
             return;
           }
         } catch { /* keep polling */ }
-        if (Date.now() - started > 5 * 60 * 1000) { status.textContent = 'Still building — watching continues in the background. Safe to close.'; return; }
+        if (Date.now() - started > 5 * 60 * 1000) { status.textContent = 'Still building. Watching continues in the background. Safe to close.'; return; }
         setTimeout(poll, 5000);
       };
       poll();
@@ -7353,7 +7354,7 @@ async function historyPanel(resume = null) {
   // Undo ONE publish: put back the sections it changed, leave everything since.
   async function undoCommit(c) {
     const parentSha = c.parents?.[0]?.sha;
-    if (!parentSha) { status.textContent = 'This is the very first version — there’s nothing before it to go back to.'; return; }
+    if (!parentSha) { status.textContent = 'This is the very first version. There’s nothing before it to go back to.'; return; }
     spin('Comparing with the version before it…');
     const before = readValues(await histFile(parentSha));
     const after = readValues(await histFile(c.sha));
@@ -7425,7 +7426,7 @@ async function historyPanel(resume = null) {
       .filter(v => v.stamp && v.sha)
       .sort((a, b) => b.stamp - a.stamp);
     box.innerHTML = vers.length ? ''
-      : '<p class="kiln-dim">No named versions yet — hit ⭑ on any publish below to keep it findable.</p>';
+      : '<p class="kiln-dim">No named versions yet. Hit ⭑ on any publish below to keep it findable.</p>';
     for (const v of vers) {
       const when = v.date.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
       const row = document.createElement('div');
@@ -7462,12 +7463,12 @@ async function historyPanel(resume = null) {
         await state.gh.request('POST', `/repos/${cfg.repo}/git/refs`,
           { ref: `refs/tags/kiln/${Math.floor(Date.now() / 1000)}-${slug}`, sha: c.sha });
         closeForm();
-        status.textContent = `Saved as “${raw}” — it’s in Named versions above.`;
+        status.textContent = `Saved as “${raw}”. It’s in Named versions above.`;
         loadNamedVersions();
       } catch (err) {
         btn.disabled = false; btn.textContent = 'Save';
         status.textContent = err.status === 422
-          ? 'A version with that name was just created — try a slightly different name.'
+          ? 'A version with that name was just created. Try a slightly different name.'
           : stopped(err, 'saved', () => (input.isConnected && input.value.trim()
             ? { name: TYPED.version, text: input.value.trim(), keep: { where: 'version', sha: c.sha } } : null)) || notDone('The name was not saved.', err);
       }
@@ -7489,7 +7490,7 @@ async function historyPanel(resume = null) {
     commits = await pager.next();
   } catch (err) { list.textContent = ''; status.textContent = stopped(err) || notDone('The history could not be read.', err); return; }
 
-  list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No saved versions yet — they appear after your first publish.</p>';
+  list.innerHTML = commits.length ? '' : '<p class="kiln-dim">No saved versions yet. They appear after your first publish.</p>';
 
   let shown = 0;
   const addRow = (c) => {
@@ -7615,7 +7616,7 @@ async function fieldHistoryPanel(key, isRepeat = false) {
       };
       box.appendChild(r);
     }
-    if (!rows.length && !box.children.length) { box.innerHTML = '<p class="kiln-dim">No saved history for this section yet — it appears here after your first publish.</p>'; return; }
+    if (!rows.length && !box.children.length) { box.innerHTML = '<p class="kiln-dim">No saved history for this section yet. It appears here after your first publish.</p>'; return; }
     rows.forEach(({ c, v, start }, i) => {
       const when = start ? '' : new Date(c.commit.author.date).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
       const r = document.createElement('div');
@@ -7680,12 +7681,12 @@ function pageSettingsPanel() {
   }
   const cur = readHead(state.page.text);
   const m = modal(`
-    <h3>Page settings — ${escapeHtml(state.page.path)}</h3>
+    <h3>Page settings: ${escapeHtml(state.page.path)}</h3>
     <label>Page title (browser tab + search results)
       <input type="text" id="kiln-ps-title" value="${escapeHtml(cur.title)}"></label>
     <label>Description (search results &amp; link previews)
       <input type="text" id="kiln-ps-desc" value="${escapeHtml(cur.description)}" maxlength="200"></label>
-    <label>Social image URL (link previews — optional)
+    <label>Social image URL (for link previews, optional)
       <input type="text" id="kiln-ps-ogimg" value="${escapeHtml(cur.ogImage || '')}" placeholder="/assets/img/social.jpg"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
@@ -7711,7 +7712,7 @@ function pageSettingsPanel() {
       if (result.unchanged) { status.textContent = 'Nothing changed.'; return; }
       await loadPageSource();
       journalAdd({ type: 'compare', target: location.pathname, expect: djb2(result.text), desc: 'Page settings', sha: result.commit?.sha });
-      status.textContent = 'Committed ✓ — safe to close; Kiln will confirm when live.';
+      status.textContent = 'Saved ✓ You can close this. Kiln will say when it is live.';
     } catch (err) { status.textContent = stopped(err, 'published', typedIn(m)) || notDone('The settings were not published.', err); }
   };
   const delBtn = m.querySelector('#kiln-ps-del');
@@ -7726,7 +7727,7 @@ function pageSettingsPanel() {
         const file = await getFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main');
         await state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
           { message: `Delete ${state.page.path} (via Kiln)`, sha: file.sha, branch: cfg.branch || 'main' });
-        status.innerHTML = 'Deleted ✓ — the page comes off the site on the next deploy. <strong>Open Site menu to remove its link.</strong>';
+        status.innerHTML = 'Deleted ✓ The page comes off the site on the next deploy. <strong>Open Site menu to remove its link.</strong>';
       } catch (err) { status.textContent = stopped(err, 'deleted') || notDone('The page was not deleted.', err); }
     })();
   };
@@ -7821,7 +7822,7 @@ async function saveDraft() {
   // annotation-dependent edit would be silently dropped. Make the user publish
   // (or discard) those first rather than lose them.
   if (state.pendingBinaries.size || state.pendingStructural.length) {
-    setStatus('Publish your new images / added sections first — drafts save text edits only', 'error');
+    setStatus('Publish your new images / added sections first. Drafts save text edits only', 'error');
     return;
   }
   setStatus('Saving draft…', 'saving');
@@ -7847,7 +7848,7 @@ async function saveDraft() {
     forgetEditHistory();
     document.querySelectorAll('.kiln-modified').forEach(el => el.classList.remove('kiln-modified'));
     refreshPublishButton();
-    setStatus('Draft saved ✓ — nothing is live; resume it any time from this page', 'saved');
+    setStatus('Draft saved ✓ Nothing is live. Resume it any time from this page', 'saved');
   } catch (err) {
     console.error('[kiln] draft', err);
     if (err instanceof ListLoss) { setStatus(LIST_NOT_WHOLE_DRAFT(readableName(err.key)), 'error'); return; }
@@ -8013,7 +8014,7 @@ async function checkForDraft() {
     refreshPublishButton();
     // Publishing these is the end of this draft (retireResumedDraft).
     if (applied) { try { sessionStorage.setItem(draftResumedKey(), resumedNote(draft.sha, brought)); } catch { /* it is offered again, as before */ } }
-    setStatus(`Draft loaded (${applied} change${applied === 1 ? '' : 's'}) — Publish when ready`
+    setStatus(`Draft loaded (${applied} change${applied === 1 ? '' : 's'}). Publish when ready`
       + (refused ? `. ${refused} part${refused === 1 ? ' was' : 's were'} not brought back: ${refused === 1 ? 'it holds' : 'they hold'} code that could run on the page.` : ''), 'saved');
     m.remove();
   };
@@ -8059,13 +8060,14 @@ function schedulePanel(at) {
   // Scheduling re-applies text edits later against the live source; it can't
   // carry queued image uploads or added sections (same reason as drafts).
   if (state.pendingBinaries.size || state.pendingStructural.length) {
-    setStatus('Publish your new images / added sections first — scheduling covers text edits only', 'error');
+    setStatus('Publish your new images / added sections first. Scheduling covers text edits only', 'error');
     return;
   }
   const inOneHour = new Date(Date.now() + 3600000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  const scheduling = countChanges(publishItems({ light: true }).filter(i => state.pending.has(i.key)));
   const m = modal(`
-    <h3>${scheduleTitle(countChanges(publishItems({ light: true }).filter(i => state.pending.has(i.key))))}</h3>
-    <p class="kiln-dim">Kiln publishes them at the time you pick (it checks every 5 minutes), and the site rebuilds.</p>
+    <h3>${scheduleTitle(scheduling)}</h3>
+    <p class="kiln-dim">${scheduleHow(scheduling)}</p>
     <label>Publish at <input type="datetime-local" id="kiln-sc-at" value="${typeof at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(at) ? at : inOneHour}"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
@@ -8123,7 +8125,7 @@ function schedulePanel(at) {
       if (!data.ok) throw said(data.error || 'The site did not take the schedule');
       // The edits now live in the schedule on the worker — retire the stage.
       retireStaged();
-      status.textContent = `Scheduled for ${new Date(data.at).toLocaleString()} ✓ — safe to close.`;
+      status.textContent = `Scheduled for ${scheduledWhen(data.at)} ✓ You can close this.`;
       refreshList();
     } catch (err) {
       status.textContent = stopped(err, 'scheduled', () => {
@@ -8144,7 +8146,7 @@ function scheduleSourcePanel(at) {
   const n = state.pendingSource.size;
   const m = modal(`
     <h3>Publish ${n === 1 ? 'this edit' : `these ${n} edits`} later</h3>
-    <p class="kiln-dim">Kiln publishes ${n === 1 ? 'it' : 'them'} at the time you pick (it checks every 5 minutes), and the site rebuilds. Anything published before then stays.</p>
+    <p class="kiln-dim">${scheduleHow(n)} Anything published before then stays.</p>
     <label>Publish at <input type="datetime-local" id="kiln-ss-at" value="${typeof at === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(at) ? at : inOneHour}"></label>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
@@ -8173,7 +8175,7 @@ function scheduleSourcePanel(at) {
       }
     }
     refreshPublishButton();
-    said.textContent = `Scheduled for ${new Date(when).toLocaleString()}. You can close this.`;
+    said.textContent = `Scheduled for ${scheduledWhen(when)}. You can close this.`;
   };
 }
 
@@ -8213,7 +8215,7 @@ function settingsPanel() {
     const google = isAdmin ? m.querySelector('#kiln-set-google').checked : (cfg.auth?.google !== false);
     const siteChanged = isAdmin && google !== (cfg.auth?.google !== false);
     if (!siteChanged) {
-      status.textContent = uiChanged ? 'Saved — reloading to apply your editor layout…' : 'Saved.';
+      status.textContent = uiChanged ? 'Saved. Reloading to apply your editor layout…' : 'Saved.';
       if (uiChanged) setTimeout(() => location.reload(), 600);
       return;
     }
@@ -8229,7 +8231,7 @@ function settingsPanel() {
         return out.slice(0, close) + flags + out.slice(close);
       }, 'Kiln settings (via Kiln)');
       journalAdd({ type: 'compare', target: '/assets/kiln-config.js', expect: djb2(result.text), desc: 'Site settings', sha: result.commit?.sha });
-      status.textContent = 'Committed ✓ — applies to everyone after the rebuild (~1 min).' + (uiChanged ? ' Reloading…' : '');
+      status.textContent = 'Saved ✓ Everyone gets it once the site has rebuilt, in about a minute.' + (uiChanged ? ' Reloading…' : '');
       if (uiChanged) setTimeout(() => location.reload(), 1500);
     } catch (err) { status.textContent = stopped(err, 'saved') || notDone('The settings were not saved.', err); }
   };
@@ -8375,7 +8377,7 @@ function insertNewSection(kind, anchor) {
   setupRepeat(node.querySelector('[data-cms-repeat]'), key);
   setStatus(cfg.sandbox
     ? `${kind === 'gallery' ? 'A gallery' : 'An events list'} is added for this visit to the demo. On a real site, Publish keeps it.`
-    : `Added a ${kind} — click “+ Add ${kind === 'gallery' ? 'photos' : 'event'}”, then Publish`, 'saved');
+    : addedSectionLine(kind), 'saved');
 }
 
 /** Whether the site's own stylesheet does anything to an element of this class (a box, a border, a background). */
@@ -8579,7 +8581,7 @@ function makeDialog(el) {
     ? [{ v: 'img', t: 'Swappable image', d: 'Click to replace it, resize it, and describe it.' }]
     : [
       { v: 'text', t: 'Editable text', d: 'Click-to-edit with formatting, links, images.' },
-      { v: 'plain', t: 'Plain text only', d: 'No formatting allowed — safest for headings and labels.' },
+      { v: 'plain', t: 'Plain text only', d: 'No formatting allowed. Safest for headings and labels.' },
       ...(repeatable && !inRepeat ? [
         { v: 'repeat', t: 'Repeating blocks', d: 'Editors can add, remove, reorder, and tag the blocks inside.' },
       ] : []),
@@ -8603,7 +8605,7 @@ function makeDialog(el) {
     const k = m.querySelector('#kiln-mk-key').value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_');
     const status = m.querySelector('#kiln-mk-status');
     if (!k) return;
-    if (state.fields.fields.has(k)) { status.textContent = `"${k}" is already used on this page — pick another name.`; return; }
+    if (state.fields.fields.has(k)) { status.textContent = `"${k}" is already used on this page. Pick another name.`; return; }
     status.textContent = 'Committing…';
     try {
       await annotateElement(el, kind, k);
@@ -8671,7 +8673,7 @@ async function annotateElement(el, kind, key) {
   state.pendingStructural.push({ op: 'annotate', tag, nth, attrs, key });
   applyAnnotationToDom(el, kind, key);
   refreshPublishButton();
-  setStatus(`“${key}” is now editable — Publish to save it to the site`, 'saved');
+  setStatus(`“${key}” is now editable. Publish to save it to the site`, 'saved');
 }
 
 /** Apply all staged structural changes (annotate/unannotate) to raw page HTML. */
@@ -8700,13 +8702,13 @@ function unmakeDialog(el) {
   // Keys repeat inside block lists; only the first (indexed) element maps to source.
   const first = document.querySelector(`[data-cms="${CSS.escape(key)}"], [data-cms-repeat="${CSS.escape(key)}"], [data-cms-menu="${CSS.escape(key)}"]`);
   if (first !== el && el.closest('[data-cms-repeat]') !== el) {
-    setStatus('Blocks in a list share their field names — remove editing on the FIRST block, or on the list itself.', 'error');
+    setStatus('Blocks in a list share their field names. Remove editing on the FIRST block, or on the list itself.', 'error');
     return;
   }
   const m = modal(`
     <h3>Remove editing from “${escapeHtml(key)}”?</h3>
     <p class="kiln-dim">This ${kindLabel} stops being editable in Kiln. The content itself stays
-    exactly as it is — only the editing annotation is removed. You can make it editable again any time.</p>
+    exactly as it is. Only the editing annotation is removed. You can make it editable again any time.</p>
     <div class="kiln-modal-actions">
       <button class="kiln-btn-ghost" data-close>Cancel</button>
       <button class="kiln-btn-publish" id="kiln-um-go">Remove editing</button>
@@ -8735,7 +8737,7 @@ function unmakeDialog(el) {
     state.pending.delete(key);
     refreshPublishButton();
     m.remove();
-    setStatus(`“${key}” will stop being editable — Publish to save`, 'saved');
+    setStatus(`“${key}” will stop being editable. Publish to save`, 'saved');
   };
 }
 
@@ -8859,11 +8861,11 @@ function renderAdminBar() {
         <button id="kiln-help" class="kiln-fab-item" data-href="${escapeHtml(helpLink())}" title="Opens the guide in a new tab">Help <span class="kiln-pal-kbd" aria-hidden="true">↗</span></button>
       </div>
       <div class="kiln-fab-foot">
-        <button id="kiln-done" title="Hide Kiln and browse normally (stays signed in — return via the Resume button or yoursite.com/kiln)">Done editing</button>
+        <button id="kiln-done" title="Hide Kiln and browse normally (stays signed in. Return via the Resume button or yoursite.com/kiln)">Done editing</button>
         <button id="kiln-signout">Sign out</button>
       </div>
     </div>
-    <button id="kiln-fab" title="Kiln — drag me anywhere" aria-label="Kiln editing menu" aria-haspopup="true" aria-expanded="false" aria-controls="kiln-fab-menu">
+    <button id="kiln-fab" title="Kiln: drag me anywhere" aria-label="Kiln editing menu" aria-haspopup="true" aria-expanded="false" aria-controls="kiln-fab-menu">
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
       <span id="kiln-fab-badge" hidden></span>
     </button>
@@ -9366,9 +9368,9 @@ function renderToolbar(el, key, opts = {}) {
       <button class="kiln-tb-fmt kiln-tb-clear" data-cmd="removeFormat" title="Clear formatting">Clear</button>`}
     ${isLink ? `<input class="kiln-href-input" type="text" value="${escapeHtml(el.getAttribute('href') || '')}" title="Where this links to" placeholder="/page.html or https://…">
       <button class="kiln-tb-fmt kiln-tb-attach" data-cmd="attach" title="Upload a file (PDF, doc…) and point this link at it">Attach file…</button>` : ''}
-    ${hasFeature('ai') && !md ? '<button class="kiln-tb-fmt" id="kiln-ai" data-cmd="ai" title="AI assist — improve, shorten, change tone, translate">✨</button>' : ''}
+    ${hasFeature('ai') && !md ? '<button class="kiln-tb-fmt" id="kiln-ai" data-cmd="ai" title="AI assist: improve, shorten, change tone, translate">✨</button>' : ''}
     <span class="kiln-tb-gap"></span>
-    ${md ? '' : `<button class="kiln-tb-fmt" data-cmd="hist" title="This section's history — undo to a previous version">${HIST_ICON}</button>`}
+    ${md ? '' : `<button class="kiln-tb-fmt" data-cmd="hist" title="This section's history: undo to a previous version">${HIST_ICON}</button>`}
     <button class="kiln-tb-save" title="Keep this edit (you can still Esc-revert until you click away)">Done</button>
     <button class="kiln-tb-cancel" title="Throw away this edit (Esc)">Revert</button>`;
   nameTextTools(tb, md ? opts.label : readableName(key));
