@@ -168,6 +168,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   While that bar is up, or the bar that asks where a new section should go,
   the notice is put away, and it comes back when the bar goes. Neither mode
   takes a click on the notice any more.
+- **After "Delete page" the owner is no longer left on the page that was
+  deleted.** Page settings stayed open, still offering "Publish" and "Delete
+  page…" for a page that was gone, and said only to take its link out of the
+  site menu. Now Page settings closes and one dialog says "This page was
+  deleted", that the page stays visible until the site's host has published
+  the change, which takes about a minute, and that Kiln does not remove
+  links to it from other pages: "Check your site menu, and any list of posts
+  that names this page, and remove the link there." Its one button is "Go to
+  the home page". The dialog has no ✕, and Esc or a click outside it goes to
+  the home page as well.
 
 ## [0.6.6] - 2026-11-13
 

@@ -41,6 +41,13 @@ export function ownDialogCopy(kind, info = {}) {
       input: { label: `To confirm, type the page’s file name: ${name}`, match: name },
       cancel: 'Keep the page', go: 'Delete page' };
   }
+  // Told once the page is gone (tell). It is the last thing said on that page:
+  // `last` leaves the dialog with its one button, which goes to the home page.
+  if (kind === 'page-deleted') {
+    return { title: 'This page was deleted',
+      body: `${info.path} stays visible until your site’s host has published the change, which takes about a minute. Kiln does not remove links to it from other pages. Check your site menu, and any list of posts that names this page, and remove the link there.`,
+      ok: 'Go to the home page', last: true };
+  }
   if (kind === 'sign-out') {
     const one = info.edits === 1;
     return { title: `Sign out and discard your edit${one ? '' : 's'}?`,
@@ -148,6 +155,8 @@ export function askFirst(modal, copy) {
 /**
  * Tell, with nothing to decide: { title, body, ok }. One button, which puts
  * the dialog away, as the ✕, Escape and a click outside do. Resolves then.
+ * A dialog that is the last thing said (`last`) has no ✕: its one button is
+ * all there is to press, and whoever told it decides where the person goes.
  */
 export function tell(modal, copy) {
   return new Promise((resolve) => {
@@ -158,6 +167,7 @@ export function tell(modal, copy) {
         <button class="kiln-btn-publish" data-close>${esc(copy.ok || 'OK')}</button>
       </div>`, { over: true, onClose: () => resolve() });
     m.classList.add('kiln-ask', 'kiln-tell');
+    if (copy.last) m.querySelector('.kiln-modal-x')?.remove();
     m.querySelector('.kiln-modal-actions [data-close]').focus();
   });
 }

@@ -7833,7 +7833,12 @@ function pageSettingsPanel() {
         const file = await getFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main');
         await whileSending(() => state.gh.request('DELETE', `/repos/${cfg.repo}/contents/${state.page.path.split('/').map(encodeURIComponent).join('/')}`,
           { message: `Delete ${state.page.path} (via Kiln)`, sha: file.sha, branch: cfg.branch || 'main' }));
-        status.innerHTML = 'Deleted ✓ The page comes off the site on the next deploy. <strong>Open Site menu to remove its link.</strong>';
+        // The page is gone, so the panel that offered Publish and Delete for it
+        // goes too. One dialog says what happens next (own-dialogs.js), and
+        // however it is put away the person leaves for the home page.
+        const gone = ownDialogCopy('page-deleted', { path: state.page.path });
+        if (m.isConnected) m._kilnClose();
+        tell(modal, gone).then(() => { location.href = '/'; });
       } catch (err) { status.textContent = stopped(err, 'deleted') || notDone('The page was not deleted.', err); }
     })();
   };

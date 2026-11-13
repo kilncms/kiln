@@ -110,6 +110,28 @@ test('questions: no browser box is left where the four were', () => {
   assert.match(out, /if \(edits && !\(await askFirst\(modal, ownDialogCopy\('sign-out', \{ edits \}\)\)\)\) return;/);
 });
 
+test('after a page is deleted: one dialog with one button, and the panel that was about the page is gone', () => {
+  const told = ownDialogCopy('page-deleted', { path: 'blog/first-post.html' });
+  assert.equal(told.title, 'This page was deleted');
+  assert.equal(told.body, 'blog/first-post.html stays visible until your site’s host has published the change, which takes about a minute. '
+    + 'Kiln does not remove links to it from other pages. Check your site menu, and any list of posts that names this page, and remove the link there.');
+  assert.equal(told.ok, 'Go to the home page');
+  // nothing to decide, and nothing else to press
+  assert.equal(told.last, true);
+  assert.equal(told.go, undefined);
+  assert.equal(told.cancel, undefined);
+  for (const said of [told.title, told.body, told.ok]) assert.doesNotMatch(said, /[—–]/);
+  // the last thing said has no ✕ (tell)
+  const dialogs = read('own-dialogs.js');
+  const tell = dialogs.slice(dialogs.indexOf('export function tell('), dialogs.indexOf('export function askWhich('));
+  assert.match(tell, /if \(copy\.last\) m\.querySelector\('\.kiln-modal-x'\)\?\.remove\(\);/);
+  // Page settings goes, the dialog is told, and however it is put away the person leaves for the home page
+  const settings = main.slice(main.indexOf('function pageSettingsPanel('), main.indexOf('function findReplacePanel('));
+  const after = settings.slice(settings.indexOf("state.gh.request('DELETE'"));
+  assert.match(after, /const gone = ownDialogCopy\('page-deleted', \{ path: state\.page\.path \}\);\s+if \(m\.isConnected\) m\._kilnClose\(\);\s+tell\(modal, gone\)\.then\(\(\) => \{ location\.href = '\/'; \}\);/);
+  assert.doesNotMatch(settings, /Deleted ✓|next deploy|Open Site menu to remove its link/);
+});
+
 test('history: a restore is shown on the page itself, not in two frames with the scripts off', () => {
   assert.equal(/confirmRestoreVisual/.test(main), false);
   assert.equal(/kiln-vrestore/.test(main), false);
