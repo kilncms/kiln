@@ -7,6 +7,8 @@
 --                'failed'    the set-up could not be made (`reason`); nothing was left behind
 --   zone_id      Cloudflare's id for the zone. Never shown to anybody.
 --   ns1, ns2     the two name servers the owner enters where the domain was bought
+--   old_name_servers  the name servers the domain had before (JSON text), so the
+--                owner can see what is being replaced, and what to go back to
 --   seller       who the domain was bought from, as the registry names it
 --   seller_id    that seller's registered number (its IANA id)
 --   records      the records that were kept when the zone was made (JSON text),
@@ -23,6 +25,7 @@ CREATE TABLE IF NOT EXISTS domains (
   reason       TEXT,
   ns1          TEXT,
   ns2          TEXT,
+  old_name_servers TEXT,
   seller       TEXT,
   seller_id    INTEGER,
   records      TEXT,

@@ -23,8 +23,7 @@
  *
  * The calls were tried against the real service before this was written
  * (2026-11-12). What was not tried is marked where it is used: the codes
- * Cloudflare refuses a domain with, and what it answers for a zone that is
- * gone.
+ * Cloudflare refuses a domain with.
  *
  * Nothing here knows about accounts, plans or the dashboard: cloud.js decides
  * who may ask, and hosted.js runs the five-minute look. The names it reads
@@ -48,6 +47,7 @@ export const LIMITS = {
   answerMs: 10000,     // the whole check that the site answers at its domain
   redirects: 3,        // followed while checking that
   recordPages: 20,     // pages of 100 records read from a new zone; more than this is not a small business domain
+  batch: 200,          // changes to records that go in one call (what Cloudflare's free plan takes at once; not tried that large)
 };
 
 export class DomainError extends Error {
@@ -139,10 +139,15 @@ async function ask(fetchImpl, name, type) {
   } catch { return null; }
 }
 
-/** What the registry says about a domain: who sold it, its name servers, whether DNSSEC is on. Null when it could not be read. */
+/**
+ * What the registry says about a domain: who sold it, its name servers,
+ * whether DNSSEC is on. { missing: true } when it answers that there is no
+ * such domain, and null when it could not be read.
+ */
 async function readRegistry(fetchImpl, name) {
   try {
     const res = await fetchImpl(`${RDAP}${name}`, { headers: { accept: 'application/rdap+json' }, redirect: 'follow', signal: limit(LIMITS.lookMs) });
+    if (res.status === 404) return { missing: true };   // "not found" is an answer too
     if (!res.ok) return null;
     const d = await res.json();
     const registrar = (d.entities || []).find(e => (e.roles || []).includes('registrar'));
@@ -162,8 +167,10 @@ async function readRegistry(fetchImpl, name) {
 }
 
 /**
- * Look at a domain without changing anything: { name, seller: { name, id } or
- * null, nameServers, dnssec: true, false or null, atCloudflare, mail, found }.
+ * Look at a domain without changing anything: { name, registered: true, false
+ * or null, seller: { name, id } or null, nameServers, dnssec: true, false or
+ * null, atCloudflare, mail, found }. `registered` is false for a name nobody
+ * has bought.
  * `found` is what the public DNS shows at the names that matter for email
  * ({ type, name, content, priority? }), so that prepareDomain can add any of
  * them the copy misses. Never throws: a part that could not be read is null
@@ -173,7 +180,7 @@ async function readRegistry(fetchImpl, name) {
  * Worker's own fetch refuses to be called on another object.
  */
 export async function lookUp(name, { fetchImpl = fetch } = {}) {
-  const out = { name, seller: null, nameServers: [], dnssec: null, atCloudflare: false, mail: false, found: [] };
+  const out = { name, registered: null, seller: null, nameServers: [], dnssec: null, atCloudflare: false, mail: false, found: [] };
   try {
     const asks = [['MX', name], ['TXT', name], ['TXT', `_dmarc.${name}`],
       ...DKIM_NAMES.flatMap(s => [['CNAME', `${s}._domainkey.${name}`], ['TXT', `${s}._domainkey.${name}`]])];
@@ -181,13 +188,22 @@ export async function lookUp(name, { fetchImpl = fetch } = {}) {
       readRegistry(fetchImpl, name), ask(fetchImpl, name, 'DS'), ask(fetchImpl, name, 'NS'),
       ...asks.map(([type, at]) => ask(fetchImpl, at, type)),
     ]);
-    out.seller = registry?.seller || null;
+    const known = registry && !registry.missing ? registry : null;
+    out.seller = known?.seller || null;
     out.atCloudflare = Number(out.seller?.id) === CLOUDFLARE_SELLER;
-    out.nameServers = registry?.nameServers?.length ? registry.nameServers : (ns || []).map(bare).filter(Boolean);
+    out.nameServers = known?.nameServers?.length ? known.nameServers : (ns || []).map(bare).filter(Boolean);
+    // Cloudflare makes a zone for a name nobody has bought (tried 2026-11-12),
+    // so Kiln has to see that for itself. The registry's "no such domain" is
+    // believed only when the public DNS shows no name servers either: some
+    // endings have no registry that can be asked, and a domain that has name
+    // servers is one somebody owns. When that could not be asked, it is not
+    // known, and nothing is stopped on a guess.
+    if (known) out.registered = true;
+    else if (registry?.missing && ns !== null) out.registered = out.nameServers.length > 0;
     // DNSSEC is on when the registry says so, or when the public DNS shows the
     // record that switches it on (a DS record). Either one is enough to stop:
     // being wrong the other way takes the domain off the air.
-    const signed = registry ? registry.dnssec : null;
+    const signed = known ? known.dnssec : null;
     const shown = ds === null ? null : ds.length > 0;
     out.dnssec = (signed === true || shown === true) ? true : (signed === false || shown === false) ? false : null;
 
@@ -211,6 +227,7 @@ export async function lookUp(name, { fetchImpl = fetch } = {}) {
 
 /** What must be done before a domain can be set up, as a code for domainSentence, or null when nothing stands in the way. */
 export function whatStops(look) {
+  if (look && look.registered === false) return 'not_registered';
   if (look && look.atCloudflare) return 'at_cloudflare';
   if (look && look.dnssec === true) return 'dnssec_on';
   return null;
@@ -273,6 +290,10 @@ async function cloudflare(env, method, path, { json, text = false } = {}) {
   return { status: res.status, result: data.result, info: data.result_info || null };
 }
 
+// A zone Cloudflare no longer has is answered with HTTP 400 and its error 1001
+// ("Invalid zone identifier"), not with a plain "not found" (tried 2026-11-12).
+const isGone = (e) => e instanceof DomainError && (e.code === 'cloudflare_missing' || (e.codes || []).includes(1001));
+
 /**
  * Why Cloudflare would not make a zone, as one of this module's codes. These
  * refusals were not tried against the real service: the numbers are the ones
@@ -304,6 +325,15 @@ const isSiteRecord = (r, zone) => ['A', 'AAAA', 'CNAME'].includes(upper(r.type))
 // A note some sellers leave so that other services can find the seller's DNS. It belongs to the DNS that is being left.
 const isDomainConnect = (r) => bare(r.name).split('.')[0] === '_domainconnect';
 const inZone = (name, zone) => bare(name) === zone || bare(name).endsWith(`.${zone}`);
+// The DNS that is being left, talking about itself: an NS record that names
+// one of the domain's old name servers (a parked domain's copy came back with
+// 34 of them, one pair at every name the copy tried). An NS record that names
+// anything else hands a part of the domain to another service, and is kept.
+const isOldDns = (r, oldNameServers) => upper(r.type) === 'NS' && oldNameServers.includes(bare(r.content));
+// The old host's catch-all: a `*` record that points where the bare name's
+// website records pointed. Left in, every name without a record of its own
+// would go on to the old host. A `*` record that points anywhere else is kept.
+const isOldCatchAll = (r, zone, oldHost) => ['A', 'AAAA', 'CNAME'].includes(upper(r.type)) && bare(r.name) === `*.${zone}` && oldHost.has(bare(r.content));
 
 const MAIL_LABELS = new Set(['mail', 'email', 'webmail', 'smtp', 'imap', 'pop', 'pop3', 'mx', 'autodiscover', 'autoconfig', 'mta-sts', '_mta-sts', '_dmarc']);
 
@@ -331,13 +361,14 @@ export const kindWords = { mail: 'Email', proof: 'Proof-of-ownership notes', oth
 
 const KIND_ORDER = { mail: 0, proof: 1, other: 2 };
 
-/** The kept records as the owner is shown them, email first: { type, name, content, kind } and an MX record's priority. */
+/** The kept records as the owner is shown them, email first: { type, name, content, kind }. */
 function shown(records, zone) {
   return records.map(r => {
     const type = upper(r.type);
-    const out = { type, name: bare(r.name), content: type === 'TXT' ? txtWords(r.content) : (bare(r.content) || '.'), kind: recordKind(r, zone) };
-    if (type === 'MX' && r.priority !== undefined && r.priority !== null) out.priority = Number(r.priority);
-    return out;
+    let content = type === 'TXT' ? txtWords(r.content) : (bare(r.content) || '.');
+    // A mail server is read with its number in front ("10 mail.example.com"), as a seller's own list shows it.
+    if (type === 'MX' && r.priority !== undefined && r.priority !== null) content = `${Number(r.priority)} ${content}`;
+    return { type, name: bare(r.name), content, kind: recordKind(r, zone) };
   }).sort((a, b) => (KIND_ORDER[a.kind] - KIND_ORDER[b.kind]) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || (a.type < b.type ? -1 : a.type > b.type ? 1 : 0));
 }
 
@@ -382,7 +413,7 @@ async function dropZone(env, zoneId) {
   // tried, so they are detached first. If that fails the zone still goes.
   try { for (const d of await workerNames(env, zoneId)) await detach(env, d.id); } catch { /* the zone's removal is what counts */ }
   try { await cloudflare(env, 'DELETE', `/zones/${zoneId}`); }
-  catch (e) { if (!(e instanceof DomainError && e.code === 'cloudflare_missing')) throw e; }
+  catch (e) { if (!isGone(e)) throw e; }   // it was gone already
 }
 
 // ─── Making everything ready ──────────────────────────────────────────────────
@@ -393,17 +424,18 @@ async function dropZone(env, zoneId) {
  *   1. make the zone (it waits until the name servers change);
  *   2. let Cloudflare copy the records it can find;
  *   3. delete the website's records (A, AAAA and CNAME at the bare name and at
- *      `www`) and the seller's `_domainconnect` note, and set every other
+ *      `www`), the old host's catch-all, the old DNS host's records about
+ *      itself and the seller's `_domainconnect` note, and set every other
  *      record to DNS only;
- *   4. add what `look.found` shows that the copy missed;
+ *   4. add what `look.found` shows that the copy missed (3 and 4 are one call);
  *   5. attach the bare name and `www` to the Worker named `worker`.
  *
- * Returns { zoneId, nameServers: [a, b], records: [{ type, name, content,
- * kind }], attached: [{ hostname, id }] }. `records` is every record kept, so
- * the owner can compare it with the seller's list.
+ * Returns { zoneId, nameServers: [a, b], oldNameServers, records: [{ type,
+ * name, content, kind }], attached: [{ hostname, id }] }. `records` is every
+ * record kept, so the owner can compare it with the seller's list.
  *
- * Throws a DomainError and makes nothing when `look` says DNSSEC is on or the
- * domain was bought at Cloudflare. When Cloudflare refuses the domain the code
+ * Throws a DomainError and makes nothing when `look` says nobody owns the
+ * name, DNSSEC is on or the domain was bought at Cloudflare. When Cloudflare refuses the domain the code
  * is 'not_registered', 'already_here', 'refused' or 'too_many'. When a step
  * after the zone was made fails, the zone is deleted again first, so a failed
  * try leaves nothing behind. A zone that was already there is never deleted:
@@ -425,22 +457,41 @@ export async function prepareDomain(env, { name, worker, look = null }) {
     const records = `/zones/${zoneId}/dns_records`;
     await cloudflare(env, 'POST', `${records}/scan`);
 
-    const kept = [];
-    for (const r of await allRecords(env, zoneId)) {
-      if (isSiteRecord(r, name) || isDomainConnect(r)) { await cloudflare(env, 'DELETE', `${records}/${r.id}`); continue; }
-      if (r.proxied) await cloudflare(env, 'PATCH', `${records}/${r.id}`, { json: { proxied: false } });
+    // The name servers the domain has now, as Cloudflare read them when it made the zone (or as the look read them).
+    const oldNameServers = ((zone.original_name_servers || []).length ? zone.original_name_servers : (look && look.nameServers) || []).map(bare).filter(Boolean);
+    const copied = await allRecords(env, zoneId);
+    // Where the website's records at the bare name point: the old host.
+    const oldHost = new Set(copied.filter(r => isSiteRecord(r, name) && bare(r.name) === name).map(r => bare(r.content)));
+    const goes = (r) => isSiteRecord(r, name) || isDomainConnect(r) || isOldDns(r, oldNameServers) || isOldCatchAll(r, name, oldHost);
+
+    const deletes = [], patches = [], posts = [], kept = [];
+    for (const r of copied) {
+      if (goes(r)) { deletes.push({ id: r.id }); continue; }
+      if (r.proxied) patches.push({ id: r.id, proxied: false });
       kept.push(r);
     }
 
     const have = new Set(kept.map(recordKey));
     for (const f of (look && look.found) || []) {
-      if (!f || !inZone(f.name, name) || isSiteRecord(f, name) || isDomainConnect(f) || have.has(recordKey(f))) continue;
+      if (!f || !inZone(f.name, name) || goes(f) || have.has(recordKey(f))) continue;
       // A name that points on to another (a CNAME) can hold nothing else, so
       // where the copy and the public DNS disagree about such a name, the copy stays.
       if (kept.some(k => bare(k.name) === bare(f.name) && (upper(k.type) === 'CNAME' || upper(f.type) === 'CNAME'))) continue;
-      await cloudflare(env, 'POST', records, { json: toSend(f) });
+      posts.push(toSend(f));
       kept.push(f);
       have.add(recordKey(f));
+    }
+
+    // Every delete, change and add goes in one call (a few, for a very large
+    // domain): the service may make only so many requests in one run, and a
+    // parked domain's copy alone held 46 records. A call is all or nothing,
+    // so one record Cloudflare will not take fails the set-up, and the zone
+    // is taken away again below.
+    const changes = [...deletes.map(d => ['deletes', d]), ...patches.map(p => ['patches', p]), ...posts.map(p => ['posts', p])];
+    for (let i = 0; i < changes.length; i += LIMITS.batch) {
+      const body = { deletes: [], patches: [], posts: [] };
+      for (const [kind, item] of changes.slice(i, i + LIMITS.batch)) body[kind].push(item);
+      await cloudflare(env, 'POST', `${records}/batch`, { json: body });
     }
 
     const attached = [];
@@ -448,7 +499,7 @@ export async function prepareDomain(env, { name, worker, look = null }) {
       const made = (await cloudflare(env, 'PUT', `${account(env)}/workers/domains`, { json: { hostname, service: worker, zone_id: zoneId, environment: 'production' } })).result || {};
       attached.push({ hostname, id: made.id || null });
     }
-    return { zoneId, nameServers, records: shown(kept, name), attached };
+    return { zoneId, nameServers, oldNameServers, records: shown(kept, name), attached };
   } catch (e) {
     const detail = e instanceof DomainError ? e.detail : String(e?.message || e);
     if (zoneId) {
@@ -477,8 +528,7 @@ export async function domainStatus(env, { zoneId, recheck = false }) {
   }
   let zone;
   try { zone = (await cloudflare(env, 'GET', `/zones/${zoneId}`)).result || {}; }
-  // What Cloudflare answers for a zone it has deleted was not tried: a plain "not found" is taken to mean gone.
-  catch (e) { if (e instanceof DomainError && e.code === 'cloudflare_missing') return { status: 'gone', nameServers: [] }; throw e; }
+  catch (e) { if (isGone(e)) return { status: 'gone', nameServers: [] }; throw e; }
   const status = STATUS[zone.status];
   // A status this module has no word for is a failure, so that nothing is decided on a guess.
   if (!status) throw new DomainError('cloudflare', `zone status ${zone.status}`);
@@ -505,6 +555,35 @@ export async function siteAnswers(name, { fetchImpl = fetch } = {}) {
     }
   } catch { /* no answer is a no */ }
   return false;
+}
+
+// ─── One address, and always HTTPS ────────────────────────────────────────────
+
+/**
+ * Give the site one address: a visitor at `www.<name>` is sent on to the bare
+ * name, or the other way round with `www: true` (for a site whose address on
+ * record is the `www` one). The path and what follows a "?" are kept. It is
+ * the zone's only redirect rule, so writing it again replaces it. Returns
+ * { from, to }.
+ */
+export async function redirectToOne(env, { zoneId, name, www = false }) {
+  need(env);
+  const from = www ? name : `www.${name}`;
+  const to = www ? `www.${name}` : name;
+  await cloudflare(env, 'PUT', `/zones/${zoneId}/rulesets/phases/http_request_dynamic_redirect/entrypoint`, { json: { rules: [{
+    description: `Kiln: ${from} goes to ${to}`,
+    expression: `(http.host eq "${from}")`,
+    action: 'redirect',
+    action_parameters: { from_value: { status_code: 301, target_url: { expression: `concat("https://${to}", http.request.uri.path)` }, preserve_query_string: true } },
+  }] } });
+  return { from, to };
+}
+
+/** Send a visitor who asks for the domain without HTTPS on to HTTPS (Cloudflare's "always use HTTPS"). */
+export async function alwaysHttps(env, { zoneId }) {
+  need(env);
+  await cloudflare(env, 'PATCH', `/zones/${zoneId}/settings/always_use_https`, { json: { value: 'on' } });
+  return true;
 }
 
 // ─── Putting it away ──────────────────────────────────────────────────────────
@@ -541,10 +620,15 @@ export async function removeWaitingDomain(env, { zoneId }) {
   return { removed: true, status };
 }
 
-/** Every record of a zone as one text file (the BIND format), for an owner who takes the domain's DNS elsewhere. */
+/**
+ * Every record of a zone as one text file (the BIND format), for an owner who
+ * takes the domain's DNS elsewhere. Throws DomainError('no_records') when
+ * Cloudflare no longer has the zone.
+ */
 export async function exportRecords(env, { zoneId }) {
   need(env);
-  return String((await cloudflare(env, 'GET', `/zones/${zoneId}/dns_records/export`, { text: true })).result || '');
+  try { return String((await cloudflare(env, 'GET', `/zones/${zoneId}/dns_records/export`, { text: true })).result || ''); }
+  catch (e) { if (isGone(e)) throw new DomainError('no_records'); throw e; }
 }
 
 // ─── What a person reads ──────────────────────────────────────────────────────
@@ -558,7 +642,7 @@ export function domainSentence(code, { name = null, seller = null } = {}) {
   const who = (typeof seller === 'string' ? seller : seller?.name) || 'the company you bought the domain from';
   switch (code) {
     case 'not_a_domain': return 'That does not look like a domain Kiln can use. Type the name you bought, like yourname.com, with nothing before or after it.';
-    case 'not_registered': return `As far as Cloudflare can tell, nobody owns ${domain} yet, so there is nothing to connect. Check the spelling, or buy the domain first and then try again.`;
+    case 'not_registered': return `As far as Kiln can tell, nobody owns ${domain} yet, so there is nothing to connect. Check the spelling, or buy the domain first and then try again.`;
     case 'already_here': return `Kiln's hosting already has ${domain} set up. If you did not set it up, write to info@kilncms.com and we will sort it out with you.`;
     case 'taken': return `Another site on Kiln already has ${domain} as its address. Stop using it on that site first, or write to info@kilncms.com if that site is not yours.`;
     case 'refused': return `Cloudflare, which runs Kiln's hosting, will not take ${domain}, and Kiln cannot change that. Nothing was changed. Write to info@kilncms.com and we will look at it with you.`;
@@ -569,6 +653,15 @@ export function domainSentence(code, { name = null, seller = null } = {}) {
     case 'not_set_up': return 'Using your own domain is not switched on for this service yet.';
     case 'not_changed': return `Kiln put this set-up away because the name servers of ${domain} were not changed within ${LIMITS.waitDays} days. Nothing of yours was changed. You can start again any time.`;
     case 'moved': return `The name servers of ${domain} no longer point at Kiln, so the site does not answer at ${domain} any more. It is still up at its Kiln address. To use the domain again, set it up here again.`;
+    case 'has_one': return 'This site already has a domain. Stop using that one first, and then set up another.';
+    case 'no_domain': return 'This site has no domain set up yet. Type the domain you want to use, and set it up first.';
+    case 'busy': return 'Kiln is already setting up a domain for this site. Give it a minute, then reload this page.';
+    case 'plan_ended': return 'Editing is switched off for this site, so Kiln cannot set up a domain for it. Subscribe on the site\'s row, then try again.';
+    case 'is_live': return `Your site is live at ${domain}, so this cannot be stopped here. To move the domain away, download its records from this page first, and then change its name servers at ${who}. Kiln notices by itself, and your site stays up at its Kiln address.`;
+    case 'changed': return `The name servers of ${domain} already point at Kiln, so this set-up cannot be stopped any more. Kiln makes your site live there within a few minutes. To move the domain away instead, download its records from this page first, and then change its name servers at ${who}.`;
+    case 'not_asked': return `Kiln could not ask Cloudflare about ${domain} just now. Nothing was changed. Try again in a few minutes.`;
+    case 'no_records': return `Kiln no longer holds any records for ${domain}, so there is nothing to download. The records are at the company whose name servers the domain uses now.`;
+    case 'bad_action': return 'Kiln did not understand what was asked for. Reload this page and try again.';
     default: return `Kiln could not finish setting up ${domain} just now. Nothing was changed, and your site and your email are as they were. Try again in a few minutes.`;
   }
 }
@@ -591,11 +684,26 @@ export async function domainForName(env, name) {
   catch { return null; }
 }
 
-const COLUMNS = ['name', 'zone_id', 'state', 'reason', 'ns1', 'ns2', 'seller', 'seller_id', 'records', 'checked_at', 'reminded_at', 'live_at', 'created_at'];
+/** Every domain of one account's sites, by site id. Never fails the page that asks. */
+export async function domainsForAccount(env, accountId) {
+  try {
+    const rows = await env.kiln_cloud.prepare('SELECT d.* FROM domains d JOIN sites s ON s.id = d.site_id WHERE s.account_id = ?').bind(accountId).all();
+    return Object.fromEntries((rows?.results || []).map(r => [r.site_id, r]));
+  } catch { return {}; }
+}
+
+/** True when the database has the `domains` table, which is to say migration 0006 has reached it. */
+export async function domainsReady(env) {
+  try { await env.kiln_cloud.prepare('SELECT site_id FROM domains LIMIT 1').first(); return true; }
+  catch { return false; }
+}
+
+const COLUMNS = ['name', 'zone_id', 'state', 'reason', 'ns1', 'ns2', 'old_name_servers', 'seller', 'seller_id', 'records', 'checked_at', 'reminded_at', 'live_at', 'created_at'];
+const LISTS = ['records', 'old_name_servers'];   // kept as JSON text
 
 /**
  * Write a site's domain row: made when the site has none, changed otherwise.
- * `records` may be handed over as the list itself. A set-up that starts again
+ * `records` and `old_name_servers` may be handed over as the lists themselves. A set-up that starts again
  * (the state becomes 'waiting' from anything else) starts its clock again and
  * forgets the last try's reminder and reason. Returns true when it was
  * written and false when the table is not there yet. Throws
@@ -606,7 +714,7 @@ export async function saveDomain(env, siteId, fields) {
   let f = {};
   for (const c of COLUMNS) {
     if (fields[c] === undefined) continue;
-    f[c] = c === 'records' && fields[c] !== null && typeof fields[c] !== 'string' ? JSON.stringify(fields[c]) : fields[c];
+    f[c] = LISTS.includes(c) && fields[c] !== null && typeof fields[c] !== 'string' ? JSON.stringify(fields[c]) : fields[c];
   }
   if (f.name) f.name = bare(f.name);
   try {
@@ -632,27 +740,66 @@ export async function saveDomain(env, siteId, fields) {
   }
 }
 
+/** Forget a site's domain. The zone is not touched: whoever calls this has dealt with it first. Never throws. */
+export async function forgetDomain(env, siteId) {
+  try { await env.kiln_cloud.prepare('DELETE FROM domains WHERE site_id = ?').bind(siteId).run(); return true; }
+  catch { return false; }
+}
+
+// The names below are the ones the dashboard was built to (the design's
+// "What the service answers"), so they are not this module's to change.
+
+/** A seller as the dashboard is told of it: { name, help_url }, or null when nobody could say who sold the domain. */
+function publicSeller(seller) {
+  if (!seller || !(seller.name || seller.id)) return null;
+  const help = sellerHelp(seller);
+  return { name: help.name, help_url: help.url };
+}
+
 /**
- * What the dashboard is told about a site's domain. Never the zone's id: it
- * is the handle the whole domain is moved by, and no page needs it.
+ * What the dashboard is told about a site's domain: { name, state,
+ * name_servers, old_name_servers, seller, records, since, checked_at,
+ * live_at, gives_up_at } and `error`, the sentence for a set-up that stopped
+ * short. `gives_up_at` is the moment a set-up that waits is put away. With
+ * `records: false` the kept records are left out, for the list of sites.
+ * Never the zone's id: it is the handle the whole domain is moved by, and no
+ * page needs it.
  */
-export function publicDomain(row) {
+export function publicDomain(row, { records = true } = {}) {
   if (!row) return null;
-  let records = [];
-  try { const parsed = JSON.parse(row.records || '[]'); if (Array.isArray(parsed)) records = parsed; } catch { /* a list that cannot be read is shown as empty */ }
-  const help = sellerHelp(row.seller || row.seller_id ? { name: row.seller, id: row.seller_id } : null);
+  // A list that cannot be read is shown as empty.
+  const list = (text) => { try { const parsed = JSON.parse(text || '[]'); return Array.isArray(parsed) ? parsed : []; } catch { return []; } };
+  const seller = publicSeller({ name: row.seller, id: row.seller_id });
   const out = {
     name: row.name,
     state: row.state,
     name_servers: [row.ns1, row.ns2].filter(Boolean),
-    seller: { name: help.name, url: help.url },
-    records,
-    created_at: row.created_at || null,
+    old_name_servers: list(row.old_name_servers),
+    seller,
+    ...(records ? { records: list(row.records) } : {}),
+    since: row.created_at || null,
     checked_at: row.checked_at || null,
     live_at: row.live_at || null,
+    gives_up_at: row.state === 'waiting' && row.created_at ? Number(row.created_at) + LIMITS.waitDays * DAY_MS : null,
   };
-  if (row.state === 'live') out.url = `https://${row.name}`;
-  if (row.state === 'waiting' && row.created_at) out.waits_until = Number(row.created_at) + LIMITS.waitDays * DAY_MS;
-  if (row.state !== 'live' && row.reason) { out.reason = row.reason; out.error = domainSentence(row.reason, { name: row.name, seller: help.name }); }
+  if (row.state !== 'live' && row.reason) out.error = domainSentence(row.reason, { name: row.name, seller: seller?.name });
   return out;
+}
+
+/**
+ * What the dashboard is told after a look: { name, seller, name_servers,
+ * mail, found, stop }. `found` is what the public DNS shows for email, in the
+ * shape of a kept record. `stop` is null, or { code, sentence } for what
+ * stands in the way of a set-up (`stop` here is that code).
+ */
+export function publicLook(look, stop = null) {
+  const seller = publicSeller(look.seller);
+  return {
+    name: look.name,
+    seller,
+    name_servers: look.nameServers || [],
+    mail: !!look.mail,
+    found: shown(look.found || [], look.name),
+    stop: stop ? { code: stop, sentence: domainSentence(stop, { name: stop === 'not_a_domain' ? null : look.name, seller: seller?.name }) } : null,
+  };
 }

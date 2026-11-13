@@ -12,8 +12,11 @@
  * scan that copies records in (a set each test chooses, every one that can be
  * proxied arriving proxied), reading, adding, changing and deleting records,
  * attaching a name to a Worker (refused with 100117 while an A, AAAA or CNAME
- * record is at the name, as the real service refused it), the activation
- * check, and the export. Two things here were not tried against the real
+ * record is at the name, as the real service refused it), the one call that
+ * makes many changes to records at once (all or nothing), the activation
+ * check, the redirect rule, the "always use HTTPS" switch, and the export. A
+ * zone that is gone is answered with HTTP 400 and error 1001, as the real
+ * service answered. Two things here were not tried against the real
  * service and are a best guess: the codes a zone is refused with (a test sets
  * them), and whether deleting a zone detaches its names (here it does not, so
  * the code under test has to).
@@ -125,13 +128,13 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
         if (refused) return no(refused.status, refused.code, refused.message);
         if (api.zoneOf(b.name)) return no(400, 1061, `${b.name} already exists`);
         const id = `zone${String(++n).padStart(4, '0')}`;
-        const z = { id, name: b.name, status: 'pending', name_servers: [`ada${n}.ns.cloudflare.com`, `bob${n}.ns.cloudflare.com`], original_name_servers: ['ns1.old-host.example', 'ns2.old-host.example'], original_registrar: 'godaddy.com, llc (id: 146)', activated_on: null, records: new Map(), checks: 0 };
+        const z = { id, name: b.name, status: 'pending', name_servers: [`ada${n}.ns.cloudflare.com`, `bob${n}.ns.cloudflare.com`], original_name_servers: ['ns1.old-host.example', 'ns2.old-host.example'], original_registrar: 'godaddy.com, llc (id: 146)', activated_on: null, records: new Map(), checks: 0, batches: 0, settings: {}, redirects: [] };
         zones.set(id, z);
         return ok(zoneView(z));
       }
       if (!inAccount && (m = /^\/zones\/([^/]+)(\/.*)?$/.exec(path))) {
         const z = zones.get(m[1]);
-        if (!z) return no(404, 1001, 'Invalid zone identifier');
+        if (!z) return no(400, 1001, 'Invalid zone identifier');   // not a 404: what the real service answered for a zone that was deleted
         const rest = m[2] || '';
         let r;
         if (rest === '' && method === 'GET') return ok(zoneView(z));
@@ -141,7 +144,8 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
         if (rest === '/dns_records/scan' && method === 'POST') {
           const found = scans.get(z.name) || [];
           const by = {};
-          for (const f of found) { addRecord(z, { ...f, proxied: true }); by[f.type] = (by[f.type] || 0) + 1; }
+          // The old host's catch-all came back not proxied; everything else that can be, proxied.
+          for (const f of found) { addRecord(z, { ...f, proxied: !String(f.name).startsWith('*.') }); by[f.type] = (by[f.type] || 0) + 1; }
           return ok({ recs_added: found.length, recs_added_by_type: by, total_records_parsed: found.length });
         }
         if (rest === '/dns_records/export' && method === 'GET') {
@@ -153,13 +157,53 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
           const all = [...z.records.values()];
           return jsonRes({ success: true, errors: [], messages: [], result: all.slice((page - 1) * per, page * per), result_info: { page, per_page: per, count: Math.min(per, all.length), total_count: all.length, total_pages: Math.max(1, Math.ceil(all.length / per)) } });
         }
-        if (rest === '/dns_records' && method === 'POST') {
-          const b = JSON.parse(init.body);
+        // Why a record cannot be added to these records, or null.
+        const refusePost = (records, b) => {
           if (!(b.name === z.name || String(b.name).endsWith(`.${z.name}`))) return no(400, 1004, 'the record is not in this zone');
-          const at = [...z.records.values()].filter(x => x.name === b.name);
+          const at = [...records.values()].filter(x => x.name === b.name);
           if (at.some(x => x.type === b.type && x.content === b.content)) return no(400, 81058, 'An identical record already exists.');
           if (at.some(x => x.type === 'CNAME' || b.type === 'CNAME')) return no(400, 81053, 'An A, AAAA, or CNAME record with that host already exists.');
-          return ok(addRecord(z, b));
+          return null;
+        };
+        if (rest === '/dns_records' && method === 'POST') {
+          const b = JSON.parse(init.body);
+          return refusePost(z.records, b) || ok(addRecord(z, b));
+        }
+        // Many changes in one call: deletes, then changes, then adds. All or
+        // nothing, as the real service is: they are tried on a copy of the
+        // records, and the copy is kept only when every one of them worked.
+        if (rest === '/dns_records/batch' && method === 'POST') {
+          const b = JSON.parse(init.body);
+          const trial = { records: new Map([...z.records].map(([id, x]) => [id, { ...x }])) };
+          const out = { deletes: [], patches: [], posts: [] };
+          for (const d of b.deletes || []) {
+            const rec = trial.records.get(d.id);
+            if (!rec) return no(400, 81044, 'Record does not exist.');
+            if (rec.meta?.origin_worker_id) return no(400, 1047, 'This record is managed by a Worker and cannot be changed here.');
+            trial.records.delete(d.id);
+            out.deletes.push({ id: d.id });
+          }
+          for (const { id, ...change } of b.patches || []) {
+            const rec = trial.records.get(id);
+            if (!rec) return no(400, 81044, 'Record does not exist.');
+            out.patches.push(Object.assign(rec, change));
+          }
+          for (const p of b.posts || []) {
+            const bad = refusePost(trial.records, p);
+            if (bad) return bad;
+            out.posts.push(addRecord(trial, p));
+          }
+          z.records = trial.records;
+          z.batches++;
+          return ok(out);
+        }
+        if (rest === '/settings/always_use_https' && method === 'PATCH') {
+          z.settings.always_use_https = JSON.parse(init.body).value;
+          return ok({ id: 'always_use_https', value: z.settings.always_use_https });
+        }
+        if (rest === '/rulesets/phases/http_request_dynamic_redirect/entrypoint' && method === 'PUT') {
+          z.redirects = JSON.parse(init.body).rules || [];
+          return ok({ id: `rules-${z.id}`, phase: 'http_request_dynamic_redirect', rules: z.redirects });
         }
         if ((r = /^\/dns_records\/([^/]+)$/.exec(rest))) {
           const rec = z.records.get(r[1]);
@@ -214,7 +258,9 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
  * "10 mail.host.", a TXT record's quoted pieces). A CNAME record's `then` is
  * what is at the name it points to, which the public DNS adds to its answer
  * under that other name. `rdap: false` is a domain the registry cannot be
- * asked about. `down` switches a whole service off: { rdap: true, dns: true }.
+ * asked about, and `registered: false` one it answers "not found" for (as it
+ * does for a domain that is not listed here at all, which is a name nobody
+ * has bought). `down` switches a whole service off: { rdap: true, dns: true }.
  */
 export function fakeLookups(domains = {}, down = {}) {
   const NUMBER = { A: 1, NS: 2, CNAME: 5, MX: 15, TXT: 16, AAAA: 28, DS: 43 };
@@ -225,7 +271,8 @@ export function fakeLookups(domains = {}, down = {}) {
       if (down.rdap) throw new TypeError('fetch failed');
       const name = url.slice('https://rdap.org/domain/'.length).toLowerCase();
       const d = domains[name];
-      if (!d || d.rdap === false) return jsonRes({ errorCode: 404, title: 'Not Found' }, 404);
+      if (d && d.rdap === false) return jsonRes({ errorCode: 503, title: 'Service Unavailable' }, 503);
+      if (!d || d.registered === false) return jsonRes({ errorCode: 404, title: 'Not Found' }, 404);
       // rdap.org answers with a redirect to the registry's own server. A fetch
       // that follows redirects hands back that server's answer, which is this.
       return jsonRes({
