@@ -359,8 +359,12 @@ test('who owns a kept site: the account on its row and nobody else, with GitHub 
   // Its own account passes. (The main app has no token for the repository in
   // this test, which is what the route says next, after it has asked who owns it.)
   let r = await reach(id, 'rosa');
-  assert.equal(r.status, 409);
-  assert.equal(r.json.code, 'no_access');
+  // The owner of a kept site has no GitHub and nothing to install: they are told Kiln could not reach
+  // their files and what to do, and are not sent to install an app (found on the test service, 0.6.7).
+  assert.equal(r.status, 502);
+  assert.equal(r.json.code, 'not_reached');
+  assert.equal(r.json.error, "Kiln could not reach your site's files just now. Wait a minute and try again. If it keeps happening, write to info@kilncms.com.");
+  assert.equal('install_url' in r.json, false);
   assert.equal(github(r.calls).length, 0, 'GitHub was not asked who owns it');
   // another Google account, and a GitHub account
   r = await reach(id, 'omar');

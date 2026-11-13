@@ -1332,6 +1332,10 @@ export async function markFirstPass(env, siteId, commit) {
   } catch { /* the pages are marked all the same; the dashboard offers the button again and is told there is nothing left */ }
 }
 
+/** Said to the owner of a site whose files Kiln keeps when the service cannot reach those files: nothing of theirs to install or to fix. */
+const KEPT_NOT_REACHED = "Kiln could not reach your site's files just now. Wait a minute and try again. If it keeps happening, write to info@kilncms.com.";
+const keptNotReached = () => json({ error: KEPT_NOT_REACHED, code: 'not_reached' }, 502);
+
 /**
  * The site a dashboard request names, checked once for every route that reads
  * or changes a site's repository for its owner (GET ?site=<id>, or POST with
@@ -1378,8 +1382,11 @@ async function ownedSite(request, env, url, sess, tools = {}, { needToken = true
     try { token = await tools.installationToken(env, site.repo); }
     catch (e) { if (needToken) throw e; }   // a route that answers without it says so itself
   }
+  // The owner of a site whose files Kiln keeps has no GitHub account and nothing to install: when the
+  // service cannot reach those files, that is Kiln's to put right, and the person is told so.
+  if (!token && needToken && mine) { console.warn(JSON.stringify({ evt: 'kept_not_reached', repo: site.repo })); return { response: keptNotReached() }; }
   if (!token && needToken) return { response: json({ error: prepareSentence('no_access', { repo: site.repo }), code: 'no_access', install_url: INSTALL_URL }, 409) };
-  return { site, token, write, body, access };
+  return { site: mine ? { ...site, kept: 1 } : site, token, write, body, access };
 }
 
 const BUSY = 'Kiln is already putting this site up. Give it a minute, then reload this page.';
@@ -1917,7 +1924,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
           return { code };
         }
       };
-      if (plan.state === 'no_access') return refused('no_access', 409, { install_url: INSTALL_URL });
+      if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: INSTALL_URL });
       if (plan.state === 'github') return refused('github', 502);
       if (plan.state === 'prepared') {
         await markPrepared(env, site.id, null);
@@ -1994,7 +2001,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     try {
       const plan = await planFirstPass({ token, repo: site.repo });
       const shown = publicFirstPass(plan, { repo: site.repo });
-      if (plan.state === 'no_access') return refused('no_access', 409, { install_url: INSTALL_URL });
+      if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: INSTALL_URL });
       if (plan.state === 'github') return refused('github', 502);
       if (plan.state === 'nothing') {
         await markFirstPass(env, site.id, null);
@@ -2394,7 +2401,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     try {
       const plan = await planUpdate({ token, repo: site.repo, worker: url.origin, releaseBase: env.KILN_RELEASE_BASE });
       const shown = publicUpdate(plan, { repo: site.repo });
-      if (plan.state === 'no_access') return refused('no_access', 409, { install_url: INSTALL_URL });
+      if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: INSTALL_URL });
       if (plan.state === 'github' || plan.state === 'release') return refused(plan.state, 502);
       if (plan.state !== 'behind' && plan.state !== 'current') {
         // Nothing here to update: say why, and what to do.
