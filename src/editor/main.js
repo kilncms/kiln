@@ -10311,6 +10311,8 @@ function injectStyles() {
 .kiln-user{color:#9ca3af;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .kiln-fab-item{display:block;width:100%;text-align:left;background:none;border:none;color:#d6d8e1;
   padding:9px 10px;border-radius:9px;cursor:pointer;font-size:13px;font-family:var(--kiln-font);transition:background .12s}
+/* A menu item marked hidden is not drawn. Without this the display set just above won over the attribute. */
+.kiln-fab-item[hidden]{display:none!important}
 .kiln-fab-item:hover{background:rgba(255,255,255,.08);color:#fff}
 .kiln-fab-item:focus-visible,.kiln-fab-foot button:focus-visible{outline:2px solid var(--kiln-accent);outline-offset:-2px;color:#fff}
 .kiln-fab-group{display:flex;flex-direction:column;gap:2px;border-top:1px solid rgba(255,255,255,.07);margin-top:4px;padding-top:5px}

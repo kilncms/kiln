@@ -141,6 +141,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   owner is told to open the editor again from their Kiln dashboard at
   app.kilncms.com. Everybody else reads every sentence exactly as before.
 
+### Fixed
+
+- **A button of the Kiln menu that is meant to be hidden is hidden.**
+  "Entries & drafts" opens the entries of a site that keeps collections of
+  them. On a site with none it was drawn in the menu all the same, and did
+  nothing when clicked, because the menu's own style for a button won over
+  the mark that hides it. A menu button marked hidden is no longer drawn. On
+  a site that has collections the button is there as before.
+
 ## [0.6.6] - 2026-11-13
 
 ### Added
