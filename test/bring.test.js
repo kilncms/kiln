@@ -434,7 +434,8 @@ test('a copy that worked: this site\'s settings are written over the copy\'s own
   assert.deepEqual([first.status, first.json], [200, { ok: true, state: 'done' }]);
   assert.deepEqual(asked(first.calls), [`GET /repos/${repo}/contents/${SETTINGS}`, `PUT /repos/${repo}/contents/${SETTINGS}`], 'with the token it already has');
   const file = w.hub.repos.get(repo).files.get(SETTINGS);
-  assert.equal(file.text, kilnConfigFile({ repo, branch: 'main', worker: 'https://worker.example', siteName: 'Oak Bakery' }));
+  assert.equal(file.text, kilnConfigFile({ repo, branch: 'main', worker: 'https://worker.example', siteName: 'Oak Bakery', preview: `https://pv-${repo.split('-').pop()}-{branch}.kiln-sites.workers.dev` }),
+    'with the line that gives a suggestion on this site a preview of its own');
   assert.deepEqual([file.branch, first.calls[1].body.sha], ['main', 'from-the-copy']);
   const [copy] = copies(w.env);
   assert.deepEqual([copy.state, copy.reason, copy.pages, copy.rendered, copy.report, typeof copy.done_at], ['done', null, 25, 1, SHOWN_REPORT, 'number']);

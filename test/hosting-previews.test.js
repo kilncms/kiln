@@ -158,7 +158,7 @@ test('previews: a change that arrives while a preview is being copied is not los
     assert.equal(served(w, '/index.html'), '<!doctype html><h1>Second thoughts</h1>');
     assert.equal(rows(w.env)[0].commit_sha, w.gh.head(SUGGEST));
     assert.equal(w.cf.scripts.get(PV).deploys, 2);
-    assert.deepEqual([...w.env.KILN.map.keys()].filter(k => k.startsWith('pv')), [], 'nothing is left locked');
+    assert.deepEqual([...w.env.KILN.map.keys()].filter(k => k.startsWith('pv')), ['pvset:site1'], 'nothing is left locked: the one note says the settings file was looked at for its preview line');
   });
 });
 

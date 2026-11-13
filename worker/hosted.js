@@ -30,7 +30,7 @@
 
 import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError, isPreviewBranch, previewAlias, previewName } from './hosting.js';
 import { gh, refPath } from './prepare.js';
-import { keepEditorsCurrent, finishCare } from './lookafter.js';
+import { keepEditorsCurrent, finishCare, setPreviews } from './lookafter.js';
 import { domainRow, saveDomain, forgetDomain, detachDomain, removeWaitingDomain } from './domain.js';
 
 const LOCK_S = 300;
@@ -421,6 +421,8 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
   cared = (await finishCare(env, live.filter(x => x.state !== 'ended'), { installationToken, record: care, now })).finished;
   // A hosted site's editor is kept current for its owner.
   editors = (await keepEditorsCurrent(env, live.filter(x => x.state === 'live'), { installationToken, now })).updated;
+  // A site that was hosted before Kiln wrote the preview line of the settings file is given it, once.
+  await setPreviews(env, live.filter(x => x.state === 'live'), { installationToken, now });
   for (const r of live.filter(x => !done.has(x.id) && (x.state === 'live' || x.state === 'waiting')).slice(0, SWEEP_LOOK)) {   // not 'ended': its owner puts it back
     if (published >= SWEEP_PUBLISH) break;
     const token = await installationToken(env, r.repo);

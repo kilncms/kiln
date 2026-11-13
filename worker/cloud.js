@@ -43,7 +43,7 @@ import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, S
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
-import { hostingOn, hostingSentence, membersGateOn } from './hosting.js';
+import { hostingOn, hostingSentence, membersGateOn, previewPattern } from './hosting.js';
 import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence } from './keeps.js';
 import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies, MOST_ANSWER } from './bring.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
@@ -2480,7 +2480,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const lookAt = !up ? site.origin
       : !onDomain ? hosting.url
         : [dom.name, `www.${dom.name}`].includes(hostName(site.origin)) ? site.origin : `https://${dom.name}`;
-    const checks = await checkSite({ token, repo: site.repo, origin: lookAt, hosted: up, ownDomain: onDomain, down, worker: url.origin, installUrl: INSTALL_URL, canAdd: access, kept: isKept, membersOn: membersGateOn(env) });
+    const checks = await checkSite({ token, repo: site.repo, origin: lookAt, hosted: up, ownDomain: onDomain, down, worker: url.origin, installUrl: INSTALL_URL, canAdd: access, kept: isKept, membersOn: membersGateOn(env), preview: up ? previewPattern(env, site) : null });
     if (dom && dom.state === 'waiting' && dom.name) checks.push(domainWaitingLine({ name: dom.name, seller: publicDomain(dom, { records: false })?.seller?.name }));
     if (!access) {
       let sub = null;

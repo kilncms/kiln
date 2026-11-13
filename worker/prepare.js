@@ -81,16 +81,126 @@ const quoted = (s) => `'${String(s).replace(/[\\']/g, '\\$&').replace(/[\r\n]/g,
 /**
  * The settings file a site starts with. `siteName` is what its owner calls
  * the site, written only for a site that was given one (a site whose files
- * Kiln keeps, keeps.js); the sign-in page shows it.
+ * Kiln keeps, keeps.js); the sign-in page shows it. `preview` is the pattern
+ * of the site's preview addresses on Kiln's hosting (hosting.js:
+ * previewPattern), written only for a site that has one: with it the editor
+ * writes a suggestion to a branch of its own and shows "Open preview".
  */
-export function kilnConfigFile({ repo, branch, worker, siteName = '' }) {
+export function kilnConfigFile({ repo, branch, worker, siteName = '', preview = '' }) {
   return `window.KILN = {
   repo:   ${quoted(repo)},
   branch: ${quoted(branch)},
   worker: ${quoted(worker)},
-${siteName ? `  siteName: ${quoted(siteName)},\n` : ''}  styles: [],
+${preview ? `  preview: ${quoted(preview)},\n` : ''}${siteName ? `  siteName: ${quoted(siteName)},\n` : ''}  styles: [],
 };
 `;
+}
+
+// ─── The preview line of the settings file ───────────────────────────────────
+//
+// On Cloudflare Pages or Netlify the owner types `preview:` into the settings
+// file by hand. On Kiln's hosting Kiln writes it (lookafter.js: previewsStep),
+// into a file its owner may have changed since, so one line goes in and every
+// other character stays as it was.
+
+/** A preview pattern Kiln's hosting wrote, for whichever site and service (hosting.js: previewPattern). */
+const HOSTING_PREVIEW = /^https:\/\/[a-z0-9-]*pv-[a-z0-9]{8}-\{branch\}\.[^\s/]+\.workers\.dev$/i;
+export const isHostingPreview = (value) => HOSTING_PREVIEW.test(String(value));
+
+/**
+ * The settings object, read as far as this file needs: every key written
+ * directly in `window.KILN = { … }` ({ name, at, after, comma }: where the key
+ * starts and ends, and where the comma after its value stands, or -1), the
+ * places where a new line of the object may begin (`lineStarts`), and where
+ * the object closes (`end`). A word in a comment, in a string or inside a
+ * value's own brackets is not a key. Null when there is no such object, or it
+ * never closes.
+ */
+function settingsKeys(src) {
+  const open = /window\.KILN\s*=\s*\{/.exec(src);
+  if (!open) return null;
+  const keys = [], lineStarts = new Set();
+  let i = open.index + open[0].length, depth = 1, wantKey = true, last = null;
+  while (i < src.length && depth > 0) {
+    const c = src[i];
+    if (c === '/' && src[i + 1] === '/') { const n = src.indexOf('\n', i); i = n < 0 ? src.length : n; continue; }
+    if (c === '/' && src[i + 1] === '*') { const n = src.indexOf('*/', i + 2); i = n < 0 ? src.length : n + 2; continue; }
+    if (c === '\n') { if (depth === 1) lineStarts.add(i + 1); i++; continue; }
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1;
+      while (j < src.length && src[j] !== c) j += src[j] === '\\' ? 2 : 1;
+      if (depth === 1 && wantKey) { last = { name: src.slice(i + 1, j), at: i, after: j + 1, comma: -1 }; keys.push(last); wantKey = false; }
+      i = j + 1; continue;
+    }
+    if (c === '{' || c === '[' || c === '(') { depth++; i++; continue; }
+    if (c === '}' || c === ']' || c === ')') { depth--; i++; continue; }
+    if (depth === 1 && c === ',') { if (last) last.comma = i; last = null; wantKey = true; i++; continue; }
+    if (depth === 1 && wantKey && /[A-Za-z_$]/.test(c)) {
+      const word = /^[\w$]+/.exec(src.slice(i, i + 100))[0];
+      last = { name: word, at: i, after: i + word.length, comma: -1 }; keys.push(last); wantKey = false;
+      i += word.length; continue;
+    }
+    i++;
+  }
+  return depth === 0 ? { keys, lineStarts, end: i - 1 } : null;
+}
+
+/**
+ * The plain quoted value of one key: what it says, and where in the file the
+ * words between its quotes stand. Null for any other kind of value (two
+ * strings joined, a name, a call).
+ */
+function quotedValue(src, key, end) {
+  const m = /^\s*:\s*(['"])((?:\\.|(?!\1)[^\\\r\n])*)\1/.exec(src.slice(key.after, end));
+  if (!m) return null;
+  const to = key.after + m[0].length - 1, from = to - m[2].length;
+  if (src.slice(to + 1, key.comma < 0 ? end : key.comma).trim()) return null;
+  return { value: m[2].replace(/\\(.)/g, '$1'), from, to };
+}
+
+/**
+ * A settings file's text with the line that gives suggestions on a hosted
+ * site a preview of their own. `pattern` is the site's (hosting.js:
+ * previewPattern). Answers { state, text? }:
+ *
+ *   has_own   the file names previews already, and not on Kiln's hosting (its
+ *             owner typed a pattern for Cloudflare Pages or Netlify): never touched
+ *   same      it holds exactly this pattern already
+ *   done      `text` is the file with the line: written straight after the
+ *             `worker:` line when there was none, or in the place of an older
+ *             pattern of Kiln's hosting (the site was moved or added again)
+ *   unknown   Kiln cannot tell where the line belongs (no `worker:` line of
+ *             its own in a `window.KILN = {` object): never touched
+ *
+ * Every other character of the file stays as it was: comments, order, quotes
+ * and line endings. `preview` counts only as a property of the settings
+ * object itself, with or without quotes around it; the word in a comment or
+ * inside another value does not.
+ */
+export function withPreview(text, pattern) {
+  const src = String(text ?? '');
+  const want = String(pattern || '');
+  if (!want || /['"`\\\r\n]/.test(want)) return { state: 'unknown' };
+  const obj = settingsKeys(src);
+  if (!obj) return { state: 'unknown' };
+
+  // Where a file names previews twice, a browser goes by the last.
+  const had = obj.keys.filter(k => k.name === 'preview').pop();
+  if (had) {
+    const v = quotedValue(src, had, obj.end);
+    if (v && v.value === want) return { state: 'same' };
+    if (!v || !isHostingPreview(v.value)) return { state: 'has_own' };
+    return { state: 'done', text: src.slice(0, v.from) + want + src.slice(v.to) };
+  }
+
+  const worker = obj.keys.find(k => k.name === 'worker' && /^[ \t]*$/.test(src.slice(src.lastIndexOf('\n', k.at - 1) + 1, k.at)));
+  if (!worker) return { state: 'unknown' };
+  // The new line goes after the line `worker:` ends on, so that line has to
+  // hold the whole of it, comma and all, and the object has to go on below.
+  const nl = src.indexOf('\n', worker.at);
+  if (nl < 0 || worker.comma < 0 || worker.comma > nl || !obj.lineStarts.has(nl + 1)) return { state: 'unknown' };
+  const eol = src[nl - 1] === '\r' ? '\r\n' : '\n';
+  return { state: 'done', text: `${src.slice(0, nl + 1)}  preview: ${quoted(want)},${eol}${src.slice(nl + 1)}` };
 }
 
 /** Is this path one of the site's own pages? Build folders, tool folders and Kiln's own two pages are not. */
@@ -172,6 +282,48 @@ export async function readText(token, repo, sha) {
     // a byte-order mark at the top stays in the text, so it is written back.
     return { text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await r.arrayBuffer()) };
   } catch { return { notText: true }; }
+}
+
+/**
+ * The settings file among a repository's files as GitHub lists them, or null.
+ * A site a generator builds keeps it in a folder of its own (public/assets,
+ * say), so the nearest file of that name is taken.
+ */
+export function settingsEntry(entries) {
+  return (entries || [])
+    .filter(e => e.type === 'blob' && (e.path === CONFIG_FILE || e.path.endsWith(`/${CONFIG_FILE}`)))
+    .filter(e => !e.path.split('/').some(d => d === 'node_modules' || d.startsWith('.')))
+    .sort((a, b) => a.path.length - b.path.length)[0] || null;
+}
+
+/**
+ * The settings file as the repository's main branch holds it, with what a
+ * commit on top of it needs: { state: 'ok', branch, head, treeSha, path, mode,
+ * text }. Any other `state` says why there is none to change: 'no_access',
+ * 'github', 'empty' (no files yet), 'missing' (no settings file) or 'not_text'.
+ * Writes nothing.
+ */
+export async function readSettingsFile({ token, repo }) {
+  const meta = await gh(token, 'GET', `/repos/${repo}`);
+  if ([401, 403, 404].includes(meta.status)) return { state: 'no_access' };
+  if (!meta.ok) return { state: 'github' };
+  const branch = (await meta.json()).default_branch || 'main';
+  const ref = await gh(token, 'GET', `/repos/${repo}/git/ref/heads/${refPath(branch)}`);
+  if (ref.status === 404 || ref.status === 409) return { state: 'empty', branch };
+  if (!ref.ok) return { state: 'github' };
+  const head = (await ref.json())?.object?.sha;
+  const commit = await gh(token, 'GET', `/repos/${repo}/git/commits/${head}`);
+  if (!commit.ok) return { state: 'github' };
+  const treeSha = (await commit.json())?.tree?.sha;
+  const listing = await gh(token, 'GET', `/repos/${repo}/git/trees/${treeSha}?recursive=1`);
+  if (!listing.ok) return { state: 'github' };
+  const base = { branch, head, treeSha };
+  const found = settingsEntry((await listing.json()).tree);
+  if (!found) return { ...base, state: 'missing' };
+  const file = await readText(token, repo, found.sha);
+  if (file.failed) return { ...base, state: 'github' };
+  if (file.notText) return { ...base, state: 'not_text' };
+  return { ...base, state: 'ok', path: found.path, mode: found.mode || '100644', text: file.text };
 }
 
 /**
@@ -405,6 +557,8 @@ export async function applyPrepare({ token, repo, worker, plan, author, releaseB
  * sha }), `texts` are files given as text ({ path, mode, text }). A repository
  * that changed meanwhile, or a branch that takes no direct change, leaves
  * everything as it was (PrepareError: 'moved', 'protected', or 'github').
+ * With no `author` the commit names nobody, and GitHub records it as made by
+ * the Kiln app.
  */
 export async function commitChange({ token, repo, branch, head, treeSha, entries = [], texts = [], message, author }) {
   // Trees are built one on the other, about a megabyte of text at a time, so
@@ -422,7 +576,7 @@ export async function commitChange({ token, repo, branch, head, treeSha, entries
     if (!batch.length) continue;
     tree = (await must(await gh(token, 'POST', `/repos/${repo}/git/trees`, { base_tree: tree, tree: batch }), 'github')).sha;
   }
-  const commit = await must(await gh(token, 'POST', `/repos/${repo}/git/commits`, { message, tree, parents: [head], author: { ...author, date: new Date().toISOString() } }), 'github');
+  const commit = await must(await gh(token, 'POST', `/repos/${repo}/git/commits`, { message, tree, parents: [head], ...(author ? { author: { ...author, date: new Date().toISOString() } } : {}) }), 'github');
   const moved = await gh(token, 'PATCH', `/repos/${repo}/git/refs/heads/${refPath(branch)}`, { sha: commit.sha, force: false });
   if (!moved.ok) {
     let why = '';

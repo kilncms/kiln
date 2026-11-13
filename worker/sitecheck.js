@@ -29,7 +29,7 @@
  * The route is in cloud.js (GET /cloud/sites/check).
  */
 
-import { planPrepare, publicPlan, prepareSentence, withKilnTags, SETUP_COMMAND } from './prepare.js';
+import { planPrepare, publicPlan, prepareSentence, withKilnTags, SETUP_COMMAND, settingsEntry, withPreview } from './prepare.js';
 import { publishedFiles, hasMembersArea, MEMBERS_OFF_SENTENCE } from './hosting.js';
 
 const GH = 'https://api.github.com';
@@ -52,6 +52,7 @@ const TITLES = {
   signin: 'The sign-in page answers',
   domain: 'The site\'s own domain is ready on Kiln\'s side',
   members: 'The members area is switched on',
+  previews: 'Suggestions get a preview',
 };
 const line = (id, ok, detail, more = {}) => ({ id, ok, title: TITLES[id], detail, ...more });
 const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
@@ -195,18 +196,40 @@ async function membersLine(plan, { token, repo, on }) {
 }
 
 /**
+ * Line `previews`, for a site on Kiln's hosting that is online: whether a
+ * suggestion on it gets a preview of its own. `pattern` is the site's preview
+ * pattern (hosting.js: previewPattern), or null when this service hosts
+ * nothing. The settings file is the one the `settings` line read, so this
+ * asks GitHub for nothing more. No line when the owner named previews
+ * themselves, or when the file could not be read.
+ */
+async function previewsLine(plan, { token, repo, pattern }) {
+  if (!pattern || !token || !plan.treeSha) return null;
+  const file = await readSettings(token, repo, plan);
+  if (typeof file.text !== 'string') return null;
+  const state = withPreview(file.text, pattern).state;
+  if (state === 'same') return line('previews', true, 'A suggestion or a shared draft on this site is put up at a preview address of its own, so it can be looked at before it is published. Search engines are asked not to list previews, and members-only pages are left out of them.');
+  if (state === 'done') return line('previews', false, 'Suggestions on this site do not get a preview yet. Kiln adds one line to the site\'s settings file for that by itself, usually within a day.');
+  return null;
+}
+
+/**
  * The settings file as the repository holds it: { path, text }, { missing } or
  * { failed }. A site a generator builds keeps it in a folder of its own
- * (public/assets, say), so the nearest file of that name is taken.
+ * (public/assets, say), so the nearest file of that name is taken
+ * (prepare.js: settingsEntry). Read once in one check, however many lines
+ * ask for it.
  */
-async function readSettings(token, repo, plan) {
+const settingsRead = new WeakMap();
+function readSettings(token, repo, plan) {
+  if (!settingsRead.has(plan)) settingsRead.set(plan, readSettingsOnce(token, repo, plan));
+  return settingsRead.get(plan);
+}
+async function readSettingsOnce(token, repo, plan) {
   try {
     const tree = await treeOf(token, repo, plan);
     if (!tree) return { failed: true };
-    const found = tree
-      .filter(e => e.type === 'blob' && (e.path === CONFIG_FILE || e.path.endsWith(`/${CONFIG_FILE}`)))
-      .filter(e => !e.path.split('/').some(d => d === 'node_modules' || d.startsWith('.')))
-      .sort((a, b) => a.path.length - b.path.length)[0];
+    const found = settingsEntry(tree);
     if (!found) return { missing: true };
     const blob = await gh(token, `/repos/${repo}/git/blobs/${found.sha}`, 'application/vnd.github.raw');
     if (!blob.ok) return { failed: true };
@@ -428,8 +451,12 @@ function keptLines(checks, { repo, unread }) {
  * A hosted site that is online and has pages under members/ gets one more
  * line, `members`. `membersOn` says whether this service can guard such pages
  * on its hosting (hosting.js: membersGateOn).
+ *
+ * A hosted site that is online gets the line `previews` after that, where
+ * `preview` is its preview pattern (hosting.js: previewPattern; null when this
+ * service hosts nothing) and the owner has not named previews themselves.
  */
-export async function checkSite({ token, repo, origin, worker, installUrl = INSTALL_URL, canAdd = true, timeoutMs = LIMITS.timeoutMs, hosted = false, ownDomain = false, down = null, kept = false, membersOn = false }) {
+export async function checkSite({ token, repo, origin, worker, installUrl = INSTALL_URL, canAdd = true, timeoutMs = LIMITS.timeoutMs, hosted = false, ownDomain = false, down = null, kept = false, membersOn = false, preview = null }) {
   const checks = [];
   let unread = false;   // Kiln could not read the files this time
   try {
@@ -450,6 +477,8 @@ export async function checkSite({ token, repo, origin, worker, installUrl = INST
       checks.push(...await liveLines(home, base, plan, timeoutMs, hosted));
       const members = hosted ? await membersLine(plan, { token, repo, on: membersOn }) : null;
       if (members) checks.push(members);
+      const previews = hosted ? await previewsLine(plan, { token, repo, pattern: preview }) : null;
+      if (previews) checks.push(previews);
     }
   } catch (e) {
     console.warn(JSON.stringify({ evt: 'site_check_failed', repo, detail: String(e?.message || e).slice(0, 200) }));

@@ -191,7 +191,7 @@ test('a Google account starts a site: a private repository in Kiln\'s organizati
 
   // its files: the starter's, and the settings written for this site
   const files = w.hub.files(repo);
-  const config = "window.KILN = {\n  repo:   '" + repo + "',\n  branch: 'main',\n  worker: 'https://worker.example',\n  siteName: 'Oak Bakery',\n  styles: [],\n};\n";
+  const config = "window.KILN = {\n  repo:   '" + repo + "',\n  branch: 'main',\n  worker: 'https://worker.example',\n  preview: 'https://pv-" + site.id.slice(0, 8) + "-{branch}.kiln-sites.workers.dev',\n  siteName: 'Oak Bakery',\n  styles: [],\n};\n";
   assert.deepEqual(Object.keys(files).sort(), [...Object.keys(STARTER), 'assets/kiln-config.js'].sort());
   for (const [path, bytes] of Object.entries(STARTER)) assert.equal(files[path].equals(bytes), true, path);
   assert.equal(files['assets/kiln-config.js'].toString(), config);

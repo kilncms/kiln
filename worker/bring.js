@@ -24,6 +24,7 @@
  * Nothing in this file ever deletes, renames or transfers a repository.
  */
 import { gh, kilnConfigFile } from './prepare.js';
+import { previewPattern } from './hosting.js';
 import { keepsReady, keepOrg, keepToken, forgetKeepToken, cleanName, startKept } from './keeps.js';
 import { sendOnce, trialEndsAt, siteCopiedMail, copyFailedMail, accountAddress } from './mail.js';
 
@@ -400,7 +401,7 @@ async function writeSettings(env, { site, branch, worker, sign, pkcs1 }) {
   const have = await gh(token, 'GET', `${where}?ref=${encodeURIComponent(on)}`);
   if (!have.ok && have.status !== 404) throw new Error(`GET ${where} answered ${have.status}`);
   const sha = have.ok ? ((await have.json())?.sha || null) : null;
-  const content = base64(kilnConfigFile({ repo: site.repo, branch: on, worker, siteName: site.name || '' }));
+  const content = base64(kilnConfigFile({ repo: site.repo, branch: on, worker, siteName: site.name || '', preview: previewPattern(env, site) || '' }));
   const r = await gh(token, 'PUT', where, { message: SETTINGS_MESSAGE, content, branch: on, ...(sha ? { sha } : {}) });
   if (!r.ok) throw new Error(`PUT ${where} answered ${r.status}`);
 }

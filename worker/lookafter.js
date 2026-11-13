@@ -9,7 +9,11 @@
  *
  *   lookAfter           when a site is first put on Kiln's hosting, before its
  *                       first copy is made (cloud.js, POST /cloud/sites/hosting):
- *                       Kiln's files, a character set on every page, a first pass
+ *                       Kiln's files, the line of the settings file that gives a
+ *                       suggestion a preview of its own, a character set on
+ *                       every page, a first pass
+ *   setPreviews         every five minutes (hosted.js, sweepHosting): a site that
+ *                       was hosted before Kiln wrote that line is given it, once
  *   keepEditorsCurrent  every five minutes (hosted.js, sweepHosting): the
  *                       editor of a hosted site is brought up to the released one
  *
@@ -34,9 +38,12 @@
  *   hostcare:<site id>  {at,steps}    how the last look-after went, for the dashboard (TTL 30 days)
  *   hostowed:<site id>  {at,tries,codes,author,worker}   a step is still owed, and whose request it was (TTL 14 days)
  *   hostupd:<site id>   a time        this site's editor was looked at for an update (TTL 24 hours)
+ *   pvset:<site id>     a time        this site's settings file was looked at for its preview line
+ *                                     (kept for good once the line is settled, 24 hours when it could not be written)
  */
 
-import { planPrepare, applyPrepare, prepareSentence, PrepareError, readPages, commitChange, MAX_PAGES } from './prepare.js';
+import { planPrepare, applyPrepare, prepareSentence, PrepareError, readPages, commitChange, MAX_PAGES, readSettingsFile, withPreview } from './prepare.js';
+import { previewPattern } from './hosting.js';
 import { planFirstPass, applyFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, rememberLatest, noteRepoBuild, releasedBuild, knownSince } from './update.js';
 
@@ -241,7 +248,14 @@ export async function lookAfter(env, { site, token, author, worker, firstpassAt 
       steps.push(line);
     }
 
-    // 2. A character set on every page that names none.
+    // 2. The line of the settings file that gives a suggestion a preview of its own.
+    const previews = await previewsStep(env, { site, token, author, shut });
+    if (previews) {
+      steps.push(previews);
+      await markPreviews(env, site.id, previews);
+    }
+
+    // 3. A character set on every page that names none.
     plan = null;
     const charsetSays = (code) => charsetSentence(code, { repo, generator: (plan || unread)?.generator, branch: shut || plan?.branch || undefined });
     try {
@@ -275,7 +289,7 @@ export async function lookAfter(env, { site, token, author, worker, firstpassAt 
       steps.push(line);
     }
 
-    // 3. A first pass at what can be edited, once for a site.
+    // 4. A first pass at what can be edited, once for a site.
     plan = null;
     const marksSay = (code) => firstPassSentence(code, { generator: (plan || unread)?.generator }) || prepareSentence(code, { repo, generator: (plan || unread)?.generator, branch: shut || plan?.branch || undefined });
     try {
@@ -353,6 +367,125 @@ export async function finishCare(env, sites, { installationToken, record = {}, n
     console.warn(JSON.stringify({ evt: 'lookafter_again_failed', detail: String(e?.message || e).slice(0, 200) }));
   }
   return { tried, finished };
+}
+
+// ─── Previews of suggestions ──────────────────────────────────────────────────
+//
+// The editor writes a suggestion to a branch of its own, and shows "Open
+// preview", only when the site's settings file has a `preview:` line. Kiln's
+// hosting puts such a branch up at an address of its own (hosted.js:
+// putPreview), so on a hosted site Kiln writes the line too.
+
+const PREVIEWS_MESSAGE = 'Kiln: suggestions on this site get a preview of their own';
+const PREVIEWS_A_RUN = 3;           // sites one run gives the line to, at most
+const RUN_MS = 5 * 60 * 1000;       // how often the job runs
+const pvKey = (siteId) => `pvset:${siteId}`;
+
+/** The sentence a person reads when the settings file could not be given its preview line. */
+export function previewsSentence(code, { repo = 'the repository', branch = 'main' } = {}) {
+  const before = 'Suggestions on this site work as before, without a preview.';
+  switch (code) {
+    case 'no_settings': return `Kiln found no settings file (assets/kiln-config.js) in ${repo}, so the settings file could not be changed. ${before}`;
+    case 'settings': return `Kiln could not tell where its line belongs in the settings file of this site, so the settings file could not be changed. ${before}`;
+    case 'protected': return `The ${branch} branch of ${repo} does not take a direct change (it is protected), so the settings file could not be changed. ${before}`;
+    case 'no_access': return `The Kiln app is not installed on ${repo}, or it was removed, so the settings file could not be changed. ${before}`;
+    case 'moved': return `The repository changed while Kiln was working on it, so the settings file could not be changed this time. ${before}`;
+    default: return `GitHub did not answer just now, so the settings file could not be changed. ${before}`;
+  }
+}
+
+/**
+ * The previews step for one hosted site: read its settings file, and where it
+ * has no `preview:` line (or an older one of Kiln's hosting) write the site's
+ * own as one commit. With `author` the commit is in that person's name;
+ * without, it names nobody and GitHub shows it as made by the Kiln app.
+ * `shut` names a branch that has just refused a direct change: it is not
+ * asked again. Returns one line as lookAfter's steps do, or null when this
+ * service hosts nothing. Never throws.
+ */
+export async function previewsStep(env, { site, token, author = null, shut = null }) {
+  const pattern = previewPattern(env, site);
+  if (!pattern) return null;
+  const repo = site.repo;
+  if (shut) return { step: 'previews', state: 'not_done', code: 'protected', detail: previewsSentence('protected', { repo, branch: shut }) };
+  let file = null;
+  const notDone = (code) => ({ step: 'previews', state: 'not_done', code, detail: previewsSentence(code, { repo, branch: file?.branch || undefined }) });
+  try {
+    file = await readSettingsFile({ token, repo });
+    if (file.state === 'missing' || file.state === 'empty') return notDone('no_settings');
+    if (file.state === 'not_text') return notDone('settings');
+    if (file.state !== 'ok') return notDone(file.state);
+    const out = withPreview(file.text, pattern);
+    if (out.state === 'same') return { step: 'previews', state: 'nothing', detail: 'Suggestions on this site already get a preview of their own.' };
+    if (out.state === 'has_own') return { step: 'previews', state: 'nothing', detail: 'The settings file already names where previews are, so Kiln left it as it is.' };
+    if (out.state !== 'done') return notDone('settings');
+    const done = await commitChange({ token, repo, branch: file.branch, head: file.head, treeSha: file.treeSha, texts: [{ path: file.path, mode: file.mode, text: out.text }], message: PREVIEWS_MESSAGE, author });
+    return { step: 'previews', state: 'done', commit: { sha: done.sha, url: done.url }, detail: 'A suggestion or a shared draft on this site now gets a preview address of its own. Kiln added one line to the settings file for that.' };
+  } catch (e) {
+    const code = e instanceof PrepareError ? e.code : 'github';
+    console.warn(JSON.stringify({ evt: 'lookafter_failed', step: 'previews', repo, code, detail: e instanceof PrepareError ? e.detail : String(e?.message || e).slice(0, 200) }));
+    return notDone(code);
+  }
+}
+
+/** Write down that a site's settings file was looked at: for good once the line is settled, for a day when it could not be written. */
+async function markPreviews(env, siteId, line, now = Date.now()) {
+  try {
+    if (line.state === 'not_done') await env.KILN.put(pvKey(siteId), String(now), { expirationTtl: DAY_S });
+    else await env.KILN.put(pvKey(siteId), String(now));
+  } catch { /* the site is looked at again on the next run */ }
+}
+
+/**
+ * The five-minute job's part in previews: a site that was on Kiln's hosting
+ * before Kiln wrote the preview line gets the previews step, once. `sites` are
+ * hosted sites that are live and may be edited ({ id, repo }). A site with a
+ * mark (`pvset:`) is passed over; at most three sites a run are given the
+ * step. The mark stays for good once the line is there or the owner has their
+ * own, and for a day when the file could not be changed, so such a site is
+ * looked at once a day. The step holds the same lock as lookAfter, so the two
+ * never write to one site at once.
+ *
+ * Nobody asked for this commit at the moment it is made, so it names no
+ * person: GitHub shows it as made by the Kiln app, as it does the editor's
+ * updates. It moves the branch, and what publishes a hosted site when its
+ * branch moves publishes this too (hosted.js). Never throws.
+ */
+export async function setPreviews(env, sites, { installationToken, now = Date.now() } = {}) {
+  let looked = 0, added = 0;
+  try {
+    if (!sites.length || !previewPattern(env, sites[0])) return { looked, added };
+    // With more sites than one run asks about, each run starts further along the list, so every site has its turn.
+    const from = sites.length > UPDATE_SCAN ? (Math.floor(now / RUN_MS) * UPDATE_SCAN) % sites.length : 0;
+    const asked = [...sites.slice(from), ...sites.slice(0, from)].slice(0, UPDATE_SCAN);
+    for (const s of asked) {
+      if (looked >= PREVIEWS_A_RUN) break;
+      try {
+        if (await env.KILN.get(pvKey(s.id))) continue;
+        const lock = `carelock:${s.id}`;
+        if (await env.KILN.get(lock)) continue;   // a look-after of this site is running, and it has this step
+        looked++;
+        const token = await installationToken(env, s.repo);
+        let line = null;
+        if (!token) line = { step: 'previews', state: 'not_done', code: 'no_access', detail: previewsSentence('no_access', { repo: s.repo }) };
+        else {
+          await env.KILN.put(lock, '1', { expirationTtl: LOCK_S });
+          try { line = await previewsStep(env, { site: s, token }); } finally {
+            try { await env.KILN.delete(lock); } catch { /* it runs out by itself in five minutes */ }
+          }
+        }
+        if (!line) continue;
+        await markPreviews(env, s.id, line, now);
+        if (line.state === 'done') added++;
+        console.log(JSON.stringify({ evt: 'hosting_previews_set', repo: s.repo, state: line.state, ...(line.code ? { code: line.code } : {}), ...(line.commit ? { commit: line.commit.sha } : {}) }));
+      } catch (e) {
+        console.warn(JSON.stringify({ evt: 'hosting_previews_not_set', repo: s.repo, detail: String(e?.message || e).slice(0, 200) }));
+      }
+    }
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'hosting_previews_failed', detail: String(e?.message || e).slice(0, 200) }));
+  }
+  return { looked, added };
 }
 
 /** How the last look-after of a site went (the lines lookAfter returned), or null. Never throws. */

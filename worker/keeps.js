@@ -21,7 +21,7 @@
  * operator is told its name.
  */
 import { gh, refPath, inTurn, kilnConfigFile } from './prepare.js';
-import { hostingOn, siteName, siteAddress } from './hosting.js';
+import { hostingOn, siteName, siteAddress, previewPattern } from './hosting.js';
 
 const CONFIG_FILE = 'assets/kiln-config.js';
 const DEFAULT_STARTER = 'kilncms/kiln-demo';
@@ -390,7 +390,7 @@ export async function startKept(env, { accountId, name, worker, by = '', sign, p
     if (!made.private) throw new KeepError('not_private', `${made.repo} was made, and GitHub does not say it is private`);
     // An empty one keeps GitHub's first commit and nothing else: whoever asked for it fills it, settings file and all.
     const filled = empty ? { files: 0, commit: null }
-      : await fill(token, { starter, repo: made.repo, branch: made.branch, config: kilnConfigFile({ repo: made.repo, branch: made.branch, worker, siteName: called }), sleep });
+      : await fill(token, { starter, repo: made.repo, branch: made.branch, config: kilnConfigFile({ repo: made.repo, branch: made.branch, worker, siteName: called, preview: previewPattern(env, { id }) || '' }), sleep });
     // The address Kiln's hosting will give it, from the same function the hosting uses.
     const origin = siteAddress(env, siteName(env, { repo: made.repo, id }));
     const site = await register({ id, repo: made.repo, origin, name: called, since });

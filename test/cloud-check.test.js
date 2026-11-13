@@ -13,6 +13,7 @@ import { fakeKV, withFetch, githubWrites } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { KILN_TAGS, KILN_PAGE, kilnConfigFile, SETUP_COMMAND } from '../worker/prepare.js';
+import { previewPattern } from '../worker/hosting.js';
 import { checkSite, refusedAddress, LIMITS } from '../worker/sitecheck.js';
 import { saveDomain, domainRow, publicDomain } from '../worker/domain.js';
 
@@ -481,7 +482,15 @@ const HOSTING_ON = { HOSTING_ACCOUNT_ID: 'cf-account', HOSTING_API_TOKEN: 'cf-to
 const hostedSite = (served) => Object.fromEntries([['/', 'index.html'], ['/kiln', 'kiln.html'], ['/assets/kiln.js', 'assets/kiln.js']].map(([at, name]) =>
   [`${HOSTED}${at}`, () => (served[name] == null ? new Response('Not found', { status: 404 }) : new Response(served[name], { status: 200, headers: { 'Content-Type': 'text/html' } }))]));
 /** `world`, with hosting switched on and the site on it in `state`. */
-function hostedWorld(files, { state = 'live', reason = null, deployed = 5, served = files, over = null, site = {}, on = true } = {}) {
+/**
+ * The settings file of site-1 once Kiln's hosting has looked after it: it has
+ * the line that gives a suggestion a preview of its own. A hosted world whose
+ * files are `withKiln()` has this file, in the repository and where it is served.
+ */
+const hostedSettings = () => kilnConfigFile({ repo: 'ada/club', branch: 'main', worker: SERVICE, preview: previewPattern(HOSTING_ON, { id: 'site-1' }) });
+const lookedAfter = (files) => (files && files['assets/kiln-config.js'] === SETTINGS ? { ...files, 'assets/kiln-config.js': hostedSettings() } : files);
+function hostedWorld(given, { state = 'live', reason = null, deployed = 5, served: givenServed = given, over = null, site = {}, on = true } = {}) {
+  const files = lookedAfter(given), served = lookedAfter(givenServed);
   const w = world(files, { site: { plan: 'managed', ...site }, over: over || hostedSite(served), served: {} });
   if (on) Object.assign(w.env, HOSTING_ON);
   w.env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, reason, deployed_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
@@ -496,7 +505,7 @@ test('check, hosted: the address Kiln\'s hosting gave the site is the one looked
   assert.equal(res.status, 200);
   assert.equal(body.origin, SITE, 'the address on record is still the one named for the site');
   assert.equal(body.looked_at, HOSTED);
-  assert.deepEqual(body.checks.map(c => c.id), ALL);
+  assert.deepEqual(body.checks.map(c => c.id), [...ALL, 'previews']);
   for (const c of body.checks) assert.equal(c.ok, true, `${c.id}: ${c.detail}`);
   assert.equal(body.all_ok, true);
   assert.equal(by.address.detail, `${HOSTED} answers. That is the address Kiln's hosting gave this site.`);
@@ -618,7 +627,7 @@ test('check, hosted: a site whose own domain is live is looked at there, and the
   let { res, body, by } = await check(w);
   assert.equal(res.status, 200);
   assert.equal(body.looked_at, DOMAIN);
-  assert.deepEqual(body.checks.map(c => c.id), ALL);
+  assert.deepEqual(body.checks.map(c => c.id), [...ALL, 'previews']);
   for (const c of body.checks) assert.equal(c.ok, true, `${c.id}: ${c.detail}`);
   assert.equal(by.address.detail, `${DOMAIN} answers. That is this site's own domain, and Kiln's hosting answers there.`);
   assert.equal(by.signin.detail, `The sign-in page is at ${DOMAIN}/kiln. Open it to sign in and edit.`);
@@ -643,7 +652,7 @@ test('check, hosted: while a domain waits for its name servers, the address the 
   const seller = publicDomain(await domainRow(w.env, 'site-1')).seller.name;
   let { body, by } = await check(w);
   assert.equal(body.looked_at, HOSTED);
-  assert.deepEqual(body.checks.map(c => c.id), [...ALL, 'domain']);
+  assert.deepEqual(body.checks.map(c => c.id), [...ALL, 'previews', 'domain']);
   assert.equal(by.address.detail, `${HOSTED} answers. That is the address Kiln's hosting gave this site.`);
   assert.deepEqual(by.domain, { id: 'domain', ok: true, title: 'The site\'s own domain is ready on Kiln\'s side',
     detail: `${OWN} is ready on Kiln's side and waits for its name servers to be changed at ${seller}. The site's row in the dashboard shows the two names to enter there. Until then, this check looks at the address Kiln's hosting gave the site.` });
@@ -663,7 +672,7 @@ test('check, hosted: while a domain waits for its name servers, the address the 
   await ownDomain(w, 'put_away', { reason: 'not_changed' });
   ({ body } = await check(w));
   assert.equal(body.looked_at, HOSTED);
-  assert.deepEqual(body.checks.map(c => c.id), ALL);
+  assert.deepEqual(body.checks.map(c => c.id), [...ALL, 'previews']);
 });
 
 // ─── A site whose files Kiln keeps ────────────────────────────────────────────

@@ -34,12 +34,15 @@ const page = (title) => `<!doctype html>\n<html lang="en">\n<head>\n  <title>${t
 const plain = { 'index.html': page('Home'), 'about.html': page('About'), 'assets/site.css': 'h1{}' };
 /** A page as it is once Kiln has looked after it. */
 const ready = (html) => autotag(withKilnTags(withCharset(html).html).html).html;
-/** Kiln's own files in a site's repository, with the editor at `stamp`. */
-const kilnFiles = (stamp, repo = 'ada/club') => ({
+/** Where the previews of site `id` are on Kiln's hosting, as its settings file says it once Kiln has looked after the site. */
+const previewOf = (id) => `https://pv-${id}-{branch}.kiln-sites.workers.dev`;
+const PREVIEWS_MESSAGE = 'Kiln: suggestions on this site get a preview of their own';
+/** Kiln's own files in the repository of site `id`, with the editor at `stamp`. */
+const kilnFiles = (stamp, repo = 'ada/club', id = 's1') => ({
   'assets/kiln.js': editor(stamp), 'assets/kiln-editor.js': `/* editor ${stamp} */\n`, 'assets/kiln-features.js': `/* features ${stamp} */\n`,
-  'assets/kiln-config.js': kilnConfigFile({ repo, branch: 'main', worker: 'https://worker.example' }), 'kiln.html': KILN_PAGE,
+  'assets/kiln-config.js': kilnConfigFile({ repo, branch: 'main', worker: 'https://worker.example', preview: previewOf(id) }), 'kiln.html': KILN_PAGE,
 });
-const lookedAfterSite = (stamp = 'r1', repo = 'ada/club') => ({ 'index.html': ready(page('Home')), 'about.html': ready(page('About')), 'assets/site.css': 'h1{}', ...kilnFiles(stamp, repo) });
+const lookedAfterSite = (stamp = 'r1', repo = 'ada/club', id = 's1') => ({ 'index.html': ready(page('Home')), 'about.html': ready(page('About')), 'assets/site.css': 'h1{}', ...kilnFiles(stamp, repo, id) });
 const REFUSED = { message: 'Repository rule violations found\n\nChanges must be made through a pull request.' };
 
 /**
@@ -158,11 +161,12 @@ test('look after: a plain site put on hosting gets Kiln, a character set and a f
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.ok, true);
-    assert.deepEqual(states(body.looked_after), [['kiln', 'done'], ['charset', 'done'], ['marks', 'done']]);
-    const [kiln, charset, marks] = body.looked_after;
-    // Three commits, one on the other, and the site is made from the last.
+    assert.deepEqual(states(body.looked_after), [['kiln', 'done'], ['previews', 'done'], ['charset', 'done'], ['marks', 'done']]);
+    const [kiln, previews, charset, marks] = body.looked_after;
+    // Four commits, one on the other, and the site is made from the last.
     assert.deepEqual(w.gh.commits.get(kiln.commit.sha).parents, [before]);
-    assert.deepEqual(w.gh.commits.get(charset.commit.sha).parents, [kiln.commit.sha]);
+    assert.deepEqual(w.gh.commits.get(previews.commit.sha).parents, [kiln.commit.sha]);
+    assert.deepEqual(w.gh.commits.get(charset.commit.sha).parents, [previews.commit.sha]);
     assert.deepEqual(w.gh.commits.get(marks.commit.sha).parents, [charset.commit.sha]);
     assert.equal(w.gh.head(), marks.commit.sha);
     assert.equal(body.hosting.state, 'live');
@@ -175,10 +179,12 @@ test('look after: a plain site put on hosting gets Kiln, a character set and a f
       assert.doesNotMatch(line.detail, /—/);
     }
     assert.match(kiln.detail, /Kiln added its files to ada\/club, and 2 pages now load the editor\./);
+    assert.equal(previews.detail, 'A suggestion or a shared draft on this site now gets a preview address of its own. Kiln added one line to the settings file for that.');
+    assert.equal(w.gh.commits.get(previews.commit.sha).message, PREVIEWS_MESSAGE);
     assert.equal(charset.detail, '2 pages now say which character set they are written in, so every letter shows as it should.');
     assert.match(marks.detail, /first pass of what can be edited on 2 pages/);
     assert.match(w.gh.commits.get(charset.commit.sha).message, /^Say which character set each page is written in\n\n2 pages now say they are written in UTF-8 [\s\S]* Added for ada when the site went on Kiln's hosting \(via Kiln\)$/);
-    assert.equal(commitsMade(calls).length, 3);
+    assert.equal(commitsMade(calls).length, 4);
 
     // What the site's record says is what the two buttons would have written.
     const rec = siteRow(w.env);
@@ -193,7 +199,9 @@ test('look after: a plain site put on hosting gets Kiln, a character set and a f
     assert.deepEqual(me.sites[0].looked_after, body.looked_after);
     assert.ok(me.sites[0].prepared_at > 0 && me.sites[0].firstpass_at > 0);
   });
-  // The repository, and so the first copy, holds all three.
+  // The repository, and so the first copy, holds all four.
+  assert.equal(w.gh.read('assets/kiln-config.js'), kilnConfigFile({ repo: 'ada/club', branch: 'main', worker: 'https://worker.example', preview: previewOf('s1') }));
+  assert.equal(served(w, '/assets/kiln-config.js'), w.gh.read('assets/kiln-config.js'));
   const home = w.gh.read('index.html');
   assert.ok(home.includes(`<head>\n  ${CHARSET_TAG}\n  <title>Home</title>`));
   for (const tag of KILN_TAGS) assert.ok(home.includes(tag), tag);
@@ -217,9 +225,10 @@ test('look after: a site that already has all three gets no commit', { skip: d1S
     const res = await switchOn(w.env);
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.deepEqual(states(body.looked_after), [['kiln', 'nothing'], ['charset', 'nothing'], ['marks', 'nothing']]);
+    assert.deepEqual(states(body.looked_after), [['kiln', 'nothing'], ['previews', 'nothing'], ['charset', 'nothing'], ['marks', 'nothing']]);
     assert.deepEqual(body.looked_after.map(l => l.detail), [
       'Kiln was already on this site.',
+      'Suggestions on this site already get a preview of their own.',
       'Every page already says which character set it is written in.',
       'Kiln found nothing more to mark as editable on this site.',
     ]);
@@ -241,8 +250,8 @@ test('look after: a site that already has all three gets no commit', { skip: d1S
   once.env.kiln_cloud.exec("UPDATE sites SET firstpass_at = 5 WHERE id = 's1'");
   await withFetch(once.handler, async (calls) => {
     const body = await (await switchOn(once.env)).json();
-    assert.deepEqual(states(body.looked_after), [['kiln', 'nothing'], ['charset', 'nothing'], ['marks', 'nothing']]);
-    assert.match(body.looked_after[2].detail, /was already made on this site/);
+    assert.deepEqual(states(body.looked_after), [['kiln', 'nothing'], ['previews', 'nothing'], ['charset', 'nothing'], ['marks', 'nothing']]);
+    assert.match(body.looked_after[3].detail, /was already made on this site/);
     assert.deepEqual(githubWrites(calls), []);
   });
   assert.doesNotMatch(once.gh.read('index.html'), /data-cms/);
@@ -260,8 +269,8 @@ test('look after: pages that name a character set are left as they are, and a pa
   w.env.kiln_cloud.exec("UPDATE sites SET firstpass_at = 5 WHERE id = 's1'");
   await withFetch(w.handler, async (calls) => {
     const body = await (await switchOn(w.env)).json();
-    assert.deepEqual(states(body.looked_after), [['kiln', 'nothing'], ['charset', 'done'], ['marks', 'nothing']]);
-    const charset = body.looked_after[1];
+    assert.deepEqual(states(body.looked_after), [['kiln', 'nothing'], ['previews', 'nothing'], ['charset', 'done'], ['marks', 'nothing']]);
+    const charset = body.looked_after[2];
     assert.deepEqual(charset.left, ['nohead.html']);
     assert.equal(charset.detail, '1 page now says which character set it is written in, so every letter shows as it should. 1 page has no <head> and was left as it is: nohead.html.');
     assert.equal(commitsMade(calls).length, 1);
@@ -277,7 +286,7 @@ test('look after: pages that name a character set are left as they are, and a pa
   only.env.kiln_cloud.exec("UPDATE sites SET firstpass_at = 5 WHERE id = 's1'");
   await withFetch(only.handler, async (calls) => {
     const body = await (await switchOn(only.env)).json();
-    const charset = body.looked_after[1];
+    const charset = body.looked_after[2];
     assert.deepEqual([charset.state, charset.code, charset.left], ['not_done', 'no_head', ['index.html']]);
     assert.match(charset.detail, /^1 page has no <head> and was left as it is: index\.html\. /);
     assert.deepEqual(githubWrites(calls), []);
@@ -295,9 +304,9 @@ test('look after: a step that cannot be done is reported and does not stop the s
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.equal(body.hosting.state, 'live');
-    assert.deepEqual(body.looked_after.map(l => [l.step, l.state, l.code]), [['kiln', 'not_done', 'protected'], ['charset', 'not_done', 'protected'], ['marks', 'not_done', 'protected']]);
+    assert.deepEqual(body.looked_after.map(l => [l.step, l.state, l.code]), [['kiln', 'not_done', 'protected'], ['previews', 'not_done', 'protected'], ['charset', 'not_done', 'protected'], ['marks', 'not_done', 'protected']]);
     assert.match(body.looked_after[0].detail, /The main branch of ada\/club does not take a direct change \(it is protected\), so Kiln could not add itself\./);
-    assert.match(body.looked_after[1].detail, /so Kiln could not add the line to its pages\./);
+    assert.match(body.looked_after[2].detail, /so Kiln could not add the line to its pages\./);
     assert.equal(body.looked_after.some(l => l.commit), false);
     assert.equal(calls.filter(c => c.method === 'PATCH').length, 1, 'the branch is asked once, not once a step');
   }));
@@ -312,7 +321,7 @@ test('look after: a step that cannot be done is reported and does not stop the s
   const r = world({ 'ada/club': plain }, { out: {} });
   await warnings(() => withFetch(r.handler, async () => {
     const body = await (await switchOn(r.env)).json();
-    assert.deepEqual(body.looked_after.map(l => [l.step, l.state, l.code]), [['kiln', 'not_done', 'release'], ['charset', 'done', undefined], ['marks', 'done', undefined]]);
+    assert.deepEqual(body.looked_after.map(l => [l.step, l.state, l.code]), [['kiln', 'not_done', 'release'], ['previews', 'not_done', 'no_settings'], ['charset', 'done', undefined], ['marks', 'done', undefined]]);
     assert.match(body.looked_after[0].detail, /could not fetch its own editor files just now/);
     assert.equal(body.hosting.state, 'live');
     assert.equal(body.hosting.commit, r.gh.head());
@@ -326,7 +335,7 @@ test('look after: a step that cannot be done is reported and does not stop the s
   const e = world({ 'ada/club': { 'README.md': '# soon' } });
   await withFetch(e.handler, async (calls) => {
     const body = await (await switchOn(e.env)).json();
-    assert.deepEqual(body.looked_after.map(l => [l.step, l.state, l.code]), [['kiln', 'not_done', 'no_pages'], ['charset', 'not_done', 'no_pages'], ['marks', 'not_done', 'no_pages']]);
+    assert.deepEqual(body.looked_after.map(l => [l.step, l.state, l.code]), [['kiln', 'not_done', 'no_pages'], ['previews', 'not_done', 'no_settings'], ['charset', 'not_done', 'no_pages'], ['marks', 'not_done', 'no_pages']]);
     assert.equal(body.code, 'no_home');
     assert.equal(body.hosting.state, 'waiting');
     assert.deepEqual(githubWrites(calls), []);
@@ -347,7 +356,7 @@ test('look after: publishing a site that is already up does not repeat the steps
   const w = world();
   await withFetch(w.handler, async (calls) => {
     const first = await (await switchOn(w.env)).json();
-    assert.deepEqual(states(first.looked_after), [['kiln', 'done'], ['charset', 'done'], ['marks', 'done']]);
+    assert.deepEqual(states(first.looked_after), [['kiln', 'done'], ['previews', 'done'], ['charset', 'done'], ['marks', 'done']]);
     // The owner adds a page by hand, then presses Publish again.
     w.gh.commit({ 'news.html': page('News') });
     const n = calls.length;
@@ -370,7 +379,7 @@ test('look after: publishing a site that is already up does not repeat the steps
 /** Three paid, hosted, live sites whose editor is r1, looked at by the sweep in the order s1, s2, s3. */
 async function fleet(n = 3, opts = {}) {
   const repos = ['ada/one', 'ada/two', 'ada/three'].slice(0, n);
-  const w = world(Object.fromEntries(repos.map(r => [r, lookedAfterSite('r1', r)])), { site: { status: 'active', ls_subscription_id: '77' }, ...opts });
+  const w = world(Object.fromEntries(repos.map((r, i) => [r, lookedAfterSite('r1', r, `s${i + 1}`)])), { site: { status: 'active', ls_subscription_id: '77' }, ...opts });
   await withFetch(w.handler, async () => { for (let i = 1; i <= n; i++) assert.equal((await switchOn(w.env, `s${i}`)).status, 200); });
   for (let i = 1; i <= n; i++) w.env.kiln_cloud.exec('UPDATE hosting SET checked_at = ? WHERE site_id = ?', i, `s${i}`);
   w.editors = () => repos.map(r => w.ghs[r].read('assets/kiln.js').match(/KILN_VERSION="(\w+)"/)[1]);
@@ -414,7 +423,7 @@ test('editor: hosted sites take a released editor once it has been known for a d
       assert.match(c.body.message, /^Update the Kiln editor\n\nThe editor's files are now version r2 \(they were version r1\)\. Updated by Kiln itself, which keeps the editor current on a site it hosts\.$/);
     }
     assert.equal(w.ghs['ada/one'].read('assets/kiln-editor.js'), '/* editor r2 */\n');
-    assert.equal(w.ghs['ada/one'].read('assets/kiln-config.js'), kilnConfigFile({ repo: 'ada/one', branch: 'main', worker: 'https://worker.example' }), 'the site\'s settings are its own');
+    assert.equal(w.ghs['ada/one'].read('assets/kiln-config.js'), kilnConfigFile({ repo: 'ada/one', branch: 'main', worker: 'https://worker.example', preview: previewOf('s1') }), 'the site\'s settings are its own');
     assert.equal(w.ghs['ada/one'].read('index.html'), ready(page('Home')));
     // The same run's look at each repository publishes what moved.
     assert.equal(served(w, '/assets/kiln.js', 's1'), editor('r2'));
@@ -505,12 +514,12 @@ test('owed: steps GitHub did not answer for are tried again by the five-minute j
   await warnings(() => withFetch(w.handler, async () => {
     const body = await (await switchOn(w.env)).json();
     assert.equal(body.hosting.state, 'live', 'the site is up all the same, as it is');
-    assert.deepEqual(body.looked_after.map(l => [l.step, l.state, l.code]), [['kiln', 'not_done', 'github'], ['charset', 'not_done', 'github'], ['marks', 'not_done', 'github']]);
+    assert.deepEqual(body.looked_after.map(l => [l.step, l.state, l.code]), [['kiln', 'not_done', 'github'], ['previews', 'not_done', 'no_settings'], ['charset', 'not_done', 'github'], ['marks', 'not_done', 'github']]);
   }));
   assert.equal(served(w, '/index.html'), plain['index.html']);
   const note = owedNote(w.env);
   assert.deepEqual({ tries: note.tries, codes: note.codes, author: note.author, worker: note.worker },
-    { tries: 0, codes: ['github', 'github', 'github'], author: { name: 'ada', email: '42+ada@users.noreply.github.com' }, worker: 'https://worker.example' });
+    { tries: 0, codes: ['github', 'no_settings', 'github', 'github'], author: { name: 'ada', email: '42+ada@users.noreply.github.com' }, worker: 'https://worker.example' });
   assert.deepEqual(await careOwed(w.env, 's1'), { at: note.at, ...{ tries: 0, codes: note.codes, author: note.author, worker: note.worker } });
 
   // GitHub answers again, but the wait is not over: the job leaves the site alone.
@@ -525,12 +534,12 @@ test('owed: steps GitHub did not answer for are tried again by the five-minute j
   age(w.env, 11 * MIN);
   await withFetch(w.handler, async () => { await sweep(w.env); });
   assert.equal(owedNote(w.env), null, 'nothing is owed any more');
-  assert.equal(byAda(w.gh).length, 3, 'Kiln, the character set, the first pass');
+  assert.equal(byAda(w.gh).length, 4, 'Kiln, the preview line, the character set, the first pass');
   assert.equal(w.gh.read('index.html'), ready(page('Home')));
   const rec = siteRow(w.env);
   assert.ok(rec.prepared_at > 0 && rec.prepared_commit, 'written down as the button writes it down');
   assert.ok(rec.firstpass_at > 0 && rec.firstpass_commit);
-  assert.deepEqual(states(JSON.parse(w.env.KILN.map.get('hostcare:s1')).steps), [['kiln', 'done'], ['charset', 'done'], ['marks', 'done']], 'and the dashboard is shown how it went');
+  assert.deepEqual(states(JSON.parse(w.env.KILN.map.get('hostcare:s1')).steps), [['kiln', 'done'], ['previews', 'done'], ['charset', 'done'], ['marks', 'done']], 'and the dashboard is shown how it went');
   // The same run, or the next, publishes what moved the branch.
   await withFetch(w.handler, async () => { await sweep(w.env); });
   assert.equal(served(w, '/index.html'), ready(page('Home')));
@@ -545,7 +554,7 @@ test('owed: steps GitHub did not answer for are tried again by the five-minute j
 test('owed: a reason only the owner can change waits for the owner, who publishes again and is given the steps then', { skip: d1Skip }, async () => {
   const w = world({ 'ada/club': plain }, { shut: ['ada/club'] });
   await warnings(() => withFetch(w.handler, async () => { await switchOn(w.env); }));
-  assert.deepEqual(owedNote(w.env).codes, ['protected', 'protected', 'protected']);
+  assert.deepEqual(owedNote(w.env).codes, ['protected', 'protected', 'protected', 'protected']);
   // However long it waits, the job does not try a protected branch again.
   age(w.env, 26 * 60 * MIN);
   await withFetch(w.handler, async (calls) => {
@@ -557,7 +566,7 @@ test('owed: a reason only the owner can change waits for the owner, who publishe
   w.shut.clear();
   await withFetch(w.handler, async () => {
     const body = await (await switchOn(w.env)).json();
-    assert.deepEqual(states(body.looked_after), [['kiln', 'done'], ['charset', 'done'], ['marks', 'done']]);
+    assert.deepEqual(states(body.looked_after), [['kiln', 'done'], ['previews', 'done'], ['charset', 'done'], ['marks', 'done']]);
     assert.equal(body.hosting.state, 'live');
     assert.equal(body.hosting.commit, w.gh.head());
   });
