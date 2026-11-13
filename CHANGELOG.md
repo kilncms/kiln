@@ -32,6 +32,22 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`KEEP_ORG`, `KEEP_APP_ID`, `KEEP_APP_KEY`, the key as GitHub hands it out),
   and needs Kiln's hosting; `KEEP_STARTER` names another starter site than
   `kilncms/kiln-demo`. Without them nothing changes.
+
+- **The owner of a site Kiln keeps the files of can edit it, with no GitHub
+  account.** The service now answers for it, though the dashboard has no
+  button yet. `POST /cloud/sites/editor` with the site's id answers with the
+  site's own address, ending in `/kiln` and carrying a sign-in for its owner.
+  Opening that address opens the editor, signed in under the person's own
+  name. It works for the account the site belongs to and for nobody else, and
+  only once the site is up on Kiln's hosting and while it may be edited.
+  Otherwise one sentence says what to do first. The sign-in lasts 30 days,
+  works only at the site's own address and only on that site's files, and ends
+  when the site is removed. Kiln reads and saves the files with its own access
+  to the repository, and every change carries the person's name and email as
+  its author, a scheduled change included. If the plan ends, the owner can
+  still open the editor and read the site, and nothing is published until the
+  plan is renewed. An owner who signs in with GitHub sees no change.
+
 - **A person with no GitHub account can have a Kiln account, and sign in to
   the dashboard with Google.** The service now answers for it, though the
   dashboard has no button yet. `GET /cloud/login/google` sends the person to
