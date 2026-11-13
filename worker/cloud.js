@@ -662,6 +662,111 @@ export async function domainTookHold(env, { site, row, now = Date.now() } = {}) 
   return { live };
 }
 
+const DOMAINS_PER_RUN = 10;                         // the five-minute job looks at this many domains at most; the rest wait their turn
+const DOMAIN_REMIND_AFTER_DAYS = 14;                // a set-up that has waited this long gets one reminder
+const DOMAIN_LIVE_LOOK_EVERY_MS = 60 * 60 * 1000;   // a live domain is looked at this often at most
+
+/**
+ * The five-minute job for domains. At most DOMAINS_PER_RUN a run, the one
+ * looked at longest ago first, and every one it looks at has its
+ * `checked_at` moved on, so a domain that keeps failing cannot hold up the
+ * rest. It never throws: what goes wrong for one domain is logged and the
+ * next is tried. Cloudflare is asked where each zone stands (domainStatus).
+ *
+ * A domain that waits:
+ *   - the zone is active: domainTookHold makes it live, or leaves it waiting
+ *     while the site does not answer there yet;
+ *   - the zone is gone, or its name servers were changed and changed away
+ *     again: the row is `put_away` (reason `gone` or `moved`) and the owner
+ *     is written to once. A row that is put away is never looked at again;
+ *   - it has waited 25 days (domain.js LIMITS.waitDays): the waiting zone is
+ *     removed, the row is `put_away` with reason `not_changed`, and the owner
+ *     is written to;
+ *   - it has waited DOMAIN_REMIND_AFTER_DAYS and nobody was reminded: one
+ *     reminder, and `reminded_at`. Where the owner cannot be written to, or
+ *     the mail did not go, `reminded_at` stays empty.
+ *
+ * A domain that is live, looked at once an hour at most: when the owner has
+ * pointed its name servers elsewhere (or Cloudflare no longer has the zone),
+ * the row is `put_away` with reason `moved`, the site's address on record
+ * goes back to the temporary address Kiln's hosting gave it, and the owner
+ * is written to. Nothing is deleted: the zone may still answer for email.
+ *
+ * Returns { looked, live, reminded, putAway, moved, failed }.
+ */
+export async function sweepDomains(env, { now = Date.now() } = {}) {
+  const out = { looked: 0, live: 0, reminded: 0, putAway: 0, moved: 0, failed: 0 };
+  let rows = [];
+  try {
+    if (!env.kiln_cloud || !(await domainsAvailable(env))) return out;
+    rows = (await env.kiln_cloud.prepare(
+      `SELECT d.*, s.repo, s.origin, a.email, h.url AS temp_url FROM domains d
+         JOIN sites s ON s.id = d.site_id LEFT JOIN accounts a ON a.id = s.account_id LEFT JOIN hosting h ON h.site_id = d.site_id
+        WHERE d.zone_id IS NOT NULL AND (d.state = 'waiting' OR (d.state = 'live' AND COALESCE(d.checked_at, 0) <= ?))
+        ORDER BY COALESCE(d.checked_at, 0) ASC, d.created_at ASC LIMIT ?`).bind(now - DOMAIN_LIVE_LOOK_EVERY_MS, DOMAINS_PER_RUN).all())?.results || [];
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'domain_sweep_failed', detail: why(e) }));
+    return out;
+  }
+  const dashboard = env.CLOUD_DASHBOARD || 'https://app.kilncms.com';
+  const day = 86400 * 1000;
+  for (const r of rows) {
+    out.looked++;
+    try {
+      const s = { id: r.site_id, repo: r.repo, origin: r.origin, email: r.email, temp_url: r.temp_url };
+      const name = r.name;
+      const looked = () => saveDomain(env, s.id, { checked_at: now });
+      const { status } = await domainStatus(env, { zoneId: r.zone_id });
+
+      if (r.state === 'live') {
+        if (status !== 'moved' && status !== 'gone') { await looked(); continue; }
+        await saveDomain(env, s.id, { state: 'put_away', reason: 'moved', checked_at: now });
+        // Back to the temporary address, unless the address on record is no longer the domain's.
+        const back = r.temp_url && [name, `www.${name}`].includes(hostName(r.origin)) && await setAddressOnRecord(env, s, r.temp_url, name);
+        await tellAboutDomain(env, 'moved', s, r, domainMovedMail({ name, tempUrl: back ? r.temp_url : null, dashboard }));
+        console.log(JSON.stringify({ evt: 'domain_moved_away', repo: s.repo, name, status }));
+        out.moved++;
+        continue;
+      }
+
+      if (status === 'active') {
+        if ((await domainTookHold(env, { site: s, row: r, now })).live) out.live++;
+        else await looked();
+        continue;
+      }
+      const putAway = async (reason) => {
+        await saveDomain(env, s.id, { state: 'put_away', reason, checked_at: now });
+        await tellAboutDomain(env, 'away', s, r, domainPutAwayMail({ origin: r.origin, name, reason, waitDays: DOMAIN_LIMITS.waitDays, dashboard }));
+        console.log(JSON.stringify({ evt: 'domain_put_away', repo: s.repo, name, reason }));
+        out.putAway++;
+      };
+      if (status === 'gone' || status === 'moved') { await putAway(status); continue; }
+
+      const waited = now - Number(r.created_at || now);
+      if (waited >= DOMAIN_LIMITS.waitDays * day) {
+        // Only a zone that still waits is removed. One that changed in this very moment is left for the next run.
+        if ((await removeWaitingDomain(env, { zoneId: r.zone_id })).removed) { await putAway('not_changed'); continue; }
+      } else if (waited >= DOMAIN_REMIND_AFTER_DAYS * day && !r.reminded_at) {
+        const d = publicDomain(r, { records: false });
+        const sent = await tellAboutDomain(env, 'remind', s, r, domainReminderMail({
+          origin: r.origin, name, nameServers: d.name_servers, seller: d.seller, helpUrl: d.seller?.help_url || sellerHelp(null).url, givesUpAt: d.gives_up_at, dashboard,
+        }));
+        if (sent.ok || sent.reason === 'already sent') {
+          await saveDomain(env, s.id, { reminded_at: now, checked_at: now });
+          if (sent.ok) out.reminded++;
+          continue;
+        }
+      }
+      await looked();
+    } catch (e) {
+      out.failed++;
+      console.warn(JSON.stringify({ evt: 'domain_sweep_one_failed', repo: r.repo, name: r.name, state: r.state, detail: why(e) }));
+      try { await saveDomain(env, r.site_id, { checked_at: now }); } catch { /* it is tried again on the next run */ }
+    }
+  }
+  return out;
+}
+
 const MAILS_PER_RUN = 25;   // a run writes to this many people at most; the rest wait five minutes
 
 /**

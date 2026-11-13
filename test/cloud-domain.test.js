@@ -18,8 +18,8 @@ import { fakeKV, withFetch } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare, fakeLookups } from './cloudflare-fake.js';
-import { domainSentence, domainRow, saveDomain, LIMITS } from '../worker/domain.js';
-import { domainTookHold, siteHasAccess } from '../worker/cloud.js';
+import { domainSentence, domainRow, saveDomain, removeWaitingDomain, LIMITS } from '../worker/domain.js';
+import { domainTookHold, sweepDomains, siteHasAccess } from '../worker/cloud.js';
 import { domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, dayWords } from '../worker/mail.js';
 
 const N = 'oakbakery.test';
@@ -814,5 +814,168 @@ test('own domain: going live writes to nobody where the service sends no custome
     w.answers(N);
     await hush(async () => assert.deepEqual(await took(w.env, row), { live: true }));
     assert.equal(w.mails().length, 0);
+  });
+});
+
+// ─── The five-minute job ──────────────────────────────────────────────────────
+
+const DAY = 86400 * 1000;
+const tally = (over = {}) => ({ looked: 0, live: 0, reminded: 0, putAway: 0, moved: 0, failed: 0, ...over });
+const sweep = async (env, now) => { let out; const lines = await hush(async () => { out = await sweepDomains(env, now ? { now } : {}); }); return { out, lines: lines.join('\n') }; };
+const where = async (env, id = 'site1') => { const r = await domainRow(env, id); return { state: r.state, reason: r.reason, checked_at: r.checked_at }; };
+
+test('own domain: the five-minute job makes a domain live once its name servers have changed and the site answers there, and looks at a live domain once an hour at most', { skip: d1Skip }, async () => {
+  const w = world();
+  assert.deepEqual(await sweepDomains({}), tally(), 'a service with no database has nothing to look at');
+  await withFetch(w.handler, async () => {
+    assert.deepEqual((await sweep(w.env)).out, tally(), 'no site has a domain');
+    await setup(w.env);
+    const t = Date.now() + 1000;
+    // The name servers have not changed: the domain is looked at and left as it is, and Cloudflare is not pressed to look again.
+    assert.deepEqual((await sweep(w.env, t)).out, tally({ looked: 1 }));
+    assert.deepEqual(await where(w.env), { state: 'waiting', reason: null, checked_at: t });
+    assert.equal(w.cf.zoneOf(N).checks, 0);
+    assert.equal(w.mails().length, 1);
+
+    // They have changed, and the certificate is not ready: it still waits, and a line says so.
+    w.cf.setStatus(N, 'active');
+    let run = await sweep(w.env, t + 5 * 60000);
+    assert.deepEqual(run.out, tally({ looked: 1 }));
+    assert.match(run.lines, /domain_not_answering_yet/);
+    assert.deepEqual(await where(w.env), { state: 'waiting', reason: null, checked_at: t + 5 * 60000 });
+
+    // The site answers at the domain: live, at that address, and the owner is written to.
+    w.answers(N);
+    run = await sweep(w.env, t + 10 * 60000);
+    assert.deepEqual(run.out, tally({ looked: 1, live: 1 }));
+    assert.deepEqual(await where(w.env), { state: 'live', reason: null, checked_at: t + 10 * 60000 });
+    assert.equal((await domainRow(w.env, 'site1')).live_at, t + 10 * 60000);
+    assert.equal(await originOf(w.env), `https://${N}`);
+    assert.deepEqual([w.mails().length, w.mails().at(-1).subject, w.mails().at(-1).to], [2, `Your site is live at ${N}`, 'ada@example.com']);
+
+    // Within the hour a live domain is left alone. After it, it is looked at, and one that still points at Kiln stays as it is.
+    w.cf.calls.length = 0;
+    assert.deepEqual((await sweep(w.env, t + 60 * 60000)).out, tally());
+    assert.equal(w.cf.calls.length, 0);
+    assert.deepEqual((await sweep(w.env, t + 71 * 60000)).out, tally({ looked: 1 }));
+    assert.deepEqual(await where(w.env), { state: 'live', reason: null, checked_at: t + 71 * 60000 });
+    assert.equal(w.mails().length, 2);
+  });
+});
+
+test('own domain: when the owner points a live domain\'s name servers elsewhere, the site goes back to its temporary address, the owner is written to once, and nothing is deleted', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await setup(w.env);
+    w.cf.setStatus(N, 'active');
+    w.answers(N);
+    const t = Date.now() + 1000;
+    assert.equal((await sweep(w.env, t)).out.live, 1);
+    w.cf.setStatus(N, 'moved');
+    w.answers();
+    w.cf.calls.length = 0;
+    const run = await sweep(w.env, t + 61 * 60000);
+    assert.deepEqual(run.out, tally({ looked: 1, moved: 1 }));
+    assert.match(run.lines, /domain_moved_away/);
+    assert.deepEqual(await where(w.env), { state: 'put_away', reason: 'moved', checked_at: t + 61 * 60000 });
+    assert.equal(await originOf(w.env), TEMP);
+    const mail = w.mails().at(-1);
+    assert.deepEqual([w.mails().length, mail.subject, mail.to], [3, `${N} was moved away from Kiln`, 'ada@example.com']);
+    assert.equal(mail.text, domainMovedMail({ name: N, tempUrl: TEMP, dashboard: 'https://app.example' }).text);
+    assert.ok(w.cf.zoneOf(N), 'the zone is left where it is: it may still answer for email');
+    assert.deepEqual(w.cf.calls.map(c => c.method), ['GET'], 'Cloudflare was only asked where the zone stands');
+    // The dashboard says it in the sentence it was built with, and the job never comes back to it.
+    assert.match((await (await standing(w.env)).json()).domain.error, /no longer point at Kiln/);
+    for (const later of [2, 3, 30]) assert.deepEqual((await sweep(w.env, t + later * DAY)).out, tally());
+    assert.equal(w.mails().length, 3);
+  });
+});
+
+test('own domain: a set-up that waits gets one reminder after 14 days, and after 25 its waiting zone is removed, it is put away, and the owner is told', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await setup(w.env);
+    const row = await domainRow(w.env, 'site1');
+    const made = row.created_at;
+    assert.deepEqual((await sweep(w.env, made + 14 * DAY - 1)).out, tally({ looked: 1 }));
+    assert.equal(w.mails().length, 1);
+    assert.deepEqual((await sweep(w.env, made + 14 * DAY)).out, tally({ looked: 1, reminded: 1 }));
+    assert.equal((await domainRow(w.env, 'site1')).reminded_at, made + 14 * DAY);
+    const mail = w.mails().at(-1);
+    assert.deepEqual([w.mails().length, mail.subject, mail.to], [2, `${N} is still waiting for its two name servers`, 'ada@example.com']);
+    assert.ok(mail.text.includes(`\n\n${row.ns1}\n\n${row.ns2}\n\n`));
+    assert.ok(mail.text.includes(`\n\n${GODADDY}\n\n`));
+    assert.ok(mail.text.includes(`If the name servers are not changed by ${dayWords(made + LIMITS.waitDays * DAY)}, Kiln puts this set-up away.`));
+    // Reminded once, however long it goes on waiting.
+    for (const d of [15, 20, 24]) assert.deepEqual((await sweep(w.env, made + d * DAY)).out, tally({ looked: 1 }));
+    assert.equal(w.mails().length, 2);
+
+    const run = await sweep(w.env, made + 25 * DAY);
+    assert.deepEqual(run.out, tally({ looked: 1, putAway: 1 }));
+    assert.match(run.lines, /domain_put_away/);
+    assert.equal(w.cf.zoneOf(N), null, 'the zone that never took hold is removed');
+    assert.deepEqual(await where(w.env), { state: 'put_away', reason: 'not_changed', checked_at: made + 25 * DAY });
+    assert.equal(w.mails().length, 3);
+    assert.equal(w.mails().at(-1).text, domainPutAwayMail({ origin: await originOf(w.env), name: N, reason: 'not_changed', waitDays: LIMITS.waitDays, dashboard: 'https://app.example' }).text);
+    assert.deepEqual((await sweep(w.env, made + 26 * DAY)).out, tally());
+    assert.equal(w.mails().length, 3);
+  });
+  // Where the owner cannot be written to, nobody is marked as reminded, and the set-up is put away all the same.
+  const v = world({ env: { CUSTOMER_MAIL_FROM: '' } });
+  await withFetch(v.handler, async () => {
+    await setup(v.env);
+    const made = (await domainRow(v.env, 'site1')).created_at;
+    assert.deepEqual((await sweep(v.env, made + 14 * DAY)).out, tally({ looked: 1 }));
+    assert.equal((await domainRow(v.env, 'site1')).reminded_at, null);
+    assert.deepEqual((await sweep(v.env, made + 25 * DAY)).out, tally({ looked: 1, putAway: 1 }));
+    assert.equal(v.mails().length, 0);
+  });
+});
+
+test('own domain: a set-up whose zone is gone, or whose name servers were changed and changed away again, is put away with one email', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await setup(w.env);
+    await removeWaitingDomain(w.env, { zoneId: w.cf.zoneOf(N).id });
+    assert.deepEqual((await sweep(w.env)).out, tally({ looked: 1, putAway: 1 }));
+    assert.deepEqual({ ...(await where(w.env)), checked_at: 0 }, { state: 'put_away', reason: 'gone', checked_at: 0 });
+    assert.deepEqual([w.mails().length, w.mails().at(-1).subject], [2, `The set-up for ${N} was put away`]);
+    assert.ok(w.mails().at(-1).text.includes('because Cloudflare, which runs Kiln\'s hosting, no longer holds it.'));
+    for (let i = 0; i < 3; i++) assert.deepEqual((await sweep(w.env)).out, tally());
+    assert.equal(w.mails().length, 2, 'one email, however often the job runs');
+    assert.match((await (await standing(w.env)).json()).domain.error, /no longer holds oakbakery\.test/);
+  });
+  const v = world();
+  await withFetch(v.handler, async () => {
+    await setup(v.env);
+    v.cf.setStatus(N, 'moved');
+    assert.deepEqual((await sweep(v.env)).out, tally({ looked: 1, putAway: 1 }));
+    assert.deepEqual({ ...(await where(v.env)), checked_at: 0 }, { state: 'put_away', reason: 'moved', checked_at: 0 });
+    assert.ok(v.mails().at(-1).text.includes('were pointed at Kiln and then pointed somewhere else before your site was live there.'));
+    assert.ok(v.cf.zoneOf(N), 'a zone that is not waiting is not removed');
+    assert.equal(v.mails().length, 2);
+  });
+});
+
+test('own domain: the five-minute job looks at ten domains a run, the one looked at longest ago first, and one that fails is logged and does not stop the rest', { skip: d1Skip }, async () => {
+  const w = world();
+  // Twelve sites with a set-up each, at zones Cloudflare no longer has. The third cannot be asked about at all.
+  for (let i = 1; i <= 12; i++) {
+    addSite(w.env, { id: `s${i}`, repo: `ada/r${i}`, origin: `https://r${i}.example`, plan: 'managed' });
+    await saveDomain(w.env, `s${i}`, { name: `r${i}.test`, zone_id: `zone-${i}`, state: 'waiting', ns1: 'ada.ns.cloudflare.com', ns2: 'bob.ns.cloudflare.com', checked_at: i });
+  }
+  w.cf.failOn((method, path) => path === '/zones/zone-3');
+  await withFetch(w.handler, async () => {
+    const t = Date.now();
+    let run = await sweep(w.env, t);
+    assert.deepEqual(run.out, tally({ looked: 10, putAway: 9, failed: 1 }));
+    assert.equal(run.lines.split('\n').filter(l => /domain_sweep_one_failed/.test(l) && /r3\.test/.test(l)).length, 1);
+    assert.deepEqual(await where(w.env, 's3'), { state: 'waiting', reason: null, checked_at: t }, 'the one that failed goes to the back of the line');
+    assert.deepEqual([(await where(w.env, 's10')).state, (await where(w.env, 's11')).state, (await where(w.env, 's12')).state], ['put_away', 'waiting', 'waiting']);
+    assert.equal(w.mails().length, 9);
+    // The next run takes the two that waited their turn, and then the one that failed.
+    run = await sweep(w.env, t + 5 * 60000);
+    assert.deepEqual(run.out, tally({ looked: 3, putAway: 2, failed: 1 }));
+    assert.equal(w.mails().length, 11);
   });
 });

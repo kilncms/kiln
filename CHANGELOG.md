@@ -9,8 +9,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **The service can set a hosted site up on its owner's own domain.** This is
-  the service's side only: the dashboard's panel, and the step that makes the
-  site live at the domain by itself, come next. For a site that is up on
+  the service's side only: the dashboard's panel comes next. For a site that is up on
   Kiln's hosting, the service looks at a domain and changes nothing: who it
   was bought from, whether it has email, which records Kiln can see, and
   anything that must be done first (DNSSEC switched off where the domain was
@@ -26,6 +25,23 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   domain's records as a file. A site whose editing is switched off can still
   do those three, so nobody is trapped. The list of sites says whether the
   service can do this at all and where each site's domain stands.
+- **A site goes live at its own domain by itself.** Every five minutes the
+  service looks at up to ten domains, the one it looked at longest ago first.
+  Once a domain's name servers have changed and the site answers there, the
+  domain is live: that is the site's address from then on, `www` is sent on
+  to the bare name (or the other way round for a site whose address was the
+  `www` one), every visitor gets HTTPS, and the owner gets an email with the
+  address, saying that the temporary address keeps working and that email
+  and the other records are untouched. A site that does not answer yet (a
+  certificate takes a few minutes) is looked at again on the next run. A
+  set-up still waiting after 14 days gets one reminder with the two name
+  servers. After 25 days the set-up is put away and the owner is told how to
+  start again. When the owner points a live domain's name servers elsewhere,
+  the site goes back to its temporary address, nothing is deleted, and the
+  owner gets an email saying how to bring the domain back.
+- **Kiln can tell where a domain was bought when it asks from the live
+  service.** The registry refused the question because it did not say who
+  was asking. It says so now.
 
 ### Fixed
 
