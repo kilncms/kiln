@@ -125,7 +125,7 @@ export default {
       // A hosted site's own domain: made live once its name servers have changed, reminded, put away (cloud.js). It never throws either.
       await sweepDomains(env);
       return sweepHosting(env, { installationToken, hasAccess: siteHasAccess, endReason: hostingEndReason,
-        endsAt: (site) => hostingDownAt(env, site, { deployed: !!site.deployed_at }), ended: (site, reason) => hostingEndedNote(env, site, reason),
+        endsAt: (site) => hostingDownAt(env, site, { deployed: !!site.deployed_at }), ended: (site, reason, domain) => hostingEndedNote(env, site, reason, domain),
         care: { prepared: (id, sha) => markPrepared(env, id, sha), firstPass: (id, sha) => markFirstPass(env, id, sha) } });
     });
   },

@@ -19,7 +19,9 @@ import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare, fakeLookups } from './cloudflare-fake.js';
 import { domainSentence, domainRow, saveDomain, removeWaitingDomain, domainsReady, LIMITS } from '../worker/domain.js';
-import { domainTookHold, sweepDomains, siteHasAccess, cloudSiteForOrigin } from '../worker/cloud.js';
+import { domainTookHold, sweepDomains, siteHasAccess, cloudSiteForOrigin, hostingEndedNote, liveDomainLeftNote } from '../worker/cloud.js';
+import { sweepHosting } from '../worker/hosted.js';
+import { publicDomain } from '../worker/domain.js';
 import { domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, dayWords } from '../worker/mail.js';
 
 const N = 'oakbakery.test';
@@ -1064,4 +1066,126 @@ test('two addresses: a site keeps the address it has on record while somebody el
   assert.equal(await domainsReady(old.env), false);
   assert.equal((await cloudSiteForOrigin(old.env, 'https://club.example'))?.repo, 'ada/club');
   assert.equal((await cloudSiteForOrigin(old.env, TEMP))?.repo, 'ada/club');
+});
+
+// ─── When hosting ends, or the site is removed ────────────────────────────────
+
+/** The site's time on Kiln's hosting is over: the sweep takes it down, and the operator's note goes out as it does for real. */
+const takeDown = (w) => hush(() => sweepHosting(w.env, {
+  installationToken: async () => 'inst-token', hasAccess: () => false, endsAt: () => 1, endReason: () => 'trial_ended',
+  ended: (site, reason, domain) => hostingEndedNote(w.env, site, reason, domain),
+}));
+const hostingOf = (env) => env.kiln_cloud.prepare("SELECT * FROM hosting WHERE site_id = 'site1'").first();
+const remove = (env) => ask(env, 'POST', '/cloud/sites/remove', { id: 'site1' });
+const downNote = (w) => w.notes().filter(m => /took ada\/club down/.test(m.raw));
+const hasMail = (w) => w.cf.recordsOf(N).some(r => r.type === 'MX');
+async function goLive(w) { const row = await changed(w); w.answers(N); await hush(async () => assert.deepEqual(await took(w.env, row), { live: true })); }
+
+test('hosting ends: a domain that still waits is removed with the site, and the note says nothing of a domain', { skip: d1Skip }, async () => {
+  const w = world({ env: { NOTIFY_TO: 'ops@example.com' } });
+  await withFetch(w.handler, async () => {
+    await setup(w.env);
+    await takeDown(w);
+    assert.equal((await hostingOf(w.env)).state, 'ended');
+    assert.equal(w.cf.scripts.size, 0);
+    assert.equal(w.cf.zoneOf(N), null, 'the zone that never took hold is gone');
+    assert.equal(w.cf.workerDomains.size, 0);
+    assert.equal(await domainRow(w.env, 'site1'), null);
+    assert.equal(downNote(w).length, 1);
+    assert.doesNotMatch(downNote(w)[0].raw, /oakbakery/);
+  });
+});
+
+test('hosting ends: a live domain is detached and put away, its zone and its email records stay, the site has its temporary address again, and the note says how to move the domain away', { skip: d1Skip }, async () => {
+  const w = world({ env: { NOTIFY_TO: 'ops@example.com' } });
+  await withFetch(w.handler, async () => {
+    await goLive(w);
+    assert.equal(w.cf.workerDomains.size, 2);
+    await takeDown(w);
+    assert.equal((await hostingOf(w.env)).state, 'ended');
+    assert.equal(w.cf.scripts.size, 0);
+    assert.equal(w.cf.workerDomains.size, 0, 'the two site names are off the Worker');
+    assert.ok(w.cf.zoneOf(N), 'the zone stays');
+    assert.equal(hasMail(w), true, 'and so does the email record');
+    const row = await domainRow(w.env, 'site1');
+    assert.deepEqual([row.state, row.reason, !!row.zone_id], ['put_away', 'hosting_ended', true]);
+    assert.equal(await originOf(w.env), TEMP);
+    const shown = publicDomain(row);
+    assert.equal(shown.error, domainSentence('hosting_ended', { name: N, seller: shown.seller.name }));
+    for (const sentence of shown.error.match(/[^.]+(?:\.[a-z][^.]*)*\./g)) plain(sentence.trim());
+    assert.match(shown.error, /keep working\. To move the domain away, download its records from this page first, and then change its name servers at /);
+    assert.equal(downNote(w).length, 1);
+    assert.ok(downNote(w)[0].raw.includes(liveDomainLeftNote(N)));
+    plain(liveDomainLeftNote(N));
+  });
+});
+
+test('hosting ends: when Cloudflare refuses, the site still comes down on a later run, the domain is put away all the same, and the note still has its sentence', { skip: d1Skip }, async () => {
+  const w = world({ env: { NOTIFY_TO: 'ops@example.com' } });
+  await withFetch(w.handler, async () => {
+    await goLive(w);
+    w.cf.failOn((method) => method === 'DELETE');
+    const lines = (await takeDown(w)).join('\n');
+    assert.match(lines, /domain_detach_failed/);
+    assert.match(lines, /hosting_end_failed/);
+    assert.equal((await domainRow(w.env, 'site1')).state, 'put_away');
+    assert.equal(downNote(w).length, 0);
+    w.cf.failOn(null);
+    await takeDown(w);
+    assert.equal((await hostingOf(w.env)).state, 'ended');
+    assert.equal(w.cf.scripts.size, 0);
+    assert.ok(w.cf.zoneOf(N));
+    assert.ok(downNote(w)[0].raw.includes(liveDomainLeftNote(N)));
+  });
+});
+
+test('removing a site: a domain that still waits goes with it, and a live domain is detached and put away while its zone and email records stay, and the answer says how to move it away', { skip: d1Skip }, async () => {
+  let w = world();
+  await withFetch(w.handler, async () => {
+    await setup(w.env);
+    const res = await remove(w.env);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).domain, undefined);
+    assert.equal(w.cf.zoneOf(N), null);
+    assert.equal(w.cf.workerDomains.size, 0);
+    assert.equal(await domainRow(w.env, 'site1'), null);
+    assert.equal(w.cf.scripts.size, 0);
+  });
+
+  w = world();
+  await withFetch(w.handler, async () => {
+    await goLive(w);
+    const seller = publicDomain(await domainRow(w.env, 'site1')).seller.name;
+    const res = await remove(w.env);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.domain, { name: N, note: domainSentence('site_removed', { name: N, seller }) });
+    assert.equal(body.domain.note, `Your site no longer answers at ${N}. The other records of ${N}, such as its email, keep working. To move the domain away, change its name servers at ${seller}. For a file of the domain's records, write to info@kilncms.com.`);
+    assert.doesNotMatch(body.domain.note, /[—–]|undefined|null/);
+    assert.equal(w.cf.scripts.size, 0);
+    assert.equal(w.cf.workerDomains.size, 0);
+    assert.ok(w.cf.zoneOf(N), 'the zone stays');
+    assert.equal(hasMail(w), true);
+    const row = await domainRow(w.env, 'site1');
+    assert.deepEqual([row.state, row.reason], ['put_away', 'site_removed']);
+    assert.equal(await w.env.kiln_cloud.prepare("SELECT id FROM sites WHERE id = 'site1'").first(), null);
+  });
+});
+
+test('removing a site: what Cloudflare refuses is logged, and the site is removed all the same', { skip: d1Skip }, async () => {
+  for (const state of ['waiting', 'live']) {
+    const w = world();
+    await withFetch(w.handler, async () => {
+      if (state === 'live') await goLive(w); else await setup(w.env);
+      w.cf.failOn((method) => method !== 'POST');
+      let res;
+      const lines = (await hush(async () => { res = await remove(w.env); })).join('\n');
+      assert.equal(res.status, 200, state);
+      assert.match(lines, /domain_detach_failed/, state);
+      if (state === 'waiting') assert.match(lines, /domain_remove_failed/);
+      assert.equal(await w.env.kiln_cloud.prepare("SELECT id FROM sites WHERE id = 'site1'").first(), null, state);
+      assert.equal((await domainRow(w.env, 'site1'))?.state, state === 'live' ? 'put_away' : undefined, state);
+      assert.equal((await hostingOf(w.env)).state, 'removing', state);
+    });
+  }
 });

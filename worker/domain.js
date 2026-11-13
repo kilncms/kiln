@@ -656,6 +656,8 @@ export function domainSentence(code, { name = null, seller = null } = {}) {
     case 'not_changed': return `Kiln put this set-up away because the name servers of ${domain} were not changed within ${LIMITS.waitDays} days. Nothing of yours was changed. You can start again any time.`;
     case 'moved': return `The name servers of ${domain} no longer point at Kiln, so the site does not answer at ${domain} any more. It is still up at its Kiln address. To use the domain again, set it up here again.`;
     case 'gone': return `Kiln put this set-up away because Cloudflare, which runs Kiln's hosting, no longer holds ${domain}. Nothing of yours was changed. You can start again any time.`;
+    case 'hosting_ended': return `Kiln took this site down from its hosting, so it no longer answers at ${domain}. The other records of ${domain}, such as its email, keep working. To move the domain away, download its records from this page first, and then change its name servers at ${who}.`;
+    case 'site_removed': return `Your site no longer answers at ${domain}. The other records of ${domain}, such as its email, keep working. To move the domain away, change its name servers at ${who}. For a file of the domain's records, write to info@kilncms.com.`;
     case 'has_one': return 'This site already has a domain. Stop using that one first, and then set up another.';
     case 'no_domain': return 'This site has no domain set up yet. Type the domain you want to use, and set it up first.';
     case 'busy': return 'Kiln is already setting up a domain for this site. Give it a minute, then reload this page.';

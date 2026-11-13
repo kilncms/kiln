@@ -23,6 +23,7 @@
 import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError } from './hosting.js';
 import { gh, refPath } from './prepare.js';
 import { keepEditorsCurrent, finishCare } from './lookafter.js';
+import { domainRow, saveDomain, forgetDomain, detachDomain, removeWaitingDomain } from './domain.js';
 
 const LOCK_S = 300;
 const RETRY_AFTER_MS = 2 * 60 * 1000;        // a failed copy is tried again this long after it failed
@@ -225,11 +226,13 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
     const at = end && typeof end === 'object' ? end.at : end;
     if (!at || now < at || (typeof end === 'object' && end.ready === false)) continue;
     try {
+      // Its own domain first, while the Worker the two names are attached to is still there.
+      const domain = await domainComesDown(env, r.id, { reason: 'hosting_ended' });
       await removeSite(env, r.name);
       const reason = endReason(r) || 'trial_ended';
       await save(env, r.id, { state: 'ended', reason, deployed_at: null, wanted_sha: null });
-      console.log(JSON.stringify({ evt: 'hosting_ended', repo: r.repo, name: r.name, reason }));
-      if (typeof ended === 'function') { try { await ended(r, reason); } catch { /* the operator's note is not what takes a site down */ } }
+      console.log(JSON.stringify({ evt: 'hosting_ended', repo: r.repo, name: r.name, reason, ...(domain ? { domain: domain.name } : {}) }));
+      if (typeof ended === 'function') { try { await ended(r, reason, domain); } catch { /* the operator's note is not what takes a site down */ } }
     } catch (e) { console.warn(JSON.stringify({ evt: 'hosting_end_failed', name: r.name, detail: String(e?.detail || e?.message || e).slice(0, 200) })); }
   }
   const live = rows.filter(r => r.state !== 'removing' && r.id && hasAccess(r));
@@ -271,13 +274,62 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
  * not answer, the record stays, marked, and the sweep takes it down later.
  */
 export async function forgetHosting(env, siteId) {
+  // Its own domain first, while the Worker the two names are attached to is still there.
+  const domain = await domainComesDown(env, siteId, { reason: 'site_removed', removed: true });
   const row = await hostingRow(env, siteId);
-  if (!row) return;
+  if (!row) return { domain };
   try { await removeSite(env, row.name); await env.kiln_cloud.prepare('DELETE FROM hosting WHERE site_id = ?').bind(siteId).run(); }
   catch (e) {
     console.warn(JSON.stringify({ evt: 'hosting_remove_failed', name: row.name, detail: String(e?.detail || e?.message || e).slice(0, 200) }));
     try { await save(env, siteId, { state: 'removing' }); } catch { /* the sweep has nothing to go on; the operator's log line above does */ }
   }
+  return { domain };
+}
+
+/**
+ * What becomes of a site's own domain when the site comes down from Kiln's
+ * hosting (`reason` 'hosting_ended') or is removed from Kiln ('site_removed',
+ * with `removed`):
+ *   waiting  nothing of the owner's depends on the zone yet, so it is removed
+ *            (domain.js removeWaitingDomain) and the row is forgotten. A zone
+ *            that turns out to be active by now is treated as a live one;
+ *   live     the bare name and `www` are detached from the site's Worker and
+ *            the row is put away with `reason`. The zone and every other
+ *            record STAY: the owner's email may be answered from them;
+ *   put away or failed: left as it is.
+ * A site that stays on Kiln gets its temporary address back as the address on
+ * record, as when a domain is moved away. Never throws: what Cloudflare or
+ * the database refuses is logged, and the take-down or the removal goes on.
+ * Returns null for a site with no domain, or { name, row, live }: `live`
+ * is true when the domain was live, now or when an earlier try at the same
+ * take-down put it away.
+ */
+export async function domainComesDown(env, siteId, { reason = 'hosting_ended', removed = false } = {}) {
+  const warn = (evt, row, e) => console.warn(JSON.stringify({ evt, site: siteId, name: row?.name, zone: row?.zone_id, detail: String(e?.detail || e?.message || e).slice(0, 200) }));
+  let row = null;
+  try { row = await domainRow(env, siteId); } catch { row = null; }
+  if (!row) return null;
+  const out = { name: row.name, row, live: row.state === 'live' || (row.state === 'put_away' && row.reason === reason) };
+  if (row.state !== 'waiting' && row.state !== 'live') return out;
+  // The two names come off the site's Worker first, whatever becomes of the zone.
+  try { if (row.zone_id) await detachDomain(env, { zoneId: row.zone_id, name: row.name }); }
+  catch (e) { warn('domain_detach_failed', row, e); }
+  if (row.state === 'waiting') {
+    let gone = true;
+    try { if (row.zone_id) gone = (await removeWaitingDomain(env, { zoneId: row.zone_id })).removed; }
+    catch (e) { warn('domain_remove_failed', row, e); }
+    if (gone) { await forgetDomain(env, siteId); return out; }
+    out.live = true;   // the name servers have changed since the last look: the zone may answer for email, so it stays
+  }
+  try { await saveDomain(env, siteId, { state: 'put_away', reason }); }
+  catch (e) { warn('domain_not_put_away', row, e); }
+  if (!removed) {
+    try {
+      const h = await hostingRow(env, siteId);
+      if (h?.url) await env.kiln_cloud.prepare('UPDATE sites SET origin = ? WHERE id = ? AND origin IN (?, ?)').bind(h.url, siteId, `https://${row.name}`, `https://www.${row.name}`).run();
+    } catch (e) { warn('domain_address_not_set', row, e); }
+  }
+  return out;
 }
 
 /** The site whose temporary address this is, when it may be edited now. */

@@ -49,6 +49,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   when the owner had already given the domain as the site's address: until
   the name servers change, what answers at the domain is not the site Kiln
   publishes (`worker/cloud.js`).
+- **A site's own domain is dealt with when the site comes down or is
+  removed.** A domain that still waits for its name servers is removed with
+  the site. A domain that is live is taken off the site and put away, and
+  everything else about it stays: its other records, such as its email, keep
+  working. A site that stays on Kiln has its temporary address again, and its
+  row says how to move the domain away (download its records, then change
+  the name servers where the domain was bought). The note the operator gets
+  when a site is taken down says the same in one more sentence, and so does
+  the answer to removing a site. When Cloudflare does not answer, that is
+  logged and the site comes down or is removed all the same
+  (`worker/hosted.js`, `worker/cloud.js`, `worker/domain.js`).
 
 ### Fixed
 

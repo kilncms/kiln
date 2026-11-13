@@ -521,8 +521,12 @@ export async function hostingDownAt(env, site, { now = Date.now(), deployed = tr
   return told ? { at: Math.max(end, told + week), ready: true } : { at: Math.max(end, now + week), ready: false };
 }
 
-/** The operator hears when a hosted site is taken down (hosted.js calls this from the sweep). Never throws. */
-export async function hostingEndedNote(env, site, reason) {
+/**
+ * The operator hears when a hosted site is taken down (hosted.js calls this
+ * from the sweep). `domain` is what hosted.js domainComesDown answered: a site
+ * that was live at its own domain gets one more sentence. Never throws.
+ */
+export async function hostingEndedNote(env, site, reason, domain = null) {
   try {
     await notifyOwner(env, `Kiln took ${site.repo} down from its hosting`, [
       reason === 'plan_ended'
@@ -530,9 +534,20 @@ export async function hostingEndedNote(env, site, reason) {
         : 'Its free days ran out and nobody subscribed for it.',
       `Repository: ${site.repo}`,
       'Nothing was deleted from the repository. Its owner can subscribe and put the site up again from the dashboard.',
+      ...(domain?.live && domain.name ? [liveDomainLeftNote(domain.name)] : []),
     ]);
   } catch { /* the site is down all the same, and the log says so */ }
 }
+
+/** What the answer to removing a site says of a domain it was live at: its name, and a sentence about what stays and how to move it away. */
+function domainLeft(gone) {
+  if (!gone?.domain?.live || !gone.domain.name) return {};
+  const shown = publicDomain(gone.domain.row, { records: false });
+  return { domain: { name: gone.domain.name, note: domainSentence('site_removed', { name: gone.domain.name, seller: shown?.seller?.name }) } };
+}
+
+/** The one more sentence of that note, for a site that was live at its own domain. */
+export const liveDomainLeftNote = (name) => `The site was live at ${name}, so Kiln detached it from that domain and left the rest alone: the other records of ${name}, such as its email, keep working, and to move the domain away its owner downloads its records from the dashboard and then changes its name servers where the domain was bought.`;
 
 /** What the dashboard is shown of a hosted site, with the day it comes down when it is on its way down. `site` is its whole row. */
 async function shownHosting(env, row, site, now = Date.now()) {
@@ -1511,10 +1526,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // is cancelled first, and the site stays if that cannot be confirmed.
     const cancel = await lsCancel(env, site.ls_subscription_id);
     if (!cancel.ok) return json({ error: NOT_CANCELLED, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
-    await forgetHosting(env, site.id);   // a hosted site comes down with it
+    const gone = await forgetHosting(env, site.id);   // a hosted site comes down with it, and so does its own domain
     await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).run();
     if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
-    return json({ ok: true, subscription: cancel.state, ...(cancel.ends_at ? { ends_at: cancel.ends_at } : {}) });
+    return json({ ok: true, subscription: cancel.state, ...(cancel.ends_at ? { ends_at: cancel.ends_at } : {}), ...domainLeft(gone) });
   }
 
   // Bring the Kiln editor in the site's repository up to the released one
@@ -1769,9 +1784,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       if (!cancel.ok) {
         return json({ error: `subscription ${site.ls_subscription_id} could not be cancelled (${cancel.state}); cancel it in Lemon Squeezy, then remove with force`, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
       }
-      await forgetHosting(env, site.id);
+      const gone = await forgetHosting(env, site.id);
       await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ?').bind(site.id).run();
-      return json({ ok: true, subscription: cancel.state });
+      return json({ ok: true, subscription: cancel.state, ...domainLeft(gone) });
     }
     // Per-site troubleshooting: app-install check, live-site reachability, /kiln
     // entry check, editability (is the origin actually in the active/trialing
