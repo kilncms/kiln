@@ -93,7 +93,7 @@ test('owner session: signing out forgets it at once and ends it on the worker be
   assert.deepEqual(page.replaced, [], 'the page waits for the worker');
   answered({ ok: true });
   await new Promise(r => setImmediate(r));
-  assert.deepEqual(page.replaced, ['/kiln']);
+  assert.deepEqual(page.replaced, ['/kiln#out']);
 });
 
 test('owner session: the old way\'s sign-out still sends the renewal id, and nothing at all is sent for an invited editor', async () => {
@@ -105,5 +105,5 @@ test('owner session: the old way\'s sign-out still sends the renewal id, and not
   const ed = { kiln_editor: JSON.stringify({ session: 'c'.repeat(64), name: 'Sam', repo: 'acme/site', role: 'editor' }) };
   const b = loadShim('/about.html', ed);
   b.window.Kiln.logout();
-  assert.deepEqual([b.sent.length, b.replaced], [0, ['/kiln']]);
+  assert.deepEqual([b.sent.length, b.replaced], [0, ['/kiln#out']]);
 });

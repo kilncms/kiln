@@ -130,13 +130,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Sign out says that you are signed out, and where to sign in again.** After
   Kiln menu > Sign out the page came back with no Kiln button and not a word.
   The person now lands on the site's own sign-in page, whose card reads "You
-  are signed out" and "Sign in below to edit" with the site's name, above the
-  same two buttons. It says so once: opened again, the page is the ordinary
-  sign-in page. A site that has turned its sign-in page off (`entry: false`)
-  goes to its home page as before, and so does the demo, which signs every
-  visitor in again. It is said on the sign-in page, and not by a notice on
-  the site's own pages, because that notice would have had to live in the
-  small script every visitor of every site loads.
+  are signed out" above the site's name and the same two buttons. A site that
+  has turned its sign-in page off (`entry: false`) goes to its home page as
+  before, and so does the demo, which signs every visitor in again. It is
+  said on the sign-in page, and not by a notice on the site's own pages,
+  because that notice would have had to live in the small script every
+  visitor of every site loads.
 
 - **An editor on a page they may not change is told so, and told which pages
   they can change.** An invited editor can be given only some pages (say,
