@@ -550,13 +550,6 @@ export async function dropOtherAskings(env, { accountId, inbox }) {
   catch (e) { console.warn(JSON.stringify({ evt: 'forward_askings_kept', inbox: want, detail: String(e?.message || e).slice(0, 200) })); }
 }
 
-/** True when a row of any account still waits for this inbox to confirm. Never throws: what cannot be read counts as waited for. */
-export async function inboxAwaited(env, inbox) {
-  const want = String(inbox ?? '').trim().toLowerCase();
-  try { return !!(await env.kiln_cloud.prepare("SELECT site_id FROM forwards WHERE (inbox = ? AND state = 'confirming') OR (want_inbox = ? AND state = 'on') LIMIT 1").bind(want, want).first()); }
-  catch { return true; }
-}
-
 /**
  * True when a row of any account uses this inbox or waits for it: a row that
  * is `on` or `confirming` has it as its inbox, or a row has it as the inbox of
