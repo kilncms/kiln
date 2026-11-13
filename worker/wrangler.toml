@@ -113,6 +113,11 @@ CLOUD_ADMIN = "erikkwilder"
 HOSTING_ACCOUNT_ID = "8713e668d8f277a1d9097a186d92e575"
 HOSTING_SUBDOMAIN = "kiln-sites"
 HOSTING_PREFIX = "stg-"
+# This service's own address. A hosted site's members gate asks it whether a
+# signed-in member is still on the list. With the secret HOSTING_MEMBER_KEY it
+# switches the members area on for hosted sites; without both, pages under
+# members/ on a hosted site are open to anyone.
+HOSTING_SERVICE_URL = "https://kiln-auth-staging.erikkwilder.workers.dev"
 
 [[env.staging.kv_namespaces]]
 binding = "KILN"
@@ -177,6 +182,9 @@ CUSTOMER_MAIL_REPLY_TO = "info@kilncms.com"
 # until hosting is released.
 HOSTING_ACCOUNT_ID = "8713e668d8f277a1d9097a186d92e575"
 HOSTING_SUBDOMAIN = "kiln-sites"
+# This service's own address, for the members gate of a hosted site (see
+# staging above). The secret HOSTING_MEMBER_KEY goes with it.
+HOSTING_SERVICE_URL = "https://auth.kilncms.com"
 
 [[env.production.kv_namespaces]]
 binding = "KILN"

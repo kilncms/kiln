@@ -28,10 +28,20 @@
  *   HOSTING_API_TOKEN    a token for that account alone (a secret)
  *   HOSTING_SUBDOMAIN    that account's workers.dev name ("kiln-sites")
  *   HOSTING_PREFIX       put before every site's name (staging: "stg-")
+ *   HOSTING_MEMBER_KEY   switches the members area on for hosted sites (a
+ *                        secret): each site's own secret is made from it
+ *   HOSTING_SERVICE_URL  this service's own address, which a hosted site's
+ *                        members gate asks about its members
+ *
+ * A site with files under members/ is uploaded with one small program beside
+ * its files, the members gate (members-gate-entry.js), and Cloudflare runs it
+ * only for the addresses in GATE_PATHS. Every other site, and every other
+ * page, is plain files as before. See "The members area" below.
  */
 
 import { gh, inTurn, refPath, base64 } from './prepare.js';
 import { dayWords } from './mail.js';
+import { MEMBERS_GATE_MODULE } from './members-gate.js';
 
 const CF = 'https://api.cloudflare.com/client/v4';
 const COMPATIBILITY_DATE = '2026-06-01';
@@ -187,8 +197,15 @@ async function settingsText(token, repo, entry) {
  * 'github', 'empty', 'too_big', 'no_home' (no index.html at the top). A
  * failure part-way is a HostingError, and the site keeps serving what it
  * served before: Cloudflare switches to the new files only at the last step.
+ *
+ * A site with files under members/ also gets the members gate, and the answer
+ * then carries `members: 'on'`. Where this service cannot switch the gate on
+ * (membersGateOn), such a site goes up as plain files and the answer carries
+ * `members: 'not_switched_on'`, so the caller can tell the owner that those
+ * pages are open to anyone. `siteId` is what the site's member secret is made
+ * from; without one the Worker's name stands in.
  */
-export async function deploySite(env, { token, repo, name, first = false }) {
+export async function deploySite(env, { token, repo, name, first = false, siteId = null }) {
   if (!hostingOn(env)) throw new HostingError('not_set_up');
   const tree = await readTree({ token, repo });
   if (tree.state !== 'ok') return tree;
@@ -224,19 +241,78 @@ export async function deploySite(env, { token, repo, name, first = false }) {
   const redirectsText = await settingsText(token, repo, redirects);
   if (headersText) config._headers = headersText;
   if (redirectsText) config._redirects = redirectsText;
-  const metadata = new FormData();
-  metadata.append('metadata', JSON.stringify({
+  const members = hasMembersArea(files) ? (membersGateOn(env) ? 'on' : 'not_switched_on') : null;
+  const meta = {
     compatibility_date: COMPATIBILITY_DATE,
     assets: { jwt: done, config },
     annotations: { 'workers/message': `${repo} at ${String(tree.head).slice(0, 7)}`.slice(0, 100) },
-  }));
+  };
+  if (members === 'on') {
+    config.run_worker_first = GATE_PATHS;
+    meta.main_module = GATE_FILE;
+    meta.bindings = [
+      { type: 'assets', name: 'ASSETS' },
+      { type: 'plain_text', name: 'KILN_WORKER', text: serviceAddress(env) },
+      { type: 'secret_text', name: 'KILN_MEMBER_SECRET', text: await memberSecret(env, siteId ?? name) },
+    ];
+  }
+  const metadata = new FormData();
+  metadata.append('metadata', JSON.stringify(meta));
+  if (members === 'on') metadata.append(GATE_FILE, new File([MEMBERS_GATE_MODULE], GATE_FILE, { type: 'application/javascript+module' }), GATE_FILE);
   await cloudflare(env, 'PUT', script, { form: metadata });
   // A new Worker has no address until it is switched on. Asked once; asking
   // again later would only repeat it.
   if (first) await cloudflare(env, 'POST', `${script}/subdomain`, { json: { enabled: true, previews_enabled: false } });
 
-  return { state: 'live', url: siteAddress(env, name), commit: tree.head, branch: tree.branch, files: files.length, sent: wanted, skipped };
+  return { state: 'live', url: siteAddress(env, name), commit: tree.head, branch: tree.branch, files: files.length, sent: wanted, skipped, ...(members ? { members } : {}) };
 }
+
+// ── The members area ───────────────────────────────────────────────────────
+//
+// Pages under members/ are for the people on the site's list of members. On
+// Cloudflare Pages the site's own functions/ folder guards them. A hosted site
+// runs no program of its own, so Kiln uploads the same gate with the files
+// (Cloudflare's "run_worker_first": the program runs before the file is
+// served, and only for the addresses listed). The gate signs a member's
+// cookie with a secret that belongs to that one site. The secret is kept
+// nowhere: it is worked out again at every upload from the site's id and
+// HOSTING_MEMBER_KEY, so it is the same every time and no two sites share one.
+
+/** The file name the gate is uploaded under. */
+export const GATE_FILE = 'members-gate.js';
+
+/**
+ * The addresses of a hosted site where the gate runs before a file is served:
+ * everything under members/, the address the sign-in page posts to, and every
+ * address written with a %-code (so /%6Dembers/ cannot slip past as a file).
+ * The same three as templates/_routes.json names for Cloudflare Pages.
+ */
+export const GATE_PATHS = ['/members/*', '/api/member-redeem-google', '/*%*'];
+
+/** True when these published files include a members area. */
+export const hasMembersArea = (files) => (files || []).some(f => String(f.path).startsWith('/members/'));
+
+/** This service's own address as a hosted site's gate should call it, or '' when it is not set. */
+export function serviceAddress(env) {
+  const url = String((env && env.HOSTING_SERVICE_URL) || '').trim().replace(/\/+$/, '');
+  return /^https:\/\/[^\s/]+$/.test(url) ? url : '';
+}
+
+/** True when this service can switch a hosted site's members area on. */
+export function membersGateOn(env) {
+  return !!(env && env.HOSTING_MEMBER_KEY && serviceAddress(env));
+}
+
+/** One site's member secret: HMAC-SHA256 of the site's id with HOSTING_MEMBER_KEY, in hex. */
+export async function memberSecret(env, siteId) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(String(env.HOSTING_MEMBER_KEY)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(String(siteId))));
+  return [...sig].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** What a person reads when a hosted site has members pages and the gate cannot be switched on. */
+export const MEMBERS_OFF_SENTENCE = 'This site has pages under members/, but the members area is not switched on for Kiln\'s hosting yet, so anyone with the address can open those pages. Write to info@kilncms.com and we will switch it on.';
 
 /** Take a site's Worker away. True when it is gone (or was never there). */
 export async function removeSite(env, name) {

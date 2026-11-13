@@ -95,7 +95,7 @@ export async function publishSite(env, { site, token, wanted = null }) {
     for (let round = 0; round < 2; round++) {
       let out;
       try {
-        out = await deploySite(env, { token, repo: site.repo, name: row.name, first: !row.deployed_at });
+        out = await deploySite(env, { token, repo: site.repo, name: row.name, first: !row.deployed_at, siteId: site.id });
       } catch (e) {
         const reason = e instanceof HostingError ? e.code : 'cloudflare';
         console.warn(JSON.stringify({ evt: 'hosting_failed', repo: site.repo, name: row.name, reason, detail: e instanceof HostingError ? e.detail : String(e?.message || e).slice(0, 300) }));
@@ -106,6 +106,9 @@ export async function publishSite(env, { site, token, wanted = null }) {
         await save(env, site.id, { state: 'waiting', reason: out.state, branch: out.branch || row.branch || null, wanted_sha: null, checked_at: Date.now() });
         break;
       }
+      // The site has pages under members/ and this service cannot guard them
+      // (hosting.js: membersGateOn). The owner reads it in "Check this site".
+      if (out.members === 'not_switched_on') console.warn(JSON.stringify({ evt: 'hosting_members_open', repo: site.repo, name: row.name }));
       await save(env, site.id, { state: 'live', reason: null, branch: out.branch, commit_sha: out.commit, files: out.files, deployed_at: Date.now(), checked_at: Date.now() });
       row = await hostingRow(env, site.id);
       // Did something newer get asked for meanwhile?

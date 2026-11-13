@@ -27,6 +27,7 @@ const items = [
   ['worker/sanitize-guard.js', 'worker/sanitize-guard.js'], // imported by worker/index.js — wizard deploy fails without it
   ['worker/mail.js', 'worker/mail.js'],                     // imported by worker/cloud.js
   ['worker/hosting.js', 'worker/hosting.js'],               // ditto — copying a hosted site's files to Cloudflare
+  ['worker/members-gate.js', 'worker/members-gate.js'],     // imported by worker/hosting.js: the members gate a hosted site is uploaded with
   ['worker/hosted.js', 'worker/hosted.js'],                 // ditto — the record of hosted sites, the push webhook, the sweep
   ['worker/domain-mail.js', 'worker/domain-mail.js'],       // imported by worker/cloud.js: one forwarded email address on a hosted site's own domain
   ['worker/domain.js', 'worker/domain.js'],                 // imported by worker/cloud.js: a hosted site on its owner's own domain

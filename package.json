@@ -20,7 +20,7 @@
     "kiln": "cli/index.mjs"
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs && node scripts/build-members-gate.mjs",
     "test": "node --test test/*.test.js",
     "dev": "cd worker && npx wrangler dev --local --port 8787",
     "deploy:test": "node scripts/release.mjs --staging",

@@ -73,6 +73,37 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
     setStatus: (name, status) => { const z = api.zoneOf(name); z.status = status; z.activated_on = status === 'active' ? new Date().toISOString() : z.activated_on; },
     /** What a visitor gets at a path of a deployed site, or null. */
     serve: (name, path) => { const s = scripts.get(name); const f = s?.manifest[path]; return f ? stored.get(f.hash) : null; },
+    /**
+     * What a visitor gets for a request to a deployed site, with the site's
+     * program run where Cloudflare would run it: first, for an address one of
+     * its `run_worker_first` rules matches (the address as it was written),
+     * and otherwise not at all, the file being served as it is. The file
+     * server decodes the address before it looks for the file, as the real
+     * one does. `ran` counts how often the program ran.
+     */
+    visit: async (name, request) => {
+      const s = scripts.get(name);
+      if (!s) return new Response('There is nothing here yet!', { status: 404 });
+      const assets = {
+        fetch: async (req) => {
+          let path; try { path = decodeURIComponent(new URL(req.url).pathname); } catch { return new Response('Bad Request', { status: 400 }); }
+          const f = s.manifest[path] || s.manifest[`${path}.html`] || (path.endsWith('/') ? s.manifest[`${path}index.html`] : null);
+          if (!f) return new Response('Not Found', { status: 404 });
+          const kept = stored.get(f.hash);
+          return new Response(kept && kept.bytes !== undefined ? kept.bytes : kept, { status: 200, headers: { 'Cache-Control': 'public, max-age=0, must-revalidate' } });
+        },
+      };
+      const rules = s.config.run_worker_first;
+      const path = new URL(request.url).pathname;
+      const hit = (rule) => new RegExp(`^${rule.split('*').map(x => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`).test(path);
+      const first = s.module && (rules === true || (Array.isArray(rules) && !rules.some(r => r.startsWith('!') && hit(r.slice(1))) && rules.some(r => !r.startsWith('!') && hit(r))));
+      if (!first) return assets.fetch(request);
+      s.ran = (s.ran || 0) + 1;
+      const program = await import(`data:text/javascript;base64,${Buffer.from(s.module).toString('base64')}`);
+      const env = {};
+      for (const b of s.bindings) env[b.name] = b.type === 'assets' ? assets : b.text;
+      return program.default.fetch(request, env);
+    },
     handler: async (url, init = {}) => {
       const root = 'https://api.cloudflare.com/client/v4';
       const base = `${root}/accounts/${account}`;
@@ -115,8 +146,30 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
         const meta = JSON.parse(init.body.get('metadata'));
         const set = complete.get(meta.assets?.jwt);
         if (!set || set.script !== m[1]) return no(400, 10021, 'assets.jwt is not a completion token for this script');
+        // A Worker with a program: the metadata names its main module, and the
+        // module comes as a file part of that name, typed as an ES module.
+        let module = null;
+        if (meta.main_module !== undefined) {
+          const part = init.body.get(meta.main_module);
+          if (!part || typeof part === 'string') return no(400, 10021, `no such module: ${meta.main_module}`);
+          if (!/^(application|text)\/javascript\+module$/.test(part.type)) return no(400, 10021, `the main module is not typed as an ES module: ${part.type}`);
+          module = await part.text();
+        }
+        const first = meta.assets.config?.run_worker_first;
+        if (first !== undefined && typeof first !== 'boolean') {
+          const rules = Array.isArray(first) ? first : null;
+          if (!rules || rules.length > 100 || !rules.every(r => typeof r === 'string' && /^!?\//.test(r)) || !rules.some(r => !r.startsWith('!'))) {
+            return no(400, 10021, 'run_worker_first: rules must start with / or !/, and at least one must not be negative');
+          }
+        }
+        if (first && !module) return no(400, 10021, 'run_worker_first needs a Worker script');
+        const bindings = meta.bindings || [];
+        if (bindings.some(b => !b.name || !b.type || ((b.type === 'plain_text' || b.type === 'secret_text') && typeof b.text !== 'string'))) return no(400, 10021, 'a binding is not complete');
         const was = scripts.get(m[1]);
-        scripts.set(m[1], { manifest: set.manifest, config: meta.assets.config || {}, message: meta.annotations?.['workers/message'] || '', address: was?.address || false, deploys: (was?.deploys || 0) + 1 });
+        scripts.set(m[1], {
+          manifest: set.manifest, config: meta.assets.config || {}, message: meta.annotations?.['workers/message'] || '', address: was?.address || false, deploys: (was?.deploys || 0) + 1,
+          meta, parts: [...init.body.keys()], module, bindings,
+        });
         return ok({ id: m[1] });
       }
       if ((m = /^\/workers\/scripts\/([^/]+)\/subdomain$/.exec(path)) && method === 'POST') {

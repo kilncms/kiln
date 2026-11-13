@@ -30,6 +30,7 @@
  */
 
 import { planPrepare, publicPlan, prepareSentence, withKilnTags, SETUP_COMMAND } from './prepare.js';
+import { publishedFiles, hasMembersArea, MEMBERS_OFF_SENTENCE } from './hosting.js';
 
 const GH = 'https://api.github.com';
 const UA = 'kiln-cloud';
@@ -50,6 +51,7 @@ const TITLES = {
   live: 'The live site loads Kiln',
   signin: 'The sign-in page answers',
   domain: 'The site\'s own domain is ready on Kiln\'s side',
+  members: 'The members area is switched on',
 };
 const line = (id, ok, detail, more = {}) => ({ id, ok, title: TITLES[id], detail, ...more });
 const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
@@ -155,15 +157,47 @@ const named = (text, key) => text.match(new RegExp(`\\b${key}\\s*:\\s*['"\`]([^'
 const sameService = (a, b) => { try { return new URL(a).origin === new URL(b).origin; } catch { return a === b; } };
 
 /**
+ * The repository's files as GitHub lists them, or null when GitHub did not
+ * give the list. Asked for once in one check, however many lines read it.
+ */
+const listings = new WeakMap();
+function treeOf(token, repo, plan) {
+  if (!listings.has(plan)) {
+    listings.set(plan, (async () => {
+      try {
+        const listing = await gh(token, `/repos/${repo}/git/trees/${plan.treeSha}?recursive=1`);
+        return listing.ok ? ((await listing.json()).tree || []) : null;
+      } catch { return null; }
+    })());
+  }
+  return listings.get(plan);
+}
+
+/**
+ * Line `members`, for a site on Kiln's hosting that has pages under members/:
+ * whether only members can open them. Kiln's hosting guards them by itself
+ * (hosting.js, "The members area") where the service has been given its key;
+ * `on` says whether it has. No line for a site with no such pages, or when the
+ * files could not be read.
+ */
+async function membersLine(plan, { token, repo, on }) {
+  if (!token || !plan.treeSha) return null;
+  const tree = await treeOf(token, repo, plan);
+  if (!tree || !hasMembersArea(publishedFiles(tree).files)) return null;
+  if (!on) return line('members', false, MEMBERS_OFF_SENTENCE);
+  return line('members', true, 'This site has pages under members/. Only the people on the site\'s list of members can open them, after they sign in with Google. Kiln\'s hosting takes care of that, so there is nothing for you to set up.');
+}
+
+/**
  * The settings file as the repository holds it: { path, text }, { missing } or
  * { failed }. A site a generator builds keeps it in a folder of its own
  * (public/assets, say), so the nearest file of that name is taken.
  */
 async function readSettings(token, repo, plan) {
   try {
-    const listing = await gh(token, `/repos/${repo}/git/trees/${plan.treeSha}?recursive=1`);
-    if (!listing.ok) return { failed: true };
-    const found = ((await listing.json()).tree || [])
+    const tree = await treeOf(token, repo, plan);
+    if (!tree) return { failed: true };
+    const found = tree
       .filter(e => e.type === 'blob' && (e.path === CONFIG_FILE || e.path.endsWith(`/${CONFIG_FILE}`)))
       .filter(e => !e.path.split('/').some(d => d === 'node_modules' || d.startsWith('.')))
       .sort((a, b) => a.path.length - b.path.length)[0];
@@ -384,8 +418,12 @@ function keptLines(checks, { repo, unread }) {
  * A site whose files Kiln keeps: `kept` is true, and the list is worded for a
  * person who has never seen a repository (keptLines, above). Nothing changes
  * for any other site.
+ *
+ * A hosted site that is online and has pages under members/ gets one more
+ * line, `members`. `membersOn` says whether this service can guard such pages
+ * on its hosting (hosting.js: membersGateOn).
  */
-export async function checkSite({ token, repo, origin, worker, installUrl = INSTALL_URL, canAdd = true, timeoutMs = LIMITS.timeoutMs, hosted = false, ownDomain = false, down = null, kept = false }) {
+export async function checkSite({ token, repo, origin, worker, installUrl = INSTALL_URL, canAdd = true, timeoutMs = LIMITS.timeoutMs, hosted = false, ownDomain = false, down = null, kept = false, membersOn = false }) {
   const checks = [];
   let unread = false;   // Kiln could not read the files this time
   try {
@@ -404,6 +442,8 @@ export async function checkSite({ token, repo, origin, worker, installUrl = INST
     } else {
       checks.push(addressLine(home, base, timeoutMs, hosted, hosted && ownDomain));
       checks.push(...await liveLines(home, base, plan, timeoutMs, hosted));
+      const members = hosted ? await membersLine(plan, { token, repo, on: membersOn }) : null;
+      if (members) checks.push(members);
     }
   } catch (e) {
     console.warn(JSON.stringify({ evt: 'site_check_failed', repo, detail: String(e?.message || e).slice(0, 200) }));
