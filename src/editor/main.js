@@ -1128,6 +1128,14 @@ function applyFeatureGating() {
   // content files has none: not offered there, to anyone (startLine says so
   // to the person who came only to comment).
   if (!cfg.sandbox && state.page && !state.page.path) { const c = document.getElementById('kiln-comments'); if (c) c.style.display = 'none'; }
+  // What is already scheduled is counted once at the start, so the menu can
+  // offer the list with no edit on the page. For the owner too: this sits
+  // above the line that sends the owner on, which is where it was missed
+  // (after a reload the owner's menu had no "Scheduled changes").
+  if (!cfg.sandbox && !state.scheduledAsked && (mode === 'admin' || (hasFeature('schedule') && !isSuggestMode()))) {
+    state.scheduledAsked = true;
+    fetchScheduled().catch(() => {});
+  }
   if (mode === 'admin' || cfg.sandbox) { hideEmptyGroups(); return; }
   // 'suggestreview' is deliberately not in the worker's GRANTABLE_FEATURES, so
   // no invited editor ever has it — the review queue stays admin-only.
@@ -1147,8 +1155,6 @@ function applyFeatureGating() {
   // live branch directly, which the worker refuses for suggest sessions anyway.
   if (isSuggestMode()) { const t = document.getElementById('kiln-theme'); if (t) t.style.display = 'none'; }
   if (!hasFeature('schedule') || isSuggestMode()) { const s = document.getElementById('kiln-schedule'); if (s) s.dataset.gated = '1'; }
-  // What is already scheduled is counted once at the start, so the menu can offer the list with no edit on the page.
-  else if (!cfg.sandbox && !state.scheduledAsked) { state.scheduledAsked = true; fetchScheduled().catch(() => {}); }
   if (!hasFeature('draft') || isSuggestMode()) { const p = document.getElementById('kiln-sharepreview'); if (p) p.dataset.gated = '1'; }
   hideEmptyGroups();
 }

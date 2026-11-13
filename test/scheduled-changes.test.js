@@ -136,3 +136,16 @@ test('scheduled changes: the editor draws the list from these words, again after
   assert.ok(fetched.includes('mergeScheduled(data.schedules || [], { made: state.scheduledMade, cancelled: state.scheduledGone })'));
   assert.ok(fetched.includes('refreshPublishButton();'));
 });
+
+test('scheduled: what is scheduled is counted when the page loads for the owner too, before the owner is sent past the tool limits', () => {
+  // Found in a real browser on 0.6.5 before its release: after a reload the
+  // owner's menu had no "Scheduled changes", because the count was asked for
+  // only below the line that returns early for an owner.
+  const gating = between('function applyFeatureGating()', '\n}');
+  const asked = gating.indexOf('fetchScheduled().catch(() => {});');
+  const ownerSentOn = gating.indexOf("if (mode === 'admin' || cfg.sandbox) { hideEmptyGroups(); return; }");
+  assert.ok(asked > 0 && ownerSentOn > 0);
+  assert.ok(asked < ownerSentOn, 'asked before the owner is sent on');
+  assert.equal(gating.split('fetchScheduled()').length - 1, 1, 'and asked once');
+  assert.match(gating, /if \(!cfg\.sandbox && !state\.scheduledAsked && \(mode === 'admin' \|\| \(hasFeature\('schedule'\) && !isSuggestMode\(\)\)\)\) \{/);
+});
