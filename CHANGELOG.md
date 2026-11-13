@@ -33,6 +33,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is replaced when a page was published while the preview was open
   (`src/editor/find-replace.js`).
 
+- **The AI tools no longer show for the first seconds after sign-in on a site
+  with no AI.** The editor offered them until the service had said it has no
+  AI, so the "let AI draft the content" brief in the New page dialog and the ✨
+  button were there for a few seconds and then went. They are now offered only
+  once the service has said it has AI (`aiConfigured` in its health answer,
+  which is asked while the editor starts). Nothing waits for that answer: a
+  dialog opened before it has come is drawn without the AI tools. An older
+  service, whose health answer does not say, keeps what it had: the tools are
+  offered once that answer has come, and are put away the first time a request
+  is answered "not set up" (`src/editor/ai-offered.js`).
+
 ## [0.6.2] - 2026-11-12
 
 ### Fixed

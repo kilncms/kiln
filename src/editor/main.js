@@ -47,7 +47,7 @@ import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
 import { findEverywhere, replaceEverywhere, changedSinceText, previewText, noMatchText, replacedText } from './find-replace.js';
-import { aiSaid, aiOffered, noAiKey } from './ai-offered.js';
+import { aiAfter, aiOffered, noAiKey } from './ai-offered.js';
 import { DRAFT_BRANCH, draftSaveMessage, draftDeleteMessage, draftPublishedMessage, blobSha, draftOfPage, draftWords, DRAFT_DELETE_REFUSED } from './draft-state.js';
 import { resumedNote, draftWasPublished, noteIsStale } from './resumed-draft.js';
 import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
@@ -252,8 +252,9 @@ function stageBinary(repoPath, base64) {
 let journalBusy = false;   // a round of asking is under way: the next one waits for it (runJournal)
 // Where this tab remembers which draft it resumed (retireResumedDraft, checkForDraft).
 const draftResumedKey = () => `kiln_draft_resumed:${cfg.repo}:${state.page.path}`;
-// What the service has said about AI: true, false, or null while it has not
-// said (aiHere, noteAi). Start-up reaches it through hasFeature('ai').
+// What the service has said about AI: true, false, "not said" once its health
+// answer has come without saying (an older service), or null while no answer
+// has come (aiHere, noteAi). Start-up reaches it through hasFeature('ai').
 let aiKnown = null;
 
 init().catch(err => {
@@ -378,6 +379,10 @@ async function init() {
   }
   // Editors: learn our path/section scope BEFORE decorating, so out-of-scope
   // content never grows an edit handle (best-effort — offline means no scope data).
+  // Whether the service has AI is asked here, while the editor starts, so the
+  // answer has usually come before a toolbar or a dialog is drawn. Nothing
+  // waits for it: until it comes the AI tools are not offered (ai-offered.js).
+  if (!cfg.sandbox) workerHealth();
   if (mode === 'editor' && !cfg.sandbox) await presencePing();
   renderAdminBar();
   chromeDrawn = true;
@@ -775,7 +780,7 @@ function workerHealth() {
     healthzAsk = fetch(`${cfg.worker}/healthz`)
       .then(res => (res.ok ? res.json().catch(() => null) : null))
       .catch(() => null)
-      .then(health => { noteAi(health); return health; });
+      .then(health => { noteAi(health, true); return health; });
   }
   return healthzAsk;
 }
@@ -1016,23 +1021,37 @@ function hasFeature(feature) {
 
 /**
  * What the service has said about AI, for someone who would be shown the AI
- * tools. A tab that was told "no AI" earlier in this visit remembers it. The
- * health answer is asked (once per page, and it is not a request the service
- * counts) so that a service which says there whether it has AI is believed.
+ * tools. Nothing is waited for: until an answer has come this is null, and the
+ * tools are not offered (they used to be, and on a site with no AI they were
+ * there for the first seconds after sign-in and then went). A tab that was
+ * told "no AI" earlier in this visit remembers it. The health answer is asked
+ * once per page (it is not a request the service counts): init() asks it
+ * while the editor starts, so it has usually come before anything is drawn.
  */
 function aiHere() {
-  if (aiKnown === null) {
-    try { if (sessionStorage.getItem(noAiKey(cfg.worker)) === '1') aiKnown = false; } catch { /* nothing remembered */ }
-    workerHealth();
-  }
+  if (aiKnown === null) { aiRecall(); workerHealth(); }
   return aiKnown;
 }
 
-/** An answer of the service that may say whether it has AI (/healthz, the people answer, a 501 from an AI request). */
-function noteAi(answer) {
-  const has = aiSaid(answer);
-  if (has === null || cfg.sandbox) return;
+/** A tab that was told "no AI" earlier in this visit remembers it. */
+function aiRecall() {
+  if (aiKnown !== null) return;
+  try { if (sessionStorage.getItem(noAiKey(cfg.worker)) === '1') aiKnown = false; } catch { /* nothing remembered */ }
+}
+
+/**
+ * An answer of the service that may say whether it has AI (/healthz, the
+ * people answer, a 501 from an AI request). `health`: it is the health
+ * answer. When that one has come and does not say, the service is an older
+ * one, and its tools are offered as they always were (ai-offered.js aiAfter).
+ */
+function noteAi(answer, health = false) {
+  if (cfg.sandbox) return;
+  aiRecall();
+  const has = aiAfter(aiKnown, answer, { health });
+  if (has === aiKnown) return;
   aiKnown = has;
+  if (typeof has !== 'boolean') return;   // an older service that does not say: nothing to remember
   try {
     if (has) sessionStorage.removeItem(noAiKey(cfg.worker));
     else sessionStorage.setItem(noAiKey(cfg.worker), '1');

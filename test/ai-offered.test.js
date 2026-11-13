@@ -5,13 +5,17 @@
  * On a site whose Kiln service holds no AI key, the toolbar's ✨ button, the
  * picture's "Describe" and the new page's "let AI draft the content" were all
  * offered, and each could only fail: the service answers every AI request
- * "ai not configured". The tools are now shown only where the service has not
- * said it has no AI, and are put away the first time it says so.
+ * "ai not configured". They were then shown unless the service had said it
+ * has no AI, which left them on show for the first seconds after sign-in,
+ * until its answer came. Now they are shown only once the service has said it
+ * has AI. An older service, whose health answer does not say, keeps what it
+ * had: the tools are shown once that answer has come, and put away the first
+ * time a request is answered "ai not configured".
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { aiSaid, aiOffered, aiNotSetUpWords, noAiKey } from '../src/editor/ai-offered.js';
+import { aiSaid, aiOffered, aiAfter, AI_NOT_SAID, aiNotSetUpWords, noAiKey } from '../src/editor/ai-offered.js';
 import { editorEnv, call, withFetch, REPO } from './worker-harness.js';
 
 const main = readFileSync(new URL('../src/editor/main.js', import.meta.url), 'utf8');
@@ -23,12 +27,41 @@ test('ai: an answer of the service says it has AI, says it has none, or does not
   for (const silent of [null, undefined, 'ok', {}, { ok: true, modes: ['html'] }, { aiConfigured: 'yes' }, { aiConfigured: 0 }]) assert.equal(aiSaid(silent), null);
 });
 
-test('ai: the tools are shown to someone granted them, unless the service has said it has no AI', () => {
+test('ai: the tools are shown to someone granted them only once the service has said it has AI', () => {
   assert.equal(aiOffered({ granted: true, known: true }), true);
-  assert.equal(aiOffered({ granted: true, known: null }), true, 'a service that does not say leaves them as they were');
+  assert.equal(aiOffered({ granted: true, known: null }), false, 'no answer yet: nothing is shown that may have to be taken away');
+  assert.equal(aiOffered({ granted: true }), false);
   assert.equal(aiOffered({ granted: true, known: false }), false, 'no AI on the service: nothing is offered that can only fail');
-  for (const known of [true, false, null]) assert.equal(aiOffered({ granted: false, known }), false, 'never to someone not granted them');
+  assert.equal(aiOffered({ granted: true, known: AI_NOT_SAID }), true, 'an older service that does not say: as it was before');
+  for (const known of [true, false, null, AI_NOT_SAID]) assert.equal(aiOffered({ granted: false, known }), false, 'never to someone not granted them');
   assert.equal(aiOffered({ granted: true, sandbox: true, known: false }), true, 'the demo shows every tool, and says what each does on a real site');
+  assert.equal(aiOffered({ granted: true, sandbox: true, known: null }), true);
+});
+
+test('ai: the first seconds after sign-in, on a site with no AI, with AI, and on an older service', () => {
+  const shown = (known) => aiOffered({ granted: true, known });
+  // no AI: never shown, before the answer or after
+  let known = null;
+  assert.equal(shown(known), false);
+  known = aiAfter(known, { ok: true, aiConfigured: false }, { health: true });
+  assert.deepEqual([known, shown(known)], [false, false]);
+  // AI: shown from the answer on
+  known = aiAfter(null, { ok: true, aiConfigured: true }, { health: true });
+  assert.deepEqual([known, shown(known)], [true, true]);
+  // an older service: its health answer is JSON without the field, plain "ok" (read as null), or never comes (null)
+  for (const old of [{ ok: true, modes: ['html'] }, null, 'ok']) {
+    known = aiAfter(null, old, { health: true });
+    assert.deepEqual([known, shown(known)], [AI_NOT_SAID, true], 'as before this fix: offered');
+    known = aiAfter(known, { aiConfigured: false });   // the first request answered "ai not configured"
+    assert.deepEqual([known, shown(known)], [false, false], 'and put away on the first "not set up" answer');
+  }
+  // a tab told "no AI" earlier in the visit stays told, whatever an older service's health answer does not say
+  assert.equal(aiAfter(false, { ok: true }, { health: true }), false);
+  // an answer that is not the health answer and does not say changes nothing: the tools do not appear on a guess
+  assert.equal(aiAfter(null, { people: [] }), null);
+  assert.equal(aiAfter(true, { people: [] }), true);
+  // the owner gives the service a key, and People & access says so
+  assert.equal(aiAfter(false, { people: [], aiConfigured: true }), true);
 });
 
 test('ai: the one line a person reads says the tools are gone, and who can turn them on', () => {
@@ -49,7 +82,13 @@ test('ai: every AI tool in the editor is behind the one question, and the questi
   assert.match(main, /\$\{hasFeature\('ai'\) && !md \? '<button class="kiln-tb-fmt" id="kiln-ai" data-cmd="ai"/);
   // the health answer and the people answer are both listened to
   const health = main.slice(main.indexOf('function workerHealth()'), main.indexOf('function workerHealth()') + 420);
-  assert.match(health, /\.then\(health => \{ noteAi\(health\); return health; \}\);/);
+  assert.match(health, /\.then\(health => \{ noteAi\(health, true\); return health; \}\);/);
+  assert.match(has, /const has = aiAfter\(aiKnown, answer, \{ health \}\);/);
+  // nothing waits on the network: the question is answered from what is known now
+  assert.match(has, /function aiHere\(\) \{\n  if \(aiKnown === null\) \{ aiRecall\(\); workerHealth\(\); \}\n  return aiKnown;\n\}/);
+  assert.equal(/\bawait\b|\.then\(/.test(has), false, 'no waiting between the question and its answer');
+  // the answer is asked for while the editor starts, before its bar is drawn, and is not waited for there either
+  assert.match(main, /\n  if \(!cfg\.sandbox\) workerHealth\(\);\n  if \(mode === 'editor' && !cfg\.sandbox\) await presencePing\(\);\n  renderAdminBar\(\);/);
   assert.match(main, /if \(data\.aiConfigured === false\) [^\n]*\n      noteAi\(data\);/);
   // told "no AI": remembered for the visit, and the buttons on the page go
   assert.match(has, /sessionStorage\.setItem\(noAiKey\(cfg\.worker\), '1'\)/);
