@@ -83,7 +83,7 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.6.5';
 
-import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, markPrepared, markFirstPass } from './cloud.js';
+import { handleCloud, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
 import { githubTrouble, googleTrouble, troubleBody, troubleLog, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
@@ -124,6 +124,8 @@ export default {
       await noticeEndingHosting(env);
       // A hosted site's own domain: made live once its name servers have changed, reminded, put away (cloud.js). It never throws either.
       await sweepDomains(env);
+      // A forwarded email address at such a domain: switched on once its inbox has confirmed, reminded, given up on (cloud.js). It never throws either.
+      await sweepForwards(env);
       return sweepHosting(env, { installationToken, hasAccess: siteHasAccess, endReason: hostingEndReason,
         endsAt: (site) => hostingDownAt(env, site, { deployed: !!site.deployed_at }), ended: (site, reason, domain) => hostingEndedNote(env, site, reason, domain),
         care: { prepared: (id, sha) => markPrepared(env, id, sha), firstPass: (id, sha) => markFirstPass(env, id, sha) } });

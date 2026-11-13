@@ -34,7 +34,7 @@
  */
 
 import { RUNBOOK_HTML } from './runbook.js';
-import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
+import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
@@ -47,6 +47,10 @@ import {
   siteAnswers, certificateReady, redirectToOne, alwaysHttps, LIMITS as DOMAIN_LIMITS,
   domainSentence, publicDomain, publicLook, domainRow, domainForName, domainsForAccount, saveDomain, forgetDomain, DomainError, TAKING_HOLD,
 } from './domain.js';
+import {
+  mailStop, saysNoMail, switchMailOn, inboxState, addInbox, askAgain, canAskAgain, forward, stopForwarding, cleanLocal, cleanInbox, mailSentence,
+  forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, MailError, MAIL_LIMITS,
+} from './domain-mail.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -879,6 +883,121 @@ export async function sweepDomains(env, { now = Date.now() } = {}) {
   return out;
 }
 
+// ─── One forwarded email address on a hosted site's own domain ───────────────
+//
+// domain-mail.js does the work at Cloudflare and keeps the `forwards` table.
+// Here are the step that switches an address on once its inbox has confirmed,
+// the mails about it, and the five-minute look at the inboxes that wait.
+
+const FORWARD_LOCK_S = 120;      // one change at a time for a site's forwarded address; the lock runs out by itself
+const FORWARDS_PER_RUN = 10;     // the five-minute job asks about this many waiting inboxes at most
+const forwardLock = (siteId) => `forwardlock:${siteId}`;
+// The refusals a person can do something about, and the status each is answered with. Anything else is "cloudflare".
+const FORWARD_STATUS = { cloudflare: 502, not_set_up: 503, no_domain: 409, not_live: 409, has_own_mail: 409, not_confirmed: 409, not_an_address: 400, same_domain: 400 };
+const whyMail = (e) => (e instanceof MailError ? e.detail || e.code : String(e?.message || e)).slice(0, 300);
+
+/** True when this service can forward an address at a site's own domain: it can put sites on their domains, and the database has the table. */
+async function forwardingAvailable(env) {
+  return await domainsAvailable(env) && await forwardsReady(env);
+}
+
+/** Why an address cannot be forwarded at a site's domain (`domain` is its row), as a code of domain-mail.js, or null. */
+const forwardStop = (domain) => (!domain?.name ? 'no_domain' : mailStop(domain));
+/** The records Kiln kept of a domain when its zone was made, as a list. */
+const keptRecords = (domain) => { let r = domain?.records; if (typeof r === 'string') { try { r = JSON.parse(r); } catch { r = []; } } return Array.isArray(r) ? r : []; };
+
+/**
+ * One of the emails about a forwarded address (mail.js), where this service
+ * writes to customers and the account has an address. Once for one asking:
+ * the key holds the kind, the site and when the address was asked for, so an
+ * address that is changed later is written about again. Never throws.
+ */
+async function tellAboutForward(env, kind, s, row, mail) {
+  try {
+    if (!customerMailOn(env) || !mailAddress(s?.email)) return { ok: false, reason: 'not sent' };
+    return await sendOnce(env, `forward-${kind}:${s.id}:${Number(row.created_at) || 0}`, s.email, mail);
+  } catch { return { ok: false, reason: 'send failed' }; }
+}
+
+/**
+ * The step that switches a forwarded address on. Whoever calls it has heard
+ * from Cloudflare that the inbox confirmed: the one rule is made (or the
+ * earlier one replaced, so an earlier address stops at this moment), the row
+ * becomes `on`, and the owner is written to, once. `s` is { id, repo, email }.
+ * It throws what domain-mail.js forward throws, and the row is then as it was.
+ */
+async function forwardingOn(env, { s, row, zoneId, inboxId = null, now = Date.now() }) {
+  const made = await forward(env, { zoneId, address: row.address, inbox: row.inbox, ruleId: row.rule_id || null });
+  await saveForward(env, s.id, { state: 'on', rule_id: made.ruleId, on_at: now, ...(inboxId ? { inbox_id: inboxId } : {}) });
+  console.log(JSON.stringify({ evt: 'forward_on', repo: s.repo, address: row.address }));
+  await tellAboutForward(env, 'on', s, row, forwardOnMail({ address: row.address, inbox: row.inbox, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' }));
+}
+
+/**
+ * The five-minute look at the forwarded addresses whose inbox has not
+ * confirmed yet: at most FORWARDS_PER_RUN a run, the one looked at longest
+ * ago first. For each, Cloudflare is asked whether the inbox has confirmed:
+ *   - it has: the rule is made, the row becomes `on`, the owner is written to;
+ *   - not after 7 days: the owner is reminded, once, whose inbox must press
+ *     the button and where "Send it again" is;
+ *   - not after 30 days: the row becomes `off` with the reason
+ *     `never_confirmed`, and nothing more is asked. Nothing at Cloudflare is
+ *     changed by that.
+ * A site whose domain is no longer live is not asked about (no rule could be
+ * made for it), and its row is given up on after the same 30 days. A row the
+ * dashboard is at work on (its lock) is left for the next run. It never
+ * throws: what goes wrong for one row is logged, and the next row is looked at.
+ *
+ * Returns { looked, on, reminded, gaveUp, failed }.
+ */
+export async function sweepForwards(env, { now = Date.now() } = {}) {
+  const out = { looked: 0, on: 0, reminded: 0, gaveUp: 0, failed: 0 };
+  let rows = [];
+  try {
+    if (!env.kiln_cloud || !(await forwardingAvailable(env))) return out;
+    rows = await forwardsConfirming(env, FORWARDS_PER_RUN);
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'forward_sweep_failed', detail: whyMail(e) }));
+    return out;
+  }
+  const dashboard = env.CLOUD_DASHBOARD || 'https://app.kilncms.com';
+  const day = 86400 * 1000;
+  for (const r of rows) {
+    out.looked++;
+    try {
+      if (await env.KILN.get(forwardLock(r.site_id))) continue;   // a press in the dashboard is at work on this one
+      const s = await env.kiln_cloud.prepare(
+        `SELECT s.id, s.repo, a.email, d.name, d.zone_id, d.state AS domain_state FROM sites s
+           LEFT JOIN accounts a ON a.id = s.account_id LEFT JOIN domains d ON d.site_id = s.id WHERE s.id = ?`).bind(r.site_id).first();
+      const waited = now - Number(r.created_at || now);
+      const live = !!s && s.domain_state === 'live' && !!s.zone_id;
+      if (live) {
+        const box = await inboxState(env, { email: r.inbox, id: r.inbox_id });
+        if (box?.verified) { await forwardingOn(env, { s, row: r, zoneId: s.zone_id, inboxId: box.id, now }); out.on++; continue; }
+      }
+      if (!s || waited >= MAIL_LIMITS.giveUpDays * day) {
+        const reason = s ? 'never_confirmed' : 'site_removed';
+        await saveForward(env, r.site_id, { state: 'off', reason });
+        console.log(JSON.stringify({ evt: 'forward_gave_up', repo: s?.repo || null, address: r.address, reason }));
+        out.gaveUp++;
+        continue;
+      }
+      if (live && waited >= MAIL_LIMITS.remindDays * day) {
+        const sent = await tellAboutForward(env, 'remind', s, r, forwardWaitingMail({
+          address: r.address, inbox: r.inbox, givesUpAt: Number(r.created_at) + MAIL_LIMITS.giveUpDays * day, dashboard,
+        }));
+        if (sent.ok) out.reminded++;
+      }
+      await saveForward(env, r.site_id, {});   // looked at: the next run begins with the rows that have waited longer for a look
+    } catch (e) {
+      out.failed++;
+      console.warn(JSON.stringify({ evt: 'forward_sweep_one_failed', site: r.site_id, address: r.address, detail: whyMail(e) }));
+      try { await saveForward(env, r.site_id, {}); } catch { /* it is tried again on the next run */ }
+    }
+  }
+  return out;
+}
+
 const MAILS_PER_RUN = 25;   // a run writes to this many people at most; the rest wait five minutes
 
 /**
@@ -1191,7 +1310,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const domains = can && await domainsAvailable(env);
     const owned = domains ? await domainsForAccount(env, sess.account_id) : {};
     for (const r of rows) r.domain = publicDomain(owned[r.id] || null, { records: false });
-    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains });
+    // `forwarding`: this service can forward one email address at a site's own domain to an inbox its owner already reads.
+    // Each site's `forward` says where that stands (domain-mail.js), or is null.
+    const forwarding = !!domains && await forwardsReady(env);
+    const forwards = forwarding ? await forwardsForAccount(env, sess.account_id) : {};
+    for (const r of rows) r.forward = publicForward(forwards[r.id] || null);
+    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding });
   }
 
   // The address notices about the account's own sites go to (mail.js). The
@@ -1574,6 +1698,124 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     }
 
     return refuse('bad_action', 400);
+  }
+
+  // One forwarded email address at a hosted site's own domain (domain-mail.js):
+  // what stands and whether it is offered (GET), and setting it up, asking
+  // whether the inbox has confirmed, having the confirmation email sent again,
+  // and stopping it (POST). With editing switched off nothing new is set up,
+  // and what was asked for earlier can still be looked at, finished and stopped.
+  if (path === '/cloud/sites/mail' && (request.method === 'GET' || request.method === 'POST')) {
+    const asked = await ownedSite(request, env, url, sess, tools, { needToken: false, needAccess: false });
+    if (asked.response) return asked.response;
+    const { site, body } = asked;
+    let row = await forwardRow(env, site.id);
+    const refuse = (code, status, { address = row?.address || null, inbox = row?.inbox || null, name = null, ...extra } = {}) => json({ error: mailSentence(code, { address, inbox, name }), code, ...extra }, status);
+
+    if (request.method === 'GET') {
+      const can = await forwardingAvailable(env);
+      const domain = can ? await domainRow(env, site.id) : null;
+      const stop = !can ? 'not_set_up' : forwardStop(domain) || (asked.access ? null : 'plan_ended');
+      // A parked domain says "no mail here". Forwarding replaces the two records that say so (domain-mail.js switchMailOn), and the look says so first.
+      const note = !stop && !row && saysNoMail(keptRecords(domain), domain.name) ? mailSentence('says_no_mail', { name: domain.name }) : null;
+      return json({ ok: true, forward: publicForward(row), offered: !stop, why: stop ? mailSentence(stop, { name: domain?.name || null }) : null, ...(note ? { note } : {}) });
+    }
+
+    const action = String(body.action || '');
+    if (!['setup', 'check', 'again', 'stop'].includes(action)) return refuse('bad_action', 400);
+    if (action === 'setup' && !asked.access) return refuse('plan_ended', 403);
+    // One change at a time for a site, so that two presses (or a press and the
+    // five-minute job) do not make two rules. The row is read again after the
+    // lock: a second press that arrives as the first one finishes finds what the first one wrote.
+    const lock = forwardLock(site.id);
+    if (await env.KILN.get(lock)) return refuse('busy', 409, { forward: publicForward(row) });
+    await env.KILN.put(lock, '1', { expirationTtl: FORWARD_LOCK_S });
+    try {
+      row = await forwardRow(env, site.id);
+      if (action !== 'setup' && !row) return action === 'stop' ? json({ ok: true, forward: null }) : refuse('no_forward', 404);   // stopping nothing is what was asked for
+      const now = Date.now();
+      const domain = await domainRow(env, site.id);
+      const name = domain?.name || null;
+      const live = domain?.state === 'live' && !!domain.zone_id;
+      const standing = async (extra = {}) => json({ ok: true, forward: publicForward(await forwardRow(env, site.id)), ...extra });
+      const failed = async (e, stage, extra = {}) => {
+        const code = e instanceof MailError && FORWARD_STATUS[e.code] ? e.code : 'cloudflare';
+        console.warn(JSON.stringify({ evt: 'forward_failed', repo: site.repo, action, stage, reason: code, detail: whyMail(e) }));
+        return refuse(code, FORWARD_STATUS[code], { name, forward: publicForward(await forwardRow(env, site.id)), ...extra });
+      };
+      // The inbox has confirmed: the rule is made, and the account's own address is written to.
+      const switchOn = async (waiting, inboxId) => {
+        const account = await env.kiln_cloud.prepare('SELECT email FROM accounts WHERE id = ?').bind(sess.account_id).first();
+        await forwardingOn(env, { s: { id: site.id, repo: site.repo, email: account?.email }, row: waiting, zoneId: domain.zone_id, inboxId, now });
+      };
+
+      if (action === 'setup') {
+        if (!(await forwardingAvailable(env))) return refuse('not_set_up', 503);
+        const stop = forwardStop(domain);
+        if (stop) return refuse(stop, 409, { name });
+        let address, inbox;
+        try { address = `${cleanLocal(body.local, name)}@${name}`; inbox = cleanInbox(body.inbox, name); }
+        catch (e) { return refuse(e instanceof MailError && e.code === 'same_domain' ? 'same_domain' : 'not_an_address', 400, { address: null, inbox: null, name }); }
+        const same = !!row && row.address === address && row.inbox === inbox;
+        if (same && row.state === 'on') return json({ ok: true, forward: publicForward(row), sent: false });   // it stands as asked
+        let box;
+        try { await switchMailOn(env, { zoneId: domain.zone_id, name }); }
+        catch (e) { return failed(e, 'switch', { address, inbox }); }
+        try { box = await addInbox(env, { email: inbox }); }
+        catch (e) { return failed(e, 'inbox', { address, inbox }); }
+        // Asking for the same again while it waits keeps its clock: the reminder and the day Kiln stops waiting count from the first asking.
+        const again = same && row.state === 'confirming';
+        const saved = await saveForward(env, site.id, {
+          address, inbox, inbox_id: box.id, state: 'confirming', reason: null,
+          ...(again ? (box.sent ? { asked_at: now } : {}) : { created_at: now, asked_at: box.sent ? now : null }),
+        });
+        if (!saved) return refuse('not_set_up', 503);
+        // An inbox that confirmed earlier (for this site or another of the hosting account's) gets no second email: the rule is made at once.
+        if (box.verified) {
+          try { await switchOn(await forwardRow(env, site.id), box.id); }
+          catch (e) { return failed(e, 'rule'); }   // the row waits, and the five-minute job tries the rule again
+        }
+        return standing({ sent: !!box.sent });
+      }
+
+      if (action === 'check') {
+        // Only an address that waits, at a domain that is live, has anything to ask about.
+        if (row.state !== 'confirming' || !live) return json({ ok: true, forward: publicForward(row) });
+        let box;
+        try { box = await inboxState(env, { email: row.inbox, id: row.inbox_id }); }
+        catch (e) { return failed(e, 'inbox'); }
+        if (box?.verified) {
+          try { await switchOn(row, box.id); }
+          catch (e) { return failed(e, 'rule'); }
+        }
+        return standing();
+      }
+
+      if (action === 'again') {
+        if (row.state !== 'confirming') return json({ ok: true, forward: publicForward(row), sent: false });
+        if (!canAskAgain(row, now)) return refuse('too_soon', 429, { forward: publicForward(row) });
+        let box;
+        try { box = await askAgain(env, { email: row.inbox }); }
+        catch (e) { return failed(e, 'inbox'); }
+        await saveForward(env, site.id, { inbox_id: box.id, ...(box.sent ? { asked_at: now } : {}) });   // the inbox has a new id after this
+        if (box.verified && live) {
+          try { await switchOn(row, box.id); }
+          catch (e) { return failed(e, 'rule'); }
+        }
+        return standing({ sent: !!box.sent });
+      }
+
+      // stop: the rule goes and the row is forgotten. The domain's mail records stay, so nothing bounces differently by surprise.
+      if (domain?.zone_id) {
+        try { await stopForwarding(env, { zoneId: domain.zone_id, ruleId: row.rule_id || null }); }
+        catch (e) { return failed(e, 'stop'); }
+      }
+      await forgetForward(env, site.id);
+      console.log(JSON.stringify({ evt: 'forward_stopped', repo: site.repo, address: row.address }));
+      return json({ ok: true, forward: null });
+    } finally {
+      try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ }
+    }
   }
 
   // The domain's records as one text file, for an owner who moves the domain

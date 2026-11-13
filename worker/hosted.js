@@ -297,6 +297,10 @@ export async function forgetHosting(env, siteId) {
  *            the row is put away with `reason`. The zone and every other
  *            record STAY: the owner's email may be answered from them;
  *   put away or failed: left as it is.
+ * A forwarded email address at the domain (domain-mail.js) is left as it is
+ * in every case, its row and its rule: the rule lives in the zone, and mail
+ * for the address keeps arriving for as long as the zone answers for the
+ * domain. Its owner can still stop it from the dashboard.
  * A site that stays on Kiln gets its temporary address back as the address on
  * record, as when a domain is moved away. Never throws: what Cloudflare or
  * the database refuses is logged, and the take-down or the removal goes on.

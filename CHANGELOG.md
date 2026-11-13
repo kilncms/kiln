@@ -7,6 +7,30 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ## [0.6.5] - 2026-11-13
+### Added
+
+- **A hosted site's own domain can have one email address forwarded to an
+  inbox its owner already reads.** The service now answers the dashboard for
+  it, though no page asks yet. `GET /cloud/sites/mail?site=` says what stands
+  and whether forwarding is offered: only at a domain that is live, that has no
+  email of its own, on a site that may be edited. When it is not offered, the
+  answer holds the sentence why. `POST /cloud/sites/mail` sets it up (mail is
+  switched on for the domain, Cloudflare writes to the inbox, and Kiln waits),
+  asks whether the inbox has confirmed, has the confirmation email sent again
+  at most once every ten minutes, and stops it (the rule goes, the domain's
+  mail records stay). The rule is made only once Cloudflare says the inbox has
+  confirmed, by "check now" or by the five-minute job, and the owner is then
+  written to: "hello@yourdomain.com now reaches you@inbox". An inbox that
+  confirmed earlier gets no second email, and the address is on at once. When
+  an inbox has not confirmed after 7 days its owner gets one reminder, and
+  after 30 days Kiln stops waiting and says so on the site's row. A domain
+  with email of its own is never touched, and a parked domain that says "no
+  mail here" is told first that those two records are replaced. A change of
+  inbox keeps the old inbox reached until the new one confirms. When hosting
+  ends or a site is removed, the forwarded address is left as it is, so mail
+  keeps arriving for as long as the domain's name servers point at Kiln.
+  `/cloud/me` carries `forwarding` and each site's `forward`. The setup tool
+  now copies `worker/domain-mail.js` for a service somebody hosts themselves.
 
 ### Fixed
 
