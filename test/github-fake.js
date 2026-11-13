@@ -187,7 +187,14 @@ export function fakeGitHub({ repo = 'acme/site', files = {}, defaultBranch = 'ma
           return jsonRes({ status: 'ahead', ahead_by: chain.length, behind_by: 0, total_commits: chain.length, files,
             commits: chain.map(sha => ({ sha, parents: commits.get(sha).parents.map(p => ({ sha: p })), commit: { author: commits.get(sha).author, message: commits.get(sha).message } })) });
         }
-        return jsonRes({ status: isAncestor(b, a) ? 'behind' : 'diverged', ahead_by: isAncestor(b, a) ? 0 : 1, behind_by: 1 });
+        // Behind, or diverged: how many commits each side has that the other lacks, and the ones `b` is ahead by
+        // (first parents, oldest first) with their authors, as GitHub lists them.
+        const reach = (x) => { const seen = new Set(); const todo = [x]; while (todo.length) { const c = todo.pop(); if (!c || seen.has(c)) continue; seen.add(c); todo.push(...(commits.get(c)?.parents || [])); } return seen; };
+        const ra = reach(a); const rb = reach(b);
+        const ahead = [];
+        for (let c = b; c && !ra.has(c); c = commits.get(c).parents[0]) ahead.unshift(c);
+        return jsonRes({ status: ahead.length ? 'diverged' : 'behind', ahead_by: ahead.length, behind_by: [...ra].filter(c => !rb.has(c)).length, total_commits: ahead.length,
+          commits: ahead.map(sha => ({ sha, parents: commits.get(sha).parents.map(p => ({ sha: p })), commit: { author: commits.get(sha).author, message: commits.get(sha).message } })) });
       }
       return notFound();
     },

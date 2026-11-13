@@ -86,6 +86,7 @@ const WORKER_VERSION = '0.6.8';
 import { startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { handleCloud, googleDashboardSignIn, keptOwnerAtSite, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, userPushAnswer, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
+import { VIA_KILN } from './prepare.js';
 import { keepsReady, keptStands } from './keeps.js';
 import { bringOn } from './bring.js';
 import { sweepBrings } from './cloud.js';
@@ -1982,7 +1983,7 @@ async function suggestionDecide(request, env) {
           content: b64FromUtf8(html), sha: cur.sha,
           // The SUGGESTER keeps authorship of their words; the decide record
           // (stored above) is where the approver is remembered.
-          author: { name: `${sug.by} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' },
+          author: { name: `${sug.by}${VIA_KILN}`, email: 'kiln-editor@users.noreply.github.com' },
         }),
       });
       if (put.ok) {
@@ -2415,7 +2416,7 @@ async function sourceCommit(request, env) {
   const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };
   const r = await commitSourceEdits(h, repo, branch, v, {
     message: (typeof message === 'string' && message.trim()) ? message : `Kiln: update ${v.file}`,
-    author: `${actor.name} (via Kiln)`,
+    author: `${actor.name}${VIA_KILN}`,
   });
   return json(r.body, r.status);
 }
@@ -2535,7 +2536,7 @@ async function sourceCreate(request, env) {
     const put = await fetch(`${GH}/repos/${d.repo}/contents/${plan.file.split('/').map(encodeURIComponent).join('/')}`, {
       method: 'PUT', headers: h,
       body: JSON.stringify({ message, content: b64FromUtf8(content), branch: d.branch,
-        author: { name: `${d.actor.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' } }),
+        author: { name: `${d.actor.name}${VIA_KILN}`, email: 'kiln-editor@users.noreply.github.com' } }),
     });
     if (put.ok) {
       const out = await put.json();
@@ -2575,7 +2576,7 @@ async function sourceRemove(request, env) {
     const del = await fetch(`${GH}/repos/${d.repo}/contents/${p.file.split('/').map(encodeURIComponent).join('/')}`, {
       method: 'DELETE', headers: h,
       body: JSON.stringify({ message: `Kiln: remove ${p.file}`, sha: cur.sha, branch: d.branch,
-        author: { name: `${d.actor.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com' } }),
+        author: { name: `${d.actor.name}${VIA_KILN}`, email: 'kiln-editor@users.noreply.github.com' } }),
     });
     if (del.ok) {
       const out = await del.json();
@@ -4100,7 +4101,7 @@ const NO_DELETE_MESSAGE = 'editors cannot delete files';
 // The author every commit made through an editor session carries. The
 // committer stays the Kiln bot.
 const EDITOR_COMMIT_EMAIL = 'kiln-editor@users.noreply.github.com';
-function viaKiln(name, email = '') { return { name: `${name} (via Kiln)`, email: email || EDITOR_COMMIT_EMAIL }; }
+function viaKiln(name, email = '') { return { name: `${name}${VIA_KILN}`, email: email || EDITOR_COMMIT_EMAIL }; }
 function editorStamp(sess) { return viaKiln(sess.name); }
 /**
  * The body of a write, with its human author on it when it writes a file or

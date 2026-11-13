@@ -154,6 +154,20 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   address they have. If you run your own service, apply migration
   `0013_preview_names.sql`.
 
+- **Only a suggestion or a shared draft that was written in Kiln is put up
+  as a preview.** A preview has a public address. An invited editor who may
+  only suggest could point a suggestion branch at any commit of the
+  repository: an old one that still held a page the owner had since removed,
+  or the newest commit of somebody's unfinished working branch, and that
+  content would have gone public. A branch (`kiln/suggest-…` or
+  `kiln-drafts`) is now put up only when it is one to fifty commits ahead of
+  the site's own branch, at most twenty behind it, and every one of those
+  commits was written through Kiln's editor. Kiln copies the very commit it
+  looked at, and a preview that was up already stays as it was. If a
+  suggestion of yours has no preview, approve or decline what waits on its
+  branch, or bring the branch up to date with the site's branch, and save
+  again.
+
 ## [0.6.8] - 2026-11-13
 
 ### Added

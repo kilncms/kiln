@@ -30,7 +30,7 @@
  */
 
 import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError, isPreviewBranch, previewAlias, previewName } from './hosting.js';
-import { gh, refPath } from './prepare.js';
+import { gh, refPath, VIA_KILN } from './prepare.js';
 import { keepEditorsCurrent, finishCare, setPreviews } from './lookafter.js';
 import { domainRow, saveDomain, forgetDomain, detachDomain, removeWaitingDomain } from './domain.js';
 
@@ -43,6 +43,8 @@ const PREVIEW_KEPT_MS = 30 * 24 * 60 * 60 * 1000;   // a preview nobody changed 
 const SWEEP_PREVIEWS = 5;                    // previews one sweep takes down at most
 const PREVIEW_COPIES_PER_HOUR = 60;          // copies of previews one site gets in one hour at most
 const HOUR_MS = 60 * 60 * 1000;
+const SUGGESTION_AHEAD = 50;                 // commits a preview's branch is ahead of the site's own branch at most
+const SUGGESTION_BEHIND = 20;                // and behind it at most
 const lockKey = (id) => `hostlock:${id}`;
 const previewLock = (id, alias) => `pvlock:${id}:${alias}`;
 const previewWant = (id, alias) => `pvwant:${id}:${alias}`;
@@ -210,6 +212,43 @@ export async function forgetPreviews(env, siteId, why = 'site_removed') {
 }
 
 /**
+ * Is this branch what its name says: a suggestion, or the shared drafts, that
+ * people wrote in Kiln's editor on top of the site's own branch? A preview has
+ * a public address, and a person who may only suggest can point such a branch
+ * at any commit of the repository: an old one that still holds a page the
+ * owner has since removed, or the head of somebody's unfinished working
+ * branch. So a branch goes up only when it is ahead of the site's default
+ * branch by one to fifty commits, behind it by twenty at most, and every
+ * commit it is ahead by has an author name Kiln wrote (it ends with VIA_KILN).
+ *
+ * Answers { ok: true, head } with the commit that was looked at, which is the
+ * one to copy; { ok: false, why, ahead, behind } for a branch that is not a
+ * suggestion; { ok: false, silent: true } when GitHub did not answer. Never
+ * throws.
+ */
+async function suggestion({ token, repo, branch }) {
+  try {
+    const meta = await gh(token, 'GET', `/repos/${repo}`);
+    const main = meta.ok ? (await meta.json())?.default_branch : null;
+    const ref = main ? await gh(token, 'GET', `/repos/${repo}/git/ref/heads/${refPath(branch)}`) : null;
+    const head = ref?.ok ? (await ref.json())?.object?.sha : null;
+    if (!head) return { ok: false, silent: true };
+    const res = await gh(token, 'GET', `/repos/${repo}/compare/${refPath(main)}...${head}`);
+    const diff = res.ok ? await res.json() : null;
+    const ahead = diff?.ahead_by, behind = diff?.behind_by;
+    if (!Number.isInteger(ahead) || !Number.isInteger(behind)) return { ok: false, silent: true };
+    const no = (why) => ({ ok: false, why, ahead, behind });
+    if (ahead < 1) return no('nothing_new');
+    if (ahead > SUGGESTION_AHEAD) return no('too_far_ahead');
+    if (behind > SUGGESTION_BEHIND) return no('too_far_behind');
+    const commits = Array.isArray(diff.commits) ? diff.commits : [];
+    if (commits.length !== ahead) return no('commits_not_listed');
+    if (!commits.every(c => typeof c?.commit?.author?.name === 'string' && c.commit.author.name.endsWith(VIA_KILN))) return no('not_written_in_kiln');
+    return { ok: true, head };
+  } catch { return { ok: false, silent: true }; }
+}
+
+/**
  * Put one branch of a hosted site up as its preview, and record it. One copy
  * at a time for a preview: a notice that arrives while a copy runs leaves the
  * commit it named, and the running copy goes round once more for it. The row
@@ -218,7 +257,10 @@ export async function forgetPreviews(env, siteId, why = 'site_removed') {
  * first, and the database itself refuses a sixth row, so branches pushed at
  * the same moment cannot each count "fewer than five" and all go up. Every
  * copy is a whole copy of the site, so one site gets sixty copies of previews
- * in one hour and no more. Never throws.
+ * in one hour and no more. Only a branch that is a suggestion written in
+ * Kiln goes up (`suggestion` above), and the copy is of the very commit that
+ * was looked at. A branch that is not one is left out, and a preview of it
+ * that was up before stays as it was. Never throws.
  */
 async function putPreview(env, { site, token, branch, sha = null }) {
   const alias = previewAlias(branch), name = previewName(env, site, branch);
@@ -252,6 +294,14 @@ async function putPreview(env, { site, token, branch, sha = null }) {
       return { state: 'failed' };
     };
     if (await taken()) return nameTaken();
+    // Looked at before anything is taken down to make room, and again for a commit that comes while the copy runs.
+    const refused = (c) => {
+      if (c.silent) console.warn(JSON.stringify({ evt: 'preview_not_up', repo: site.repo, branch, name, reason: 'github' }));   // the next push tries again
+      else console.log(JSON.stringify({ evt: 'preview_not_a_suggestion', repo: site.repo, branch, why: c.why, ahead: c.ahead, behind: c.behind }));
+      return { state: c.silent ? 'github' : 'not_a_suggestion' };
+    };
+    let checked = await suggestion({ token, repo: site.repo, branch });
+    if (!checked.ok) return refused(checked);
     if (!row) {
       const others = await previewsOf(env, site.id);
       for (const old of others.slice(0, Math.max(0, others.length - (PREVIEWS_PER_SITE - 1)))) {
@@ -274,6 +324,10 @@ async function putPreview(env, { site, token, branch, sha = null }) {
     }
     let out = null;
     for (let round = 0; round < 2; round++) {
+      if (round) {
+        checked = await suggestion({ token, repo: site.repo, branch });
+        if (!checked.ok) { refused(checked); break; }   // what went up a moment ago was looked at and stays
+      }
       const made = await copies();
       if (made >= PREVIEW_COPIES_PER_HOUR) {
         if (round) break;   // the copy made a moment ago stays up; the commit that came meanwhile waits for the next hour's push
@@ -281,7 +335,7 @@ async function putPreview(env, { site, token, branch, sha = null }) {
         return tooMany();
       }
       await env.KILN.put(countKey, String(made + 1), { expirationTtl: 2 * 60 * 60 });
-      out = await deploySite(env, { token, repo: site.repo, name, first: !row.deployed_at, siteId: site.id, branch, preview: true });
+      out = await deploySite(env, { token, repo: site.repo, name, first: !row.deployed_at, siteId: site.id, branch, commit: checked.head, preview: true });
       if (out.state !== 'live') {
         // Nothing was put up (no home page on that branch, say). A preview that was up keeps what it served.
         if (!row.deployed_at) await env.kiln_cloud.prepare('DELETE FROM previews WHERE site_id = ? AND alias = ?').bind(site.id, alias).run();

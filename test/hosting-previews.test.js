@@ -18,6 +18,7 @@ import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare } from './cloudflare-fake.js';
 import { previewPattern, previewAlias, previewName, isPreviewBranch, siteName, PREVIEW_HEADERS } from '../worker/hosting.js';
 import { previewNotice, previewDecided } from '../worker/hosted.js';
+import { VIA_KILN } from '../worker/prepare.js';
 import { readFileSync } from 'node:fs';
 import { previewUrl } from '../src/editor/suggest.js';
 
@@ -53,10 +54,12 @@ const sweep = (env) => worker.scheduled({}, env);
 const rows = (env) => env.kiln_cloud.db.prepare('SELECT * FROM previews ORDER BY alias').all();
 const served = (w, path, name = PV) => w.cf.serve(name, path)?.bytes.toString() ?? null;
 const previewsUp = (w) => [...w.cf.scripts.keys()].filter(n => n.startsWith('pv-')).sort();
-/** Somebody's change lands on `branch`, which is made from the default branch when it is new. Returns the commit. */
-function change(w, branch, files) {
+/** The author Kiln gives a commit it writes for a person who works in the editor. */
+const ANA = { name: `Ana${VIA_KILN}`, email: 'kiln-editor@users.noreply.github.com' };
+/** An editor's change lands on `branch`, which is made from the default branch when it is new. Returns the commit. */
+function change(w, branch, files, by = ANA) {
   if (!w.gh.refs.has(`heads/${branch}`)) w.gh.refs.set(`heads/${branch}`, w.gh.head());
-  return w.gh.commit(files, { branch });
+  return w.gh.commit(files, { branch, by });
 }
 /** A push notice as GitHub sends it, signed. */
 async function notice(w, { branch, ref = `refs/heads/${branch}`, after = w.gh.head(branch), deleted = false } = {}) {
@@ -413,6 +416,166 @@ test('previews: two sites never share a preview name, and the database refuses t
     assert.equal(lines.filter(l => l.evt === 'preview_name_taken').length, 1);
     // The index of migration 0013 holds it even if the look before the write is passed by two at once.
     assert.throws(() => w.env.kiln_cloud.exec('INSERT INTO previews (site_id, alias, branch, name, commit_sha, deployed_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'site1', 'kiln-suggest-ana', SUGGEST, PV, null, null, 6), /UNIQUE/);
+  });
+});
+
+test('previews: a suggestion written in Kiln goes up, and so do the shared drafts, with the commit that was looked at', { skip: d1Skip }, async () => {
+  assert.equal(VIA_KILN, ' (via Kiln)');
+  const w = world();
+  await withFetch(w.handler, async (calls) => {
+    await switchOn(w.env);
+    const first = await push(w, SUGGEST, { 'index.html': '<!doctype html><h1>Ana suggests</h1>' });
+    assert.deepEqual(first.body, { ok: true, previews: 1 });
+    assert.equal(rows(w.env)[0].commit_sha, first.commit);
+    assert.ok(calls.some(c => c.url === `https://api.github.com/repos/ada/club/compare/main...${first.commit}`), 'GitHub was asked to compare the site\'s branch with that commit');
+    // A second commit by another editor, and the site's own branch twenty commits further: still a suggestion.
+    for (let n = 1; n <= 20; n++) w.gh.commit({ 'news.html': `<!doctype html><h1>News ${n}</h1>` });
+    change(w, SUGGEST, { 'about.html': '<!doctype html><h1>Ben adds</h1>' }, { name: `Ben${VIA_KILN}`, email: 'ben@example.com' });
+    assert.deepEqual((await notice(w, { branch: SUGGEST })).body, { ok: true, previews: 1 });
+    assert.equal(served(w, '/about.html'), '<!doctype html><h1>Ben adds</h1>');
+    // The shared drafts follow the same rule.
+    assert.deepEqual((await push(w, 'kiln-drafts', { 'index.html': '<!doctype html><h1>Draft</h1>' })).body, { ok: true, previews: 1 });
+    assert.equal(served(w, '/index.html', 'pv-site1-kiln-drafts'), '<!doctype html><h1>Draft</h1>');
+  });
+});
+
+test('previews: a branch pointed at an old commit, at somebody else\'s work, or too far from the site\'s branch is not put up', { skip: d1Skip }, async () => {
+  const w = world({ ...pages, 'old-prices.html': '<!doctype html><h1>Prices the owner took down</h1>' });
+  const refusals = async (branch) => {
+    let answer;
+    const lines = await logged(async () => { answer = await notice(w, { branch }); });
+    assert.deepEqual(answer, { status: 200, body: { ok: true, previews: 0 } }, branch);
+    const said = lines.filter(l => l.evt === 'preview_not_a_suggestion');
+    assert.equal(said.length, 1, `${branch}: one line in the log`);
+    assert.deepEqual([said[0].repo, said[0].branch], ['ada/club', branch]);
+    return said[0];
+  };
+  await withFetch(w.handler, async () => {
+    const old = w.gh.head();
+    w.gh.commit({ 'old-prices.html': null });   // the owner removed a page before the site came to Kiln's hosting
+    await switchOn(w.env);
+
+    // A person who may only suggest points a suggestion branch at the commit that still has the page.
+    w.gh.refs.set('heads/kiln/suggest-old', old);
+    assert.equal((await refusals('kiln/suggest-old')).why, 'nothing_new');
+    // And at the same branch as the site itself, which says nothing new either.
+    w.gh.refs.set('heads/kiln/suggest-same', w.gh.head());
+    assert.equal((await refusals('kiln/suggest-same')).why, 'nothing_new');
+
+    // At the head of the owner's unfinished working branch.
+    w.gh.refs.set('heads/redesign', w.gh.head());
+    w.gh.commit({ 'unfinished.html': '<!doctype html><h1>Not for anybody yet</h1>' }, { branch: 'redesign' });
+    w.gh.refs.set('heads/kiln/suggest-theirs', w.gh.head('redesign'));
+    assert.equal((await refusals('kiln/suggest-theirs')).why, 'not_written_in_kiln');
+    // One commit written in Kiln on top of that work does not make the rest a suggestion.
+    change(w, 'kiln/suggest-theirs', { 'about.html': '<!doctype html><h1>Mine</h1>' });
+    assert.equal((await refusals('kiln/suggest-theirs')).why, 'not_written_in_kiln');
+    // A name that only looks like Kiln's does not pass, and the shared drafts follow the same rule.
+    change(w, 'kiln/suggest-looks', { 'about.html': '<!doctype html><h1>x</h1>' }, { name: 'Mallory (via Kiln) ', email: 'm@example.com' });
+    assert.equal((await refusals('kiln/suggest-looks')).why, 'not_written_in_kiln');
+    w.gh.refs.set('heads/kiln-drafts', w.gh.head('redesign'));
+    assert.equal((await refusals('kiln-drafts')).why, 'not_written_in_kiln');
+
+    assert.deepEqual(previewsUp(w), []);
+    assert.deepEqual(rows(w.env), []);
+    assert.ok(![...w.cf.scripts.values()].some(s => Object.keys(s.manifest).some(p => p === '/old-prices.html' || p === '/unfinished.html')), 'neither page is anywhere on Kiln\'s hosting');
+
+    // Fifty commits ahead is a suggestion. Fifty-one is not, and what was up stays up.
+    for (let n = 1; n <= 50; n++) change(w, 'kiln/suggest-long', { 'index.html': `<!doctype html><h1>Change ${n}</h1>` });
+    assert.deepEqual((await notice(w, { branch: 'kiln/suggest-long' })).body, { ok: true, previews: 1 });
+    change(w, 'kiln/suggest-long', { 'index.html': '<!doctype html><h1>Change 51</h1>' });
+    const far = await refusals('kiln/suggest-long');
+    assert.deepEqual([far.why, far.ahead], ['too_far_ahead', 51]);
+    assert.equal(served(w, '/index.html', 'pv-site1-kiln-suggest-long'), '<!doctype html><h1>Change 50</h1>');
+
+    // Twenty-one commits behind the site's branch is too far behind.
+    change(w, 'kiln/suggest-late', { 'about.html': '<!doctype html><h1>Late</h1>' });
+    for (let n = 1; n <= 21; n++) w.gh.commit({ 'news.html': `<!doctype html><h1>News ${n}</h1>` });
+    const late = await refusals('kiln/suggest-late');
+    assert.deepEqual([late.why, late.ahead, late.behind], ['too_far_behind', 1, 21]);
+    assert.deepEqual(previewsUp(w), ['pv-site1-kiln-suggest-long']);
+  });
+});
+
+test('previews: a preview that is up stays as it was when its branch is pointed somewhere else, and takes nobody\'s place', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    for (const n of ['amy', 'ben', 'cy', 'di']) await push(w, `kiln/suggest-${n}`);
+    const up = await push(w, SUGGEST, { 'index.html': '<!doctype html><h1>Ana suggests</h1>' });
+    assert.equal(previewsUp(w).length, 5);
+    w.gh.refs.set('heads/redesign', w.gh.head());
+    const theirs = w.gh.commit({ 'index.html': '<!doctype html><h1>Not for anybody yet</h1>' }, { branch: 'redesign' });
+    w.gh.refs.set(`heads/${SUGGEST}`, theirs);
+    assert.deepEqual((await notice(w, { branch: SUGGEST })).body, { ok: true, previews: 0 });
+    assert.equal(served(w, '/index.html'), '<!doctype html><h1>Ana suggests</h1>');
+    assert.equal(rows(w.env).find(r => r.alias === 'kiln-suggest-ana').commit_sha, up.commit);
+    // A sixth branch that is not a suggestion takes no preview down to make room for itself.
+    w.gh.refs.set('heads/kiln/suggest-eve', theirs);
+    assert.deepEqual((await notice(w, { branch: 'kiln/suggest-eve' })).body, { ok: true, previews: 0 });
+    assert.equal(previewsUp(w).length, 5);
+    assert.equal(rows(w.env).length, 5);
+  });
+});
+
+test('previews: the copy is of the commit that was looked at, even when the branch moves right after', { skip: d1Skip }, async () => {
+  const w = world();
+  let after = null;
+  const handler = async (url, init) => {
+    const answer = await w.handler(url, init);
+    if (after && url.includes('/compare/')) { const now = after; after = null; now(); }
+    return answer;
+  };
+  await withFetch(handler, async () => {
+    await switchOn(w.env);
+    const good = change(w, SUGGEST, { 'index.html': '<!doctype html><h1>Ana suggests</h1>' });
+    w.gh.refs.set('heads/redesign', w.gh.head());
+    const theirs = w.gh.commit({ 'index.html': '<!doctype html><h1>Not for anybody yet</h1>' }, { branch: 'redesign' });
+    // The moment GitHub has answered the comparison, the branch is pointed at somebody else's work.
+    after = () => { w.gh.refs.set(`heads/${SUGGEST}`, theirs); };
+    assert.deepEqual((await notice(w, { branch: SUGGEST, after: good })).body, { ok: true, previews: 1 });
+    assert.equal(after, null);
+    assert.equal(served(w, '/index.html'), '<!doctype html><h1>Ana suggests</h1>');
+    assert.equal(rows(w.env)[0].commit_sha, good);
+    // GitHub's notice of the move puts nothing up either.
+    assert.deepEqual((await notice(w, { branch: SUGGEST })).body, { ok: true, previews: 0 });
+    assert.equal(served(w, '/index.html'), '<!doctype html><h1>Ana suggests</h1>');
+  });
+});
+
+test('previews: when GitHub does not answer the comparison nothing is put up, nothing fails, and the next push tries again', { skip: d1Skip }, async () => {
+  const w = world();
+  let cut = false;
+  const handler = async (url, init) => {
+    if (cut && url.includes('/compare/')) throw new TypeError('fetch failed');
+    return w.handler(url, init);
+  };
+  await withFetch(handler, async () => {
+    await switchOn(w.env);
+    change(w, SUGGEST, { 'index.html': '<!doctype html><h1>Ana suggests</h1>' });
+    // An error from GitHub, then no answer at all, then an answer that is not a comparison.
+    w.gh.failOn((method, path) => path.startsWith('/compare/'));
+    let answer;
+    const lines = await logged(async () => { answer = await notice(w, { branch: SUGGEST }); });
+    assert.deepEqual(answer, { status: 200, body: { ok: true, previews: 0 } });
+    assert.deepEqual(lines.filter(l => l.evt === 'preview_not_up').map(l => l.reason), ['github']);
+    assert.equal(lines.filter(l => l.evt === 'preview_not_a_suggestion').length, 0);
+    w.gh.failOn(null);
+    cut = true;
+    assert.deepEqual(await notice(w, { branch: SUGGEST }), { status: 200, body: { ok: true, previews: 0 } });
+    cut = false;
+    assert.deepEqual(previewsUp(w), []);
+    assert.deepEqual(rows(w.env), []);
+    assert.deepEqual([...w.env.KILN.map.keys()].filter(k => k.startsWith('pvlock:') || k.startsWith('pvcount:')), [], 'nothing is left locked, and no copy was counted');
+    // The next push finds GitHub answering.
+    assert.deepEqual((await notice(w, { branch: SUGGEST })).body, { ok: true, previews: 1 });
+    assert.equal(served(w, '/index.html'), '<!doctype html><h1>Ana suggests</h1>');
+    // A preview that is up stays as it was while GitHub is silent.
+    change(w, SUGGEST, { 'index.html': '<!doctype html><h1>Ana again</h1>' });
+    w.gh.failOn((method, path) => path.startsWith('/compare/'));
+    assert.deepEqual((await notice(w, { branch: SUGGEST })).body, { ok: true, previews: 0 });
+    assert.equal(served(w, '/index.html'), '<!doctype html><h1>Ana suggests</h1>');
+    assert.equal(rows(w.env).length, 1);
   });
 });
 

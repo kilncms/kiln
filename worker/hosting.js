@@ -212,16 +212,22 @@ async function cloudflare(env, method, path, { json, form, bearer } = {}) {
   return { status: res.status, result: data.result };
 }
 
-/** A repository's files at the head of `branch`, or of its default branch when none is named: { state, branch, head, entries }. */
-export async function readTree({ token, repo, branch: named = null }) {
+/**
+ * A repository's files at the head of `branch`, or of its default branch when none is named: { state, branch, head, entries }.
+ * When `commit` is given, the files are that commit's, and where the branch points now is not asked.
+ */
+export async function readTree({ token, repo, branch: named = null, commit = null }) {
   const meta = await gh(token, 'GET', `/repos/${repo}`);
   if ([401, 403, 404].includes(meta.status)) return { state: 'no_access' };
   if (!meta.ok) return { state: 'github' };
   const branch = named || (await meta.json()).default_branch || 'main';
-  const ref = await gh(token, 'GET', `/repos/${repo}/git/ref/heads/${refPath(branch)}`);
-  if (ref.status === 404 || ref.status === 409) return { state: 'empty', branch };
-  if (!ref.ok) return { state: 'github' };
-  const head = (await ref.json())?.object?.sha;
+  let head = commit;
+  if (!head) {
+    const ref = await gh(token, 'GET', `/repos/${repo}/git/ref/heads/${refPath(branch)}`);
+    if (ref.status === 404 || ref.status === 409) return { state: 'empty', branch };
+    if (!ref.ok) return { state: 'github' };
+    head = (await ref.json())?.object?.sha;
+  }
   const listing = await gh(token, 'GET', `/repos/${repo}/git/trees/${head}?recursive=1`);
   if (!listing.ok) return { state: 'github' };
   const tree = await listing.json();
@@ -260,11 +266,13 @@ async function settingsText(token, repo, entry) {
  * says the Worker is a preview of it: the files under members/ are then left
  * out always and the gate is never uploaded (a preview's address is not a
  * place members can sign in), and its `_headers` ends with PREVIEW_HEADERS
- * after whatever the site's own file says.
+ * after whatever the site's own file says. `commit` names the one commit to
+ * copy: a preview is a copy of the commit that was looked at, even when its
+ * branch has moved since.
  */
-export async function deploySite(env, { token, repo, name, first = false, siteId = null, branch = null, preview = false }) {
+export async function deploySite(env, { token, repo, name, first = false, siteId = null, branch = null, commit = null, preview = false }) {
   if (!hostingOn(env)) throw new HostingError('not_set_up');
-  const tree = await readTree({ token, repo, branch });
+  const tree = await readTree({ token, repo, branch, commit });
   if (tree.state !== 'ok') return tree;
   const all = publishedFiles(tree.entries);
   const { headers, redirects, skipped } = all;

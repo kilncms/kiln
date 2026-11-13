@@ -263,6 +263,14 @@ export function gh(token, method, path, body, accept) {
 }
 export const refPath = (branch) => String(branch).split('/').map(encodeURIComponent).join('/');
 
+/**
+ * What the author's name of every commit ends with that Kiln writes for a
+ * person who works in the editor ("Ana (via Kiln)"). The service writes it in
+ * one spelling, from here, because a preview is only put up for a branch whose
+ * new commits all carry it (hosted.js).
+ */
+export const VIA_KILN = ' (via Kiln)';
+
 /** Run `fn` over `items`, a few at a time, keeping their order. */
 export async function inTurn(items, fn) {
   const out = new Array(items.length);
