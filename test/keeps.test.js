@@ -18,6 +18,7 @@ import worker from '../worker/index.js';
 import { keepsOn, keepsReady, inKeepOrg, cleanName, siteSlug, keepKey, keepSentence, keptRemovedNote, STARTS_AN_HOUR } from '../worker/keeps.js';
 import { siteName, siteAddress } from '../worker/hosting.js';
 import { kilnConfigFile } from '../worker/prepare.js';
+import { siteStartedMail, siteAddedMail } from '../worker/mail.js';
 import { fakeKV, withFetch, jsonRes } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 
@@ -443,4 +444,68 @@ test('what the dashboard is told: keeps on /cloud/me and /healthz, and kept on e
   assert.equal(me.json.keeps, true);
   assert.equal(me.json.sites.length, 1);
   assert.equal('kept' in me.json.sites[0], false, 'an ordinary site says nothing about it');
+});
+
+test('the welcome mail for a site Kiln keeps: its name, that Kiln keeps its files, its address, how the editor opens, the free days and what follows them, and a domain of one\'s own, with no word of GitHub', () => {
+  const ends = Date.UTC(2026, 10, 20, 15);
+  const m = siteStartedMail({ name: 'Oak Bakery', address: 'https://oak-bakery-1a2b3c4d.kiln-sites.workers.dev/', endsAt: ends, dashboard: 'https://app.example' });
+  assert.equal(m.subject, 'Oak Bakery is started on Kiln: what to do next');
+  assert.equal(m.text, [
+    'Hello,',
+    'Oak Bakery is started. Kiln made its files and keeps them for you, so there is nothing to install and nothing to store.',
+    "Its temporary address is https://oak-bakery-1a2b3c4d.kiln-sites.workers.dev. The site is up there about a minute after your dashboard has put it on Kiln's hosting. If the site's row in your dashboard has a button that says Put it on Kiln's hosting, press it.",
+    "To edit the site, open your dashboard and press Open the editor on the site's row. There is no password. Click any outlined words or picture, change them, and press Publish.",
+    "The site is free until Friday, November 20, and no card is needed for that time. To keep it after Friday, November 20, press Subscribe on the site's row. Kiln Cloud + hosting is $14.99 a month for the site, and you can cancel any time.",
+    'If you do not subscribe by Friday, November 20, editing is switched off. The site then stays up at its temporary address for three more days and comes down after that. Kiln keeps every file, and subscribing puts the site back up.',
+    'To use a domain of your own for the site, add it from the same row in your dashboard and follow the steps there.',
+    'Your dashboard:',
+    'https://app.example',
+    'Kiln\nYou are getting this because Oak Bakery was started on Kiln Cloud with this email address. Reply to this email to reach a person.\n',
+  ].join('\n\n'));
+  for (const body of [m.subject, m.text, m.html]) assert.equal(/github|repositor|sign in with|—|–|undefined|null\b/i.test(body), false, body);
+  assert.ok(m.html.includes('<a href="https://app.example"'), 'the dashboard is a link');
+  assert.equal(m.html.includes('<script'), false);
+  // It says the same about the free days and the price as the mail for a site added the ordinary way.
+  const added = siteAddedMail({ origin: 'https://club.example', plan: 'managed', endsAt: ends, dashboard: 'https://app.example' });
+  for (const same of ['Friday, November 20', 'Kiln Cloud + hosting is $14.99 a month for the site, and you can cancel any time.']) {
+    assert.ok(added.text.includes(same) && m.text.includes(same), same);
+  }
+  // A name is never trusted to be tidy: it cannot break the subject line or the page.
+  const odd = siteStartedMail({ name: 'Oak\r\nBcc: x@example.com <b>', address: 'https://a.example', endsAt: ends, dashboard: 'https://app.example' });
+  assert.equal(/[\r\n]/.test(odd.subject), false);
+  assert.equal(odd.html.includes('<b>'), false);
+});
+
+test('starting a site sends its owner the welcome mail once, and only where customer mail is on and the account has an address', { skip: d1Skip }, async () => {
+  /** A service with customer mail on, and everything it sends to a customer. */
+  const withMail = () => {
+    const sent = [];
+    const w = world({ env: { CUSTOMER_MAIL_FROM: 'hello@kilncms.com', NOTIFY: { send: async (m) => { if (m && m.subject) sent.push(m); return { messageId: `<${sent.length}@kilncms.com>` }; } } } });
+    return { ...w, sent };
+  };
+  const w = withMail();
+  const first = await start(w);
+  assert.equal(first.status, 200);
+  assert.equal(w.sent.length, 1);
+  const expected = siteStartedMail({ name: 'Oak Bakery', address: first.json.site.origin, endsAt: rows(w.env)[0].created_at + 7 * 86400e3, dashboard: 'https://app.example' });
+  assert.deepEqual({ to: w.sent[0].to, subject: w.sent[0].subject, text: w.sent[0].text, html: w.sent[0].html },
+    { to: 'rosa@example.com', subject: 'Oak Bakery is started on Kiln: what to do next', text: expected.text, html: expected.html });
+  assert.ok(w.sent[0].text.includes(`Its temporary address is ${first.json.site.origin}.`));
+  const marker = () => [...w.env.KILN.map.keys()].filter(k => k.startsWith('mail:started:'));
+  assert.deepEqual(marker(), [`mail:started:${first.json.site.id}`], 'remembered for the site, so it never goes twice');
+  await start(w);   // pressed again: whatever the service answers, no second mail for that site
+  assert.equal(w.sent.length, 1);
+  assert.equal(marker().length, 1);
+
+  // Customer mail is off: the site is started and nothing is sent.
+  const off = world();
+  assert.equal((await start(off)).status, 200);
+  assert.deepEqual([...off.env.KILN.map.keys()].filter(k => k.startsWith('mail:started:')), []);
+  assert.equal(off.notes.some(raw => /is started on Kiln/.test(String(raw))), false);
+
+  // The account has no address: the same.
+  const bare = withMail();
+  bare.env.kiln_cloud.exec('UPDATE accounts SET email = NULL WHERE id = ?', 'acct-g');
+  assert.equal((await start(bare)).status, 200);
+  assert.deepEqual(bare.sent, []);
 });

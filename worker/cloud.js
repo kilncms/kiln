@@ -37,7 +37,7 @@
 
 import { RUNBOOK_HTML } from './runbook.js';
 import { troubleBody, forDashboard, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN } from './signin-trouble.js';
-import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
+import { customerMailOn, mailAddress, sendOnce, siteAddedMail, siteStartedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
@@ -1650,13 +1650,21 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   if (path === '/cloud/sites/start' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const { name } = await request.json().catch(() => ({}));
+    let typed = null;   // the name as it is put on the site's row: what the person typed, tidied
     const out = await startKept(env, {
       accountId: sess.account_id, name, worker: url.origin, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
-      register: ({ id, repo, origin, name }) => registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name }),
+      register: ({ id, repo, origin, name }) => { typed = name; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name }); },
       forget: (id) => env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(),
       note: (subject, lines) => notifyOwner(env, subject, lines),
     });
     if (!out.ok) return json({ error: out.error, code: out.code }, out.status);
+    // The welcome mail for a site Kiln keeps: once for the site, and only where
+    // customer mail is on and the account has an address (sendOnce sees to
+    // all three). The site is started whether or not the mail goes.
+    try {
+      const to = await accountEmail(env, sess.account_id);
+      await sendOnce(env, `started:${out.site.id}`, to, siteStartedMail({ name: typed || name, address: out.site.origin, endsAt: trialEndsAt(out.site.created_at, TRIAL_GRACE_DAYS), dashboard: dash }));
+    } catch { /* a mail that could not go is not a reason to fail the start */ }
     // The site in the form /cloud/me lists it, from /cloud/me's own code, so the two can never differ.
     let site = null;
     try {

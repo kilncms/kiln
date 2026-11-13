@@ -26,6 +26,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   operator is told that its repository may be removed by hand after 30 days.
   Nothing in the service deletes, renames or hands over a repository. The
   ordinary way to add a site refuses a repository in that organization.
+  Where customer mail is on and the account has an address, the person gets
+  one welcome mail for the site. It says the site's name as they typed it,
+  that Kiln made its files and keeps them, its temporary address, that the
+  editor opens from the site's row in the dashboard with Open the editor and
+  no password, the day the free trial ends and what happens then, and that a
+  domain of their own can be added from the same row. It does not speak of
+  GitHub.
   `/cloud/me` and `/healthz` say `keeps` when the service can do this, and
   `/cloud/me` says `kept` on each such site. It is switched on with three
   settings for a second GitHub App that may make repositories there
