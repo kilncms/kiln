@@ -60,13 +60,15 @@ test('names: a theme setting is named without the stylesheet\'s dashes, or the w
   assert.equal(tokenName('--color-peri', 'color'), 'Peri');
   assert.equal(tokenName('--color-ink-soft', 'color'), 'Ink soft');
   assert.equal(tokenName('--colour-accent', 'color'), 'Accent');
-  assert.equal(tokenName('--font-sans', 'font'), 'Sans');
-  assert.equal(tokenName('--font-display', 'font'), 'Display');
+  // a font is named for what it is used for (0.6.5): "Sans" and "Display" said nothing to a shop owner
+  assert.equal(tokenName('--font-sans', 'font'), 'Text font');
+  assert.equal(tokenName('--font-display', 'font'), 'Heading font');
   assert.equal(tokenName('--text-xs--line-height', 'size'), 'Text xs line height');
   assert.equal(tokenName('--brand-primary', 'color'), 'Brand primary');
   // the one word a name has is kept, even when it is the group's own
   assert.equal(tokenName('--color', 'color'), 'Color');
-  assert.equal(tokenName('--radius', 'other'), 'Radius');
+  // "Radius" is the stylesheet's word for it (0.6.5)
+  assert.equal(tokenName('--radius', 'other'), 'Corner roundness');
 });
 
 test('names: nothing stored is changed, only what is shown', () => {

@@ -39,6 +39,37 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Cloudflare has seen the name servers change, what the dashboard is told has
   no `gives_up_at` and carries `taking_hold: true`, so the dashboard can say
   that the name servers have changed and Kiln is finishing the set-up.
+### Changed
+
+- **Theme names each setting in words a shop owner uses.** A setting was listed
+  under its style sheet name with the dashes taken out, so the starter site
+  showed "R sm", "Maxw" and "Cream 2". Each is now named for what it does:
+  "Corner roundness, small", "Widest the page gets", "Space at the page's
+  edges", "Shadow, small", "Cream, second shade", "Heading font", "Text font".
+  A name Kiln does not know keeps its own words ("Brand ink"), and a name of
+  two or three letters is given the word for what it is ("Ink colour"). The
+  owner still sees the style sheet's own name in small print under it.
+- **A font is shown by its name, and the one the site had can always be put
+  back.** The list of fonts showed raw CSS and offered "Inter, serif", a
+  sans-serif face with a serif fallback. Once another font was applied, the
+  line the site started with was gone from the list. A font is now listed by
+  its first family's name ("Fraunces", "Inter"). The value a setting had when
+  Theme was opened stays in its list, marked "(as it is now)", or "(as it was
+  before)" once Apply has changed it, and choosing it writes the original line
+  back byte for byte. Every other face comes with fallbacks of its own kind:
+  the site's own list for that face where it has one. A face Kiln cannot place
+  is offered by itself. This memory lasts until the page is loaded again.
+- **A value Theme cannot change safely shows "Set in the style sheet".** A
+  shadow's long value, a gradient or a curve was printed raw beside its name.
+  It now shows those words and nothing to type in. A shadow that starts with
+  a colour is no longer taken for a colour.
+- **Theme says what Apply will change before it publishes.** A sentence above
+  the buttons names what is about to change: "This changes the mustard colour
+  and the heading font on every page." Two settings are named and the rest are
+  counted. The history entry says the same ("Theme: mustard colour, heading
+  font (via Kiln)") where it said "Theme: 2 tokens". The dialog says "Saved 2
+  changes", and the status line ends on "The new theme is live ✓". It no
+  longer offers "View site" for a theme change, which opened the style sheet.
 
 ## [0.6.4] - 2026-11-12
 

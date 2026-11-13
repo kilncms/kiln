@@ -218,11 +218,23 @@ hand-written and AI-generated sites already have. If yours doesn't, add one bloc
 shows a color picker per color, a font menu per font (offering fonts the page already
 loads — to introduce a brand-new font, add its `<link>`/`@font-face` to the site
 first), and a unit-preserving input per size. Values it can't safely edit as a single
-control — `var()` references, gradients, `url()`s, shadows — are listed read-only.
+control — `var()` references, gradients, `url()`s, shadows — are listed with the words
+"Set in the style sheet" and nothing to type in.
 
-Changes preview live on the page as you drag. **Apply** commits them to the
+Each setting is named for what it does, worked out from its own name: `--r-sm` is
+"Corner roundness, small", `--maxw` is "Widest the page gets", `--display` is "Heading
+font", `--cream-2` is "Cream, second shade". A name Kiln does not know keeps its own
+words (`--brand-ink` is "Brand ink"). A font is listed by its first family's name. The
+font a setting had when Theme was opened stays in its list, and choosing it writes the
+original line back exactly. Every other face comes with a fallback of its own kind.
+
+Changes preview live on the page as you drag, and a sentence above the buttons says
+what Apply is about to change ("This changes the mustard colour and the heading font
+on every page."). **Apply** commits them to the
 stylesheet file itself — one commit per touched stylesheet, byte-exact around the
-edited values — and the status line reports when the live site has picked it up.
+edited values, with a message in the same words ("Theme: mustard colour, heading font
+(via Kiln)") — and the status line reports when the live site has picked it up
+("The new theme is live ✓").
 Because the stylesheet is the source of truth, your CSS *is* the brand kit: nothing
 to keep in sync, and every change is in your git history like any other edit.
 

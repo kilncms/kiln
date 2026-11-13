@@ -15,7 +15,7 @@
 
 import { whyNot } from './plain-failure.js';
 import { demoSays } from './tryout.js';
-import { tokenName } from './names.js';
+import { tokenName, tokenPhrase } from './names.js';
 import { editFile } from '../github.js';
 
 let deps = null;
@@ -39,7 +39,8 @@ function classifyValue(value) {
   // References and composites are edited at their source token / in real CSS.
   if (lower.startsWith('var(') || lower.includes('gradient(') || lower.includes('url(')) return 'other';
   if (/^#[0-9a-f]+$/.test(lower) && [4, 5, 7, 9].includes(lower.length)) return 'color';
-  if (/^(rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\(/.test(lower)) return 'color';
+  // One colour and nothing after it: a shadow's long value can start with a colour too.
+  if (/^(rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\([^()]*\)$/.test(lower)) return 'color';
   if (NAMED_COLORS.has(lower)) return 'color';
   // Fonts: a quoted family name, or a stack ending in a generic family.
   if (/(^|[,\s])(sans-serif|serif|monospace|cursive)$/.test(lower)) return 'font';
@@ -160,6 +161,113 @@ export function applyTokenEdits(cssText, edits) {
   return { css: out, applied: edits.map(e => e.name), mismatched: [] };
 }
 
+// ─── Fonts (pure) ────────────────────────────────────────────────────────────
+
+const GENERIC = /^(serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-serif|ui-sans-serif|ui-monospace|ui-rounded|-apple-system|blinkmacsystemfont)$/i;
+
+// The plain fallback that suits a face, for the faces a site is most likely to
+// use. A name that says its own kind ("Noto Sans", "Roboto Slab", "Fira Code")
+// is read from the name and is not listed.
+const FACES = {
+  serif: ['fraunces', 'georgia', 'lora', 'merriweather', 'playfair display', 'libre baskerville', 'baskerville',
+    'eb garamond', 'cormorant garamond', 'garamond', 'crimson text', 'crimson pro', 'newsreader', 'bitter', 'spectral',
+    'literata', 'times new roman', 'times', 'palatino', 'cambria', 'charter', 'iowan old style'],
+  'sans-serif': ['inter', 'roboto', 'lato', 'montserrat', 'poppins', 'nunito', 'raleway', 'manrope', 'figtree',
+    'outfit', 'karla', 'rubik', 'mulish', 'oswald', 'helvetica', 'helvetica neue', 'arial', 'verdana', 'tahoma',
+    'trebuchet ms', 'segoe ui', 'ubuntu', 'barlow', 'archivo', 'sora', 'urbanist', 'lexend', 'quicksand', 'cabin',
+    'heebo', 'geist', 'satoshi', 'avenir', 'avenir next', 'futura', 'bebas neue'],
+  monospace: ['menlo', 'monaco', 'sf mono', 'cascadia code', 'source code pro', 'inconsolata'],
+};
+
+/** The families of a font value in order, without their quotes. */
+function families(value) {
+  return (String(value).match(/"[^"]*"|'[^']*'|[^,]+/g) || [])
+    .map(f => f.trim().replace(/^["']|["']$/g, '').trim()).filter(Boolean);
+}
+
+/** The name a font is shown by: its first family ("Fraunces"), never the whole list. Pure; exported for tests. */
+export function fontName(value) {
+  const first = families(value)[0] || '';
+  if (first && !GENERIC.test(first)) return first;
+  return /mono/i.test(first) ? 'The device’s own font for code' : 'The device’s own font';
+}
+
+/**
+ * The plain fallback that goes with a face: 'serif', 'sans-serif' or
+ * 'monospace', and '' when Kiln cannot tell. Pure; exported for tests.
+ */
+export function fallbackFor(family) {
+  // "Inter Variable" and "Inter var" are Inter
+  const f = String(family).trim().toLowerCase().replace(/\s+(variable|var|vf)$/, '');
+  if (/\bmono\b|\bcode\b|courier|consol/.test(f)) return 'monospace';
+  if (/\bsans\b|grotesk|grotesque|gothic/.test(f)) return 'sans-serif';
+  if (/\bserif\b|\bslab\b/.test(f)) return 'serif';
+  return Object.keys(FACES).find(kind => FACES[kind].includes(f)) || '';
+}
+
+/**
+ * The fonts one setting can be given: [{ value, label }], the style sheet's own first.
+ *   now        the setting's value in the style sheet, offered as "Fraunces (as it is now)"
+ *   before     the value it had when Theme was first opened, once Apply has changed it:
+ *              offered as "Fraunces (as it was before)", its text kept byte for byte
+ *   staged     a choice made and not applied yet
+ *   faces      the families this page can show
+ *   siteFonts  every font value the site's style sheets set
+ * A face is offered once, with fallbacks that suit it: the site's own list for
+ * that face when it has one, or else the plain fallback of the face's kind. A
+ * face Kiln cannot place is offered alone, never beside a fallback of the
+ * wrong kind. Pure; exported for tests.
+ */
+export function fontChoices(now, { before, staged, faces = [], siteFonts = [] } = {}) {
+  const out = [];
+  const shown = new Set();
+  const add = (value, note) => {
+    if (!value || out.some(o => o.value === value)) return;
+    const face = fontName(value);
+    if (!note && shown.has(face.toLowerCase())) return;
+    shown.add(face.toLowerCase());
+    out.push({ value, label: note ? `${face} (${note})` : face });
+  };
+  add(now, 'as it is now');
+  if (before !== undefined && before !== now) add(before, 'as it was before');
+  for (const value of siteFonts) add(value);
+  for (const family of faces) {
+    const name = /[^A-Za-z0-9-]/.test(family) ? `'${family}'` : family;
+    const fallback = fallbackFor(family);
+    add(fallback ? `${name}, ${fallback}` : name);
+  }
+  if (staged && !out.some(o => o.value === staged)) out.push({ value: staged, label: fontName(staged) });
+  return out;
+}
+
+// ─── What Apply says (pure) ──────────────────────────────────────────────────
+
+/** What a setting that cannot be changed here shows in place of its value. */
+export const SET_IN_SHEET = 'Set in the style sheet';
+
+/** What the status line says once a theme change is seen on the site. */
+export const THEME_LIVE = 'The new theme is live ✓';
+
+/**
+ * The sentence above the buttons, before anything is published: "This changes
+ * the mustard colour and the heading font on every page." `phrases` are the
+ * changed settings as names.js tokenPhrase says them. Two are named and the
+ * rest are counted. In the demo nothing is saved, and the sentence says so.
+ */
+export function whatChanges(phrases, { demo = false } = {}) {
+  const [a, b, ...rest] = phrases;
+  if (!a) return '';
+  const list = !b ? a : rest.length ? `${a}, ${b} and ${rest.length} more` : `${a} and ${b}`;
+  return `${demo ? 'On a real site, this' : 'This'} changes ${list} on every page.`;
+}
+
+/** The history entry for one style sheet's change: "Theme: mustard colour, heading font (via Kiln)". */
+export function themeCommitMessage(phrases) {
+  const names = phrases.map(p => String(p).replace(/^the /, ''));
+  const more = names.length - 2;
+  return `Theme: ${names.slice(0, 2).join(', ')}${more > 0 ? ` and ${more} more` : ''} (via Kiln)`;
+}
+
 // ─── Sources ─────────────────────────────────────────────────────────────────
 
 // Per-session stylesheet cache: repoPath → { path, text, tokens }. Refreshed
@@ -170,6 +278,11 @@ const sheetCache = new Map();
 // preview stays on the page, so the staging that explains it must too).
 // name → { token, value } — the keys are exactly the inline-previewed props.
 const dirty = new Map();
+
+// What each font setting was when Theme was first opened on this page: name →
+// value. Apply moves the style sheet on; this keeps the first text, so the
+// list of fonts can always offer it back exactly as it was written.
+const asOpened = new Map();
 
 /**
  * The page's same-origin stylesheets, mapped to repo paths and fetched FROM
@@ -223,7 +336,7 @@ function winningTokens(sheets) {
 
 // ─── Panel ───────────────────────────────────────────────────────────────────
 
-const KINDS = [['color', 'Colors'], ['font', 'Fonts'], ['size', 'Sizes'], ['other', 'Other']];
+const KINDS = [['color', 'Colours'], ['font', 'Fonts'], ['size', 'Sizes'], ['other', 'Other']];
 
 /** Build an element; `text` goes through textContent (CSS values stay inert). */
 function el(tag, cls, text) {
@@ -250,11 +363,29 @@ function loadedFontFamilies() {
   return [...fams].filter(Boolean).sort();
 }
 
-/** A font stack for family F, keeping the current value's generic fallback. */
-function fontStackFor(family, currentValue) {
-  const generic = (/(sans-serif|serif|monospace|cursive)\s*$/i.exec(currentValue) || [])[1] || 'sans-serif';
-  const name = /[^A-Za-z0-9-]/.test(family) ? `'${family}'` : family;
-  return `${name}, ${generic.toLowerCase()}`;
+/**
+ * The control one setting gets, as HTML. `cur` is the value to show (a choice
+ * not applied yet, or the style sheet's own); `choices` are a font's, from
+ * fontChoices. A value that is not one colour, one size or a font (a shadow, a
+ * gradient, a curve) gets words and nothing to type in. A font's raw text is
+ * never put on the page: its choice is read back by its place in the list.
+ * Pure; exported for tests.
+ */
+export function controlHtml(token, cur, choices, esc) {
+  if (token.kind === 'color') {
+    const hex = hexForPicker(cur);   // non-hex keeps a raw text input — never lossily convert
+    // The native picker shows its color itself; text-input colors get a swatch.
+    return hex
+      ? `<input type="color" value="${hex}">`
+      : `<span class="kiln-th-swatch"></span><input type="text" value="${esc(cur)}">`;
+  }
+  if (token.kind === 'font') {
+    return `<select class="kiln-th-select">${choices.map(c =>
+      `<option${c.value === cur ? ' selected' : ''}>${esc(c.label)}</option>`).join('')}</select>`;
+  }
+  // Unit preserved — committed exactly as typed.
+  if (token.kind === 'size') return `<input type="text" value="${esc(cur)}">`;
+  return `<span class="kiln-th-fixed">${SET_IN_SHEET}</span>`;
 }
 
 export async function openThemePanel() {
@@ -263,6 +394,7 @@ export async function openThemePanel() {
 <p class="kiln-dim">The site’s colours and type sizes. A change shows on this page at once;
 <strong>Apply</strong> puts it on every page.${mode === 'admin' ? ' <small>For the owner: these are the custom properties on <code>:root</code> in the site’s stylesheet.</small>' : ''}</p>
 <div id="kiln-th-body"><p class="kiln-dim">Reading stylesheets…</p></div>
+<p class="kiln-th-what" id="kiln-th-what"></p>
 <div class="kiln-modal-actions">
 <button class="kiln-btn-ghost" id="kiln-th-revert">Revert</button>
 <button class="kiln-btn-ghost" data-close>Close</button>
@@ -273,14 +405,21 @@ export async function openThemePanel() {
   const applyBtn = m.querySelector('#kiln-th-apply');
   const revertBtn = m.querySelector('#kiln-th-revert');
   const status = m.querySelector('#kiln-th-status');
+  const what = m.querySelector('#kiln-th-what');
 
   const sheets = await loadSheets();
   if (!document.body.contains(m)) return;   // closed while fetching
+  for (const t of winningTokens(sheets).values()) {
+    if (t.kind === 'font' && !asOpened.has(t.name)) asOpened.set(t.name, t.value);
+  }
+  let siteFonts = [];   // every font value the site sets, for the lists of fonts (render)
 
   function updateButtons() {
     const n = dirty.size;
     applyBtn.disabled = !n;
     applyBtn.textContent = n ? `Apply ${n} change${n > 1 ? 's' : ''}` : 'Apply';
+    // Said before anything is published: what Apply is about to change, in the settings' own names.
+    what.textContent = whatChanges([...dirty.values()].map(d => tokenPhrase(d.token.name, d.token.kind)), { demo: !!cfg.sandbox });
   }
 
   const rootStyle = document.documentElement.style;
@@ -321,6 +460,7 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
       return;
     }
     const multiFile = new Set(tokens.map(t => t.path)).size > 1;
+    siteFonts = [...tokens.filter(t => t.kind === 'font').map(t => t.value), ...asOpened.values()];
     for (const [kind, label] of KINDS) {
       const group = tokens.filter(t => t.kind === kind);
       if (!group.length) continue;
@@ -347,35 +487,18 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
     // The name as a person reads it; the stylesheet's own name is the row's title, and small print for the owner.
     const name = `<span class="kiln-th-name" title="${escapeHtml(token.name)}">${escapeHtml(tokenName(token.name, token.kind))}${
       mode === 'admin' ? `<small class="kiln-th-raw">${escapeHtml(token.name)}</small>` : ''}</span>`;
-    if (token.kind === 'color') {
-      const hex = hexForPicker(cur);   // non-hex keeps a raw text input — never lossily convert
-      // The native picker shows its color itself; text-input colors get a swatch.
-      r.innerHTML = name + (hex
-        ? `<input type="color" value="${hex}">`
-        : `<span class="kiln-th-swatch"></span><input type="text" value="${escapeHtml(cur)}">`);
-      const swatch = r.querySelector('.kiln-th-swatch');
-      if (swatch) swatch.style.background = cur;
-      const input = r.querySelector('input');
-      input.oninput = () => { stage(token, input.value); if (swatch) swatch.style.background = input.value; };
-    } else if (token.kind === 'font') {
-      const options = [token.value];
-      for (const fam of loadedFontFamilies()) {
-        const stack = fontStackFor(fam, token.value);
-        if (!options.includes(stack)) options.push(stack);
-      }
-      if (!options.includes(cur)) options.push(cur);
-      r.innerHTML = name + `<select class="kiln-th-select">${options.map(v =>
-        `<option value="${escapeHtml(v)}"${v === cur ? ' selected' : ''}>${escapeHtml(v)}</option>`).join('')}</select>`;
-      const sel = r.querySelector('select');
-      sel.onchange = () => stage(token, sel.value);
-    } else if (token.kind === 'size') {
-      // Unit preserved — committed exactly as typed.
-      r.innerHTML = `${name}<input type="text" value="${escapeHtml(cur)}">`;
-      const input = r.querySelector('input');
-      input.oninput = () => stage(token, input.value);
-    } else {
-      r.innerHTML = `${name}<span class="kiln-th-val">${escapeHtml(token.value)}</span>`;
-    }
+    const choices = token.kind === 'font' ? fontChoices(token.value, {
+      before: asOpened.get(token.name), staged: dirty.get(token.name)?.value, faces: loadedFontFamilies(), siteFonts,
+    }) : [];
+    r.innerHTML = name + controlHtml(token, cur, choices, escapeHtml);
+    const swatch = r.querySelector('.kiln-th-swatch');
+    if (swatch) swatch.style.background = cur;
+    const input = r.querySelector('input');
+    if (input) input.oninput = () => { stage(token, input.value); if (swatch) swatch.style.background = input.value; };
+    const sel = r.querySelector('select');
+    // The choice is taken by its place in the list, so a font's text is written
+    // back exactly as the style sheet had it, never as the page gave it back.
+    if (sel) sel.onchange = () => stage(token, choices[sel.selectedIndex].value);
     return r;
   }
 
@@ -400,7 +523,8 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
     const byFile = new Map();
     for (const { token, value } of dirty.values()) {
       if (!byFile.has(token.path)) byFile.set(token.path, []);
-      byFile.get(token.path).push({ name: token.name, value: token.value, start: token.start, end: token.end, newValue: value });
+      byFile.get(token.path).push({ name: token.name, value: token.value, start: token.start, end: token.end, newValue: value,
+        label: tokenName(token.name, token.kind), phrase: tokenPhrase(token.name, token.kind) });
     }
     applyBtn.disabled = revertBtn.disabled = true;
     const notices = [];
@@ -408,12 +532,14 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
     let halted = '';   // what stopped() said, when the answer was about the sign-in or the way to the site
     let committed = 0;
     for (const [path, edits] of byFile) {
-      status.textContent = `Committing ${path}…`;
+      status.textContent = 'Saving the theme…';
       let appliedNames = [];
       let skipped = [];
+      let gone = [];   // the same settings by the names a person reads
       try {
         const result = await editFile(state.gh, cfg.repo, path, cfg.branch || 'main', (text) => {
           skipped = [];
+          gone = [];
           let attempt = applyTokenEdits(text, edits);
           if (attempt.mismatched.length) {
             // The file changed since discovery — re-discover and re-apply by NAME
@@ -422,20 +548,20 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
             const redone = [];
             for (const e of edits) {
               const t = fresh.get(e.name);
-              if (!t) { skipped.push(e.name); continue; }
+              if (!t) { skipped.push(e.name); gone.push(e.label); continue; }
               redone.push({ name: t.name, value: t.value, start: t.start, end: t.end, newValue: e.newValue });
             }
             attempt = applyTokenEdits(text, redone);
           }
           appliedNames = attempt.applied;
           return attempt.css;
-        }, `Theme: ${edits.length} token${edits.length === 1 ? '' : 's'} (via Kiln)`);
-        for (const nm of skipped) notices.push(`${nm} is gone, so it was skipped`);
+        }, themeCommitMessage(edits.map(e => e.phrase)));
+        for (const label of gone) notices.push(`“${label}” is no longer in the style sheet, so it was left as it is.`);
         if (!result.unchanged) {
           committed += appliedNames.length;
           // Mirror menuEditor: the journal probes the live file and reports in the
-          // status line ("Theme: live ✓") even after this modal closes.
-          journalAdd({ type: 'compare', target: '/' + path, expect: djb2(result.text), desc: 'Theme', sha: result.commit?.sha });
+          // status line ("The new theme is live ✓") even after this modal closes.
+          journalAdd({ type: 'compare', target: '/' + path, expect: djb2(result.text), desc: 'The new theme', live: THEME_LIVE, sha: result.commit?.sha });
           const entry = { path, text: result.text, tokens: discoverTokens(result.text, path) };
           sheetCache.set(path, entry);
           const idx = sheets.findIndex(s => s.path === path);
@@ -458,14 +584,14 @@ properties on <code>:root</code> in your stylesheet and this panel becomes contr
     updateButtons();
     revertBtn.disabled = false;
     const parts = committed
-      ? [`Saved ${committed} token${committed > 1 ? 's' : ''} ✓ Live in about a minute.`]
+      ? [`Saved ${committed} change${committed > 1 ? 's' : ''} ✓ Live in about a minute.`]
       : failures.length || halted ? [] : ['Nothing to change.'];
     parts.push(...notices);
     if (halted) parts.push(halted);
     if (failures.length) parts.push(`${failures.join(' ')} Your choices are still here.`);
     status.textContent = parts.join(' ');
     // No setStatus on success — journalAdd's first tick already narrates
-    // ("“Theme” is going live…", then "live ✓") in the status line.
+    // ("“The new theme” is going live…", then "The new theme is live ✓") in the status line.
     if (!committed && failures.length) setStatus('The theme was not updated. The panel says why.', 'error');
   };
 }

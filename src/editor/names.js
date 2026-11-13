@@ -56,14 +56,92 @@ export function readableName(key) {
 // The word a stylesheet puts in front of each kind of setting, which the group's heading already says.
 const LEAD = { color: /^(color|colour|clr)$/, font: /^(font|family|typeface)$/ };
 
-/**
- * A theme setting's name: "--color-ink-soft" under Colors → "Ink soft",
- * "--font-sans" under Fonts → "Sans", "--text-xs--line-height" → "Text xs line height".
- * `kind` is the group it is listed in ('color', 'font', 'size', 'other').
- */
-export function tokenName(name, kind = 'other') {
+// The short ending a stylesheet gives a size, said in full.
+const SIZE = {
+  xxs: 'extra extra small', '2xs': 'extra extra small', xs: 'extra small', sm: 'small', small: 'small',
+  md: 'medium', medium: 'medium', lg: 'large', large: 'large', xl: 'extra large',
+  xxl: 'extra extra large', '2xl': 'extra extra large',
+};
+const NTH = ['', 'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth'];
+
+// What a setting is for, told from its name: [the name, its label, the words for it in a sentence].
+const SETTINGS = [
+  [/^(r|radius|rounded|rounding|corner|corners)$/, 'corner roundness', 'the corner roundness'],
+  [/^(maxw|max-w|max-width|page-width|content-width)$/, 'widest the page gets', 'how wide the page gets'],
+  [/^(gutter|page-gutter|page-padding)$/, 'space at the page’s edges', 'the space at the page’s edges'],
+  [/^(shadow|box-shadow)$/, 'shadow', 'the shadow'],
+  [/^(s|space|spacing)$/, 'spacing', 'the spacing'],
+];
+// The same for a font: what it is used for is its name.
+const FONTS = [
+  [/^(display|heading|headings|title|titles)$/, 'heading font'],
+  [/^(body|sans|text|copy)$/, 'text font'],
+  [/^(mono|monospace|code)$/, 'font for code'],
+];
+
+/** One theme setting two ways: `label` on its own line, `phrase` for the middle of a sentence. */
+function setting(name, kind) {
   let words = String(name).replace(/^--/, '').split(/[_\-\s]+/).filter(Boolean).map(w => w.toLowerCase());
   const lead = LEAD[kind];
   while (lead && words.length > 1 && lead.test(words[0])) words = words.slice(1);
-  return capital(words.join(' ')) || String(name);
+  if (!words.length) return { label: String(name), phrase: String(name) };
+  const full = (w) => SIZE[w] || WORDS[w] || w;
+
+  if (kind === 'font') {
+    const own = words.filter(w => !LEAD.font.test(w));
+    const known = FONTS.find(([re]) => re.test(own.join('-')));
+    const base = known ? known[1] : own.length ? `${own.map(full).join(' ')} font` : 'font';
+    return { label: capital(base), phrase: `the ${base}` };
+  }
+
+  // The longest start of the name that says what the setting is for; what is left says which one.
+  let known = null;
+  let cut = words.length;
+  if (kind !== 'color') {
+    for (; cut > 0 && !known; cut--) known = SETTINGS.find(([re]) => re.test(words.slice(0, cut).join('-')));
+    cut = known ? cut + 1 : words.length;
+  }
+  // A name Kiln does not know keeps its words; only a size or a number at its end is set apart.
+  const last = words[words.length - 1];
+  if (!known && words.length > 1 && (SIZE[last] || /^\d+$/.test(last))) cut = words.length - 1;
+  const tail = words.slice(cut);
+  const base = known ? known[1] : words.slice(0, cut).map(w => WORDS[w] || w).join(' ');
+  const thing = known ? known[2] : `the ${base}${kind === 'color' && !/colou?r/.test(base) ? ' colour' : ''}`;
+
+  let label = capital(base);
+  let phrase = thing;
+  if (tail.length === 1 && /^\d+$/.test(tail[0])) {
+    const n = Number(tail[0]);
+    if (kind === 'color') {
+      const shade = NTH[n] ? `${NTH[n]} shade` : `shade ${n}`;
+      label += `, ${shade}`;
+      phrase = NTH[n] ? `the ${shade} of ${base}` : `${shade} of ${base}`;
+    } else {
+      label += `, step ${n}`;
+      phrase = `step ${n} of ${thing}`;
+    }
+  } else if (tail.length) {
+    const which = tail.map(full).join(' ');
+    label += `, ${which}`;
+    phrase = thing.startsWith('the ') ? `the ${which} ${thing.slice(4)}` : `${thing}, ${which}`;
+  }
+  // A name of two or three letters says too little alone: it is given the word for what it is.
+  if (label.replace(/[^a-z]/gi, '').length < 4) label += kind === 'color' ? ' colour' : kind === 'size' ? ' size' : ' setting';
+  return { label, phrase };
+}
+
+/**
+ * A theme setting's name as a shop owner reads it: "--r-sm" → "Corner roundness, small",
+ * "--maxw" → "Widest the page gets", "--cream-2" under Colours → "Cream, second shade",
+ * "--display" under Fonts → "Heading font", "--color-ink-soft" → "Ink soft". A name Kiln
+ * does not know is shown with its dashes as spaces: "--brand-ink" → "Brand ink".
+ * `kind` is the group it is listed in ('color', 'font', 'size', 'other').
+ */
+export function tokenName(name, kind = 'other') {
+  return setting(name, kind).label;
+}
+
+/** The same setting in the middle of a sentence: "the mustard colour", "the heading font", "how wide the page gets". */
+export function tokenPhrase(name, kind = 'other') {
+  return setting(name, kind).phrase;
 }

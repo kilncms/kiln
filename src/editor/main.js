@@ -6433,7 +6433,10 @@ function runJournal() {
         // It stays long enough to be read by someone who had looked away (went-live.js).
         const hold = isMobileEditor() ? LIVE_STAYS_PHONE : LIVE_STAYS;
         // What follows it is said with it (rest): the line may be shown later than now, after "Published. Undo" has had its ten seconds.
-        if (e.deployed) setStatus('Live ✓ View site', 'saved', { href: e.target, hold, rest: true });
+        // A publish that brings its own sentence says it (theme.js: "The new theme is live ✓"). What a theme
+        // change would offer under "View site" is the style sheet, so it is not offered.
+        if (e.live) setStatus(e.live, 'saved', { hold, rest: true });
+        else if (e.deployed) setStatus('Live ✓ View site', 'saved', { href: e.target, hold, rest: true });
         else setStatus(`${e.desc}: live ✓`, 'saved', { hold, rest: true });
         if (e.target === location.pathname || e.target === location.pathname + location.search) swapImagePreviews();
       } else if (Date.now() - e.started > 6 * 60 * 1000) {
@@ -10383,7 +10386,7 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
    global 100%-width modal input rule is overridden here. */
 .kiln-th-src,.kiln-th-hint{font-size:11px;color:#9ca3af;margin:2px 2px 4px;line-height:1.45}
 .kiln-th-row{display:flex;align-items:center;gap:10px;padding:6px 2px;border-bottom:1px solid #f3f4f6}
-.kiln-th-name,.kiln-th-val{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kiln-th-name,.kiln-th-fixed{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .kiln-th-name{flex:1;min-width:0;font:600 13px var(--kiln-font);color:#374151}
 .kiln-th-raw{display:block;font:400 10.5px ui-monospace,Menlo,monospace;color:#9ca3af;overflow:hidden;text-overflow:ellipsis}
 .kiln-th-swatch{flex:none;width:26px;height:26px;border-radius:8px;border:1px solid rgba(0,0,0,.14)}
@@ -10391,7 +10394,9 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-th-row input[type=color]{flex:none;width:46px;height:30px;padding:1px 2px;cursor:pointer}
 .kiln-th-row input[type=text]{flex:0 1 180px;width:180px;padding:7px 9px;font-size:12.5px;font-family:ui-monospace,Menlo,monospace}
 .kiln-th-select{flex:0 1 220px;max-width:220px;padding:7px 8px;font:12.5px var(--kiln-font);color:#1c1c28}
-.kiln-th-val{flex:0 1 auto;max-width:230px;font:12px ui-monospace,Menlo,monospace;color:#9ca3af}
+.kiln-th-fixed{flex:0 1 auto;max-width:230px;font:12.5px var(--kiln-font);color:#6b7280}
+.kiln-th-what{margin:12px 2px 0;font:13px/1.45 var(--kiln-font);color:#374151}
+.kiln-th-what:empty{display:none}
 .kiln-th-example{background:#f6f7f9;border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;font:12px/1.6 ui-monospace,Menlo,monospace;overflow-x:auto}
 .kiln-repeat-item{position:relative}
 /* The control bar stays INSIDE its block: on a narrow card (a two-column grid
