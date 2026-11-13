@@ -361,6 +361,61 @@ test('previews: one site gets sixty copies of previews in an hour, and the sixty
   });
 });
 
+test('previews: a site and a preview can never have the same name', { skip: d1Skip }, async () => {
+  // Tess owns a hosted site and may also make a branch on Ada's. She names her repository after the preview
+  // Ada's site would give her branch, and the branch after her own site.
+  const tess = { repo: 'tess/pv-site1-kiln-suggest-x', id: 'tsite999' };
+  const branch = 'kiln/suggest-x-tsite999';
+  const hers = siteName({}, tess);
+  assert.equal(previewName({}, { id: 'site1' }, branch), 'pv-site1-kiln-suggest-x-tsite999', 'the name her site had before this rule');
+  assert.equal(hers, 's-pv-site1-kiln-suggest-x-tsite999');
+  for (const prefix of ['', 'stg-']) {
+    const env = { HOSTING_PREFIX: prefix };
+    assert.notEqual(siteName(env, tess), previewName(env, { id: 'site1' }, branch));
+    assert.ok(!siteName(env, tess).slice(prefix.length).startsWith('pv-'));
+    assert.ok(previewName(env, { id: 'site1' }, branch).slice(prefix.length).startsWith('pv-'));
+  }
+
+  // A site that got such a name before the rule keeps it. A preview of that name is not put up over it.
+  const w = world();
+  const old = 'pv-site1-kiln-suggest-x-tsite999';
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    addSite(w.env, { id: 'tsite999', repo: tess.repo, origin: 'https://tess.example' });
+    w.env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, created_at, updated_at) VALUES (?,?,?,?,?,?)', 'tsite999', old, `https://${old}.kiln-sites.workers.dev`, 'live', 1, 1);
+    w.cf.addScript(old);
+    let answer;
+    const lines = await logged(async () => { answer = await push(w, branch); });
+    assert.deepEqual(answer.body, { ok: true, previews: 0 });
+    assert.deepEqual(rows(w.env), []);
+    assert.equal(w.cf.scripts.get(old).deploys, 1, 'her site is as it was');
+    assert.deepEqual(lines.filter(l => l.evt === 'preview_name_taken').map(l => [l.repo, l.branch, l.name]), [['ada/club', branch, old]]);
+    // Deleting the branch takes nothing of hers down.
+    assert.deepEqual((await notice(w, { branch, deleted: true })).body, { ok: true, previews: 0 });
+    assert.ok(w.cf.scripts.has(old));
+    // Any other branch of Ada's site goes up as before.
+    assert.deepEqual((await push(w, SUGGEST)).body, { ok: true, previews: 1 });
+  });
+});
+
+test('previews: two sites never share a preview name, and the database refuses the second row of one', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    // Another site whose id begins with the same characters has a preview of that name already.
+    w.env.kiln_cloud.exec('INSERT INTO previews (site_id, alias, branch, name, commit_sha, deployed_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'site1-other', 'kiln-suggest-ana', SUGGEST, PV, 'abc', 5, 5);
+    w.cf.addScript(PV);
+    let answer;
+    const lines = await logged(async () => { answer = await push(w, SUGGEST); });
+    assert.deepEqual(answer.body, { ok: true, previews: 0 });
+    assert.deepEqual(rows(w.env).map(r => r.site_id), ['site1-other']);
+    assert.equal(w.cf.scripts.get(PV).deploys, 1, 'the other site\'s preview is as it was');
+    assert.equal(lines.filter(l => l.evt === 'preview_name_taken').length, 1);
+    // The index of migration 0013 holds it even if the look before the write is passed by two at once.
+    assert.throws(() => w.env.kiln_cloud.exec('INSERT INTO previews (site_id, alias, branch, name, commit_sha, deployed_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'site1', 'kiln-suggest-ana', SUGGEST, PV, null, null, 6), /UNIQUE/);
+  });
+});
+
 test('previews: a removed site loses all of its previews, and so does a site that comes down from Kiln\'s hosting', { skip: d1Skip }, async () => {
   let w = world();
   await withFetch(w.handler, async () => {

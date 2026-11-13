@@ -131,6 +131,13 @@ test('hosting: a site\'s name is safe as a web address and never shared by two s
   const long = siteName(env, { repo: `ada/${'x'.repeat(200)}`, id: 'abcdef12' });
   assert.ok(long.length <= 63 && /^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(long), long);
   assert.equal(siteName(env, { repo: 'ada/---', id: '' }), 'site-0');
+  // No site's name begins the way every preview's name does, whatever the repository is called.
+  assert.equal(siteName(env, { repo: 'tess/pv-site1-kiln-suggest-x', id: 'tsite999-aaaa' }), 's-pv-site1-kiln-suggest-x-tsite999');
+  assert.equal(siteName(env, { repo: 'tess/PV', id: 'abcdef12' }), 's-pv-abcdef12');
+  assert.equal(siteName(env, { repo: 'tess/--pv--club', id: 'abcdef12' }), 's-pv-club-abcdef12');
+  assert.equal(siteName({ HOSTING_PREFIX: 'stg-' }, { repo: 'tess/pv-club', id: 'abcdef12-9' }), 'stg-s-pv-club-abcdef12');
+  assert.equal(siteName(env, { repo: 'kiln-sites/pv-club-3f2a9c1d', id: '3f2a9c1d-aaaa' }), 's-pv-club-3f2a9c1d');
+  assert.equal(siteName(env, { repo: 'ada/pvc-pipes', id: 'abcdef12' }), 'pvc-pipes-abcdef12', 'a name that only starts with those two letters is left alone');
   assert.equal(siteAddress(env, 'club-1'), 'https://club-1.kiln-sites.workers.dev');
   assert.equal(hostingOn({}), false);
   assert.equal(hostingOn({ HOSTING_ACCOUNT_ID: 'a', HOSTING_API_TOKEN: 't', HOSTING_SUBDOMAIN: 's' }), true);

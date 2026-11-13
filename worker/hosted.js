@@ -244,6 +244,14 @@ async function putPreview(env, { site, token, branch, sha = null }) {
     };
     // Asked before anything is taken down to make room, so a copy that will not be made costs nobody their preview.
     if (await copies() >= PREVIEW_COPIES_PER_HOUR) return tooMany();
+    // A Worker's name belongs to one thing only. When a site's own Worker has this name, or another site's preview
+    // does, a copy would overwrite what that one serves and a clean-up here would take it down: nothing is put up.
+    const taken = async () => !!(await env.kiln_cloud.prepare('SELECT site_id FROM hosting WHERE name = ? UNION ALL SELECT site_id FROM previews WHERE name = ? AND site_id <> ? LIMIT 1').bind(name, name, site.id).first());
+    const nameTaken = () => {
+      console.warn(JSON.stringify({ evt: 'preview_name_taken', site: site.id, repo: site.repo, branch, name }));
+      return { state: 'failed' };
+    };
+    if (await taken()) return nameTaken();
     if (!row) {
       const others = await previewsOf(env, site.id);
       for (const old of others.slice(0, Math.max(0, others.length - (PREVIEWS_PER_SITE - 1)))) {
@@ -251,8 +259,15 @@ async function putPreview(env, { site, token, branch, sha = null }) {
         if (!(await removePreview(env, old, 'room_for_another'))) return { state: 'full' };
       }
       // The count is part of the write: of many notices that arrive together, the database lets five write a row.
-      const put = await env.kiln_cloud.prepare('INSERT INTO previews (site_id, alias, branch, name, commit_sha, deployed_at, updated_at) SELECT ?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM previews WHERE site_id = ?) < ?')
-        .bind(site.id, alias, branch, name, null, null, Date.now(), site.id, PREVIEWS_PER_SITE).run();
+      let put;
+      try {
+        put = await env.kiln_cloud.prepare('INSERT INTO previews (site_id, alias, branch, name, commit_sha, deployed_at, updated_at) SELECT ?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM previews WHERE site_id = ?) < ?')
+          .bind(site.id, alias, branch, name, null, null, Date.now(), site.id, PREVIEWS_PER_SITE).run();
+      } catch (e) {
+        // Another site wrote a preview of this name in the same moment, and the database refused the second (migration 0013).
+        if (await taken()) return nameTaken();
+        throw e;
+      }
       if (!put?.meta?.changes) return { state: 'full' };
       row = await one.first();
       if (!row) return { state: 'full' };   // taken away again already, to make room for another

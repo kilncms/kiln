@@ -66,7 +66,10 @@ export function hostingOn(env) {
  * The name of a site's Worker, which is also the first part of its temporary
  * address: the repository's name made safe, and the start of the site's id so
  * that two repositories of the same name never share one. Lowercase letters,
- * digits and dashes, 63 at most, as a web address allows.
+ * digits and dashes, 63 at most, as a web address allows. It never begins
+ * with "pv-", which is how every preview's name begins (previewName below):
+ * a repository named that way gets "s-" in front, so no site can be given the
+ * name of another site's preview.
  */
 const idStart = (id) => String(id || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || '0';
 
@@ -74,7 +77,8 @@ const idStart = (id) => String(id || '').toLowerCase().replace(/[^a-z0-9]/g, '')
 const namePrefix = (env) => String((env && env.HOSTING_PREFIX) || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 8);
 
 export function siteName(env, { repo, id }) {
-  const words = String(repo || '').split('/').pop().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'site';
+  const said = String(repo || '').split('/').pop().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'site';
+  const words = /^pv(-|$)/.test(said) ? `s-${said}` : said;
   const tail = idStart(id);
   const prefix = namePrefix(env);
   // A site whose files Kiln keeps already carries those eight characters at the end of its repository's name

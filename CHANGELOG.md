@@ -142,6 +142,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   does not show after a great many pushes, push to its branch again in the
   next hour.
 
+- **A site and a preview can never be given the same name on Kiln's
+  hosting.** A site's Worker was named after its repository and a preview's
+  after its branch, with nothing to keep the two apart, so a person who owned
+  one hosted site and could make a branch on another could name them to match
+  and have their own site answer at the address the other site's editor
+  offers as "Open preview". No site's name begins with `pv-` any more (a
+  repository named that way gets `s-` in front), a preview is not put up when
+  its name already belongs to a site or to another site's preview, and the
+  database refuses two previews of one name. Sites that are up keep the
+  address they have. If you run your own service, apply migration
+  `0013_preview_names.sql`.
+
 ## [0.6.8] - 2026-11-13
 
 ### Added
