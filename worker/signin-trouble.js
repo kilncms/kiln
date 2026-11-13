@@ -126,3 +126,61 @@ export function troubleBody(trouble, { origin = null, dashboard = null } = {}) {
 export function troubleLog(who, trouble, { status = 0, tok = null } = {}) {
   return JSON.stringify({ evt: 'signin_trouble', who, code: trouble.code, status, error: tok && tok.error ? String(tok.error).slice(0, 80) : null, detail: said(tok) });
 }
+
+// ─── A dashboard sign-in belongs to the browser that started it ──────────────
+
+/**
+ * A sign-in to the dashboard belongs to the browser that started it.
+ *
+ * /cloud/login and /cloud/login/google (cloud.js) send the person to GitHub or
+ * Google with a state, and set a cookie holding that state on the service's
+ * own address. The two places a sign-in comes back to (/cloud/callback in
+ * cloud.js, and the dashboard branch of /google/callback in index.js) finish
+ * it only for a browser that sends the same state back in that cookie. So a
+ * callback address that somebody started and then passed to another person
+ * signs nobody in: the other person's browser has no such cookie.
+ *
+ * The cookie lasts ten minutes, as the state does, and is taken away again
+ * when the sign-in ends either way.
+ */
+
+/**
+ * What a person reads when a sign-in comes back to a browser that does not
+ * hold its cookie. It is shown as the dashboard's other sign-in troubles above
+ * are (troubleBody, with the way back to the dashboard).
+ */
+export const STARTED_ELSEWHERE = { code: 'elsewhere', status: 400, heading: 'The sign-in did not finish',
+  words: 'Kiln could not tell that this sign-in was started in this browser, so nobody was signed in. Nothing is wrong with your account. Go back to the Kiln dashboard and sign in again. If it keeps happening, check that this browser accepts cookies from Kiln.' };
+
+/** Local development (wrangler dev) is plain http, where a browser may not keep a Secure cookie. */
+const local = (url) => url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname);
+
+/**
+ * The cookie's name. On the real service it starts with `__Host-`: a browser
+ * takes such a cookie only from this very address over https, so no other
+ * address under the same domain can plant one. That needs Secure, so local
+ * development has the plain name.
+ */
+export const signInCookieName = (url) => (local(url) ? 'kiln_signin' : '__Host-kiln_signin');
+
+const cookie = (url, value, maxAge) =>
+  `${signInCookieName(url)}=${value}; HttpOnly; ${local(url) ? '' : 'Secure; '}SameSite=Lax; Path=/; Max-Age=${maxAge}`;
+
+/** The redirect that starts a sign-in: on to `to`, with the cookie that ties the state to this browser. */
+export function startSignIn(url, to, state) {
+  return new Response(null, { status: 302, headers: { Location: to, 'Set-Cookie': cookie(url, state, 600) } });
+}
+
+/** Whether this request comes from the browser in which the sign-in with this state was started. */
+export function startedHere(request, url, state) {
+  if (!state || !request || !request.headers) return false;
+  const name = `${signInCookieName(url)}=`;
+  return (request.headers.get('Cookie') || '').split(';').map(c => c.trim()).some(c => c.startsWith(name) && c.slice(name.length) === String(state));
+}
+
+/** The same answer, with the sign-in's cookie taken away: the sign-in is over, however it ended. */
+export function signInOver(url, res) {
+  const headers = new Headers(res.headers);
+  headers.append('Set-Cookie', cookie(url, '', 0));
+  return new Response(res.body, { status: res.status, headers });
+}

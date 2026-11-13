@@ -37,6 +37,7 @@
 
 import { RUNBOOK_HTML } from './runbook.js';
 import { troubleBody, forDashboard, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN } from './signin-trouble.js';
+import { startSignIn, startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { customerMailOn, mailAddress, addressSql, accountAddress, sendOnce, siteAddedMail, siteStartedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
@@ -1596,7 +1597,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const nonce = uuid();
     await env.KILN.put(`cstate:${nonce}`, '1', { expirationTtl: 600 });
     const params = new URLSearchParams({ client_id: c.client_id, redirect_uri: `${url.origin}/cloud/callback`, state: nonce });
-    return Response.redirect(`https://github.com/login/oauth/authorize?${params}`, 302);
+    return startSignIn(url, `https://github.com/login/oauth/authorize?${params}`, nonce);   // with the cookie that ties it to this browser
   }
 
   // The same for a person with no GitHub account: Google says who they are.
@@ -1614,7 +1615,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       client_id: env.GOOGLE_CLIENT_ID, redirect_uri: `${url.origin}/google/callback`, response_type: 'code',
       scope: 'openid email profile', state: nonce, prompt: 'select_account',
     });
-    return Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`, 302);
+    return startSignIn(url, `https://accounts.google.com/o/oauth2/v2/auth?${params}`, nonce);   // with the cookie that ties it to this browser
   }
 
   if (path === '/cloud/callback') {
@@ -1623,12 +1624,21 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // JSON. Why it failed is logged for the operator.
     const notFinished = (stage, detail = '') => {
       console.warn(JSON.stringify({ evt: 'cloud_signin_not_finished', stage, detail: String(detail).slice(0, 160) }));
-      try { const back = new URL(dash); back.searchParams.set('signin', 'again'); return Response.redirect(back.toString(), 302); }
+      try { const back = new URL(dash); back.searchParams.set('signin', 'again'); return signInOver(url, Response.redirect(back.toString(), 302)); }
       catch { return json({ error: 'github sign-in failed' }, 401); }
     };
     const code = url.searchParams.get('code'), state = url.searchParams.get('state');
     if (!code || !state || !(await env.KILN.get(`cstate:${state}`))) return notFinished('state');
     await env.KILN.delete(`cstate:${state}`);
+    // Only the browser the sign-in was started in may finish it
+    // (signin-trouble.js). In any other, nobody is signed in, GitHub is not
+    // asked who they are, and the person gets the page that says the sign-in
+    // did not finish, with the way back to the dashboard.
+    if (!startedHere(request, url, state)) {
+      console.warn(JSON.stringify({ evt: 'cloud_signin_not_finished', stage: 'cookie', detail: '' }));
+      const page = typeof tools.page === 'function' ? tools.page : plainPage;
+      return page(troubleBody(forDashboard(STARTED_ELSEWHERE), { dashboard: dash }), STARTED_ELSEWHERE.status);
+    }
     const c = await creds(env);
     const tokRes = await fetch('https://github.com/login/oauth/access_token', {
       method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
@@ -1646,7 +1656,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // `uid` is GitHub's numeric user id: unlike the login, it cannot be
     // renamed away or registered by someone else later.
     await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: account.id, login: user.login, uid: user.id ?? null, gh: tok.access_token || null }), { expirationTtl: 30 * 24 * 3600 });
-    return Response.redirect(`${dash}#kc_token=${sid}`, 302);   // dashboard reads + stores this
+    return signInOver(url, Response.redirect(`${dash}#kc_token=${sid}`, 302));   // dashboard reads + stores this
   }
 
   // Everything below needs a dashboard session (Authorization: Bearer <token>).

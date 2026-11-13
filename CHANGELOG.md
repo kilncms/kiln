@@ -277,6 +277,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   looks the repository up once and asks for the token by its id. Making a new
   site in Kiln's organization still uses a token for the organization, since
   the repository does not exist yet.
+- **A sign-in to the dashboard can only be finished in the browser that
+  started it.** Somebody could start a sign-in, stop before the last step and
+  pass that address to another person, whose dashboard was then signed in to
+  the first person's account. Pressing "Sign in" with GitHub or with Google
+  now leaves a cookie in the browser for ten minutes, and the sign-in finishes
+  only where that cookie is. Anywhere else nobody is signed in, and the page
+  says "The sign-in did not finish. Kiln could not tell that this sign-in was
+  started in this browser, so nobody was signed in. Nothing is wrong with your
+  account. Go back to the Kiln dashboard and sign in again. If it keeps
+  happening, check that this browser accepts cookies from Kiln." Signing in at
+  a site, as an editor or a member, is not changed.
 
 ## [0.6.6] - 2026-11-13
 

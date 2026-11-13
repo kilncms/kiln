@@ -31,7 +31,7 @@ const github = (notYet) => { let asked = 0; return async (url) => {
   if (url === 'https://github.com/login/oauth/access_token') return jsonRes({ access_token: 'ghu_new' });
   if (url === `${GH}/user`) return asked++ < notYet ? jsonRes({ message: 'Bad credentials' }, 401) : jsonRes({ login: 'rosa', id: 7, email: null });
 }; };
-const callback = (e) => worker.fetch(new Request('https://worker.example/cloud/callback?code=c1&state=s1', { redirect: 'manual' }), e);
+const callback = (e) => worker.fetch(new Request('https://worker.example/cloud/callback?code=c1&state=s1', { redirect: 'manual', headers: { Cookie: '__Host-kiln_signin=s1' } }), e);
 
 test('dashboard sign-in: GitHub not ready for the new token at the first ask, and the sign-in still finishes', { skip: d1Skip }, async () => {
   const e = env();

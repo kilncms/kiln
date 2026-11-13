@@ -31,7 +31,9 @@ const google = (who = ROSA, over = {}) => async (url) => {
   if (url === 'https://oauth2.googleapis.com/token') return jsonRes({ id_token: 'idt' });
   if (url.startsWith('https://oauth2.googleapis.com/tokeninfo')) return jsonRes({ aud: 'gid', sub: who.sub, email: who.email, name: who.name, email_verified: 'true', ...over });
 };
-const get = (env, p, token) => worker.fetch(new Request(`https://worker.example${p}`, { redirect: 'manual', headers: token ? { Authorization: `Bearer ${token}` } : {} }), env);
+/** The cookie the browser that started a dashboard sign-in holds for it (worker/signin-trouble.js). */
+const cookieFor = (state) => `__Host-kiln_signin=${state}`;
+const get = (env, p, token, cookie) => worker.fetch(new Request(`https://worker.example${p}`, { redirect: 'manual', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(cookie ? { Cookie: cookie } : {}) } }), env);
 const post = (env, p, body, token) => worker.fetch(new Request(`https://worker.example${p}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), env);
 const sessions = (env) => [...env.KILN.map.keys()].filter(k => k.startsWith('csess:') && k !== 'csess:tok');
 const page = async (res) => ({ status: res.status, body: (await res.text()).replace(/<style[\s\S]*?<\/style>/g, '') });
@@ -44,7 +46,7 @@ async function signIn(env, who = ROSA, over = {}) {
   const start = await get(env, '/cloud/login/google');
   assert.equal(start.status, 302);
   const state = new URL(start.headers.get('Location')).searchParams.get('state');
-  const res = await withFetch(google(who, over), () => get(env, `/google/callback?code=c&state=${state}`));
+  const res = await withFetch(google(who, over), () => get(env, `/google/callback?code=c&state=${state}`, null, cookieFor(state)));
   return { res, state, start };
 }
 const tokenOf = (res) => (res.headers.get('Location').match(/#kc_token=([0-9a-f-]{36})$/) || [])[1];
@@ -87,7 +89,7 @@ test('Google sign-in to the dashboard: the first one makes an account and a sess
   assert.ok(env.KILN.expires.get(`gstate:${state}`) - Date.now() / 1000 <= 600, 'the state is good for ten minutes');
 
   await withFetch(google(), async (calls) => {
-    const res = await get(env, `/google/callback?code=c&state=${state}`);
+    const res = await get(env, `/google/callback?code=c&state=${state}`, null, cookieFor(state));
     assert.equal(res.status, 302);
     assert.match(res.headers.get('Location'), /^https:\/\/app\.example\/?#kc_token=[0-9a-f-]{36}$/);
     const sid = tokenOf(res);
@@ -103,7 +105,7 @@ test('Google sign-in to the dashboard: the first one makes an account and a sess
     assert.equal(calls.every(c => c.url.startsWith('https://oauth2.googleapis.com/')), true, 'only Google was asked');
 
     // the same state a second time: nobody is signed in
-    const again = await page(await get(env, `/google/callback?code=c&state=${state}`));
+    const again = await page(await get(env, `/google/callback?code=c&state=${state}`, null, cookieFor(state)));
     assert.equal(again.status, 400);
     assert.match(again.body, /<h1>That sign-in is no longer good<\/h1>/);
     assert.equal(sessions(env).length, 1);
@@ -151,7 +153,7 @@ test('Google sign-in to the dashboard: every other way it can stop is a plain pa
   let env = cloud();
   let state = new URL((await get(env, '/cloud/login/google')).headers.get('Location')).searchParams.get('state');
   let out = await withFetch(async (url) => (url === 'https://oauth2.googleapis.com/token' ? jsonRes({ error: 'invalid_grant', error_description: 'Bad Request' }, 400) : undefined),
-    async () => page(await get(env, `/google/callback?code=c&state=${state}`)));
+    async () => page(await get(env, `/google/callback?code=c&state=${state}`, null, cookieFor(state))));
   assert.equal(out.status, 400);
   assert.match(out.body, /<h1>That sign-in was already used, or it took too long<\/h1>/);
   assert.match(out.body, /Go back to the Kiln dashboard and sign in again\.<\/p>/);
@@ -161,7 +163,7 @@ test('Google sign-in to the dashboard: every other way it can stop is a plain pa
   // the person pressed Cancel at Google: they come back with the state and no code
   env = cloud();
   state = new URL((await get(env, '/cloud/login/google')).headers.get('Location')).searchParams.get('state');
-  out = await page(await get(env, `/google/callback?error=access_denied&state=${state}`));
+  out = await page(await get(env, `/google/callback?error=access_denied&state=${state}`, null, cookieFor(state)));
   assert.equal(out.status, 400);
   assert.match(out.body, /<h1>The sign-in did not finish<\/h1><p>Google sent you back without signing you in\. Nothing is wrong with your account\. Go back to the Kiln dashboard and sign in again\.<\/p>/);
   assert.ok(out.body.includes(BACK));
@@ -290,7 +292,7 @@ test('a GitHub sign-in to the dashboard is exactly as before: the same session, 
     if (url === 'https://github.com/login/oauth/access_token') return jsonRes({ access_token: 'ghu_new' });
     if (url === 'https://api.github.com/user') return jsonRes({ login: 'rosa', id: 7, email: 'rosa@example.com' });
   }, async () => {
-    const res = await get(env, '/cloud/callback?code=c1&state=s1');
+    const res = await get(env, '/cloud/callback?code=c1&state=s1', null, cookieFor('s1'));
     assert.equal(res.status, 302);
     const sid = tokenOf(res);
     const row = { ...env.kiln_cloud.row("SELECT * FROM accounts WHERE github_login = 'rosa'") };
@@ -351,4 +353,80 @@ test('a database the confirmed address has not reached: a Google account has no 
   const seven = cloud({ d1: { upTo: 7 } });
   assert.equal(await addressSql(seven), 'a.email AS email');
   assert.equal(await accountAddress(seven, 'acct-1'), 'ada@example.com');
+});
+
+// ─── A dashboard sign-in belongs to the browser that started it ──────────────
+
+const ELSEWHERE = 'Kiln could not tell that this sign-in was started in this browser, so nobody was signed in. Nothing is wrong with your account. Go back to the Kiln dashboard and sign in again. If it keeps happening, check that this browser accepts cookies from Kiln.';
+const withGitHub = () => { const env = cloud(); env.KILN.map.set('app:creds', JSON.stringify({ app_id: 1, slug: 'kiln-cms', client_id: 'cid', client_secret: 'sec' })); return env; };
+const gitHub = async (url) => {
+  if (url === 'https://github.com/login/oauth/access_token') return jsonRes({ access_token: 'ghu_new' });
+  if (url === 'https://api.github.com/user') return jsonRes({ login: 'rosa', id: 7, email: 'rosa@example.com' });
+};
+const stateOf = (start) => new URL(start.headers.get('Location')).searchParams.get('state');
+
+test('pressing Sign in, with GitHub or with Google, leaves a cookie that holds the sign-in\'s state for ten minutes; in local development over plain http it is not marked Secure', { skip: d1Skip }, async () => {
+  const env = withGitHub();
+  for (const p of ['/cloud/login/google', '/cloud/login']) {
+    const start = await get(env, p);
+    assert.equal(start.status, 302, p);
+    assert.equal(start.headers.get('Set-Cookie'), `__Host-kiln_signin=${stateOf(start)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`, p);
+  }
+  for (const host of ['localhost:8787', '127.0.0.1:8787']) {
+    for (const p of ['/cloud/login/google', '/cloud/login']) {
+      const start = await worker.fetch(new Request(`http://${host}${p}`, { redirect: 'manual' }), env);
+      assert.equal(start.headers.get('Set-Cookie'), `kiln_signin=${stateOf(start)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`, `${host}${p}`);
+    }
+  }
+});
+
+test('a Google sign-in to the dashboard that comes back in another browser signs nobody in: Google is not asked, no session is made, and the page says what to do', { skip: d1Skip }, async () => {
+  const others = [() => undefined, () => cookieFor('another-sign-in'), (state) => `kiln_signin=${state}`, (state) => `other=1; __Host-kiln_signin=${state}x`];
+  for (const cookie of others) {
+    const env = cloud();
+    const state = stateOf(await get(env, '/cloud/login/google'));
+    const out = await withFetch(google(), async (calls) => ({ ...(await page(await get(env, `/google/callback?code=c&state=${state}`, null, cookie(state)))), asked: calls.length }));
+    assert.equal(out.status, 400);
+    assert.match(out.body, /<h1>The sign-in did not finish<\/h1>/);
+    assert.ok(out.body.includes(ELSEWHERE), out.body);
+    assert.ok(out.body.includes('https://app.example'), 'the way back to the dashboard');
+    plain(out.body.replace(/<[^>]+>/g, ' '), 'started elsewhere');
+    assert.equal(out.asked, 0, 'Google was not asked who the person is');
+    assert.deepEqual(sessions(env), [], 'nobody is signed in');
+    assert.equal(env.KILN.map.has(`gstate:${state}`), false, 'the state works once');
+  }
+});
+
+test('a GitHub sign-in to the dashboard that comes back in another browser signs nobody in, and in the browser that started it it finishes and the cookie is taken away', { skip: d1Skip }, async () => {
+  const env = withGitHub();
+  let state = stateOf(await get(env, '/cloud/login'));
+  const out = await withFetch(gitHub, async (calls) => ({ ...(await page(await get(env, `/cloud/callback?code=c1&state=${state}`))), asked: calls.length }));
+  assert.equal(out.status, 400);
+  assert.match(out.body, /<h1>The sign-in did not finish<\/h1>/);
+  assert.ok(out.body.includes(ELSEWHERE), out.body);
+  assert.ok(out.body.includes('https://app.example'), 'the way back to the dashboard');
+  assert.equal(out.asked, 0, 'GitHub was not asked who the person is');
+  assert.deepEqual(sessions(env), [], 'nobody is signed in');
+  assert.equal(env.KILN.map.has(`cstate:${state}`), false, 'the state works once');
+
+  const start = await get(env, '/cloud/login');
+  state = stateOf(start);
+  const res = await withFetch(gitHub, () => get(env, `/cloud/callback?code=c1&state=${state}`, null, start.headers.get('Set-Cookie').split(';')[0]));
+  assert.equal(res.status, 302);
+  assert.ok(tokenOf(res), 'signed in');
+  assert.equal(res.headers.get('Set-Cookie'), '__Host-kiln_signin=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');
+  assert.equal(sessions(env).length, 1);
+});
+
+test('the browser that started a Google sign-in finishes it with the cookie it was given, in local development over plain http too, and the cookie is then taken away', { skip: d1Skip }, async () => {
+  for (const base of ['https://worker.example', 'http://localhost:8787', 'http://127.0.0.1:8787']) {
+    const env = cloud();
+    const at = (p, cookie) => worker.fetch(new Request(`${base}${p}`, { redirect: 'manual', headers: cookie ? { Cookie: cookie } : {} }), env);
+    const start = await at('/cloud/login/google');
+    const res = await withFetch(google(), () => at(`/google/callback?code=c&state=${stateOf(start)}`, start.headers.get('Set-Cookie').split(';')[0]));
+    assert.equal(res.status, 302, base);
+    assert.ok(tokenOf(res), base);
+    assert.equal(res.headers.get('Set-Cookie'), base.startsWith('https:') ? '__Host-kiln_signin=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0' : 'kiln_signin=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0', base);
+    assert.equal(sessions(env).length, 1, base);
+  }
 });

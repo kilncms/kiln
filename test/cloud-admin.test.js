@@ -35,7 +35,7 @@ test('KLR-08 end to end: sign-in records the numeric id, and /admin/cloud/* answ
     if (url.includes('/login/oauth/access_token')) return jsonRes({ access_token: 'gho_x' });
     if (url === 'https://api.github.com/user') return jsonRes(user);
   }, async () => {
-    const res = await worker.fetch(new Request(`https://worker.example/cloud/callback?code=c&state=${state}`), env);
+    const res = await worker.fetch(new Request(`https://worker.example/cloud/callback?code=c&state=${state}`, { headers: { Cookie: `__Host-kiln_signin=${state}` } }), env);
     return new URL(res.headers.get('Location')).hash.replace('#kc_token=', '');
   });
   const runbook = (token) => worker.fetch(new Request('https://worker.example/admin/cloud/runbook', { headers: { Authorization: `Bearer ${token}` } }), env);

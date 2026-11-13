@@ -83,6 +83,7 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.6.7';
 
+import { startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { handleCloud, googleDashboardSignIn, keptOwnerAtSite, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
 import { keepsReady, keptStands } from './keeps.js';
@@ -277,7 +278,7 @@ async function routeRequest(request, env, ctx) {
     if (path === '/source/fields' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceFields(request, env));
     if (path === '/source/history' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceHistory(request, env));
     if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
-    if (path === '/google/callback') return googleCallback(url, env);
+    if (path === '/google/callback') return googleCallback(url, env, request);
     if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
     // The commit proxy runs on the shared App installation token: it is counted
     // for each session (workLimited), so one editor can't exhaust the owner's
@@ -2960,7 +2961,7 @@ async function googleIdentity(url, env, code) {
   return { info };
 }
 
-async function googleCallback(url, env) {
+async function googleCallback(url, env, request) {
   const code = url.searchParams.get('code');
   const nonce = url.searchParams.get('state');
   if (!code || !nonce) {
@@ -2969,7 +2970,7 @@ async function googleCallback(url, env) {
     const waiting = nonce ? await env.KILN.get(`gstate:${nonce}`, 'json') : null;
     if (waiting && waiting.for === 'dashboard') {
       await env.KILN.delete(`gstate:${nonce}`);
-      return googleDashboardSignIn(env, waiting, { page: html });
+      return signInOver(url, await googleDashboardSignIn(env, waiting, { page: html }));
     }
     return html(troubleBody(HALF_A_SIGN_IN), HALF_A_SIGN_IN.status);
   }
@@ -2979,7 +2980,14 @@ async function googleCallback(url, env) {
 
   // A sign-in to Kiln's dashboard (cloud.js, /cloud/login/google) comes back
   // to this same address, so that Google needs no second one on its list.
-  if (state.for === 'dashboard') return googleDashboardSignIn(env, state, { page: html, identity: () => googleIdentity(url, env, code) });
+  if (state.for === 'dashboard') {
+    // Only the browser the sign-in was started in may finish it
+    // (signin-trouble.js). In any other, nobody is signed in, Google is not
+    // asked who they are, and the person gets the dashboard's page that says
+    // the sign-in did not finish.
+    if (!startedHere(request, url, nonce)) return googleDashboardSignIn(env, state, { page: html, identity: async () => ({ trouble: STARTED_ELSEWHERE }) });
+    return signInOver(url, await googleDashboardSignIn(env, state, { page: html, identity: () => googleIdentity(url, env, code) }));
+  }
 
   const who = await googleIdentity(url, env, code);
   if (who.trouble) return html(troubleBody(who.trouble, { origin: state.origin }), who.trouble.status);
