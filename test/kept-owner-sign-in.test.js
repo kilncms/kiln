@@ -22,10 +22,14 @@ const NAMES_GITHUB = /GitHub|github|repositor|\brepo\b/;
 const DASHBOARD = 'open the editor again from your Kiln dashboard at app.kilncms.com';
 const staged = (over = {}) => ({ edits: 0, source: 0, structural: 0, files: 0, ...over });
 
-test('kept owner: the editor keeps what the service said with the sign-in, for the page that finds it ended', () => {
+test('kept owner: the editor remembers what the service said, for the page that finds the sign-in ended', () => {
   const main = read('main.js');
-  assert.match(main, /state\.kept = !!stored\?\.session && stored\.kept === true;/);
-  assert.match(main, /rememberKept\(stored, user\.kept === true\)/);
+  assert.match(main, /rememberKept\(user\.kept === true\)/);
+  assert.match(main, /state\.kept = !!stored\?\.session && wasKept\(\);/);
+  // A sign-in that ran out by the browser's own clock is dropped by the boot shim before the editor starts: still known.
+  const known = main.indexOf("state.kept = mode === 'admin' && wasKept();");
+  assert.ok(known > main.indexOf('async function init()') && known < main.indexOf('if (window.__KILN_OVER)'));
+  assert.match(main, /function keptKey\(\) \{ return `kiln_kept:\$\{cfg\.repo\}`; \}/);
   assert.match(main, /function signInWay\(\) \{ return wayOf\(\{ mode, kept: state\.kept \}\); \}/);
 });
 

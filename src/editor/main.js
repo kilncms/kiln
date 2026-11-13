@@ -310,6 +310,9 @@ async function init() {
     console.error('[kiln] window.KILN.repo and .worker are required');
     return;
   }
+  // An owner without GitHub is remembered in this browser (rememberKept), so
+  // the card below leads the Google way even when the sign-in is already gone.
+  state.kept = mode === 'admin' && wasKept();
   // The stored sign-in ran out by this browser's own clock, and the boot shim
   // dropped it as this page loaded (it loads this bundle to say so, and leaves
   // this marker). The page gets the card a sign-in the worker has ended gets,
@@ -334,12 +337,12 @@ async function init() {
     } else {
       state.gh = watched(withAutoRefresh(makeGh({ mode: 'direct', token: () => JSON.parse(localStorage.getItem(ADMIN_KEY)).token }), stored));
     }
-    // An owner without GitHub is remembered with the sign-in: a sign-in that has ended gets no answer that says so.
-    state.kept = !!stored?.session && stored.kept === true;
+    // An owner without GitHub is remembered in this browser: a sign-in that has ended gets no answer that says so.
+    state.kept = !!stored?.session && wasKept();
     try {
       const user = stored?.session ? await ownerWho(stored.session) : await state.gh.request('GET', '/user');
       state.user = user.login || stored.login || '';
-      if (stored?.session) rememberKept(stored, user.kept === true);
+      if (stored?.session) rememberKept(user.kept === true);
     } catch (err) {
       // Only a real auth rejection should sign the owner out. A network or worker
       // blip (no HTTP status) must NOT nuke a valid session — that would log them
@@ -838,20 +841,25 @@ async function ownerWho(session) {
 
 /**
  * Whether the owner has no GitHub account: Kiln keeps the site's files, and
- * the service says so in its /auth/session answer (`kept: true`). It is kept
- * with the stored sign-in, because a page that finds the sign-in ended gets
- * no such answer and still has to offer the right way back in. A new sign-in
- * writes the record afresh, so it never outlives the sign-in it describes.
+ * the service says so in its /auth/session answer (`kept: true`). It is
+ * remembered in this browser beside the sign-in, not in it: the page that
+ * finds the sign-in ended gets no such answer, and the boot shim has by then
+ * dropped a sign-in that ran out by the clock. That page still has to offer
+ * the right way back in. Every answer from the service sets it afresh.
  */
-function rememberKept(stored, kept) {
+function rememberKept(kept) {
   state.kept = kept;
-  if ((stored.kept === true) === kept) return;
   try {
-    const next = { ...stored };
-    if (kept) next.kept = true; else delete next.kept;
-    localStorage.setItem(ADMIN_KEY, JSON.stringify(next));
+    if (kept) localStorage.setItem(keptKey(), '1'); else localStorage.removeItem(keptKey());
   } catch { /* a browser that keeps nothing: known for this page load */ }
 }
+
+/** What rememberKept left in this browser for this site. */
+function wasKept() {
+  try { return localStorage.getItem(keptKey()) === '1'; } catch { return false; }
+}
+
+function keptKey() { return `kiln_kept:${cfg.repo}`; }   // declarations: init() uses them before this line is reached
 
 /**
  * An owner signed in the old way holds a GitHub token in this browser. When
