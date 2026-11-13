@@ -275,11 +275,27 @@ async function fill(token, { starter, repo, branch, config, sleep }) {
  *   forget    (id) → takes that row away again
  *   note      (subject, lines) → a note to the operator
  *
- * Answers { ok: true, site, repo, files, commit } or { ok: false, code,
- * status, error }, where `error` is the one sentence the person reads.
+ * A site that is brought in from somewhere else (bring.js) starts the same
+ * way, except that its repository is not filled with the starter: a job
+ * outside the service fills it. For that:
+ *
+ *   empty     true: the starter is not read and nothing is written after
+ *             GitHub's own first commit
+ *   mayStart  () → null, or a refusal { ok: false, code, status, error }. One
+ *             more look at fair use, after the ones here and before anything
+ *             is made
+ *   onMade    ({ id, site, repo, branch, name }) → what must be written down
+ *             with the new row. If it throws, the start fails as any other
+ *             failure after the repository was made does
+ *   about     more lines for the note to the operator
+ *
+ * Answers { ok: true, site, repo, branch, name, files, commit } or { ok:
+ * false, code, status, error }, where `error` is the one sentence the person
+ * reads.
  */
 export async function startKept(env, { accountId, name, worker, by = '', sign, pkcs1 = null, register, forget = async () => {}, note = async () => {},
-  sleep = (ms) => new Promise(r => setTimeout(r, ms)), now = Date.now() } = {}) {
+  sleep = (ms) => new Promise(r => setTimeout(r, ms)), now = Date.now(),
+  empty = false, mayStart = async () => null, onMade = async () => {}, about = [] } = {}) {
   if (!keepsReady(env)) return refusal('not_set_up');
   const called = cleanName(name);
   if (!called) return refusal('bad_name');
@@ -295,23 +311,28 @@ export async function startKept(env, { accountId, name, worker, by = '', sign, p
     const hour = `keepstarts:${Math.floor(now / 3600000)}`;
     const started = Number(await env.KILN.get(hour)) || 0;
     if (started >= STARTS_AN_HOUR) return refusal('too_many');
+    const no = await mayStart();
+    if (no) return no;
 
     const token = await keepToken(env, { sign, pkcs1 });
-    const starter = await readStarter(env, token);
+    const starter = empty ? null : await readStarter(env, token);
     await env.KILN.put(hour, String(started + 1), { expirationTtl: 2 * 3600 });
     // One new id for both: the repository's name ends with the start of the site's id.
     id = crypto.randomUUID();
     made = await makeRepo(env, token, { name: called, id });
     if (!made.private) throw new KeepError('not_private', `${made.repo} was made, and GitHub does not say it is private`);
-    const config = kilnConfigFile({ repo: made.repo, branch: made.branch, worker, siteName: called });
-    const filled = await fill(token, { starter, repo: made.repo, branch: made.branch, config, sleep });
+    // An empty one keeps GitHub's first commit and nothing else: whoever asked for it fills it, settings file and all.
+    const filled = empty ? { files: 0, commit: null }
+      : await fill(token, { starter, repo: made.repo, branch: made.branch, config: kilnConfigFile({ repo: made.repo, branch: made.branch, worker, siteName: called }), sleep });
     // The address Kiln's hosting will give it, from the same function the hosting uses.
     const origin = siteAddress(env, siteName(env, { repo: made.repo, id }));
     const site = await register({ id, repo: made.repo, origin, name: called });
+    await onMade({ id, site, repo: made.repo, branch: made.branch, name: called });
     try {
-      await note(`Kiln started a site and keeps its files: ${made.repo}`, [`Name: ${called}`, `Address it will have: ${origin}`, `Started by: ${by}`, `Files: ${filled.files}`, `Commit: ${filled.commit}`]);
+      await note(`Kiln started a site and keeps its files: ${made.repo}`, [`Name: ${called}`, `Address it will have: ${origin}`, `Started by: ${by}`,
+        ...(empty ? [] : [`Files: ${filled.files}`, `Commit: ${filled.commit}`]), ...about]);
     } catch { /* the site is started either way */ }
-    return { ok: true, site, repo: made.repo, files: filled.files, commit: filled.commit };
+    return { ok: true, site, repo: made.repo, branch: made.branch, name: called, files: filled.files, commit: filled.commit };
   } catch (e) {
     const detail = String((e && (e.detail || e.message)) || e).slice(0, 300);
     console.warn(JSON.stringify({ evt: 'keep_start_failed', code: (e && e.code) || 'error', repo: made ? made.repo : null, detail }));
