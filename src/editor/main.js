@@ -71,7 +71,7 @@ import { saveMenuEverywhere, menuStepText } from './menu-save.js';
 import { plainName, readableName } from './names.js';
 import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
 import { linkDialogCopy, LINK_NEEDS_WORDS, fullAddress } from './link-dialog.js';
-import { stillThere, restLine, withLastLive, LIVE_STAYS, LIVE_STAYS_PHONE, PUBLISHED_NOT_SEEN, PUBLISHED_NOT_WATCHED, SHARED_NOT_PUBLISHED } from './went-live.js';
+import { stillThere, restLine, withLastLive, lineLeaves, LIVE_STAYS, LIVE_STAYS_PHONE, PUBLISHED_NOT_SEEN, PUBLISHED_NOT_WATCHED, SHARED_NOT_PUBLISHED } from './went-live.js';
 import { listAsFile, ListLoss, LIST_NOT_WHOLE, LIST_NOT_WHOLE_DRAFT } from './list-as-file.js';
 import { holdsBlocks, BLOCK_CMDS, NO_LIST_HERE, NO_FORMAT_HERE, NO_LIST_TITLE, wordsBefore, pointAfter, liftLists, holdsBlockMarkup, inlineHtml } from './one-paragraph.js';
 import { askFirst, askWhich, tell, ownDialogCopy } from './own-dialogs.js';
@@ -6305,7 +6305,9 @@ function runJournal() {
     const list = journalAll();
     if (!list.length) {
       clearInterval(journalTimer); journalTimer = null;
-      // "live ✓" has just been said: it stays long enough to be read (went-live.js)
+      // "live ✓" has just been said: it stays long enough to be read (went-live.js).
+      // That line moves on to the resting line by itself, from when it was really
+      // shown (setStatus, lineLeaves). This is for the other ways a watch can end.
       const said = state.lastLive ? Date.now() - state.lastLive.at : Infinity;
       const stays = isMobileEditor() ? LIVE_STAYS_PHONE : LIVE_STAYS;
       setStatusIdle(said < stays ? Math.max(4000, stays - said) : undefined);
@@ -6352,8 +6354,9 @@ function runJournal() {
         state.lastLive = { at: Date.now(), desc: e.desc };
         // It stays long enough to be read by someone who had looked away (went-live.js).
         const hold = isMobileEditor() ? LIVE_STAYS_PHONE : LIVE_STAYS;
-        if (e.deployed) setStatus('Live ✓ — view site', 'saved', { href: e.target, hold });
-        else setStatus(`${e.desc} — live ✓`, 'saved', { hold });
+        // What follows it is said with it (rest): the line may be shown later than now, after "Published. Undo" has had its ten seconds.
+        if (e.deployed) setStatus('Live ✓ — view site', 'saved', { href: e.target, hold, rest: true });
+        else setStatus(`${e.desc} — live ✓`, 'saved', { hold, rest: true });
         if (e.target === location.pathname || e.target === location.pathname + location.search) swapImagePreviews();
       } else if (Date.now() - e.started > 6 * 60 * 1000) {
         // Saved, and not showing: the editor cannot tell why, and says so, with how to check.
@@ -6388,9 +6391,13 @@ function setStatusIdle(after = 4000) {
     // On a phone the toast covers the page: it returns only with news, and
     // "you are still signed in" is not news.
     if (isMobileEditor()) { el.hidden = true; return; }
-    // After a publish went live the line goes on saying so, with the time (went-live.js).
-    setStatus(restLine(state.user, state.lastLive), 'idle', state.lastLive ? { hold: LIVE_STAYS } : undefined);
+    restStatus();
   }, after);
+}
+
+/** The line the editor rests on. After a publish went live it goes on saying so, with the time (went-live.js). */
+function restStatus() {
+  setStatus(restLine(state.user, state.lastLive), 'idle', state.lastLive ? { hold: LIVE_STAYS } : undefined);
 }
 
 function swapImagePreviews() {
@@ -9642,16 +9649,23 @@ function setStatus(text, kind, opts) {
   statusShown++;
   placeStatus();
   clearTimeout(statusHideTimer);
-  if (opts?.signIn) { signInLine = [text, kind, opts]; return; }
-  // The line that says who is signed in comes back after other news, and from then on it also says when the last publish went live (went-live.js).
-  if (signInLine && !opts?.offer) { statusHideTimer = setTimeout(() => setStatus(withLastLive(signInLine[0], state.lastLive), signInLine[1], signInLine[2]), opts?.hold || 6000); return; }
-  if (opts?.sticky) return;
-  // Busy/error states stay visible; calm states fade away on their own. On a
-  // phone the toast sits over the top of the page, so it leaves sooner. A line
-  // with something to press says how long it stays (opts.hold).
-  if (kind === 'idle' || kind === 'saved') {
-    statusHideTimer = setTimeout(() => { el.hidden = true; }, opts?.hold || (isMobileEditor() ? 4000 : 6000));
-  }
+  if (opts?.signIn) signInLine = [text, kind, opts];
+  // How long this line stays, and what follows it, is settled here, where the
+  // line is really shown (went-live.js lineLeaves). "live ✓" is followed by the
+  // resting line. That used to hang on a second timer, set when "live ✓" was
+  // said and tied to a count of the lines shown by then. After an ordinary
+  // publish "Published. Undo" can still have the line at that moment, with
+  // "live ✓" waiting behind it; the count was then taken too early, the timer
+  // found a newer line and did nothing, and the resting line never came.
+  // The line that says who is signed in comes back after other news, and from then on it also says when the last publish went live.
+  const leaves = lineLeaves({ kind, hold: opts?.hold, sticky: !!opts?.sticky, signIn: !!opts?.signIn, offer: !!opts?.offer, rest: !!opts?.rest,
+    phone: isMobileEditor(), signInWaiting: !!signInLine });
+  if (!leaves) return;
+  statusHideTimer = setTimeout(() => {
+    if (leaves.then === 'sign-in') setStatus(withLastLive(signInLine[0], state.lastLive), signInLine[1], signInLine[2]);
+    else if (leaves.then === 'rest') restStatus();
+    else el.hidden = true;
+  }, leaves.after);
 }
 
 // ─── Crash-proof pending edits ───────────────────────────────────────────────

@@ -70,6 +70,39 @@ export function restLine(user, lastLive, opts) {
   return lastLive && lastLive.at ? withLastLive(who, lastLive, opts) : who;
 }
 
+/**
+ * What a line does once it is on the status line: null when it stays until
+ * other news, or { after, then }: how long it stays, and what follows.
+ *
+ *   'away'     the line is put away
+ *   'rest'     the resting line takes its place (restLine): who is signed in,
+ *              and when the last publish went live
+ *   'sign-in'  the line that says the sign-in has ended comes back
+ *
+ * This is asked when a line is really shown, which can be later than when it
+ * was said: after an ordinary publish "Published. Undo" keeps the line for
+ * ten seconds, and "live ✓" waits behind it if the site was quick. The timer
+ * that brought the resting line used to be set when "live ✓" was said, so on
+ * that path it never did. Now "live ✓" is said with `rest`, and moves on by
+ * itself from the moment it is on screen.
+ *
+ *   kind           'saving', 'saved', 'idle', 'error'
+ *   hold           how long the line asks to stay, when it says
+ *   sticky         it stays until other news ("Published. Undo" has a timer of its own)
+ *   signIn         it is the line that says the sign-in has ended
+ *   offer          it is "Published. Undo"
+ *   rest           the resting line follows it ("live ✓")
+ *   phone          on a phone the line lies over the page: it leaves sooner, and rests on nothing
+ *   signInWaiting  the sign-in has ended, and its line is waiting to come back
+ */
+export function lineLeaves({ kind, hold = 0, sticky = false, signIn = false, offer = false, rest = false, phone = false, signInWaiting = false }) {
+  if (signIn) return null;
+  if (signInWaiting && !offer) return { after: hold || 6000, then: 'sign-in' };
+  if (sticky) return null;
+  if (kind !== 'idle' && kind !== 'saved') return null;
+  return { after: hold || (phone ? 4000 : 6000), then: rest && !phone ? 'rest' : 'away' };
+}
+
 /** Six minutes on, the page still does not hold the change. It was saved; why it does not show is not known. */
 export const PUBLISHED_NOT_SEEN = 'Published, but this page is not showing the change yet and Kiln cannot tell why. Reload the page in a few minutes to see it. History in the Kiln menu shows that it was saved.';
 /** The commit was made and something after it stopped: the change is published, and cannot be watched. */

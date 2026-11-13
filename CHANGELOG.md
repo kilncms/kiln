@@ -44,6 +44,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   offered once that answer has come, and are put away the first time a request
   is answered "not set up" (`src/editor/ai-offered.js`).
 
+- **After an ordinary publish the line by the Kiln button moves on from "live
+  ✓".** That line is meant to stay half a minute (ten seconds on a phone) and
+  then give way to "Signed in as NAME. Your last publish went live at 5:33
+  PM." After "New post or page" and after Find & replace it did. After an
+  ordinary publish it could stop at "live ✓": when the site showed the change
+  while "Published. Undo" still had the line, "live ✓" waited its turn, and
+  the timer that brings the resting line had been set before "live ✓" was on
+  screen. When it went off it found a newer line and did nothing, so "live ✓"
+  was put away and nothing followed it. Now "live ✓" moves on to the resting
+  line by itself, thirty seconds after it is really shown, on every path
+  (`lineLeaves` in `src/editor/went-live.js`).
+
 ## [0.6.2] - 2026-11-12
 
 ### Fixed

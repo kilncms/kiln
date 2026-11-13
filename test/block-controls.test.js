@@ -54,7 +54,7 @@ test('block controls: "Removed. Undo" is put away once another change is made, s
   // the line says how long it stays, and any other line clears the mark
   const status = main.slice(main.indexOf('function setStatus('), main.indexOf('// ─── Crash-proof pending edits'));
   assert.match(status, /if \(opts\?\.tag\) el\.dataset\.tag = opts\.tag; else delete el\.dataset\.tag;/);
-  assert.match(status, /opts\?\.hold \|\| \(isMobileEditor\(\) \? 4000 : 6000\)/);
+  assert.match(status, /const leaves = lineLeaves\(\{ kind, hold: opts\?\.hold, /);   // how long a line stays is settled in went-live.js (lineLeaves, test/went-live.test.js)
 });
 
 test('a tap on plain words folds an open bar away on an iPhone too, where such a tap makes no click', () => {
