@@ -65,9 +65,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   was left out. It is switched on with `CONVERT_SECRET` where sites can be
   started, and needs migration `0009_conversions.sql`; `CONVERT_REPO` and
   `CONVERT_WORKFLOW` name another job than `convert.yml` in `kiln-converter`
-  in the organization where Kiln keeps files. The service does not put the
-  copied site on Kiln's hosting by itself yet: the dashboard's own step does
-  that. Nothing here deletes, renames or hands over a repository.
+  in the organization where Kiln keeps files. When GitHub answers 401 to the
+  start of the job, the token the service remembered is forgotten and the
+  start is tried once more with a new one, so a token that stopped working
+  early does not fail every copy until it runs out. The service does not put
+  the copied site on Kiln's hosting by itself yet: the dashboard's own step
+  does that. Nothing here deletes, renames or hands over a repository.
 
 - **The owner of a site Kiln keeps the files of can edit it, with no GitHub
   account.** The service now answers for it, though the dashboard has no

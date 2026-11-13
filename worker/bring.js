@@ -24,7 +24,7 @@
  * Nothing in this file ever deletes, renames or transfers a repository.
  */
 import { gh, kilnConfigFile } from './prepare.js';
-import { keepsReady, keepOrg, keepToken, cleanName, startKept } from './keeps.js';
+import { keepsReady, keepOrg, keepToken, forgetKeepToken, cleanName, startKept } from './keeps.js';
 import { sendOnce, trialEndsAt, siteCopiedMail, copyFailedMail } from './mail.js';
 
 const CONFIG_FILE = 'assets/kiln-config.js';
@@ -242,16 +242,21 @@ export async function copyOf(env, { accountId, id, now = Date.now() } = {}) {
 // ─── Starting the job ─────────────────────────────────────────────────────────
 
 /**
- * Starts the job for one row of `conversions`. true when GitHub took it. When
- * it did not, the row is failed with `no_job`, the operator is told, and the
- * site and its repository are left as they are.
+ * Starts the job for one row of `conversions`. true when GitHub took it. A
+ * 401 means the remembered token is dead: it is forgotten (keeps.js) and the
+ * start is tried once more with a new one. When GitHub still did not take it,
+ * the row is failed with `no_job`, the operator is told, and the site and its
+ * repository are left as they are.
  */
 async function startJob(env, { job, address, repo, worker, sign, pkcs1, note, now }) {
   const where = `/repos/${convertRepo(env)}/actions/workflows/${convertWorkflow(env)}/dispatches`;
   let detail;
   try {
-    const token = await keepToken(env, { sign, pkcs1 });
-    const r = await gh(token, 'POST', where, { ref: 'main', inputs: { job, address, repo, back: `${worker}/cloud/convert/done`, pages: String(MOST_PAGES) } });
+    const start = async () => gh(await keepToken(env, { sign, pkcs1 }), 'POST', where,
+      { ref: 'main', inputs: { job, address, repo, back: `${worker}/cloud/convert/done`, pages: String(MOST_PAGES) } });
+    let r = await start();
+    // 401: the remembered token is dead before its 50 minutes are over. It is forgotten, and the start is tried once more with a new one.
+    if (r.status === 401) { await forgetKeepToken(env); r = await start(); }
     if (r.ok) return true;
     detail = `POST ${where} answered ${r.status}`;
   } catch (e) { detail = String((e && (e.detail || e.message)) || e).slice(0, 300); }

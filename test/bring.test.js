@@ -53,6 +53,7 @@ function fakeHub({ fail = null } = {}) {
     }
     if (p === JOBS && m === 'POST') {
       if (hub.fail === 'job') return jsonRes({ message: 'Workflow does not have a workflow_dispatch trigger' }, 422);
+      if (hub.fail === 'job401') { hub.refused = (hub.refused || 0) + 1; return jsonRes({ message: 'Bad credentials' }, 401); }
       hub.jobs.push(body);
       return new Response(null, { status: 204 });
     }
@@ -316,6 +317,34 @@ test('a job that cannot be started: one sentence, the copy failed with its reaso
   w.hub.fail = null;
   const next = await again(w, json.site.id);
   assert.deepEqual([next.status, next.json.bring.state, w.hub.jobs.length, w.hub.made.length], [200, 'copying', 1, 1]);
+});
+
+test('a remembered token GitHub no longer takes is forgotten, and the job is started once more with a new one', { skip: d1Skip }, async () => {
+  const w = world({ fail: 'job' });
+  const first = await bring(w);
+  assert.equal(first.status, 502);
+  const KEY = 'keeptok:kiln-sites:4242';
+  assert.equal(await w.env.KILN.get(KEY), 'keep-token', 'the token is remembered');
+  // the remembered token dies before its 50 minutes are over
+  await w.env.KILN.put(KEY, 'dead-token');
+  w.hub.fail = null;
+  const next = await again(w, first.json.site.id);
+  assert.deepEqual([next.status, next.json.bring.state, w.hub.jobs.length], [200, 'copying', 1]);
+  assert.deepEqual(asked(next.calls).filter(c => !c.includes('/contents/')), [`POST ${JOBS}`, 'GET /orgs/kiln-sites/installation', 'POST /app/installations/77/access_tokens', `POST ${JOBS}`]);
+  assert.deepEqual(next.calls.filter(c => new URL(c.url).pathname === JOBS).map(c => c.headers.Authorization), ['Bearer dead-token', 'Bearer keep-token']);
+  assert.equal(await w.env.KILN.get(KEY), 'keep-token', 'the new token is the one remembered now');
+  assert.deepEqual(w.hub.unsafe, []);
+});
+
+test('a job start GitHub answers 401 to twice is tried twice and no more, and the copy fails as any job that cannot be started', { skip: d1Skip }, async () => {
+  const w = world({ fail: 'job401' });
+  const { status, json } = await bring(w);
+  assert.deepEqual([status, json.code], [502, 'no_job']);
+  assert.equal(w.hub.refused, 2, 'the first try and one more');
+  const [copy] = copies(w.env);
+  assert.deepEqual([copy.state, copy.reason], ['failed', 'no_job']);
+  assert.match(w.notes.at(-1), /answered 401/);
+  assert.deepEqual([w.hub.made.length, sites(w.env).length, w.hub.unsafe.length], [1, 1, 0]);
 });
 
 // ─── POST /cloud/convert/done ─────────────────────────────────────────────────

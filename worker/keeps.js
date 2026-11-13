@@ -108,6 +108,15 @@ export function keepKey(env, { pkcs1 = null } = {}) {
 }
 
 /**
+ * Forgets the remembered token. GitHub answered 401 to it, so it is dead before
+ * its 50 minutes are over, and the next `keepToken` asks GitHub for a new one.
+ * Never throws: a token that could not be forgotten runs out by itself.
+ */
+export async function forgetKeepToken(env) {
+  try { await env.KILN.delete(tokenKey(env)); } catch { /* it runs out by itself */ }
+}
+
+/**
  * A token that may make and write repositories in `KEEP_ORG`, kept for 50
  * minutes. `sign` is the service's signer for a GitHub App (cloud.js appJwt),
  * so both apps are signed for by the same code.
@@ -225,7 +234,7 @@ async function makeRepo(env, token, { name, id }) {
     throw err;
   }
   if (r.status !== 201) {
-    if (r.status === 401) { try { await env.KILN.delete(tokenKey(env)); } catch { /* it runs out by itself */ } }
+    if (r.status === 401) await forgetKeepToken(env);
     throw new KeepError('no_repo', `POST /orgs/${org}/repos answered ${r.status}`);
   }
   const j = await r.json().catch(() => ({}));
