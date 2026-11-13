@@ -616,3 +616,36 @@ test('owed: the job waits twice as long each time, six hours at most, tries eigh
   bad.env.KILN.map.set('hostowed:s1', JSON.stringify({ at: 1, tries: 0, codes: ['github'], author: { name: '' }, worker: 'javascript:alert(1)' }));
   assert.equal(await careOwed(bad.env, 's1'), null);
 });
+
+// ─── A site Astro builds ──────────────────────────────────────────────────────
+
+const ASTRO = {
+  'astro.config.mjs': "import { defineConfig } from 'astro/config';\nexport default defineConfig({});\n",
+  'src/layouts/Base.astro': '---\n---\n<html>\n<body>\n<slot />\n</body>\n</html>\n',
+  'src/pages/index.astro': "---\nimport Base from '../layouts/Base.astro';\n---\n<Base><h1>Hi</h1></Base>\n",
+  'src/content/site/home.md': '---\nheading: Hi\n---\n',
+};
+
+test('look after: a site Astro builds gets Kiln the way the button adds it, in the public folder and the layout file', { skip: d1Skip }, async () => {
+  const w = world({ 'ada/club': ASTRO });
+  w.out = { ...w.out, 'integrations/astro/index.mjs': Buffer.from('// the helper\n') };
+  const before = w.gh.head();
+  await withFetch(w.handler, async () => {
+    const res = await switchOn(w.env);
+    const body = await res.json();
+    const [kiln, , charset, marks] = body.looked_after;
+    assert.deepEqual(states(body.looked_after), [['kiln', 'done'], ['previews', 'done'], ['charset', 'not_done'], ['marks', 'not_done']]);
+    assert.equal(kiln.detail, 'Kiln added its files to ada/club, and 1 layout file now loads the editor.');
+    assert.deepEqual(w.gh.commits.get(kiln.commit.sha).parents, [before]);
+    // The steps that work on a site's own pages say what they said before, and so does the hosting.
+    assert.match(charset.detail, /^This site is built by Astro before it is published/);
+    assert.match(marks.detail, /^This site is built by Astro before it is published/);
+    assert.equal(body.code, 'no_home');
+  });
+  for (const p of ['public/assets/kiln.js', 'public/assets/kiln-editor.js', 'public/assets/kiln-features.js', 'public/assets/kiln-config.js', 'public/kiln.html', 'public/_headers', 'src/lib/kiln-astro.mjs']) assert.ok(w.gh.paths().includes(p), p);
+  assert.match(w.gh.read('public/assets/kiln-config.js'), /mode: {3}'source',\n {2}adapter: 'astro',/);
+  assert.equal(w.gh.read('src/layouts/Base.astro'), '---\n---\n<html>\n<body>\n<slot />\n<script is:inline src="/assets/kiln-config.js"></script>\n<script is:inline src="/assets/kiln.js" defer></script>\n</body>\n</html>\n');
+  assert.equal(w.gh.read('astro.config.mjs'), ASTRO['astro.config.mjs']);
+  assert.equal(w.gh.read('src/pages/index.astro'), ASTRO['src/pages/index.astro']);
+  assert.ok(siteRow(w.env).prepared_at);
+});

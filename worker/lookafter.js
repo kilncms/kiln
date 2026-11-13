@@ -240,7 +240,7 @@ export async function lookAfter(env, { site, token, author, worker, firstpassAt 
       } else {
         const done = await applyPrepare({ token, repo, worker, plan, author, ...(env.KILN_RELEASE_BASE ? { releaseBase: env.KILN_RELEASE_BASE } : {}) });
         await noted(record.prepared, done.sha);
-        steps.push({ step: 'kiln', state: 'done', commit: made(done), detail: `Kiln added its files to ${repo}${done.pages ? `, and ${count(done.pages, 'page now loads', 'pages now load')} the editor` : ''}.${done.templates ? ` ${count(done.templates, 'page template now loads', 'page templates now load')} the editor too, so a new page made from ${done.templates === 1 ? 'it' : 'one'} can be edited.` : ''}` });
+        steps.push({ step: 'kiln', state: 'done', commit: made(done), detail: `Kiln added its files to ${repo}${done.pages ? `, and ${count(done.pages, 'page now loads', 'pages now load')} the editor` : ''}${done.layouts ? `, and ${count(done.layouts, 'layout file now loads', 'layout files now load')} the editor` : ''}.${done.templates ? ` ${count(done.templates, 'page template now loads', 'page templates now load')} the editor too, so a new page made from ${done.templates === 1 ? 'it' : 'one'} can be edited.` : ''}` });
       }
     } catch (e) {
       const line = failed('kiln', e, kilnSays);
