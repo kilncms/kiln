@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createHmac } from 'node:crypto';
 import worker from '../worker/index.js';
-import { copyAnswered, bringOn, convertRepo, convertWorkflow, cleanAddress, bringSentence, copySentence, copyTrouble, cutReport, signAnswer, signedRight, sweepCopies, MOST_TRIES, COPY_MINUTES, withoutCommands } from '../worker/bring.js';
+import { copyAnswered, bringOn, convertRepo, convertWorkflow, cleanAddress, bringSentence, copySentence, copyTrouble, cutReport, signAnswer, signedRight, sweepCopies, MOST_TRIES, COPY_MINUTES, withoutCommands, shownCopy, MOST_PAGES } from '../worker/bring.js';
 import { sweepBrings, accountAuthor } from '../worker/cloud.js';
 import { keepSentence } from '../worker/keeps.js';
 import { kilnConfigFile } from '../worker/prepare.js';
@@ -204,6 +204,15 @@ test('an address a person typed becomes a web address a copy can be made from, a
     plain(out.error);
   }
   assert.equal(cleanAddress('kilncms.com').code, 'kiln_own', 'with nothing told about this service');
+});
+
+test('a copy that reached the most pages one copy reads says so to the dashboard, and a smaller one says nothing', () => {
+  const row = { state: 'done', address: 'https://www.oakbakery.com', asked_at: 1, done_at: 2, rendered: 0, tries: 1 };
+  assert.equal(shownCopy({ ...row, pages: MOST_PAGES }).stopped_at, MOST_PAGES);
+  assert.equal(shownCopy({ ...row, pages: MOST_PAGES + 3 }).stopped_at, MOST_PAGES);
+  assert.equal('stopped_at' in shownCopy({ ...row, pages: MOST_PAGES - 1 }), false);
+  assert.equal('stopped_at' in shownCopy({ ...row, state: 'copying', pages: null }), false);
+  assert.equal('stopped_at' in shownCopy({ ...row, state: 'failed', pages: MOST_PAGES, reason: 'tool' }), false, 'a copy that failed has other words');
 });
 
 test('every sentence a person can read is a plain one that says what to do', () => {

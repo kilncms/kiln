@@ -218,6 +218,8 @@ export function shownCopy(row, { now = Date.now(), report = false } = {}) {
     error: row.state === 'failed' ? copySentence(row.reason, { again: left }) : null,
     again: left && (row.state === 'failed' || stale(row, now)),
     ...(report ? { report: row.report || '', tries: Number(row.tries) || 1 } : {}),
+    // A copy that reached the most pages one copy reads very likely left some of the site behind: the dashboard says so.
+    ...(row.state === 'done' && Number(row.pages) >= MOST_PAGES ? { stopped_at: MOST_PAGES } : {}),
   };
 }
 
