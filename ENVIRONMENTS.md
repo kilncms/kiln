@@ -470,6 +470,8 @@ npx wrangler d1 migrations apply kiln-cloud --local                          # y
   info kiln-cloud --env production` gives a bookmark for "now" before a
   migration; `time-travel restore --bookmark <id>` returns to it. See
   "Backups and restore" above.
+- **After `0012_github_id.sql`**, an account made before it has no GitHub number until its person signs in. To fill the numbers in at once, run `node scripts/fill-github-ids.mjs <login> …`: it prints one `UPDATE` for each login and changes nothing.
+  Check that each login still belongs to the person who made the account, then run the statements with `npx wrangler d1 execute kiln-cloud --env production --remote --file <file>` (staging first).
 
 ---
 
