@@ -130,7 +130,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Sign out says that you are signed out, and where to sign in again.** After
   Kiln menu > Sign out the page came back with no Kiln button and not a word.
   The person now lands on the site's own sign-in page, whose card reads "You
-  are signed out" and "Sign in again to edit" with the site's name, above the
+  are signed out" and "Sign in below to edit" with the site's name, above the
   same two buttons. It says so once: opened again, the page is the ordinary
   sign-in page. A site that has turned its sign-in page off (`entry: false`)
   goes to its home page as before, and so does the demo, which signs every

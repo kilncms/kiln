@@ -1,7 +1,7 @@
 /**
  * Sign out says so. After "Sign out" the page used to come back with no Kiln
  * button and not a word. Now the person lands on the site's own sign-in page,
- * whose card reads "You are signed out" and "Sign in again to edit <site>",
+ * whose card reads "You are signed out" and "Sign in below to edit <site>",
  * once. It is said there, and not by a notice of its own on the site's pages,
  * because the script that would have to carry such a notice is the one every
  * visitor of every site downloads (see the size check in sign-in-clock.test.js).
@@ -50,7 +50,7 @@ test('signed out: Sign out leaves a note and goes to the sign-in page, which say
   assert.deepEqual(editing.replaced, ['/kiln'], 'the page that follows is the site\'s sign-in page');
 
   const next = loadShim('/kiln', { local, session });
-  assert.match(next.card, /^KilnYou are signed outSign in again to edit Acme/);
+  assert.match(next.card, /^KilnYou are signed outSign in below to edit Acme/);
   assert.doesNotMatch(next.card, /[—–]/);
   assert.equal(NOTE in session, false, 'the note is read once');
 

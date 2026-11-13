@@ -200,7 +200,7 @@
     card.innerHTML =
       '<div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#a3a3ad;margin-bottom:8px">Kiln</div>' +
       '<h1 style="font-size:21px;line-height:1.2;margin:0 0 4px;color:#1c1c28">' + (signedOut ? 'You are signed out' : 'Sign in to edit') + '</h1>' +
-      '<p style="font-size:13px;color:#888;margin:0 0 22px">' + (signedOut ? 'Sign in again to edit ' : '') + esc(cfg.siteName || 'this site') + '</p>' +
+      '<p style="font-size:13px;color:#888;margin:0 0 22px">' + (signedOut ? 'Sign in below to edit ' : '') + esc(cfg.siteName || 'this site') + '</p>' +
       '<div id="kiln-entry-btns"></div>' +
       '<p style="font-size:11px;line-height:1.5;color:#b0b0b8;margin:20px 0 0">Editors and members sign in with Google. ' +
       'The site owner signs in with GitHub.</p>';
