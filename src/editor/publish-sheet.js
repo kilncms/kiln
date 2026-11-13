@@ -335,7 +335,7 @@ function renderItem(item, deps, rerender) {
  * }
  */
 export function openPublishSheet(deps) {
-  const m = deps.modal(`<h3 id="kiln-ps-title"></h3><div id="kiln-ps-list"></div>
+  const m = deps.modal(`<h3 id="kiln-ps-title"></h3><p class="kiln-ps-lead" id="kiln-ps-lead" hidden></p><div id="kiln-ps-list"></div>
     <p class="kiln-ps-extra" id="kiln-ps-extra" hidden></p>
     <label class="kiln-ps-notefield"><span>What changed?</span>
       <input type="text" id="kiln-ps-note" maxlength="${NOTE_MAX}" autocomplete="off" placeholder="${deps.suggest ? 'A line for the person who reviews it' : 'Optional. Saved with this change.'}"></label>
@@ -355,7 +355,12 @@ export function openPublishSheet(deps) {
   const render = () => {
     const items = deps.items();
     const n = deps.count();
-    if (!items.length && !n) { m.querySelector('[data-close]').click(); return; }
+    // A line above the rows that keeps the sheet open by itself: a whole-page
+    // restore may change no part that has a row (restore-page.js).
+    const lead = deps.lead?.() || '';
+    if (!items.length && !n && !lead) { m.querySelector('[data-close]').click(); return; }
+    const ld = m.querySelector('#kiln-ps-lead');
+    if (ld) { ld.textContent = lead; ld.hidden = !lead; }
     m.querySelector('#kiln-ps-title').textContent = deps.suggest ? `Send ${n} change${n === 1 ? '' : 's'} for review` : (n ? `${n} change${n === 1 ? '' : 's'} to publish` : 'Ready to publish');
     go.textContent = deps.label(n);
     list.textContent = '';
@@ -433,6 +438,7 @@ export function publishSheetCss(mobileMq) {
 .kiln-ps-warn-mark{flex:none;width:16px;height:16px;border-radius:50%;background:#f59e0b;color:#fff;font:700 11px/16px var(--kiln-font);text-align:center}
 .kiln-ps-warn-go{margin-left:auto;flex:none;font-weight:600;text-decoration:underline}
 .kiln-ps-extra{margin:10px 0 0;font:12.5px var(--kiln-font);color:#6b7280}
+.kiln-ps-lead{margin:0 0 10px;font:13px var(--kiln-font);color:#374151}
 .kiln-pubsheet .kiln-ps-notefield{margin:14px 0 0;font:600 12px var(--kiln-font);color:#4b5563}
 .kiln-pubsheet .kiln-ps-notefield input{font-weight:400}
 .kiln-pubsheet .kiln-ps-actions{margin:14px -22px 0;padding:12px 22px;border-top:1px solid #eef0f3;background:#fafafb}

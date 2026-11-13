@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ownDialogCopy, answerOf } from '../src/editor/own-dialogs.js';
+import { historyIntro } from '../src/editor/restore-page.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const read = (f) => readFileSync(path.join(ROOT, 'src', 'editor', f), 'utf8');
@@ -117,7 +118,9 @@ test('history: a restore is shown on the page itself, not in two frames with the
   // each way back closes History and previews on the page, where Cancel puts everything back
   assert.equal((hist.match(/closeHistory\(\);\s*\n\s*const n = previewRestore\(/g) || []).length, 2);
   // the words in History no longer promise frames
-  assert.match(hist, /Both show the result on the page first, with Cancel and Keep/);
+  // (the dialog's words are kept in restore-page.js, one set for a real site and one for the demo)
+  assert.match(hist, /\$\{historyIntro\(\{ demo: !!cfg\.sandbox \}\)\}/);
+  for (const words of [historyIntro(), historyIntro({ demo: true })]) assert.match(words, /Both show the result on the page first, with Cancel and Keep/);
 });
 
 test('questions: "Start over" and "Delete draft" ask first, and nothing is cleared until the answer', () => {

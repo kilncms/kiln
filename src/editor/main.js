@@ -69,6 +69,9 @@ import { notDone, whyNot, said } from './plain-failure.js';
 import { pictureNotAdded } from './picture-not-added.js';
 import { saveMenuEverywhere, menuStepText, MENU_SAME } from './menu-save.js';
 import { menuLinks, rewriteMenu } from './menu-links.js';
+import { restoreMessage, restoreSheetLine, pageRestoredLine, restoreNote, restoreStart, restoreHolds, restoreMark, readRestoreMark, differsFromNow, historyIntro,
+  RESTORE_KEPT, RESTORE_NOTHING_SHOWN, RESTORE_DEPLOY_NAME, RESTORE_NOT_WHOLE, RESTORE_SUGGEST_NOTE, RESTORE_SUGGEST_NOTHING, RESTORE_UNDONE, RESTORE_NOT_READ,
+  NOT_BROUGHT_BACK, DEMO_NOT_BROUGHT_BACK } from './restore-page.js';
 import { discardLabel, discardQuestion, unpublishedHeading, restoredLine } from './edit-count.js';
 import { plainName, readableName } from './names.js';
 import { reachable, typing, isReachable, unreach, stripFocus, partLabel, lockedLabel, TOOL_NAMES, TOGGLES, arrowStep } from './keyboard.js';
@@ -179,6 +182,9 @@ const state = {
   // applied to the source at Publish time — so they're pending like everything else.
   // [{ op:'annotate', tag, nth, attrs } | { op:'remove', key }]
   pendingStructural: [],
+  // A whole-page restore from History that was kept and waits for Publish
+  // (restore-page.js): { sha, path, when, name, text, keys, removed }, or null.
+  restoring: null,
   // What each field/container held before this session's unpublished changes,
   // as the page's file would hold it. Taken whenever the person begins to
   // change a part that has no change waiting (baselines.js), never only when
@@ -2547,6 +2553,10 @@ function applyKeyDom(key, html) {
 }
 
 function applyUndoStep(s, dir) {
+  if (s.restoring) {   // a whole-page restore that was kept: Undo takes the waiting restore away again
+    state.restoring = dir === 'before' ? (s.restoringBefore || null) : s.restoring;
+    return null;
+  }
   if (s.srcRef) {   // a source-mode field edit (only exists once source fields staged)
     const entry = dir === 'before' ? s.prevEntry : s.nextEntry;
     if (entry === undefined) state.pendingSource.delete(s.srcRef);
@@ -3703,7 +3713,7 @@ function checkEditedLinks(items, add) {
 function requestPublish() {
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
   if (sourceActive) commitSourceEdit();
-  const anything = () => state.pending.size || state.pendingSource.size || state.pendingBinaries.size || state.pendingStructural.length;
+  const anything = () => state.pending.size || state.pendingSource.size || state.pendingBinaries.size || state.pendingStructural.length || state.restoring;
   if (!anything()) return;
   if (mode === 'editor' && state.scope?.mode === 'review') return;
   if (previewOff(localStorage)) return publish();
@@ -3713,6 +3723,7 @@ function requestPublish() {
     items: () => publishItems(),
     count: changeCount,
     label: (n) => (suggest ? 'Send for review' : publishLabel(n)),
+    lead: () => (restoreWaiting() && !suggest ? restoreSheetLine(state.restoring) : ''),
     extra: () => {
       const rows = state.pending.size + state.pendingSource.size + state.pendingStructural.length;
       const n = state.pendingBinaries.size;
@@ -3803,8 +3814,9 @@ async function publish(opts = {}) {
   // stage it first (the click-away that normally does this runs after us).
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
   if (sourceActive) commitSourceEdit();
+  restoreWaiting();   // a restore one of whose parts was taken out again is not published as one
   if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length
-    && !state.pendingSource.size) return;
+    && !state.pendingSource.size && !state.restoring) return;
   // The note from the publish sheet, already cleaned to one line of plain text.
   // Empty: every commit keeps the message it has always had.
   const noteMsg = noteMessage(opts.note);
@@ -3827,12 +3839,12 @@ async function publish(opts = {}) {
   // Only source-file edits staged: skip the HTML flow entirely — there may not
   // even BE a committed page file to edit (§13), and its journal/status tail
   // must not claim "Published" for commits whose build hasn't run (§11).
-  if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length) {
+  if (!state.pending.size && !state.pendingBinaries.size && !state.pendingStructural.length && !state.restoring) {
     return publishSource(opts.note);
   }
   // Content-file edits and the pictures they name: the pictures first, in
   // one commit, so that no content file names a picture that is not there yet.
-  if (!state.pending.size && !state.pendingStructural.length) {
+  if (!state.pending.size && !state.pendingStructural.length && !state.restoring) {
     setStatus('Publishing — adding the pictures…', 'saving');
     disablePublish(true);
     try {
@@ -3877,7 +3889,16 @@ async function publish(opts = {}) {
   // losing something its owner did not change, stops the publish here: it is
   // said, and nothing is sent.
   const lists = listsWaiting();
-  try { if (state.page.text) editsForFile(state.page.text, localEdits, lists); }
+  // A whole-page restore that was kept (restore-page.js): this publish writes
+  // that version's own text, with the edits waiting put on top. After a reload
+  // only its mark was kept, and the text is read again here.
+  const restoring = state.restoring;
+  if (restoring && typeof restoring.text !== 'string') {
+    try { restoring.text = await histFile(restoring.sha); }
+    catch (err) { setStatus(stopped(err) || notDone(RESTORE_NOT_READ, err), 'error'); return; }
+  }
+  const startText = restoring ? restoring.text : state.page.text;
+  try { if (startText) editsForFile(startText, localEdits, lists); }
   catch (err) {
     if (err instanceof ListLoss) { setStatus(LIST_NOT_WHOLE(readableName(err.key)), 'error'); return; }
     console.warn('[kiln] the lists could not be read before publishing', err);
@@ -3908,7 +3929,9 @@ async function publish(opts = {}) {
     // What Undo needs: the page file exactly as it was when this commit was made.
     let textBefore = null;
     const hadSource = state.pendingSource.size > 0;
-    const pageMessage = noteMsg || editCommitMessage(state.page.path, localEdits.map(e => e.key));
+    // A restore is named as one; the line typed in the publish sheet names either kind.
+    const pageMessage = restoring ? (noteMsg || restoreMessage(state.page.path, restoring))
+      : (noteMsg || editCommitMessage(state.page.path, localEdits.map(e => e.key)));
     const record = publishRecord({ path: state.page.path, branch: cfg.branch || 'main', message: pageMessage });
     // Track which keys actually made it into the commit vs. were skipped (e.g. a
     // key another editor un-annotated between load and publish). The final callback
@@ -3917,7 +3940,7 @@ async function publish(opts = {}) {
     // Freeze the structural ops we're sending so a mid-publish addition can't get
     // applied to this commit (it would then be double-applied on the next Publish).
     const structuralOps = state.pendingStructural.slice();
-    if (localEdits.length || structuralOps.length) {
+    if (localEdits.length || structuralOps.length || restoring) {
       const structDesc = structuralOps.map(s => s.op === 'annotate' ? `+${s.key}`
         : s.op === 'remove' || s.op === 'removeSection' ? `-${s.key}`
         : `+${s.key || 'section'}`);
@@ -3927,20 +3950,27 @@ async function publish(opts = {}) {
           textBefore = text;
           // Structural changes (make/unmake editable) first, so field edits can
           // reference newly-annotated keys; then splice the field edits.
-          const t = applyStructural(text, structuralOps);
+          // A restore starts from the old version's text, without the removals it staged itself.
+          const start = restoreStart(text, structuralOps, restoring);
+          const t = applyStructural(start.text, start.ops);
           const { html, applied, skipped } = applyEdits(t, editsForFile(t, localEdits, lists));
           appliedKeys = new Set(applied);
           skippedKeys = new Set(skipped.map(s => s.key));
           for (const s of skipped) console.warn('[kiln] skipped:', s);
           return html;
         },
-        noteMsg || editCommitMessage(state.page.path, [...localEdits.map(e => e.key), ...structDesc])
+        restoring ? pageMessage : (noteMsg || editCommitMessage(state.page.path, [...localEdits.map(e => e.key), ...structDesc]))
       );
       // Drop only the structural ops we sent (they're appended, so the sent ones are
       // at the front); anything added mid-publish stays queued for the next Publish.
       state.pendingStructural.splice(0, structuralOps.length);
       record.structural = structuralOps;
       if (result && !result.unchanged) committed = result;
+      // The restore is made, or the file already read that way: it stops waiting.
+      if (restoring) {
+        if (state.restoring === restoring) state.restoring = null;
+        if (result && !result.unchanged) record.restoring = restoring;
+      }
     }
     if (partialEdits.length) await publishPartials(partialEdits, noteMsg);
     sharedDone = true;
@@ -3994,13 +4024,14 @@ async function publish(opts = {}) {
       setStatus(`${keptSkipped.length} edit${keptSkipped.length > 1 ? 's' : ''} couldn't be applied — that section no longer exists on the page. Still pending.`, 'error');
       return;
     }
-    if (result && result.unchanged && !partialEdits.length && !state.pendingSource.size) { setStatus('Nothing changed', 'idle'); return; }
+    if (result && result.unchanged && !partialEdits.length && !state.pendingSource.size) { setStatus(restoring ? 'The page already matches that version.' : 'Nothing changed', 'idle'); return; }
     // One page file, one commit: that can be taken back. Shared content (many
     // files) and source files go through History instead.
     const canUndo = result && !result.unchanged && result.commit?.sha && textBefore !== null && !partialEdits.length && !hadSource;
     if (canUndo) offerUndo({ ...record, before: textBefore, after: result.text, sha: result.commit.sha });
+    else if (record.restoring) setStatus(pageRestoredLine(record.restoring), 'saved', { hold: 9000 });
     if (told && result && !result.unchanged) guidePublished(told);
-    watchDeploy(result?.commit?.sha, result?.text);
+    watchDeploy(result?.commit?.sha, result?.text, record.restoring ? RESTORE_DEPLOY_NAME : undefined);
     // A draft that was resumed is used up when the parts it brought back were the ones just published (resumed-draft.js).
     if (result && !result.unchanged) retireResumedDraft([...appliedKeys]);
     // A mixed publish (page edits + source-file edits from the same screen):
@@ -4047,7 +4078,7 @@ let undoOffer = null;   // { timer, held } while the offer is on screen
 function offerUndo(rec) {
   endUndoOffer(false);
   undoOffer = { held: null, timer: setTimeout(() => endUndoOffer(true), 10000) };
-  setStatus(rec.sandbox ? 'Published to your private demo.' : 'Published.', 'saved', {
+  setStatus(rec.sandbox ? 'Published to your private demo.' : rec.restoring ? pageRestoredLine(rec.restoring) : 'Published.', 'saved', {
     offer: true, sticky: true,
     action: { label: 'Undo', title: 'Take this publish back', run: () => (rec.sandbox ? undoSandboxPublish(rec) : undoPublish(rec)) },
   });
@@ -4067,6 +4098,8 @@ function endUndoOffer(showHeld) {
 function restageRecord(rec) {
   const back = restage(rec, { pending: state.pending, undoBase: state.undoBase, undoBaseAttrs: state.undoBaseAttrs, structural: state.pendingStructural });
   for (const key of back) elementForKey(key)?.classList.add('kiln-modified');
+  // A restore whose publish was taken back waits again as a restore.
+  if (rec.restoring && !state.restoring) state.restoring = rec.restoring;
   refreshPublishButton();
   return back.length + rec.structural.length;
 }
@@ -4083,7 +4116,7 @@ async function undoPublish(rec) {
     journalSave(journalAll().filter(e => e.sha !== rec.sha));
     const n = restageRecord(rec);
     await loadPageSource();
-    setStatus(`Undone. The site is back as it was, and ${editsWaiting(n)}.`, 'saved');
+    setStatus(rec.restoring ? RESTORE_UNDONE : `Undone. The site is back as it was, and ${editsWaiting(n)}.`, 'saved');
     guideUndone(n);   // a first-session card still on screen stops saying it is published
   } catch (err) {
     console.error('[kiln] undo publish', err);
@@ -6434,9 +6467,9 @@ function swapImagePreviews() {
 }
 
 /** Compatibility wrapper: page-edit publishes register a compare entry. */
-function watchDeploy(sha, committedText) {
+function watchDeploy(sha, committedText, desc = 'Your page edit') {
   if (committedText) {
-    journalAdd({ type: 'compare', target: location.pathname, expect: djb2(committedText), desc: 'Your page edit', sha });
+    journalAdd({ type: 'compare', target: location.pathname, expect: djb2(committedText), desc, sha });
   } else {
     setStatus('Published to GitHub ✓', 'saved');
     setStatusIdle();
@@ -7089,7 +7122,8 @@ function currentDomHtmlFor(key) {
  * with the Publish button, undoable with ⌘Z); Cancel puts everything back.
  * Nothing touches GitHub here.
  */
-function previewRestore(changes, label, note, removals = []) {
+/** `whole`: a whole-page restore ({ sha, path, when, name, text }) that Keep leaves waiting for Publish (restore-page.js). */
+function previewRestore(changes, label, note, removals = [], whole = null) {
   document.getElementById('kiln-previewbar')?.remove();
   const applied = [];
   for (const { key, value, attrs } of changes) {
@@ -7128,16 +7162,22 @@ function previewRestore(changes, label, note, removals = []) {
     sec.style.display = 'none';
     removed.push({ node: sec, key: repKey });
   }
-  if (!applied.length && !removed.length) return 0;
-  (applied[0]?.el || removed[0]?.node.previousElementSibling || document.body)
-    .scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (!applied.length && !removed.length && !whole) return 0;
+  if (applied.length || removed.length) {
+    (applied[0]?.el || removed[0]?.node.previousElementSibling || document.body)
+      .scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
   const bar = document.createElement('div');
   bar.id = 'kiln-previewbar';
   const nChanged = applied.length + removed.length;
   // This bar is the whole of going back: the page shows the older version,
   // and Keep leaves it there as unpublished edits. What it says after that is
   // what is left to do.
-  bar.innerHTML = `<span><strong>Previewing</strong> ${label}. ${nChanged} section${nChanged > 1 ? 's' : ''} changed${removed.length ? ` (${removed.length} removed)` : ''}.
+  // A whole-page restore may change no part that can be shown here: the bar still asks, with what goes back in its note.
+  const shown = nChanged
+    ? `<strong>Previewing</strong> ${label}. ${nChanged} section${nChanged > 1 ? 's' : ''} changed${removed.length ? ` (${removed.length} removed)` : ''}.`
+    : `<strong>Going back to</strong> ${label}. ${RESTORE_NOTHING_SHOWN}`;
+  bar.innerHTML = `<span>${shown}
     ${note ? `<small>${note}</small>` : ''} <small>Nothing is live yet. Keep it, then press Publish.</small></span>
     <button class="kiln-btn-ghost" id="kiln-pv-cancel">Cancel</button>
     <button class="kiln-btn-publish" id="kiln-pv-keep" title="Keep this on the page as unpublished edits">Keep</button>`;
@@ -7158,10 +7198,19 @@ function previewRestore(changes, label, note, removals = []) {
         undoBucket.steps.push({ structural: { node: r.node, op, html: null, removed: true,
           place: () => parent.insertBefore(r.node, next) } });
       }
+      // A whole-page restore is remembered as one, so that Publish writes that
+      // version's own text. Last in the group: Undo takes it away first, and
+      // Redo brings it back once its parts are staged again.
+      if (whole) {
+        const keys = [...new Set([...(state.restoring?.keys || []), ...applied.map(a => a.key)])].filter(k => state.pending.has(k));
+        const restoring = { ...whole, keys, removed: removed.map(r => r.key) };
+        undoBucket.steps.push({ restoring, restoringBefore: state.restoring });
+        state.restoring = restoring;
+      }
     });
     refreshPublishButton();
     bar.remove();
-    setStatus(`Kept. Press Publish to make ${applied.length + removed.length > 1 ? 'these changes' : 'this change'} live.`, 'saved', { hold: 9000 });
+    setStatus(whole ? RESTORE_KEPT : `Kept. Press Publish to make ${applied.length + removed.length > 1 ? 'these changes' : 'this change'} live.`, 'saved', { hold: 9000 });
   };
   bar.querySelector('#kiln-pv-cancel').onclick = () => {
     previewing.clear();
@@ -7177,9 +7226,9 @@ function previewRestore(changes, label, note, removals = []) {
     }
     for (const r of removed) r.node.style.display = '';
     bar.remove();
-    setStatus('Preview cancelled — the page is back to how it was', 'idle');
+    setStatus('Preview cancelled. The page is back to how it was.', 'idle');
   };
-  return applied.length + removed.length;
+  return applied.length + removed.length || (whole ? 1 : 0);
 }
 
 // ─── Named versions (Figma-style restore points) ─────────────────────────────
@@ -7266,10 +7315,8 @@ async function historyPanel(resume = null) {
   }
   const m = modal(`
     <h3>Page history</h3>
-    <p class="kiln-dim">Every publish saves a version of this page. <strong>Undo this change</strong> takes
-    back just what that publish changed; <strong>Go back to this</strong> returns the whole page to how it
-    was then. Both show the result on the page first, with Cancel and Keep. Nothing changes on the live site
-    until you publish. (For one section's history, click into it and press its ${'↻'} clock button.)</p>
+    <p class="kiln-dim">${historyIntro({ demo: !!cfg.sandbox })}</p>
+    <p class="kiln-dim">${escapeHtml(cfg.sandbox ? DEMO_NOT_BROUGHT_BACK : NOT_BROUGHT_BACK)}</p>
     <div id="kiln-hist" class="kiln-inv-list">Loading…</div>
     <p class="kiln-np-step" id="kiln-hist-status"></p>`);
   const status = m.querySelector('#kiln-hist-status');
@@ -7308,7 +7355,9 @@ async function historyPanel(resume = null) {
 
   // Whole-page: every section back to how it was at that version (a commit sha
   // from the list below, or a named version's tagged sha).
-  async function restoreVersion(sha, what) {
+  // `at`: { when } as the list shows that version's time, or { name } for a named version.
+  async function restoreVersion(sha, at) {
+    const what = at.name ? `“${escapeHtml(at.name)}”` : escapeHtml(at.when);
     spin('Reading that version…');
     const thenText = await histFile(sha);
     const vals = readValues(thenText);
@@ -7325,10 +7374,19 @@ async function historyPanel(resume = null) {
       const el = document.querySelector(`[data-cms-repeat="${CSS.escape(key)}"], [data-cms="${CSS.escape(key)}"]`);
       if (el?.closest('.kiln-added')) removals.push(key); else gone++;
     }
-    if (!changes.length && !removals.length) { status.textContent = 'The page already matches that version.'; return; }
-    const note = gone ? `${gone} section${gone > 1 ? 's' : ''} added since then stay as they are.` : '';
+    // The whole file goes back, head included (restore-page.js): a version whose
+    // title alone differs is a restore too. A person who may only suggest sends
+    // the editable parts, since a suggestion can carry no more.
+    const differs = differsFromNow(state.page.text, thenText);
+    const suggest = isSuggestMode();
+    if (!changes.length && !removals.length && (!differs || suggest)) {
+      status.textContent = differs ? RESTORE_SUGGEST_NOTHING : 'The page already matches that version.';
+      return;
+    }
+    const whole = differs && !suggest ? { sha, path: state.page.path, when: at.when || '', name: at.name || '', text: thenText } : null;
+    const note = whole ? restoreNote(state.page.text, thenText, gone) : differs ? RESTORE_SUGGEST_NOTE : '';
     closeHistory();
-    const n = previewRestore(changes, `the page as it was ${what}`, note, removals);
+    const n = previewRestore(changes, `the page as it was ${what}`, escapeHtml(note), removals, whole);
     if (!n) setStatus('Those sections aren’t on this page anymore, so there’s nothing to put back.', 'error');
   }
 
@@ -7355,9 +7413,9 @@ async function historyPanel(resume = null) {
       row.className = 'kiln-inv-row';
       row.innerHTML = `<span><strong>${escapeHtml(v.name)}</strong>
         <small>${when} · ${escapeHtml(String(v.sha).slice(0, 7))}</small></span>
-        <span class="kiln-hist-acts"><button class="kiln-btn-ghost" title="Every section back to how it was in this named version">Go back to this</button></span>`;
+        <span class="kiln-hist-acts"><button class="kiln-btn-ghost" title="The whole page back to how it was in this named version">Go back to this</button></span>`;
       row.querySelector('button').onclick = () =>
-        restoreVersion(v.sha, `“${escapeHtml(v.name)}”`).catch(err => { status.textContent = stopped(err) || notDone('That version could not be read.', err); });
+        restoreVersion(v.sha, { name: v.name }).catch(err => { status.textContent = stopped(err) || notDone('That version could not be read.', err); });
       box.appendChild(row);
     }
   }
@@ -7424,12 +7482,12 @@ async function historyPanel(resume = null) {
       <small>${i === 0 ? '<b class="kiln-hist-live">live now</b> · ' : ''}${when} · ${escapeHtml(c.commit.author.name)}</small></span>
       <span class="kiln-hist-acts">
         <button class="kiln-btn-ghost" data-act="undo" title="Put back just what this publish changed">${UNDO_ICON} Undo this change</button>
-        ${i === 0 ? '' : '<button class="kiln-btn-ghost" data-act="restore" title="Every section back to how it was at this point">Go back to this</button>'}
+        ${i === 0 ? '' : '<button class="kiln-btn-ghost" data-act="restore" title="The whole page back to how it was at this point">Go back to this</button>'}
         <button class="kiln-btn-ghost" data-act="name" title="Name this version so it’s easy to find and restore later">⭑ Name</button>
       </span>`;
     div.querySelector('[data-act="undo"]').onclick = () => undoCommit(c).catch(err => { status.textContent = stopped(err) || notDone('The two versions could not be compared.', err); });
     const rBtn = div.querySelector('[data-act="restore"]');
-    if (rBtn) rBtn.onclick = () => restoreVersion(c.sha, escapeHtml(when)).catch(err => { status.textContent = stopped(err) || notDone('That version could not be read.', err); });
+    if (rBtn) rBtn.onclick = () => restoreVersion(c.sha, { when }).catch(err => { status.textContent = stopped(err) || notDone('That version could not be read.', err); });
     div.querySelector('[data-act="name"]').onclick = () => nameVersionInline(div, c);
     list.appendChild(div);
     if (resume && typeof resume.name === 'string' && resume.sha === c.sha) {
@@ -9141,7 +9199,7 @@ function renderTopBar() {
 function discardEdits() {
   // The number the Discard button itself shows, counted the same way (edit-count.js).
   const nAll = changeCount();
-  if (!nAll && !state.pendingBinaries.size && !state.pendingStructural.length) return;
+  if (!nAll && !state.pendingBinaries.size && !state.pendingStructural.length && !state.restoring) return;
   const m = modal(`
     <h3>${discardQuestion(nAll)}</h3>
     <p class="kiln-dim">The page goes back to what's currently live. This can't be undone.</p>
@@ -9543,12 +9601,27 @@ function nameDialog(card) {
   if (said) card.setAttribute('aria-label', said);
 }
 
+/**
+ * The whole-page restore that waits for Publish, or null. One of whose parts
+ * was taken out again (a row removed in the publish sheet, a draft saved) is
+ * no longer the whole page going back: it is let go, and that is said
+ * (restore-page.js).
+ */
+function restoreWaiting() {
+  if (state.restoring && !restoreHolds(state.restoring, state.pending.keys())) {
+    state.restoring = null;
+    setStatus(RESTORE_NOT_WHOLE, 'idle', { hold: 9000 });
+  }
+  return state.restoring;
+}
+
 function refreshPublishButton() {
+  restoreWaiting();
   // The number of things the publish sheet lists: every change to a list is one, as every edit to a field is.
   const n = changeCount();
   state.shownCount = n;   // kept with the saved copy of the edits, so the offer to bring them back says this number too
   // A queued upload with no field edit still needs a Publish to commit it.
-  const anything = n || state.pendingBinaries.size || state.pendingStructural.length;
+  const anything = n || state.pendingBinaries.size || state.pendingStructural.length || !!state.restoring;
   const btn = document.getElementById('kiln-publish');
   // The same action, always in sight beside the pencil while something is unpublished.
   const quick = document.getElementById('kiln-publish-quick');
@@ -9575,7 +9648,7 @@ function refreshPublishButton() {
     placeQuickRow();
   }
   const badge = document.getElementById('kiln-fab-badge');
-  if (badge) { badge.hidden = !anything; badge.textContent = n || (state.pendingBinaries.size || state.pendingStructural.length ? '•' : ''); }
+  if (badge) { badge.hidden = !anything; badge.textContent = n || (state.pendingBinaries.size || state.pendingStructural.length || state.restoring ? '•' : ''); }
   // The whole "unpublished edits" group appears only when there's something to act on.
   const grp = document.getElementById('kiln-grp-edits');
   if (grp) grp.hidden = !anything;
@@ -9694,6 +9767,11 @@ function savePendingToStorage() {
   try {
     // Edits to the page's own fields, and to the content files of a generated page.
     const record = draftRecord(withOpenBox(state.pending), state.pendingSource, Date.now(), state.typed, state.shownCount);
+    // A waiting restore is kept beside them as a small mark, never the file's text (restore-page.js).
+    // With no edits to keep the mark is left as it is: this runs with nothing staged before an
+    // earlier visit's edits are brought back, and the mark that came with them is read then.
+    if (record && state.restoring) localStorage.setItem(restoreMarkKey(), JSON.stringify(restoreMark(state.restoring)));
+    else if (record) localStorage.removeItem(restoreMarkKey());
     if (!record) { localStorage.removeItem(pendingStorageKey()); return; }
     localStorage.setItem(pendingStorageKey(), JSON.stringify(record));
   } catch {
@@ -9737,8 +9815,11 @@ const saveTypingNow = () => { if (state.active) { clearTimeout(typingSaveTimer);
 window.addEventListener('pagehide', saveTypingNow);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveTypingNow(); });
 
+/** Where the browser keeps the mark of a waiting whole-page restore, beside this page's saved edits. */
+function restoreMarkKey() { return 'kiln:restoring:' + pendingStorageKey(); }
+
 function clearSavedPending() {
-  try { localStorage.removeItem(pendingStorageKey()); } catch { /* ignore */ }
+  try { localStorage.removeItem(pendingStorageKey()); localStorage.removeItem(restoreMarkKey()); } catch { /* ignore */ }
   keptHere.clear();
   if (keptReady && !cfg.sandbox) forgetFiles(pendingStorageKey()).catch(() => {});
 }
@@ -9828,6 +9909,12 @@ async function restoreSaved(saved, kept, signedInAgain) {
     }
     document.querySelectorAll(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`)
       .forEach(n => n.classList.add('kiln-modified'));
+  }
+  // A whole-page restore was waiting with these edits: it waits again, and its text is read when it is published.
+  if (!cfg.sandbox && state.page?.path) {
+    let mark = null;
+    try { mark = readRestoreMark(localStorage.getItem(restoreMarkKey()), state.page.path); } catch { /* storage blocked */ }
+    if (mark && restoreHolds(mark, state.pending.keys())) state.restoring = mark;
   }
   for (const f of files) {
     const url = siteAddress(f.path, cfg.root || '');

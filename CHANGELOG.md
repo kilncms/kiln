@@ -143,6 +143,32 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Now the page moves just far enough to show the whole row, clear of all of
   those and of a bar the site keeps at the top, and it stays where it is when
   the row already shows (`src/editor/in-view.js`).
+- **"Go back to this" returns the whole page, and says that it did.** In
+  History & restore, "Go back to this" promised the whole page as it was then
+  and brought back only the parts marked as editable, written into today's
+  file as ordinary edits. The page's title, its description and everything
+  else in the file stayed as they are now, the change was saved as
+  "Edit about.html: -events_mwe9ooml" with the status "Published.", and a
+  version that differed only in its title got "The page already matches that
+  version." Now the page's whole file goes back to that version, head
+  included, as one new change on top of the history that throws nothing away.
+  The bar with Cancel and Keep says what goes back that the page cannot show
+  (the title, the description, the rest of the file), and still asks when no
+  editable part differs. After Keep the Publish button is ready even when no
+  part has a row, the publish sheet says the page is being restored and to
+  what, the change is saved as "Restore about.html to how it was on Nov 12,
+  7:50 PM (via Kiln)" (a named version by its name), and the status line
+  afterwards says "Restored this page to how it was on Nov 12, 7:50 PM."
+  Edits made after Keep go on top of the old version. Undo after Keep takes
+  the waiting restore away, Undo after the publish leaves it waiting again,
+  and a reload keeps it with the saved edits. Taking one of its parts out
+  again turns it back into ordinary edits, and says so. The dialog now says
+  what going back does not bring back: things kept in other files (the site
+  menu on other pages, the theme, pictures that were removed from the site's
+  files). The demo's history still brings back the editable parts only, and
+  its words now say that. A person who may only suggest still sends the
+  editable parts, and is told that the rest stays
+  (`src/editor/restore-page.js`).
 
 ### Changed
 
