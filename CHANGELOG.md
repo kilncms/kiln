@@ -6,6 +6,33 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Find & replace changes only the words a visitor reads or hears.** The tool
+  replaced in the whole text of each file, so replacing "brine" also rewrote
+  `href="/blog/the-monday-brine.html"`, and the link pointed at a page that
+  does not exist. The same would have happened to a picture's address, a
+  class, an id, the names Kiln marks parts with, and anything in a script or a
+  style. Now a replacement is written only in the text between tags in the
+  body, in the page's title, in the `alt`, `title`, `aria-label` and
+  `placeholder` attributes, and in the description and the link-preview words
+  in the head (`description`, `og:title`, `og:description`, `twitter:title`,
+  `twitter:description`). Every other byte of the file stays as it was. Text
+  the file writes with entities is found as it reads (type `Salt & vinegar` to
+  find `Salt &amp; vinegar`), and what is typed as the replacement is written
+  so that it shows as typed and can never become markup. Capitals count, as
+  before: "Tea" does not find "tea". A word split between two elements
+  (`<b>br</b>ine`) is not found, and the tool says so when it finds nothing.
+  The preview now says for each page how many places would change, and shows
+  the first three with the words around them, as they are and as they would
+  be. It also says how many other places on the site hold the word in an
+  address, a style name or a script and will not be changed, so someone who
+  meant to rename a page knows this tool did not do that. The count said
+  afterwards is the count of places really changed. As before each page is
+  read once, every changed page is saved in one commit or none is, and nothing
+  is replaced when a page was published while the preview was open
+  (`src/editor/find-replace.js`).
+
 ## [0.6.2] - 2026-11-12
 
 ### Fixed

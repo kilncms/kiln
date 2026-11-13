@@ -46,7 +46,7 @@ import { publishLabel, editCommitMessage, goingLiveLabel, initGuide, guideSync, 
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
-import { findEverywhere, replaceEverywhere, changedSinceText } from './find-replace.js';
+import { findEverywhere, replaceEverywhere, changedSinceText, previewText, noMatchText, replacedText } from './find-replace.js';
 import { aiSaid, aiOffered, noAiKey } from './ai-offered.js';
 import { DRAFT_BRANCH, draftSaveMessage, draftDeleteMessage, draftPublishedMessage, blobSha, draftOfPage, draftWords, DRAFT_DELETE_REFUSED } from './draft-state.js';
 import { resumedNote, draftWasPublished, noteIsStale } from './resumed-draft.js';
@@ -7628,6 +7628,7 @@ function findReplacePanel() {
     <h3>Find &amp; replace across the site</h3>
     <label>Find <input type="text" id="kiln-fr-find" placeholder="Old phone number, name, address…"></label>
     <label>Replace with <input type="text" id="kiln-fr-repl"></label>
+    <p class="kiln-dim kiln-fr-rule">This changes the words a visitor reads or hears, on every page. Capitals count: “Tea” does not find “tea”.</p>
     <div class="kiln-modal-actions" style="justify-content:flex-start">
       <button class="kiln-btn-publish" id="kiln-fr-scan">Preview matches</button>
     </div>
@@ -7645,27 +7646,37 @@ function findReplacePanel() {
     // The matches of an earlier preview go with it: only what is on show can be replaced.
     m.querySelectorAll('.kiln-fr-act').forEach(old => old.remove());
     try {
-      // Every page is read once here; "Replace all" then saves every page with
-      // a match as one change, or none (find-replace.js).
+      // Every page is read once here; "Replace" then saves every page with
+      // a match as one change, or none (find-replace.js). Only words a visitor
+      // reads or hears are matched: `left` counts the other places that hold
+      // the word (addresses, style names, scripts), which are not changed.
       const branch = cfg.branch || 'main';
-      const { hits } = await findEverywhere({ gh: state.gh, repo: cfg.repo, branch, find, getFile,
+      const { hits, left } = await findEverywhere({ gh: state.gh, repo: cfg.repo, branch, find, getFile,
         onStep: ({ done, of }) => { status.textContent = `Scanning… ${done}/${of}`; } });
-      if (!hits.length) { status.textContent = `No matches for “${find}”.`; return; }
-      out.innerHTML = hits.map(h => `<div class="kiln-inv-row"><span>${escapeHtml(h.path)}</span><small>${h.count}×</small></div>`).join('');
-      status.innerHTML = `${hits.reduce((n, h) => n + h.count, 0)} match(es) in ${hits.length} file(s).
-        <strong>This replaces matches anywhere in the page source</strong> — review on GitHub afterwards if unsure.`;
+      if (!hits.length) { status.textContent = noMatchText(find, left); return; }
+      // The preview says what would happen before anything does: for each page how
+      // many places, and the first few with the words around them, now and after.
+      const shown = (s, word) => `${escapeHtml(s.pre)}<mark>${escapeHtml(word)}</mark>${escapeHtml(s.post)}`;
+      const nPlaces = (n) => (n === 1 ? '1 place' : `${n} places`);
+      out.innerHTML = hits.map(h => `<div class="kiln-inv-row"><span>${escapeHtml(h.path)}</span><small>${nPlaces(h.count)}</small></div>
+        <div class="kiln-fr-places">${h.samples.map(s => `<div class="kiln-fr-place">${s.where ? `<small>${escapeHtml(s.where)}</small>` : ''}
+          <div><span>Now</span> ${shown(s, find)}</div><div><span>After</span> ${shown(s, repl)}</div></div>`).join('')}
+          ${h.count > h.samples.length ? `<small>and ${h.count - h.samples.length} more on this page</small>` : ''}</div>`).join('');
+      const count = hits.reduce((n, h) => n + h.count, 0);
+      status.textContent = previewText(find, count, hits.length, left);
       const act = document.createElement('div');
       act.className = 'kiln-modal-actions kiln-fr-act';
       act.innerHTML = `<button class="kiln-btn-ghost" data-close>Cancel</button>
-        <button class="kiln-btn-publish">Replace all (1 commit)</button>`;
+        <button class="kiln-btn-publish">Replace in ${nPlaces(count)}</button>`;
       out.after(act);
       act.querySelector('.kiln-btn-publish').onclick = async () => {
-        status.textContent = 'Committing…';
+        status.textContent = 'Replacing…';
         try {
-          const { changed, commit } = await replaceEverywhere({ gh: state.gh, repo: cfg.repo, branch, hits, find, repl, commitFiles });
+          const { changed, commit, count: done } = await replaceEverywhere({ gh: state.gh, repo: cfg.repo, branch, hits, find, repl, commitFiles });
           const thisPage = changed.find(c => c.path === state.page.path);
           if (thisPage) journalAdd({ type: 'compare', target: location.pathname, expect: djb2(thisPage.text), desc: 'Find & replace', sha: commit.sha });
-          status.textContent = 'Committed ✓ — rebuilding. Safe to close; Kiln will confirm when live.';
+          // The number said is the number of places really changed, not the number previewed.
+          status.textContent = replacedText(done, changed.length, left, !!thisPage);
           act.remove();
         } catch (err) {
           // A page changed since the preview read it: its words here are old, so they are not written. Preview again.
@@ -10185,6 +10196,12 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-inv-row{display:flex;justify-content:space-between;align-items:center;border:1.5px solid #f3f4f6;
   border-radius:10px;padding:9px 12px;font-size:13px;gap:8px}
 .kiln-inv-row small{color:#9ca3af;display:block;margin-top:1px}
+.kiln-fr-rule{margin:6px 0 0;font-size:12.5px}
+.kiln-fr-places{margin:2px 0 10px 10px;font-size:12.5px;line-height:1.5;color:#4b5563;overflow-wrap:anywhere}
+.kiln-fr-place{margin:4px 0 6px}
+.kiln-fr-places small{color:#9ca3af;display:block}
+.kiln-fr-place span{display:inline-block;min-width:38px;color:#9ca3af}
+.kiln-fr-place mark{background:#fef3c7;color:#111827;border-radius:3px;padding:0 2px}
 .kiln-dim{color:#9ca3af;font-size:12px;margin-top:10px;line-height:1.5}
 .kiln-np-step{font-size:13px;color:#4b5563;min-height:20px;line-height:1.5}
 /* Suggestions: the review queue + the little open-count badge on its button. */
