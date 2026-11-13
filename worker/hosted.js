@@ -4,6 +4,9 @@
  *
  *   publishSite     the owner switches hosting on, or presses Publish again
  *   pushNotice      GitHub says the repository changed (the App's push webhook)
+ *   previewNotice   GitHub says a branch the editor writes suggestions or shared
+ *                   drafts to changed, or was deleted: its preview goes up
+ *                   as a Worker of its own, or comes down
  *   sweepHosting    every five minutes: finish what could not be done at once,
  *                   look whether a repository moved without a notice, take
  *                   down a site whose time on Kiln's hosting is over (a trial
@@ -16,11 +19,16 @@
  * cloud.js decides who may ask, and passes in `hasAccess` (may this site be
  * edited right now) and the App's token.
  *
+ * A preview is on record in the `previews` table (migration 0010). A database
+ * that migration has not reached has no previews, and nothing here fails.
+ *
  * KV:
- *   hostlock:<site id>   '1'   one copy at a time for a site (TTL 5 min)
+ *   hostlock:<site id>           '1'   one copy at a time for a site (TTL 5 min)
+ *   pvlock:<site id>:<alias>     '1'   one copy at a time for a preview (TTL 5 min)
+ *   pvwant:<site id>:<alias>     the commit a notice named while that copy ran (TTL 5 min)
  */
 
-import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError } from './hosting.js';
+import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError, isPreviewBranch, previewAlias, previewName } from './hosting.js';
 import { gh, refPath } from './prepare.js';
 import { keepEditorsCurrent, finishCare } from './lookafter.js';
 import { domainRow, saveDomain, forgetDomain, detachDomain, removeWaitingDomain } from './domain.js';
@@ -29,7 +37,12 @@ const LOCK_S = 300;
 const RETRY_AFTER_MS = 2 * 60 * 1000;        // a failed copy is tried again this long after it failed
 const SWEEP_PUBLISH = 5;                     // copies one sweep makes at most
 const SWEEP_LOOK = 20;                       // repositories one sweep looks at for a change nobody announced
+const PREVIEWS_PER_SITE = 5;                  // previews one site has at most
+const PREVIEW_KEPT_MS = 30 * 24 * 60 * 60 * 1000;   // a preview nobody changed for this long comes down
+const SWEEP_PREVIEWS = 5;                    // previews one sweep takes down at most
 const lockKey = (id) => `hostlock:${id}`;
+const previewLock = (id, alias) => `pvlock:${id}:${alias}`;
+const previewWant = (id, alias) => `pvwant:${id}:${alias}`;
 
 const hex = (buf) => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 
@@ -154,10 +167,154 @@ export async function pushNotice(env, { repo, sha }, { installationToken, hasAcc
   return published;
 }
 
+// ── Previews ───────────────────────────────────────────────────────────────
+
+/** Rows of the `previews` table, or none on a database migration 0010 has not reached. */
+async function previewRows(env, sql, ...args) {
+  try { return (await env.kiln_cloud.prepare(sql).bind(...args).all())?.results || []; }
+  catch { return []; }
+}
+
+/** A site's previews, the one changed longest ago first. */
+export const previewsOf = (env, siteId) => previewRows(env, 'SELECT * FROM previews WHERE site_id = ? ORDER BY updated_at, alias', siteId);
+
+/**
+ * Take one preview down: its Worker, then its row. When Cloudflare does not
+ * answer, the row stays, with `updated_at` set to 0 so the next sweep tries
+ * again (a push to its branch meanwhile makes it a preview like any other
+ * again). Never throws.
+ */
+async function removePreview(env, row, why) {
+  try {
+    await removeSite(env, row.name);
+    await env.kiln_cloud.prepare('DELETE FROM previews WHERE site_id = ? AND alias = ?').bind(row.site_id, row.alias).run();
+    console.log(JSON.stringify({ evt: 'preview_removed', site: row.site_id, name: row.name, why }));
+    return true;
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'preview_remove_failed', site: row.site_id, name: row.name, why, detail: String(e?.detail || e?.message || e).slice(0, 200) }));
+    // Marked as the oldest there is, so the next sweep takes it down whatever the reason was.
+    try { await env.kiln_cloud.prepare('UPDATE previews SET updated_at = 0 WHERE site_id = ? AND alias = ?').bind(row.site_id, row.alias).run(); } catch { /* the row is as it was */ }
+    return false;
+  }
+}
+
+/** Every preview of a site comes down. Returns how many did. Never throws. */
+export async function forgetPreviews(env, siteId, why = 'site_removed') {
+  let removed = 0;
+  for (const row of await previewsOf(env, siteId)) if (await removePreview(env, row, why)) removed++;
+  return removed;
+}
+
+/**
+ * Put one branch of a hosted site up as its preview, and record it. One copy
+ * at a time for a preview: a notice that arrives while a copy runs leaves the
+ * commit it named, and the running copy goes round once more for it. The row
+ * is written before the first copy, so no Worker is ever up without one. A
+ * site that has five previews already loses the one changed longest ago
+ * first. Never throws.
+ */
+async function putPreview(env, { site, token, branch, sha = null }) {
+  const alias = previewAlias(branch), name = previewName(site, branch);
+  const lock = previewLock(site.id, alias), want = previewWant(site.id, alias);
+  try {
+    if (await env.KILN.get(lock)) {
+      if (sha) await env.KILN.put(want, sha, { expirationTtl: LOCK_S });
+      return { state: 'busy' };
+    }
+  } catch { return { state: 'failed' }; }
+  try {
+    await env.KILN.put(lock, '1', { expirationTtl: LOCK_S });
+    await env.KILN.delete(want);   // what was asked for until now is what the copy below reads
+    const one = env.kiln_cloud.prepare('SELECT * FROM previews WHERE site_id = ? AND alias = ?').bind(site.id, alias);
+    let row;
+    try { row = await one.first(); } catch { return { state: 'off' }; }   // migration 0010 has not reached this database: no previews
+    if (row && row.deployed_at && sha && row.commit_sha === sha && row.branch === branch) return { state: 'live', url: siteAddress(env, name), commit: sha };
+    if (!row) {
+      const others = await previewsOf(env, site.id);
+      for (const old of others.slice(0, Math.max(0, others.length - (PREVIEWS_PER_SITE - 1)))) {
+        // Five is the most a site has: when the oldest cannot be taken down just now, the new one waits for the next push.
+        if (!(await removePreview(env, old, 'room_for_another'))) return { state: 'full' };
+      }
+      await env.kiln_cloud.prepare('INSERT INTO previews (site_id, alias, branch, name, commit_sha, deployed_at, updated_at) VALUES (?,?,?,?,?,?,?)')
+        .bind(site.id, alias, branch, name, null, null, Date.now()).run();
+      row = await one.first();
+    }
+    let out = null;
+    for (let round = 0; round < 2; round++) {
+      out = await deploySite(env, { token, repo: site.repo, name, first: !row.deployed_at, siteId: site.id, branch, preview: true });
+      if (out.state !== 'live') {
+        // Nothing was put up (no home page on that branch, say). A preview that was up keeps what it served.
+        if (!row.deployed_at) await env.kiln_cloud.prepare('DELETE FROM previews WHERE site_id = ? AND alias = ?').bind(site.id, alias).run();
+        console.log(JSON.stringify({ evt: 'preview_not_up', repo: site.repo, branch, name, reason: out.state }));
+        return { state: out.state };
+      }
+      const now = Date.now();
+      await env.kiln_cloud.prepare('UPDATE previews SET branch = ?, name = ?, commit_sha = ?, deployed_at = ?, updated_at = ? WHERE site_id = ? AND alias = ?')
+        .bind(branch, name, out.commit, now, now, site.id, alias).run();
+      row = { ...row, branch, name, commit_sha: out.commit, deployed_at: now };
+      const wanted = await env.KILN.get(want);
+      if (!wanted || wanted === out.commit) break;
+      await env.KILN.delete(want);
+    }
+    return { state: 'live', url: out.url, commit: out.commit };
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'preview_failed', repo: site.repo, branch, name, reason: e instanceof HostingError ? e.code : 'record', detail: e instanceof HostingError ? e.detail : String(e?.message || e).slice(0, 300) }));
+    return { state: 'failed' };
+  } finally {
+    try { await env.KILN.delete(lock); } catch { /* it runs out by itself */ }
+  }
+}
+
+/**
+ * GitHub says a branch the editor writes suggestions or shared drafts to moved
+ * (to `sha`) or was deleted. A branch that moved goes up as the preview of
+ * every hosted site of that repository whose hosting is up and that may be
+ * edited now; a deleted branch's preview comes down, whoever may edit.
+ * Returns how many previews went up or came down. Never throws.
+ */
+export async function previewNotice(env, { repo, branch, sha = null, deleted = false }, { installationToken, hasAccess }) {
+  let changed = 0;
+  try {
+    if (!isPreviewBranch(branch) || !previewAlias(branch)) return 0;
+    if (deleted) {
+      const rows = await previewRows(env, 'SELECT p.* FROM previews p JOIN sites s ON s.id = p.site_id WHERE lower(s.repo) = lower(?) AND p.alias = ? AND p.branch = ?', String(repo), previewAlias(branch), branch);
+      for (const row of rows) if (await removePreview(env, row, 'branch_deleted')) changed++;
+      return changed;
+    }
+    const sites = (await hostedSitesOf(env, repo, hasAccess)).filter(s => s.state !== 'ended');   // a site that was taken down has no previews
+    for (const site of sites) {
+      const token = await installationToken(env, site.repo);
+      if (!token) continue;   // the next push to the branch tries again
+      if ((await putPreview(env, { site, token, branch, sha })).state === 'live') changed++;
+    }
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'preview_notice_failed', repo, branch, detail: String(e?.message || e).slice(0, 300) }));
+  }
+  return changed;
+}
+
+/**
+ * The sweep's part: previews that should be gone come down, five a run at
+ * most. Those are the previews of a site that is no longer hosted (removed,
+ * or taken down) which Cloudflare did not take away at the time, and the
+ * previews nobody changed for thirty days. Never throws.
+ */
+async function sweepPreviews(env, now) {
+  const rows = await previewRows(env,
+    `SELECT p.site_id, p.alias, p.name, p.updated_at, h.site_id AS hosted, h.state FROM previews p LEFT JOIN hosting h ON h.site_id = p.site_id
+     WHERE h.site_id IS NULL OR h.state IN ('removing', 'ended') OR p.updated_at < ? ORDER BY p.updated_at LIMIT ?`, now - PREVIEW_KEPT_MS, SWEEP_PREVIEWS);
+  let removed = 0;
+  const why = (row) => (!row.hosted || row.state === 'removing' ? 'site_removed' : row.state === 'ended' ? 'hosting_ended' : Number(row.updated_at) === 0 ? 'left_from_an_earlier_try' : 'not_changed_for_30_days');
+  for (const row of rows) if (await removePreview(env, row, why(row))) removed++;
+  return removed;
+}
+
 /**
  * The App's webhook. Only a delivery signed with the webhook secret is acted
- * on, and only a push to a repository's default branch. The answer goes back
- * at once (GitHub waits ten seconds at most); the copying carries on after it.
+ * on, and only a push to a repository's default branch (the site) or to a
+ * branch the editor writes suggestions or shared drafts to (its preview; such
+ * a branch being deleted takes the preview down). The answer goes back at
+ * once (GitHub waits ten seconds at most); the copying carries on after it.
  */
 export async function handleGithubWebhook(request, env, ctx, tools) {
   const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
@@ -180,6 +337,13 @@ export async function handleGithubWebhook(request, env, ctx, tools) {
   const repo = p?.repository?.full_name;
   const branch = p?.repository?.default_branch;
   if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ ok: true, ignored: 'no repository' });
+  const pushed = typeof p.ref === 'string' && p.ref.startsWith('refs/heads/') ? p.ref.slice('refs/heads/'.length) : null;
+  if (pushed && pushed !== branch && isPreviewBranch(pushed)) {
+    if (!hostingOn(env) || !env.kiln_cloud) return json({ ok: true, ignored: 'hosting is off' });
+    const preview = previewNotice(env, { repo, branch: pushed, sha: typeof p.after === 'string' ? p.after : null, deleted: !!p.deleted }, tools);
+    if (ctx && typeof ctx.waitUntil === 'function') { ctx.waitUntil(preview); return json({ ok: true, accepted: true }, 202); }
+    return json({ ok: true, previews: await preview });
+  }
   if (p.deleted || !branch || p.ref !== `refs/heads/${branch}`) return json({ ok: true, ignored: 'not the default branch' });
   if (!hostingOn(env) || !env.kiln_cloud) return json({ ok: true, ignored: 'hosting is off' });
   const work = pushNotice(env, { repo, sha: typeof p.after === 'string' ? p.after : null }, tools);
@@ -234,10 +398,13 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
       await removeSite(env, r.name);
       const reason = endReason(r) || 'trial_ended';
       await save(env, r.id, { state: 'ended', reason, deployed_at: null, wanted_sha: null });
+      await forgetPreviews(env, r.id, 'hosting_ended');   // its previews come down with it
       console.log(JSON.stringify({ evt: 'hosting_ended', repo: r.repo, name: r.name, reason, ...(domain ? { domain: domain.name } : {}) }));
       if (typeof ended === 'function') { try { await ended(r, reason, domain); } catch { /* the operator's note is not what takes a site down */ } }
     } catch (e) { console.warn(JSON.stringify({ evt: 'hosting_end_failed', name: r.name, detail: String(e?.detail || e?.message || e).slice(0, 200) })); }
   }
+  // Previews that should be gone: those Cloudflare did not take away when their site came down, and the old ones.
+  await sweepPreviews(env, now);
   const live = rows.filter(r => r.state !== 'removing' && r.id && hasAccess(r));
   const owed = live.filter(r => (r.wanted_sha && r.wanted_sha !== r.commit_sha) || ((r.state === 'failed' || r.state === 'starting') && now - Number(r.updated_at) > RETRY_AFTER_MS));
   const done = new Set();
@@ -273,12 +440,14 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
 }
 
 /**
- * A site is removed from Kiln: its Worker is taken down. If Cloudflare does
- * not answer, the record stays, marked, and the sweep takes it down later.
+ * A site is removed from Kiln: its Worker is taken down, and so is every
+ * preview of it. If Cloudflare does not answer, the record stays, marked, and
+ * the sweep takes it down later.
  */
 export async function forgetHosting(env, siteId) {
   // Its own domain first, while the Worker the two names are attached to is still there.
   const domain = await domainComesDown(env, siteId, { reason: 'site_removed', removed: true });
+  if (hostingOn(env)) await forgetPreviews(env, siteId, 'site_removed');
   const row = await hostingRow(env, siteId);
   if (!row) return { domain };
   try { await removeSite(env, row.name); await env.kiln_cloud.prepare('DELETE FROM hosting WHERE site_id = ?').bind(siteId).run(); }
