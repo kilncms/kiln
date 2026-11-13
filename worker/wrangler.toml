@@ -130,7 +130,9 @@ database_id = "153c3353-6e1e-4d18-a2b8-9f7b50f517ba"
 migrations_dir = "migrations"
 
 [env.staging.triggers]
-crons = ["*/5 * * * *"]
+# Every five minutes: everything that is done on a timer. Every minute: only the look at
+# whether an inbox a forwarded address waits for has confirmed (index.js EVERY_MINUTE).
+crons = ["*/5 * * * *", "* * * * *"]
 
 # The same rate limiter as production, so limits can be tried here first.
 [[env.staging.unsafe.bindings]]
@@ -197,7 +199,9 @@ database_id = "a00713f4-3838-49fd-9e53-58961b1feb2e"
 migrations_dir = "migrations"
 
 [env.production.triggers]
-crons = ["*/5 * * * *"]
+# Every five minutes: everything that is done on a timer. Every minute: only the look at
+# whether an inbox a forwarded address waits for has confirmed (index.js EVERY_MINUTE).
+crons = ["*/5 * * * *", "* * * * *"]
 
 [[env.production.unsafe.bindings]]
 name = "RL"

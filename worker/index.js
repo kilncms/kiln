@@ -111,8 +111,22 @@ function b64FromUtf8(text) {
   return btoa(bin);
 }
 
+// The trigger that fires every minute (wrangler.toml), beside the one that fires every five.
+// Not exported: the Workers runtime refuses a worker whose main file exports anything but functions.
+const EVERY_MINUTE = '* * * * *';
+
 export default {
-  async scheduled(_event, env) {
+  async scheduled(event, env) {
+    // The every-minute trigger does one thing: it looks whether an inbox that a
+    // forwarded email address waits for has pressed the button in Cloudflare's
+    // email. A person presses it and writes to the new address straight away,
+    // and until the rule is made that mail bounces. On the minutes the
+    // five-minute trigger runs too, that one looks, so the two never meet.
+    if (event?.cron === EVERY_MINUTE) {
+      if (new Date(Number(event.scheduledTime) || Date.now()).getUTCMinutes() % 5 === 0) return;
+      await cronJob('forwards', () => sweepForwards(env));
+      return;
+    }
     // Each job on its own: one failing must not stop the other, and a failure
     // must leave a line someone can find (Workers Logs, when observability is on).
     await cronJob('schedules', () => runDueSchedules(env));

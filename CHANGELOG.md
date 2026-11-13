@@ -62,6 +62,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the list is treated the same way: it is asked afresh, not refused. If
   Cloudflare does not take the inbox off its list, the stop still stands.
 
+- **A forwarded email address works about a minute after its inbox pressed
+  the button, not up to five.** People press the button in Cloudflare's email
+  and write to the new address straight away, and until Kiln had made the rule
+  that mail bounced. Kiln's service now looks for the press every minute.
+
 ### Security
 
 - **An address typed on a Kiln account is no longer proof that an inbox

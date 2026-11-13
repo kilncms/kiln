@@ -12,6 +12,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import worker from '../worker/index.js';
 import { fakeKV, withFetch } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
@@ -356,6 +357,26 @@ test('forwarding: an address typed on the Kiln account is no proof of an inbox, 
     assert.deepEqual([body.ok, body.sent, body.forward.state, body.forward.inbox], [true, false, 'on', OTHER]);
     assert.deepEqual(w.cf.confirmations, [OTHER], 'no email to the inbox');
     assert.deepEqual(rules(w), [`${HELLO} > ${OTHER}`]);
+  });
+});
+
+test('forwarding: the every-minute timer switches an address on about a minute after its inbox pressed the button, does nothing else, and stands back on the minutes the five-minute timer runs', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await withDomain(w);
+    assert.equal((await setup(w.env)).status, 200);
+    w.cf.confirm(INBOX);
+    const at = (minute) => Date.UTC(2026, 10, 13, 16, minute, 0);
+    // On a minute the five-minute timer runs, the every-minute one leaves it to that one.
+    await hush(async () => { await worker.scheduled({ cron: '* * * * *', scheduledTime: at(35) }, w.env, { waitUntil() {} }); });
+    assert.deepEqual([(await rowOf(w.env)).state, rules(w)], ['confirming', []]);
+    // On any other minute it looks, and makes the rule.
+    const calls = w.cf.calls.length;
+    await hush(async () => { await worker.scheduled({ cron: '* * * * *', scheduledTime: at(33) }, w.env, { waitUntil() {} }); });
+    assert.deepEqual([(await rowOf(w.env)).state, rules(w)], ['on', [`${HELLO} > ${INBOX}`]]);
+    assert.ok(w.cf.calls.slice(calls).every(c => /email\/routing/.test(c.path)), 'it asks Cloudflare about mail only: no site is published or looked at by this timer');
+    // The five-minute timer's name is no name of the every-minute one: it runs everything, as before.
+    assert.match(readFileSync(new URL('../worker/wrangler.toml', import.meta.url), 'utf8'), /\[env\.production\.triggers\][^\[]*crons = \["\*\/5 \* \* \* \*", "\* \* \* \* \*"\]/, 'production has both timers');
   });
 });
 
