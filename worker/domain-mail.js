@@ -518,6 +518,37 @@ export async function ownsInbox(env, { accountId, inbox }) {
   } catch { return false; }
 }
 
+/**
+ * An account has just set an inbox up, or asked for it again. Every OTHER
+ * account's row that waits for the same inbox loses its mark that Cloudflare
+ * wrote at that row's asking (`asked_at`, and `want_asked_at` for a change
+ * that waits beside an address that works). "This inbox has confirmed" is one
+ * flag for the whole hosting account, so without this the button its real
+ * owner presses for their own address would switch on the address of a
+ * stranger who had asked for the same inbox earlier and was ignored. A row
+ * without the mark is not proof of anything (ownsInbox), so it ends as
+ * `inbox_elsewhere` when the inbox confirms, and "Send it again" is refused
+ * for it. Rows of the same account keep their mark. Whose a row is: the
+ * account the row names (`account_id`, migration 0011) and, for a row that
+ * names none, the account of the row's site. A row whose account cannot be
+ * told is nobody's, and loses the mark too. One UPDATE. Never throws.
+ */
+export async function dropOtherAskings(env, { accountId, inbox }) {
+  const want = String(inbox ?? '').trim().toLowerCase();
+  if (!accountId || !want) return;
+  const ofSite = '(SELECT s.account_id FROM sites s WHERE s.id = forwards.site_id)';
+  const update = (whose) => env.kiln_cloud.prepare(
+    `UPDATE forwards SET
+        asked_at = CASE WHEN state = 'confirming' AND inbox = ? THEN NULL ELSE asked_at END,
+        want_asked_at = CASE WHEN state = 'on' AND want_inbox = ? THEN NULL ELSE want_asked_at END
+      WHERE ((state = 'confirming' AND inbox = ? AND asked_at IS NOT NULL) OR (state = 'on' AND want_inbox = ? AND want_asked_at IS NOT NULL))
+        AND COALESCE(${whose}, '') != ?`).bind(want, want, want, want, accountId).run();
+  try { await update(`forwards.account_id, ${ofSite}`); return; }
+  catch { /* a database migration 0011 has not reached: no row names its account, and the site says whose it is */ }
+  try { await update(ofSite); }
+  catch (e) { console.warn(JSON.stringify({ evt: 'forward_askings_kept', inbox: want, detail: String(e?.message || e).slice(0, 200) })); }
+}
+
 /** True when a row of any account still waits for this inbox to confirm. Never throws: what cannot be read counts as waited for. */
 export async function inboxAwaited(env, inbox) {
   const want = String(inbox ?? '').trim().toLowerCase();

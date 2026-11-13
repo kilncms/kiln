@@ -99,6 +99,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   says whether Kiln's App is installed on it, and it no longer asks GitHub as
   the App about it at all. It asks GitHub with your own sign-in first whether
   the repository is yours, and asks as the App only when it is.
+- **An address that waits for an inbox is not switched on by somebody else's
+  confirmation.** Kiln's hosting keeps one list of confirmed inboxes for all
+  customers. If one customer asked to forward mail to an inbox that was not
+  theirs and was ignored, and the inbox's real owner later set up forwarding
+  of their own and pressed the button, the first customer's address could be
+  switched on too. Now, when an account sets an inbox up or asks for the
+  email again, an address of any other account that waits for the same inbox
+  stops counting as asked for. It is never switched on, and its owner is told
+  that Kiln cannot confirm that inbox by itself. Two sites of the same account
+  that wait for the same inbox are both switched on as before.
 
 ## [0.6.8] - 2026-11-13
 

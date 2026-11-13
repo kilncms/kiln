@@ -19,7 +19,7 @@ import { cloudEnv, addSite, d1Skip, schemaFiles } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare, fakeLookups } from './cloudflare-fake.js';
 import { domainRow } from '../worker/domain.js';
-import { addInbox, forwardRow, saveForward, ownsInbox, publicForward, mailSentence, MAIL_LIMITS } from '../worker/domain-mail.js';
+import { addInbox, forwardRow, saveForward, ownsInbox, dropOtherAskings, publicForward, mailSentence, MAIL_LIMITS } from '../worker/domain-mail.js';
 import { domainTookHold, sweepForwards, hostingEndedNote } from '../worker/cloud.js';
 import { sweepHosting } from '../worker/hosted.js';
 import { forwardOnMail, forwardWaitingMail, dayWords } from '../worker/mail.js';
@@ -452,6 +452,81 @@ test('forwarding: if Cloudflare took a left-behind inbox as confirmed the moment
     const body = await res.json();
     assert.deepEqual([res.status, body.code, body.forward], [409, 'inbox_elsewhere', null]);
     assert.deepEqual([await rowOf(w.env), rules(w), w.mails().length], [null, [], 0], 'no row, no rule, no mail');
+  });
+});
+
+test('forwarding: the button an inbox\'s owner presses for their own address does not switch on a stranger\'s address that waited for the same inbox', { skip: d1Skip }, async () => {
+  // How the owner confirms (after "Send it again", or in the email the stranger had sent), and what then looks at the stranger's row.
+  for (const [how, sendAgain] of [['job', true], ['check', false], ['again', true]]) {
+    const w = world();
+    await withFetch(w.handler, async () => {
+      // Ada asks for hello@ to reach Bea's inbox. Cloudflare writes to Bea, who ignores it, and the row waits.
+      await withDomain(w);
+      assert.equal((await setup(w.env, 'hello', OTHER)).status, 200);
+      assert.ok((await rowOf(w.env)).asked_at, 'Cloudflare wrote at Ada\'s asking');
+      // Bea signs in to Kiln with Google under that address, and sets up forwarding for her own site.
+      await secondSite(w, { account: 'acct-2', token: 'tok2' });
+      w.env.kiln_cloud.exec("UPDATE accounts SET google_sub = 'g-bea', google_email = ? WHERE id = 'acct-2'", OTHER);
+      const bea = (action, more = {}) => askAs(w.env, 'tok2', '/cloud/sites/mail', { id: 'site2', action, ...more });
+      assert.equal((await bea('setup', { local: 'post', inbox: OTHER })).status, 200);
+      assert.deepEqual([(await rowOf(w.env)).state, (await rowOf(w.env)).asked_at], ['confirming', null], `${how}: Ada's row waits on, and no longer counts as asked for by Ada`);
+      if (sendAgain) assert.equal((await (await bea('again')).json()).sent, true);
+      w.cf.confirm(OTHER);
+      await hush(async () => { assert.equal((await bea('check')).status, 200); });
+      assert.deepEqual([(await forwardRow(w.env, 'site2')).state, rulesAt(w, N2)], ['on', [`post@${N2} > ${OTHER}`]], `${how}: Bea's own address is on`);
+      // Ada's row is not switched on: not by the five-minute job, and not when Ada presses "Check" or "Send it again".
+      const written = w.cf.confirmations.length;
+      await hush(async () => {
+        if (how === 'job') { await sweepForwards(w.env); return; }
+        const res = await post(w.env, how);
+        assert.deepEqual([res.status, (await res.json()).code], [409, 'inbox_elsewhere'], how);
+      });
+      const row = await rowOf(w.env);
+      assert.deepEqual([row.state, row.reason, row.rule_id || null], ['failed', 'inbox_elsewhere', null], how);
+      assert.deepEqual(rules(w), [], `${how}: no mail to Ada's address reaches Bea`);
+      assert.equal(w.cf.confirmations.length, written, `${how}: and Bea is not written to again`);
+      assert.deepEqual(rulesAt(w, N2), [`post@${N2} > ${OTHER}`], `${how}: Bea's address goes on working`);
+    });
+  }
+});
+
+test('forwarding: a second site of the same account that waits for the same inbox is still switched on', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await waiting(w);   // hello@ waits for the account's inbox, and Cloudflare wrote to it at this account's asking
+    await secondSite(w);
+    const asked = (await rowOf(w.env)).asked_at;
+    const second = (action, more = {}) => askAs(w.env, 'tok', '/cloud/sites/mail', { id: 'site2', action, ...more });
+    assert.equal((await second('setup', { local: 'post', inbox: INBOX })).status, 200);
+    assert.ok(asked && (await rowOf(w.env)).asked_at === asked, 'the first site\'s row keeps its mark');
+    w.cf.confirm(INBOX);
+    await hush(async () => {
+      assert.equal((await post(w.env, 'check')).status, 200);
+      assert.equal((await second('check')).status, 200);
+    });
+    assert.deepEqual([(await rowOf(w.env)).state, (await forwardRow(w.env, 'site2')).state], ['on', 'on']);
+    assert.deepEqual([rules(w), rulesAt(w, N2)], [[`${HELLO} > ${INBOX}`], [`post@${N2} > ${INBOX}`]]);
+  });
+});
+
+test('forwarding: whose a waiting row is comes from the row itself, and from its site when the row names no account', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await otherSite(w, { confirmed: false });   // site9 of acct-2 waits for the inbox, in a row that names no account
+    // A site of acct-1 has an address that works, and a change to the same inbox that waits beside it.
+    await saveForward(w.env, 'site1', { account_id: 'acct-1', address: HELLO, inbox: INBOX, inbox_id: 'box-1', rule_id: 'rule-1', state: 'on', asked_at: 5, want_address: `post@${N}`, want_inbox: OTHER, want_inbox_id: 'box-2', want_asked_at: 7, want_since: 7 });
+    const marks = async () => { const [a, b] = [await rowOf(w.env), await forwardRow(w.env, 'site9')]; return [a.asked_at, a.want_asked_at, !!b.asked_at]; };
+    assert.deepEqual(await marks(), [5, 7, true]);
+    // acct-2 asks, however the inbox is written: its own row keeps the mark, and the other account's waiting change loses it.
+    await dropOtherAskings(w.env, { accountId: 'acct-2', inbox: ' Bea@Example.NET ' });
+    assert.deepEqual(await marks(), [5, null, true], 'the address that works keeps the time it was asked for');
+    // acct-1 asks: the row of acct-2's site loses the mark.
+    await dropOtherAskings(w.env, { accountId: 'acct-1', inbox: OTHER });
+    assert.deepEqual(await marks(), [5, null, false]);
+    assert.equal(await owns(w.env, 'acct-2', OTHER), false, 'a row without the mark is no proof');
+    // Nothing to do, or a database that does not answer: no throw.
+    await dropOtherAskings(w.env, { accountId: '', inbox: OTHER });
+    await hush(async () => { await dropOtherAskings({ kiln_cloud: { prepare() { throw new Error('down'); } } }, { accountId: 'acct-1', inbox: OTHER }); });
   });
 });
 

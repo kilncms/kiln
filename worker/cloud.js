@@ -55,7 +55,7 @@ import {
 } from './domain.js';
 import {
   mailStop, saysNoMail, switchMailOn, inboxState, addInbox, askAgain, canAskAgain, forward, stopForwarding, cleanLocal, cleanInbox, mailSentence,
-  forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, inboxInUse, forgetInboxesOf, whatWaits, NO_CHANGE, MailError, MAIL_LIMITS,
+  forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, dropOtherAskings, inboxInUse, forgetInboxesOf, whatWaits, NO_CHANGE, MailError, MAIL_LIMITS,
 } from './domain-mail.js';
 
 const GH = 'https://api.github.com';
@@ -2507,6 +2507,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
           ? { want_address: address, want_inbox: inbox, want_inbox_id: box.id, ...(again ? {} : { want_since: now }), ...(box.sent ? { want_asked_at: now } : sameInbox ? {} : { want_asked_at: null }) }
           : { address, inbox, inbox_id: box.id, state: 'confirming', reason: null, ...(again ? {} : { created_at: now }), ...(box.sent ? { asked_at: now } : sameInbox ? {} : { asked_at: null }) }) });
         if (!saved) return refuse('not_set_up', 503);
+        // From here on the inbox is asked for by this account. A row of any other account that waits for the same inbox loses its mark
+        // that Cloudflare wrote at its asking, so the button pressed for this address never switches on somebody else's (dropOtherAskings).
+        await dropOtherAskings(env, { accountId: sess.account_id, inbox });
         // An inbox of this account's that confirmed earlier gets no second email: the rule is made at once.
         if (box.verified) {
           try { await switchOn(await forwardRow(env, site.id), box.id); }
@@ -2539,6 +2542,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         try { box = await askAgain(env, { email: waits.inbox }); }
         catch (e) { return failed(e, 'inbox'); }
         await saveForward(env, site.id, waits.change ? { want_inbox_id: box.id, ...(box.sent ? { want_asked_at: now } : {}) } : { inbox_id: box.id, ...(box.sent ? { asked_at: now } : {}) });   // the inbox has a new id after this
+        await dropOtherAskings(env, { accountId: sess.account_id, inbox: waits.inbox });   // the email that counts now is the one this account had sent
         if (box.verified && live) {
           try { await switchOn(row, box.id); }
           catch (e) { return failed(e, 'rule'); }
