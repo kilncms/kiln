@@ -1678,6 +1678,20 @@ async function suggestionCreate(request, env) {
   return json({ suggestion: sug });
 }
 
+/**
+ * Whether a suggestion is this invited person's own. It is told by the address
+ * they signed in with. Two missing addresses are not a match: a suggestion kept
+ * without an address is read only by a sign-in that has none either and that
+ * carries the name the suggestion was sent under. So a suggester reads their
+ * own suggestions, with what was decided, when, and the owner's note, and
+ * never anybody else's.
+ */
+function suggestionIsOf(sug, actor) {
+  if (!sug || !actor) return false;
+  if (sug.email || actor.email) return !!sug.email && sug.email === actor.email;
+  return !!sug.by && sug.by === actor.name;
+}
+
 async function suggestionList(request, env, url) {
   const repo = url.searchParams.get('repo') || '';
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return json({ error: 'bad repo' }, 400);
@@ -1692,7 +1706,7 @@ async function suggestionList(request, env, url) {
     const v = await shelfRead(env, entry);
     if (!v) continue;
     // Editors see only their own submissions; admins review everything.
-    if (!actor.admin && v.email !== actor.email) continue;
+    if (!actor.admin && !suggestionIsOf(v, actor)) continue;
     suggestions.push(v);
   }
   suggestions.sort((a, b) => (b.ts || 0) - (a.ts || 0));

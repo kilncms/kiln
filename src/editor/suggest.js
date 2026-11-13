@@ -16,6 +16,8 @@
 import { notDone, said } from './plain-failure.js';
 import { demoSays } from './tryout.js';
 import { askFirst, ownDialogCopy } from './own-dialogs.js';
+import { MY_TITLE, MY_LEAD, MY_NONE, MY_NOT_READ, myRows, myItem, newlyDecided, latestDecision, decidedLine, waitingLine,
+  dotShown, seenKey, readSeen, keepSeen } from './my-suggestions.js';
 import { applyEdits, readValues } from '../engine.js';
 import { editFile } from '../github.js';
 
@@ -152,6 +154,9 @@ async function sendSuggestionNow(note, onStatus) {
   // The edits now live in the suggestion on the worker — retire them here,
   // exactly like a schedule handoff (stage + undo history + markers).
   retireStaged();
+  // "My suggestions" is in the menu from now on, without waiting for the next look at the service.
+  signs = { waiting: 0, mine: [data.suggestion, ...signs.mine.filter(s => s.id !== data.suggestion.id)] };
+  paintSuggestSigns();
   return { previewSkipped };
 }
 
@@ -182,19 +187,129 @@ async function writePreviewBranch(edits) {
 
 let badgeBusy = false;
 
-/** Lazily refresh the open-suggestions badge (piggybacked on the presence tick). */
+// What the last look at the service found: how many suggestions wait for an
+// owner, or an invited suggester's own. Kept so the signs can be drawn again
+// once the menu exists (the first answer can come before it does).
+let signs = { waiting: 0, mine: [] };
+let saidWaiting = false;                  // an owner is told once on each page load
+let askedOnce = false;                    // the service has been asked on this page load
+let seenHere = { looked: 0, told: 0 };    // "last looked", should the browser keep nothing
+
+/** "Last looked" for this person on this site, from the browser, or from this tab when the browser keeps nothing. */
+function seenRead() {
+  let kept = readSeen(null);
+  try { kept = readSeen(localStorage.getItem(seenKey(deps.cfg.repo, deps.state.user))); } catch { /* a browser that keeps nothing */ }
+  return { looked: Math.max(kept.looked, seenHere.looked), told: Math.max(kept.told, seenHere.told) };
+}
+function seenKeep(seen) {
+  seenHere = seen;
+  try { localStorage.setItem(seenKey(deps.cfg.repo, deps.state.user), keepSeen(seen)); } catch { /* kept for this tab only */ }
+}
+
+/** Whether this person is an invited person who may only suggest. */
+function suggester() {
+  return deps.mode !== 'admin' && !!deps.suggestMode?.();
+}
+
+/**
+ * Ask the service what waits (an owner) or what became of this person's own
+ * suggestions (a suggester), and draw the signs. Lazy: it rides the presence tick.
+ */
 export async function refreshSuggestBadge() {
   if (!deps || deps.cfg.sandbox) return;
   const { cfg, ask } = deps;
+  const admin = deps.mode === 'admin';
+  if (!admin && !suggester()) return;
   if (badgeBusy) return;
   badgeBusy = true;
+  askedOnce = true;
   try {
     const data = await ask(`/suggestions?repo=${encodeURIComponent(cfg.repo)}`);
-    const n = data.counts?.open || 0;
-    const badge = document.getElementById('kiln-sug-badge');
-    if (badge) { badge.hidden = !n; badge.textContent = String(n); }
+    signs = admin ? { waiting: data.counts?.open || 0, mine: [] } : { waiting: 0, mine: data.suggestions || [] };
+    paintSuggestSigns();
   } catch { /* best-effort, like presence */ }
   finally { badgeBusy = false; }
+}
+
+/**
+ * Once the menu is drawn: ask the service if it has not been asked yet on this
+ * page load (the first presence answer can come before the menu exists, and
+ * the next look is a minute and a half away), or draw what is already known.
+ */
+export function startSuggestSigns() {
+  if (askedOnce) paintSuggestSigns();
+  else refreshSuggestBadge();
+}
+
+/**
+ * Draw the signs from what is known: the number beside "Suggestions", the
+ * "My suggestions" entry, the small dot on the Kiln button, and the one
+ * sentence in the status line. An owner is told once on each page load that
+ * suggestions wait. A suggester is told once about each decision. The
+ * sentence waits while the status line is busy with a save or a failure.
+ */
+export function paintSuggestSigns() {
+  if (!deps || deps.cfg.sandbox) return;
+  const admin = deps.mode === 'admin';
+  const mine = suggester() ? signs.mine : [];
+  const badge = document.getElementById('kiln-sug-badge');
+  if (badge) { badge.hidden = !signs.waiting; badge.textContent = String(signs.waiting); }
+  const item = document.getElementById('kiln-mysuggestions');
+  if (item) item.hidden = !myItem({ suggest: suggester(), count: mine.length }).show;
+  const seen = seenRead();
+  const dot = document.getElementById('kiln-fab-dot');
+  if (dot) dot.hidden = !dotShown({ admin, waiting: signs.waiting, mine, looked: seen.looked });
+  const line = document.getElementById('kiln-status');
+  if (!line || (!line.hidden && /kiln-status--(saving|error)/.test(line.className))) return;
+  if (admin) {
+    if (signs.waiting > 0 && !saidWaiting) {
+      saidWaiting = true;
+      deps.setStatus(waitingLine(signs.waiting), 'idle');
+    }
+    return;
+  }
+  const untold = newlyDecided(mine, Math.max(seen.looked, seen.told));
+  if (untold.length) {
+    deps.setStatus(decidedLine(untold, { root: deps.cfg.root }), untold.length === 1 && untold[0].status === 'approved' ? 'saved' : 'idle');
+    seenKeep({ looked: seen.looked, told: latestDecision(untold) });
+  }
+}
+
+/** A suggester's own list: each suggestion they sent, and where it stands. Looking at it clears the dot. */
+export async function mySuggestionsPanel() {
+  const { cfg, modal, ask, stopped, escapeHtml } = deps;
+  const m = modal(`
+    <h3>${escapeHtml(MY_TITLE)}</h3>
+    <p class="kiln-dim">${escapeHtml(MY_LEAD)}</p>
+    <div id="kiln-mysug-list" class="kiln-inv-list">Loading…</div>
+    <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Close</button></div>`);
+  const list = m.querySelector('#kiln-mysug-list');
+  let data;
+  try {
+    data = await ask(`/suggestions?repo=${encodeURIComponent(cfg.repo)}`);
+  } catch (e) {
+    list.textContent = '';
+    list.appendChild(el('p', 'kiln-dim', stopped(e) || MY_NOT_READ));
+    return;
+  }
+  signs = { waiting: 0, mine: data.suggestions || [] };
+  const rows = myRows(signs.mine, { root: cfg.root });
+  list.textContent = '';
+  if (!rows.length) list.appendChild(el('p', 'kiln-dim', MY_NONE));
+  for (const r of rows) {
+    // Every word of a row goes in as text: the owner's note is somebody else's writing.
+    const row = el('div', 'kiln-inv-row');
+    const words = el('span');
+    words.append(el('strong', '', r.page), el('small', '', ` ${r.where} · ${r.sent}`), el('br'), el('span', `kiln-mysug-${r.state}`, r.stands));
+    if (r.note) words.append(el('br'), el('small', '', r.note));
+    row.appendChild(words);
+    list.appendChild(row);
+  }
+  // They have now seen every decision in the list: the dot goes, and the status line does not repeat them.
+  const seen = seenRead();
+  const latest = latestDecision(signs.mine);
+  seenKeep({ looked: Math.max(seen.looked, latest), told: Math.max(seen.told, latest) });
+  paintSuggestSigns();
 }
 
 export async function suggestionsPanel() {

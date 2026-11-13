@@ -37,7 +37,9 @@ import { pictureValue, pictureFileName } from '../adapters/pictures.js';
 import { fieldSchema, valueProblem, problemSentence, readSchemaDoc } from './source-schema.js';
 import { initPalette, openPalette } from './palette.js';
 import { builtPages } from './site-pages.js';
-import { initSuggest, suggestChanges, sendSuggestion, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge } from './suggest.js';
+import { initSuggest, suggestChanges, sendSuggestion, suggestionsPanel, sharePreviewPanel, refreshSuggestBadge, mySuggestionsPanel, startSuggestSigns } from './suggest.js';
+import { peopleOnline, onlineLabel, leaveBody, tellLeft } from './online.js';
+import { MY_TITLE, DOT_TITLE } from './my-suggestions.js';
 import { initTheme, openThemePanel } from './theme.js';
 import { initComments, openComments, commentsTick, resumeComment, typedComment } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
@@ -976,8 +978,9 @@ async function presencePing() {
     updateOnlineChip();
     // Open-suggestions badge (admins): piggyback on the presence heartbeat, but
     // lazily — every 3rd tick (~90s), a review-queue count doesn't need realtime.
+    // A person who may only suggest asks the same way what became of their own.
     presenceTickN++;
-    if (mode === 'admin' && presenceTickN % 3 === 1) refreshSuggestBadge();
+    if ((mode === 'admin' || isSuggestMode()) && presenceTickN % 3 === 1) refreshSuggestBadge();
   } catch (err) {
     // offline blip — presence is best-effort
     if (readFailure(err).kind === 'refused') presenceRefused = true;
@@ -8952,7 +8955,7 @@ function renderAdminBar() {
     }),
     sourceFieldRows: () => [...(state.sourceFields || [])].map(([ref, f]) => ({ ref, name: sourceName(ref), el: f.els.find(el => el.isConnected && !el.classList.contains('kiln-source-locked')) })).filter(r => r.el) });
   initSuggest({ state, cfg, mode, modal, setStatus, escapeHtml, ask, stopped, flattenPending, retireStaged, whileSending,
-    saveDraft, journalAdd, humanizeKey, noteTyped,
+    saveDraft, journalAdd, humanizeKey, noteTyped, suggestMode: isSuggestMode,
     note: () => keptNote, noteDone: () => { keptNote = ''; },
     fetchFile: (p) => getFile(state.gh, cfg.repo, p, cfg.branch || 'main'),
     ghRequest: (method, path, body) => state.gh.request(method, path, body) });
@@ -8995,6 +8998,7 @@ function renderAdminBar() {
         <button id="kiln-theme" class="kiln-fab-item">Theme</button>
         <button id="kiln-findreplace" class="kiln-fab-item">Find &amp; replace</button>
         ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-fab-item">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}
+        <button id="kiln-mysuggestions" class="kiln-fab-item" hidden>${escapeHtml(MY_TITLE)}</button>
         ${mode === 'admin' || cfg.sandbox ? '<button id="kiln-invite" class="kiln-fab-item">People &amp; access</button>' : ''}
         <button id="kiln-settings" class="kiln-fab-item">Settings</button>
         <button id="kiln-help" class="kiln-fab-item" data-href="${escapeHtml(helpLink())}" title="Opens the guide in a new tab">Help <span class="kiln-pal-kbd" aria-hidden="true">↗</span></button>
@@ -9007,6 +9011,7 @@ function renderAdminBar() {
     <button id="kiln-fab" title="Kiln: drag me anywhere" aria-label="Kiln editing menu" aria-haspopup="true" aria-expanded="false" aria-controls="kiln-fab-menu">
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
       <span id="kiln-fab-badge" hidden></span>
+      <span id="kiln-fab-dot" title="${escapeHtml(DOT_TITLE)}" hidden></span>
     </button>
     <div id="kiln-quick">
       <div id="kiln-undo-wrap" hidden>
@@ -9221,6 +9226,7 @@ function renderAdminBar() {
   fab.querySelector('#kiln-sharepreview').onclick = close(sharePreviewPanel);
   const sugBtn = fab.querySelector('#kiln-suggestions');
   if (sugBtn) sugBtn.onclick = close(suggestionsPanel);
+  fab.querySelector('#kiln-mysuggestions').onclick = close(mySuggestionsPanel);
   fab.querySelector('#kiln-comments').onclick = close(openComments);
   const settingsBtn = fab.querySelector('#kiln-settings');
   if (settingsBtn) settingsBtn.onclick = close(settingsPanel);
@@ -9235,6 +9241,7 @@ function renderAdminBar() {
 
   applyFeatureGating();
   refreshPublishButton();   // suggest-mode label ("Suggest changes") from the first paint
+  startSuggestSigns();      // a waiting suggestion (an owner) or a decided one (its suggester): the dot and one sentence
   updateOnlineChip();
   // What this person can do here, in one true sentence (grants.js startLine).
   // A phone has no click, and its outlines are always on.
@@ -9303,7 +9310,7 @@ function renderTopBar() {
     <button id="kiln-findreplace" class="kiln-btn-ghost">Replace</button>
     <button id="kiln-history" class="kiln-btn-ghost">History</button>
     <button id="kiln-comments" class="kiln-btn-ghost">💬 Comments</button>
-    ${canMakeEditable() ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button>' : ''}${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-btn-ghost" title="Review suggested changes">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}${mode === 'admin' || cfg.sandbox ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
+    ${canMakeEditable() ? '<button id="kiln-addsection" class="kiln-btn-ghost" title="Add a gallery or events section">＋ Add</button><button id="kiln-makeblock" class="kiln-btn-ghost" title="Make text/images editable">✨ Editable</button>' : ''}${mode === 'admin' || cfg.sandbox ? '<button id="kiln-suggestions" class="kiln-btn-ghost" title="Review suggested changes">Suggestions <span id="kiln-sug-badge" hidden></span></button>' : ''}<button id="kiln-mysuggestions" class="kiln-btn-ghost" hidden>${escapeHtml(MY_TITLE)}</button>${mode === 'admin' || cfg.sandbox ? '<button id="kiln-invite" class="kiln-btn-ghost">People</button>' : ''}
     <button id="kiln-settings" class="kiln-btn-ghost">Settings</button>
     <button id="kiln-help" class="kiln-btn-ghost" data-href="${escapeHtml(helpLink())}" title="Opens the guide in a new tab">Help</button>
     <button id="kiln-draft" class="kiln-btn-ghost" hidden>Draft</button>
@@ -9339,6 +9346,7 @@ function renderTopBar() {
   bar.querySelector('#kiln-draft').onclick = saveDraft;
   bar.querySelector('#kiln-sharepreview').onclick = sharePreviewPanel;
   bar.querySelector('#kiln-schedule').onclick = openScheduleItem;
+  bar.querySelector('#kiln-mysuggestions').onclick = mySuggestionsPanel;
   const sugBtn = bar.querySelector('#kiln-suggestions');
   if (sugBtn) sugBtn.onclick = suggestionsPanel;
   bar.querySelector('#kiln-signout').onclick = signOut;
@@ -9353,6 +9361,7 @@ function renderTopBar() {
   if (settingsBtn) settingsBtn.onclick = settingsPanel;
   applyFeatureGating();
   refreshPublishButton();   // suggest-mode label ("Suggest changes") from the first paint
+  startSuggestSigns();      // a waiting suggestion (an owner) or a decided one (its suggester): the dot and one sentence
   updateOnlineChip();
   watchToolbar();
   setStatus(restLine(state.user, null, { limits: limitsHere() }), 'idle');
@@ -10247,6 +10256,10 @@ function injectStyles() {
   background:var(--kiln-warn);color:#1c1300;font-size:11px;font-weight:700;display:flex;
   align-items:center;justify-content:center;padding:0 5px;box-shadow:0 1px 4px rgba(0,0,0,.3)}
 #kiln-fab-badge[hidden]{display:none!important}
+#kiln-fab-dot{position:absolute;top:-2px;left:-2px;width:13px;height:13px;border-radius:50%;box-sizing:border-box;
+  background:var(--kiln-warn,#f59e0b);border:2px solid #fff;pointer-events:none}
+#kiln-fab-dot[hidden]{display:none!important}
+#kiln-mysuggestions[hidden]{display:none!important}
 #kiln-fab-menu[hidden]{display:none!important}
 #kiln-fab-menu{position:absolute;width:230px;background:var(--kiln-bg);-webkit-backdrop-filter:blur(16px);
   backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.09);border-radius:16px;padding:8px 8px 0;

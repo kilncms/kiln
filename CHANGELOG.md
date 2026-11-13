@@ -49,6 +49,33 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now copies `worker/domain-mail.js` for a service somebody hosts themselves.
 ### Fixed
 
+- **A person who suggests a change now learns what became of it, and an
+  owner is told that one waits.** A tester sent two suggestions as an invited
+  person who may only suggest. The owner approved one and declined the other
+  with a note. Back as the suggester there was nothing about either, though
+  the owner's dialog says "The person who suggested it sees that it was
+  declined, with your note if you write one." Now the suggester's Kiln menu
+  has "My suggestions" once they have sent one. It lists each one: the page,
+  the day it was sent, and where it stands ("Waiting for the owner",
+  "Approved and published on Thursday 12 November", "Declined on Thursday 12
+  November" with the owner's note). When one was decided since they last
+  looked, the Kiln button shows a small dot and the status line says it once,
+  for example "Your suggestion for About was approved and is live." or "Your
+  suggestion for About was declined: Not this month." Opening the list
+  clears the dot. An owner with a suggestion waiting sees the same dot and
+  reads once on each page load "1 suggestion is waiting for you: Kiln menu,
+  then Suggestions." Kiln's service already gave an invited person their own
+  suggestions only. It now also refuses to match two sign-ins that both lack
+  an email address, so nobody reads a suggestion that is not theirs.
+- **People who signed out no longer count as online.** A tester signed in as
+  one person after another in one browser, and the Kiln menu read "2 online",
+  then "3 online": each person who had signed out kept counting for up to six
+  and a half minutes. Now Sign out tells Kiln's service that the person has
+  left, and they stop counting at once. The sign-out never waits more than a
+  second and a half for this and goes ahead whatever the service answers. A
+  person counts once however many tabs they have open, and never counts
+  themselves. A service older than this release ignores the new message, and
+  the person stops counting when their entry runs out, as before.
 - **Leaving the page while any save is being sent asks first.** Since 0.6.5
   the browser asks "Leave site?" while a Publish or a "Save to all pages"
   is on its way. A tester left during one of the editor's other saves and
