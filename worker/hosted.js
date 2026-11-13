@@ -26,6 +26,7 @@
  *   hostlock:<site id>           '1'   one copy at a time for a site (TTL 5 min)
  *   pvlock:<site id>:<alias>     '1'   one copy at a time for a preview (TTL 5 min)
  *   pvwant:<site id>:<alias>     the commit a notice named while that copy ran (TTL 5 min)
+ *   pvcount:<site id>:<hour>     how many copies of previews the site got in that hour (TTL 2 hours)
  */
 
 import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError, isPreviewBranch, previewAlias, previewName } from './hosting.js';
@@ -40,9 +41,12 @@ const SWEEP_LOOK = 20;                       // repositories one sweep looks at 
 const PREVIEWS_PER_SITE = 5;                  // previews one site has at most
 const PREVIEW_KEPT_MS = 30 * 24 * 60 * 60 * 1000;   // a preview nobody changed for this long comes down
 const SWEEP_PREVIEWS = 5;                    // previews one sweep takes down at most
+const PREVIEW_COPIES_PER_HOUR = 60;          // copies of previews one site gets in one hour at most
+const HOUR_MS = 60 * 60 * 1000;
 const lockKey = (id) => `hostlock:${id}`;
 const previewLock = (id, alias) => `pvlock:${id}:${alias}`;
 const previewWant = (id, alias) => `pvwant:${id}:${alias}`;
+const previewCount = (id, now = Date.now()) => `pvcount:${id}:${Math.floor(now / HOUR_MS)}`;
 
 const hex = (buf) => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 
@@ -211,7 +215,10 @@ export async function forgetPreviews(env, siteId, why = 'site_removed') {
  * commit it named, and the running copy goes round once more for it. The row
  * is written before the first copy, so no Worker is ever up without one. A
  * site that has five previews already loses the one changed longest ago
- * first. Never throws.
+ * first, and the database itself refuses a sixth row, so branches pushed at
+ * the same moment cannot each count "fewer than five" and all go up. Every
+ * copy is a whole copy of the site, so one site gets sixty copies of previews
+ * in one hour and no more. Never throws.
  */
 async function putPreview(env, { site, token, branch, sha = null }) {
   const alias = previewAlias(branch), name = previewName(env, site, branch);
@@ -229,18 +236,36 @@ async function putPreview(env, { site, token, branch, sha = null }) {
     let row;
     try { row = await one.first(); } catch { return { state: 'off' }; }   // migration 0010 has not reached this database: no previews
     if (row && row.deployed_at && sha && row.commit_sha === sha && row.branch === branch) return { state: 'live', url: siteAddress(env, name), commit: sha };
+    const countKey = previewCount(site.id);
+    const copies = async () => Number(await env.KILN.get(countKey)) || 0;
+    const tooMany = () => {
+      console.log(JSON.stringify({ evt: 'preview_too_many', site: site.id, repo: site.repo, branch, most: PREVIEW_COPIES_PER_HOUR }));
+      return { state: 'busy' };
+    };
+    // Asked before anything is taken down to make room, so a copy that will not be made costs nobody their preview.
+    if (await copies() >= PREVIEW_COPIES_PER_HOUR) return tooMany();
     if (!row) {
       const others = await previewsOf(env, site.id);
       for (const old of others.slice(0, Math.max(0, others.length - (PREVIEWS_PER_SITE - 1)))) {
         // Five is the most a site has: when the oldest cannot be taken down just now, the new one waits for the next push.
         if (!(await removePreview(env, old, 'room_for_another'))) return { state: 'full' };
       }
-      await env.kiln_cloud.prepare('INSERT INTO previews (site_id, alias, branch, name, commit_sha, deployed_at, updated_at) VALUES (?,?,?,?,?,?,?)')
-        .bind(site.id, alias, branch, name, null, null, Date.now()).run();
+      // The count is part of the write: of many notices that arrive together, the database lets five write a row.
+      const put = await env.kiln_cloud.prepare('INSERT INTO previews (site_id, alias, branch, name, commit_sha, deployed_at, updated_at) SELECT ?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM previews WHERE site_id = ?) < ?')
+        .bind(site.id, alias, branch, name, null, null, Date.now(), site.id, PREVIEWS_PER_SITE).run();
+      if (!put?.meta?.changes) return { state: 'full' };
       row = await one.first();
+      if (!row) return { state: 'full' };   // taken away again already, to make room for another
     }
     let out = null;
     for (let round = 0; round < 2; round++) {
+      const made = await copies();
+      if (made >= PREVIEW_COPIES_PER_HOUR) {
+        if (round) break;   // the copy made a moment ago stays up; the commit that came meanwhile waits for the next hour's push
+        if (!row.deployed_at) await env.kiln_cloud.prepare('DELETE FROM previews WHERE site_id = ? AND alias = ?').bind(site.id, alias).run();
+        return tooMany();
+      }
+      await env.KILN.put(countKey, String(made + 1), { expirationTtl: 2 * 60 * 60 });
       out = await deploySite(env, { token, repo: site.repo, name, first: !row.deployed_at, siteId: site.id, branch, preview: true });
       if (out.state !== 'live') {
         // Nothing was put up (no home page on that branch, say). A preview that was up keeps what it served.
@@ -249,8 +274,16 @@ async function putPreview(env, { site, token, branch, sha = null }) {
         return { state: out.state };
       }
       const now = Date.now();
-      await env.kiln_cloud.prepare('UPDATE previews SET branch = ?, name = ?, commit_sha = ?, deployed_at = ?, updated_at = ? WHERE site_id = ? AND alias = ?')
+      const kept = await env.kiln_cloud.prepare('UPDATE previews SET branch = ?, name = ?, commit_sha = ?, deployed_at = ?, updated_at = ? WHERE site_id = ? AND alias = ?')
         .bind(branch, name, out.commit, now, now, site.id, alias).run();
+      if (!kept?.meta?.changes) {
+        // Its row was taken away while the copy ran (the branch was deleted, or the room went to a newer preview),
+        // so what was just put up comes down again: no Worker stays up without a row.
+        try { await removeSite(env, name); }
+        catch (e) { console.warn(JSON.stringify({ evt: 'preview_remove_failed', site: site.id, name, why: 'row_gone', detail: String(e?.detail || e?.message || e).slice(0, 200) })); }
+        console.log(JSON.stringify({ evt: 'preview_not_up', repo: site.repo, branch, name, reason: 'row_gone' }));
+        return { state: 'full' };
+      }
       row = { ...row, branch, name, commit_sha: out.commit, deployed_at: now };
       const wanted = await env.KILN.get(want);
       if (!wanted || wanted === out.commit) break;

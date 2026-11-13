@@ -159,7 +159,8 @@ test('previews: a change that arrives while a preview is being copied is not los
     assert.equal(served(w, '/index.html'), '<!doctype html><h1>Second thoughts</h1>');
     assert.equal(rows(w.env)[0].commit_sha, w.gh.head(SUGGEST));
     assert.equal(w.cf.scripts.get(PV).deploys, 2);
-    assert.deepEqual([...w.env.KILN.map.keys()].filter(k => k.startsWith('pv')), ['pvset:site1'], 'nothing is left locked: the one note says the settings file was looked at for its preview line');
+    assert.deepEqual([...w.env.KILN.map.keys()].filter(k => k.startsWith('pv') && !k.startsWith('pvcount:')), ['pvset:site1'], 'nothing is left locked: the one note says the settings file was looked at for its preview line');
+    assert.deepEqual([...w.env.KILN.map].filter(([k]) => k.startsWith('pvcount:site1:')).map(([, v]) => v), ['2'], 'the two copies are counted toward the hour');
   });
 });
 
@@ -275,6 +276,88 @@ test('previews: a site has five at most, and a sixth takes the place of the one 
     assert.deepEqual((await notice(w, { branch: 'kiln/suggest-fay' })).body, { ok: true, previews: 1 });
     assert.equal(previewsUp(w).length, 5);
     assert.ok(previewsUp(w).includes('pv-site1-kiln-suggest-fay'));
+  });
+});
+
+/** What the service wrote to its log while `fn` ran, the lines that are JSON. */
+async function logged(fn) {
+  const lines = []; const { log, warn } = console;
+  console.log = console.warn = (line) => { try { lines.push(JSON.parse(line)); } catch { /* not one of the service's lines */ } };
+  try { await fn(); } finally { console.log = log; console.warn = warn; }
+  return lines;
+}
+
+test('previews: thirty branches pushed at the same moment leave five previews, each with its row', { skip: d1Skip }, async () => {
+  const w = world();
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    const branches = Array.from({ length: 30 }, (_, i) => `kiln/suggest-b${i + 1}`);
+    for (const b of branches) change(w, b, { 'index.html': `<!doctype html><h1>${b}</h1>` });
+    const answers = await Promise.all(branches.map(b => notice(w, { branch: b })));
+    assert.ok(answers.every(a => a.status === 200));
+    assert.equal(answers.reduce((n, a) => n + a.body.previews, 0), 5, 'five of the thirty went up');
+    assert.equal(rows(w.env).length, 5);
+    assert.equal(previewsUp(w).length, 5);
+    assert.deepEqual(previewsUp(w), rows(w.env).map(r => r.name).sort(), 'every Worker has its row');
+    assert.ok(rows(w.env).every(r => r.deployed_at && r.commit_sha));
+
+    // The same again, with five up already: still five, and every Worker still has its row.
+    const more = Array.from({ length: 30 }, (_, i) => `kiln/suggest-c${i + 1}`);
+    for (const b of more) change(w, b, { 'index.html': `<!doctype html><h1>${b}</h1>` });
+    await Promise.all(more.map(b => notice(w, { branch: b })));
+    assert.ok(rows(w.env).length <= 5);
+    assert.deepEqual(previewsUp(w), rows(w.env).map(r => r.name).sort());
+  });
+});
+
+test('previews: a preview whose row was taken away while it was being copied comes down again', { skip: d1Skip }, async () => {
+  const w = world();
+  let during = null;
+  const handler = async (url, init) => {
+    // Somebody deletes the branch while its first copy is on the way to Cloudflare.
+    if (during && /\/workers\/scripts\//.test(url) && (init?.method || 'GET') === 'PUT') { const now = during; during = null; await now(); }
+    return w.handler(url, init);
+  };
+  await withFetch(handler, async () => {
+    await switchOn(w.env);
+    change(w, SUGGEST, { 'index.html': '<!doctype html><h1>Ana</h1>' });
+    during = () => { w.env.kiln_cloud.exec('DELETE FROM previews WHERE site_id = ? AND alias = ?', 'site1', 'kiln-suggest-ana'); };
+    assert.deepEqual((await notice(w, { branch: SUGGEST })).body, { ok: true, previews: 0 });
+    assert.equal(during, null, 'the row went while the copy ran');
+    assert.deepEqual(previewsUp(w), []);
+    assert.deepEqual(rows(w.env), []);
+  });
+});
+
+test('previews: one site gets sixty copies of previews in an hour, and the sixty-first is not made', { skip: d1Skip }, async () => {
+  const w = world();
+  // Each push is one commit on a branch made new from the site's own branch.
+  const again = (n, branch = SUGGEST) => { w.gh.refs.delete(`heads/${branch}`); return push(w, branch, { 'index.html': `<!doctype html><h1>Copy ${n}</h1>` }); };
+  await withFetch(w.handler, async () => {
+    await switchOn(w.env);
+    for (let n = 1; n <= 60; n++) assert.deepEqual((await again(n)).body, { ok: true, previews: 1 }, `copy ${n}`);
+    const key = [...w.env.KILN.map.keys()].find(k => k.startsWith('pvcount:site1:'));
+    assert.equal(w.env.KILN.map.get(key), '60');
+    assert.ok(w.env.KILN.expires.has(key), 'the count runs out by itself');
+    const deploys = w.cf.scripts.get(PV).deploys;
+
+    let over;
+    const lines = await logged(async () => { over = await again(61); });
+    assert.deepEqual(over.body, { ok: true, previews: 0 });
+    assert.equal(served(w, '/index.html'), '<!doctype html><h1>Copy 60</h1>', 'what was up stays up');
+    assert.equal(w.cf.scripts.get(PV).deploys, deploys, 'no copy was made');
+    assert.equal(lines.filter(l => l.evt === 'preview_too_many').length, 1);
+    assert.equal(lines.find(l => l.evt === 'preview_too_many').repo, 'ada/club');
+
+    // A new branch gets no preview that hour either, and leaves no row behind.
+    assert.deepEqual((await again(62, 'kiln-drafts')).body, { ok: true, previews: 0 });
+    assert.deepEqual(previewsUp(w), [PV]);
+    assert.equal(rows(w.env).length, 1);
+
+    // The next hour counts from nothing.
+    w.env.KILN.map.delete(key);
+    assert.deepEqual((await notice(w, { branch: SUGGEST })).body, { ok: true, previews: 1 });
+    assert.equal(served(w, '/index.html'), '<!doctype html><h1>Copy 61</h1>');
   });
 });
 

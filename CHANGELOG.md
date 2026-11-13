@@ -131,6 +131,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already working on the forwarded address for this site. Wait a minute, then
   look at the site's row again."
 
+- **A site on Kiln's hosting has five previews at most, even when many
+  branches are pushed at the same moment.** Until now each of those pushes
+  counted the site's previews by itself, found fewer than five and put up a
+  whole copy of the site, so one push that carried hundreds of suggestion
+  branches made hundreds of copies in Kiln's hosting account and could leave
+  no room for anybody else's site. The database now refuses the sixth, and a
+  preview whose place was taken while it was being copied comes down again.
+  One site also gets sixty copies of previews in an hour at most. If a preview
+  does not show after a great many pushes, push to its branch again in the
+  next hour.
+
 ## [0.6.8] - 2026-11-13
 
 ### Added
