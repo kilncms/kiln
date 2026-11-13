@@ -303,7 +303,7 @@ save drafts; scheduling is off for them (a schedule would publish directly).
 ### Preview links
 
 Add one line to your `window.KILN` config and Kiln can hand out links to a built
-preview of unpublished work:
+preview of unpublished work. (On Kiln's hosting there is nothing to add: see below.)
 
 ```js
 preview: 'https://{branch}.<project>.pages.dev',   // Cloudflare Pages
@@ -312,6 +312,15 @@ preview: 'https://{branch}.<project>.pages.dev',   // Cloudflare Pages
 On Netlify it's `preview: 'https://{branch}--<site>.netlify.app'` — and branch
 deploys must be enabled for the site (Site configuration → Build & deploy → Branches).
 `{branch}` is replaced with the branch's URL-safe alias.
+
+On Kiln's hosting there is nothing to type. Kiln writes the `preview:` line into
+your settings file by itself, when the site first goes on the hosting, or within a
+day for a site that was there already. It then puts every suggestion and every
+shared draft up at a preview address of its own. A preview leaves out the pages
+under `members/` and asks search engines not to list it. If your settings file
+already has a `preview:` line that you typed, Kiln leaves it as it is.
+**Check this site** in the dashboard says whether the line is there
+("Suggestions get a preview").
 
 With it configured: **Share a preview link** (under *Your unpublished edits*) saves a
 draft and gives you a link to send around, and each suggestion also lands on its own

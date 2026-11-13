@@ -18,11 +18,25 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   site's own domain. A site has five previews at most: a sixth takes the place
   of the one changed longest ago. A preview comes down when its branch is
   deleted, when the site comes down from Kiln's hosting or is removed, and
-  after thirty days without a change. This is the service's half: the link the
-  editor shows leads to the preview once the site's settings file names the
-  pattern, which the next step writes there. It needs migration
-  `0010_previews.sql`. A service without it has no previews and works as
-  before.
+  after thirty days without a change. The link the editor shows leads to the
+  preview once the site's settings file names the pattern, and Kiln writes it
+  there by itself (the next entry). It needs migration `0010_previews.sql`. A
+  service without it has no previews and works as before.
+- **On Kiln's hosting nobody types the `preview:` line.** The editor writes a
+  suggestion to a branch of its own, and shows "Open preview", only when the
+  site's settings file (`assets/kiln-config.js`) has a `preview:` line. On
+  Cloudflare Pages or Netlify the owner types it. On Kiln's hosting Kiln now
+  writes it: as one more step when a site first goes on the hosting (one
+  commit in the owner's name, "Kiln: suggestions on this site get a preview of
+  their own"), in the settings file of a site Kiln starts or copies, and once,
+  from the five-minute job, for a site that was on the hosting already (that
+  commit names no person, so GitHub shows it as made by the Kiln app). The one
+  line goes in straight after `worker:`, and every other character of the file
+  stays as it was. A `preview:` line the owner typed is never touched, and
+  neither is a settings file in which Kiln cannot tell where its line belongs:
+  suggestions on such a site work as before, without a preview, and Kiln looks
+  again once a day. "Check this site" has one more line for a hosted site that
+  is online, "Suggestions get a preview".
 
 ## [0.6.8] - 2026-11-13
 
