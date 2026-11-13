@@ -116,7 +116,11 @@ test('scheduled changes: the editor draws the list from these words, again after
   assert.ok(panel.includes('cancelQuestion(s, '));
   assert.ok(panel.indexOf('cancelQuestion(s, ') < panel.indexOf("ask('/schedule/cancel'"));
   assert.ok(panel.indexOf("[data-yes]').onclick") < panel.indexOf("ask('/schedule/cancel'"));
-  assert.ok(panel.includes('status.textContent = cancelledLine('));
+  // After a cancel: the one sentence in the dialog and on the status line, which until then may say when the change was scheduled for.
+  const cancelled = panel.slice(panel.indexOf("ask('/schedule/cancel'"), panel.indexOf('async function refreshList('));
+  assert.match(cancelled, /const line = cancelledLine\(\{ shownHere: state\.scheduledMine\.has\(s\.id\) \}\);\s+status\.textContent = line;\s+setStatus\(line, 'idle', \{ hold: \d+ \}\);/);
+  assert.ok(cancelled.indexOf('state.scheduledGone.set(s.id') < cancelled.indexOf('setStatus(line'), 'only once the cancel was taken');
+  assert.doesNotMatch(cancelled.slice(0, cancelled.indexOf('state.scheduledGone.set(s.id')), /setStatus\(/);
   // After a schedule: the true sentence in the dialog and on the status line, the part that schedules goes, the list is drawn again.
   const made = panel.slice(panel.indexOf('retireStaged();'));
   assert.ok(made.includes('const line = scheduledLine(data.at);'));

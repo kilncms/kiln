@@ -178,6 +178,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that names this page, and remove the link there." Its one button is "Go to
   the home page". The dialog has no ✕, and Esc or a click outside it goes to
   the home page as well.
+- **The status line stops saying a change is scheduled once it was
+  cancelled.** After a scheduled change was cancelled the dialog said "That
+  scheduled change was cancelled. Nothing was published." while the status
+  line went on reading "Scheduled for Friday 13 November at 3:17 AM…", also
+  after the dialog was closed. The status line now says the same sentence as
+  the dialog as soon as the cancel is taken.
 
 ## [0.6.6] - 2026-11-13
 

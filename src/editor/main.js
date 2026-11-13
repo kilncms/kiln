@@ -8267,7 +8267,11 @@ function schedulePanel(at, opts) {
         state.scheduledGone.set(s.id, Date.now());
         rememberRecentSchedules();
         // One this tab made: the page still shows its words, which are now neither scheduled nor published.
-        status.textContent = cancelledLine({ shownHere: state.scheduledMine.has(s.id) });
+        // Said in the dialog and on the status line, which may still say when
+        // the change was scheduled for and would go on saying it once the dialog is closed.
+        const line = cancelledLine({ shownHere: state.scheduledMine.has(s.id) });
+        status.textContent = line;
+        setStatus(line, 'idle', { hold: 60000 });
         refreshList();
       };
     };
