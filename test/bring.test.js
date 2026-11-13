@@ -249,8 +249,8 @@ test('a person brings a site in: an empty private repository, the site\'s row, t
   assert.deepEqual(w.hub.jobs, [{ ref: 'main', inputs: { job: copy.id, address: 'https://www.oakbakery.com', repo, back: 'https://worker.example/cloud/convert/done', pages: '200' } }]);
 
   // one free copy of that site for 30 days, counted without "www."
-  assert.equal(w.env.KILN.map.has('brought:oakbakery.com'), true);
-  assert.equal(Math.round((w.env.KILN.expires.get('brought:oakbakery.com') - Date.now() / 1000) / 86400), 30);
+  assert.equal(w.env.KILN.map.has('brought:acct-g:oakbakery.com'), true);
+  assert.equal(Math.round((w.env.KILN.expires.get('brought:acct-g:oakbakery.com') - Date.now() / 1000) / 86400), 30);
 
   // the answer: the site as /cloud/me lists it
   assert.deepEqual([site.kept, site.name, site.repo], [true, 'Oak Bakery', repo]);
@@ -286,7 +286,7 @@ test('each refusal is a sentence, and nothing is made: nobody signed in, a servi
   const name = await bring(w, { ...OAK, name: 'x' });
   assert.deepEqual([name.status, name.json.code, name.json.error], [400, 'bad_name', bringSentence('bad_name')]);
   assert.deepEqual([w.hub.made, w.hub.jobs, sites(w.env), copies(w.env), w.notes], [[], [], [], [], []]);
-  assert.equal(w.env.KILN.map.has('brought:oakbakery.com'), false);
+  assert.equal([...w.env.KILN.map.keys()].some(k => k.startsWith('brought:')), false);
 
   const off = world({ env: { CONVERT_SECRET: '' } });
   const no = await bring(off);
@@ -305,24 +305,32 @@ test('fair use: the limits of starting a site, and one free copy of a site in 30
   // Rosa has a site that is not paid for
   const second = await bring(w, { address: 'rosas-other-site.com', mine: true });
   assert.deepEqual([second.status, second.json], [409, { error: keepSentence('one_unpaid'), code: 'one_unpaid' }]);
-  // Omar asks for the same site, typed another way
+  // Omar asks for the same site, typed another way: Rosa's mark does not stand in his way
   person(w.env, 'omar', OMAR, 'acct-o');
   const omar = await bring(w, { address: 'http://oakbakery.com/about', mine: true }, 'omar');
-  assert.deepEqual([omar.status, omar.json], [429, { error: 'Kiln cannot copy that site during the free days just now. Write to info@kilncms.com and we will help you bring it in.', code: 'not_now' }]);
-  assert.deepEqual([w.hub.made.length, w.hub.jobs.length, sites(w.env).length, omar.calls.length], [1, 1, 1, 0], 'refused before anything was made or asked');
-  // Omar pays for a site: the mark does not hold him, and his copy leaves the mark as it was
-  w.env.kiln_cloud.exec("INSERT INTO sites (id, account_id, repo, origin, plan, status, ls_subscription_id, created_at, kept, name) VALUES ('paid-1', 'acct-o', 'kiln-sites/paid-1', 'https://paid.example', 'managed', 'active', 'sub-1', 1, 1, 'Paid')");
-  const mark = w.env.KILN.map.get('brought:oakbakery.com');
-  const paid = await bring(w, { address: 'http://oakbakery.com/about', mine: true }, 'omar');
-  assert.equal(paid.status, 200, JSON.stringify(paid.json));
-  assert.deepEqual([w.hub.made.length, w.hub.jobs.length, w.env.KILN.map.get('brought:oakbakery.com')], [2, 2, mark]);
+  assert.equal(omar.status, 200, JSON.stringify(omar.json));
+  assert.deepEqual([w.hub.made.length, w.hub.jobs.length, sites(w.env).length], [2, 2, 2]);
   assert.equal(w.hub.jobs[1].inputs.address, 'http://oakbakery.com/about');
+  assert.deepEqual([...w.env.KILN.map.keys()].filter(k => k.startsWith('brought:')).sort(), ['brought:acct-g:oakbakery.com', 'brought:acct-o:oakbakery.com'], 'a mark for each account, and none that holds everybody');
+  // Rosa removes her site and asks for the same one again: her own mark holds her, and the try is not counted against her
+  const hers = sites(w.env).find(x => x.account_id === 'acct-g');
+  assert.equal((await ask(w, 'POST', '/cloud/sites/remove', { id: hers.id })).status, 200);
+  const again = await bring(w, { address: 'https://www.oakbakery.com/', mine: true });
+  assert.deepEqual([again.status, again.json], [429, { error: 'Kiln cannot copy that site during the free days just now. Write to info@kilncms.com and we will help you bring it in.', code: 'not_now' }]);
+  assert.deepEqual([w.hub.made.length, w.hub.jobs.length, sites(w.env).length, again.calls.length], [2, 2, 1, 0], 'refused before anything was made or asked');
+  assert.equal(w.env.kiln_cloud.row("SELECT COUNT(*) n FROM kept_starts WHERE account_id = 'acct-g'").n, 1);
+  // Rosa pays for a site: the mark does not hold her, and her copy leaves the mark as it was
+  w.env.kiln_cloud.exec("INSERT INTO sites (id, account_id, repo, origin, plan, status, ls_subscription_id, created_at, kept, name) VALUES ('paid-1', 'acct-g', 'kiln-sites/paid-1', 'https://paid.example', 'managed', 'active', 'sub-1', 1, 1, 'Paid')");
+  const mark = w.env.KILN.map.get('brought:acct-g:oakbakery.com');
+  const paid = await bring(w, { address: 'https://www.oakbakery.com/', mine: true });
+  assert.equal(paid.status, 200, JSON.stringify(paid.json));
+  assert.deepEqual([w.hub.made.length, w.hub.jobs.length, w.env.KILN.map.get('brought:acct-g:oakbakery.com')], [3, 3, mark]);
   // 30 new sites an hour for the whole service, counted with the sites that start from the starter
   person(w.env, 'lena', { sub: 'g-3003', email: 'lena@example.com', name: 'Lena' }, 'acct-l');
   w.env.KILN.map.set(`keepstarts:${Math.floor(Date.now() / 3600000)}`, '30');
   const late = await bring(w, { address: 'lenas-site.com', mine: true }, 'lena');
   assert.deepEqual([late.status, late.json], [429, { error: keepSentence('too_many'), code: 'too_many' }]);
-  assert.equal(w.env.KILN.map.has('brought:lenas-site.com'), false);
+  assert.equal(w.env.KILN.map.has('brought:acct-l:lenas-site.com'), false);
   assert.deepEqual(w.hub.unsafe, []);
 });
 

@@ -32,7 +32,7 @@ export const SETTINGS_MESSAGE = "This site's Kiln settings";
 export const MOST_PAGES = 200;          // addresses the job tries for one copy
 export const MOST_TRIES = 3;            // copies of one site, the first one counted
 export const COPY_MINUTES = 30;         // a job that has said nothing for this long is given up on
-export const BROUGHT_DAYS = 30;         // how long one free copy of a site stands in the way of the next
+export const BROUGHT_DAYS = 30;         // how long one free copy of a site stands in the way of the same account's next copy of it
 export const MOST_ANSWER = 300000;      // bytes of the job's answer
 export const MOST_REPORT = 20000;       // characters of the report that are kept
 export const HOST_SECONDS = 20;        // how long the owner's mail waits for the site to go up, where the work goes on after the answer
@@ -183,7 +183,8 @@ export async function signedRight(secret, body, header) {
 
 const newJob = () => crypto.randomUUID().replace(/-/g, '');
 const changed = (r) => Number(r && r.meta && r.meta.changes) > 0;
-const broughtKey = (source) => `brought:${source}`;
+// The mark is one account's own: it never stands in the way of anybody else who asks for the same site.
+const broughtKey = (accountId, source) => `brought:${accountId}:${source}`;
 const base64 = (text) => btoa(String.fromCharCode(...bytesOf(text)));
 const stale = (row, now) => row.state === 'copying' && now - Number(row.asked_at || 0) > COPY_MINUTES * 60000;
 
@@ -308,14 +309,16 @@ export async function bringIn(env, { accountId, address, name, mine, worker, das
     mayStart: async () => {
       // The table the copy is written down in, before anything is made.
       try { await env.kiln_cloud.prepare('SELECT id FROM conversions LIMIT 1').first(); } catch { return refusal('not_set_up'); }
-      // One free copy of a site in 30 days, whoever asks. An account that pays for a site is not held to it.
+      // One free copy of a site in 30 days for an account, so that it cannot copy the same site again and again.
+      // The mark holds that account alone: whoever else asks for the site is not held by it, and what one
+      // account may start over time is counted in startKept. An account that pays for a site is not held to it.
       paid = await hasPaidSite(env, accountId);
-      return !paid && await env.KILN.get(broughtKey(at.source)) ? refusal('not_now') : null;
+      return !paid && await env.KILN.get(broughtKey(accountId, at.source)) ? refusal('not_now') : null;
     },
     onMade: ({ id, branch }) => writeRow(env, { job, siteId: id, accountId, address: at.address, branch, tries: 1, now }),
   });
   if (!out.ok) return out;
-  if (!paid) { try { await env.KILN.put(broughtKey(at.source), String(now), { expirationTtl: BROUGHT_DAYS * 86400 }); } catch { /* the copy goes on */ } }
+  if (!paid) { try { await env.KILN.put(broughtKey(accountId, at.source), String(now), { expirationTtl: BROUGHT_DAYS * 86400 }); } catch { /* the copy goes on */ } }
   const started = await startJob(env, { job, address: at.address, repo: out.repo, worker, sign, pkcs1, note, now });
   const bring = shownCopy(await lastCopy(env, out.site.id), { now });
   return started ? { ok: true, site: out.site, bring } : { ...refusal('no_job'), site: out.site, bring };

@@ -228,6 +228,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   whole before it was refused. It is now read through a reader that stops at
   300,000 bytes and answers "too large" without waiting for the rest. An
   answer of the right size is read and checked as before.
+- **Nobody can stop another person's site from being brought in.** The mark
+  that says a site was copied already was kept for the site alone, so whoever
+  asked first for an address held everybody else off it for 30 days. It is now
+  kept for the account and the site together: it stops the same account from
+  copying the same site again and again, and nobody else. What one account may
+  start over time is held by its own count of 3 in 7 days.
 
 ## [0.6.6] - 2026-11-13
 
