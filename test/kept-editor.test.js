@@ -551,3 +551,67 @@ test('a kept owner reads what the editor needs from their repository, and any ot
   }
   assert.ok(await record(w.env, session), 'and the session is still there');
 });
+
+/** Stand in front of the stand-in GitHub: every ask for an installation token is noted, and `answer(body)` may answer it. */
+function tokenAsks(w, answer = () => undefined) {
+  const asks = [], wide = [];
+  const inner = w.hub.handler;
+  w.hub.handler = async (url, init) => {
+    const u = new URL(url);
+    if (u.pathname === '/app/installations/77/access_tokens' && init.method === 'POST') {
+      const body = init.body ? JSON.parse(init.body) : null;
+      asks.push(body);
+      const mine = answer(body);
+      if (mine) return mine;
+    }
+    if (((init.headers && init.headers.Authorization) || '') === 'Bearer wide-token') {
+      wide.push(`${init.method} ${u.pathname}`);
+      return init.method === 'DELETE' ? new Response(null, { status: 204 }) : jsonRes({ id: 9001, full_name: REPO });
+    }
+    return inner(url, init);
+  };
+  return { asks, wide };
+}
+
+test('the token asked of GitHub for a site is good for that site\'s repository only', { skip: d1Skip }, async () => {
+  const w = world();
+  const { session } = await open(w);
+  await w.env.KILN.delete(`itok:${REPO}`);   // the service has no token in hand
+  const { asks, wide } = tokenAsks(w);
+  const r = await site(w, 'GET', `/gh/repos/${REPO}/contents/index.html?ref=main`, { session });
+  assert.equal(r.status, 200);
+  assert.deepEqual(asks, [{ repositories: ['oak-bakery-1a2b3c4d'] }], 'one ask, naming the one repository');
+  assert.deepEqual(wide, [], 'no token for the whole installation was asked for or used');
+  assert.match(await w.env.KILN.get(`itok:${REPO}`), /^inst-\d+$/);
+});
+
+test('a repository GitHub does not list under the name asked with (a name from before a rename) gets a token by its id, and the look that finds the id is the only use of a wider token', { skip: d1Skip }, async () => {
+  const w = world();
+  const { session } = await open(w);
+  await w.env.KILN.delete(`itok:${REPO}`);
+  const { asks, wide } = tokenAsks(w, (body) => {
+    if (body && body.repositories) return jsonRes({ message: 'There is at least one repository that does not exist or is not accessible to the parent installation.' }, 422);
+    if (body && body.repository_ids) return jsonRes({ token: 'inst-7' }, 201);
+    return jsonRes({ token: 'wide-token' }, 201);
+  });
+  const r = await site(w, 'GET', `/gh/repos/${REPO}/contents/index.html?ref=main`, { session });
+  assert.equal(r.status, 200);
+  assert.deepEqual(asks, [{ repositories: ['oak-bakery-1a2b3c4d'] }, {}, { repository_ids: [9001] }]);
+  assert.deepEqual(wide, [`GET /repos/${REPO}`, 'DELETE /installation/token'], 'the wide token looks the repository up, is handed back, and does nothing else');
+  assert.equal(await w.env.KILN.get(`itok:${REPO}`), 'inst-7', 'the token kept is the one for the one repository');
+  assert.equal([...w.env.KILN.map.values()].some(v => String(v).includes('wide-token')), false, 'the wide token is kept nowhere');
+  const read = beyondIdentity(r.calls).filter(c => c.url.includes('/contents/'));
+  assert.deepEqual(read.map(c => c.headers.Authorization), ['Bearer inst-7']);
+});
+
+test('when GitHub gives no token for the one repository, the service has no token at all and says GitHub could not be reached', { skip: d1Skip }, async () => {
+  const w = world();
+  const { session } = await open(w);
+  await w.env.KILN.delete(`itok:${REPO}`);
+  const { asks } = tokenAsks(w, (body) => (body && body.repositories ? jsonRes({ message: 'no such repository' }, 422) : jsonRes({ message: 'Forbidden' }, 403)));
+  const r = await site(w, 'GET', `/gh/repos/${REPO}/contents/index.html?ref=main`, { session });
+  assert.equal(r.status, 502);
+  assert.equal(r.json.code, 'github_unreachable');
+  assert.equal(asks.some(b => b && b.repository_ids), false);
+  assert.equal(await w.env.KILN.get(`itok:${REPO}`), null);
+});

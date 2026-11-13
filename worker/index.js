@@ -4271,6 +4271,27 @@ async function commitDiffInScope(env, itok, sess, bodyText, { branch } = {}) {
   }
 }
 
+/**
+ * The id of the repository that answers to a name the installation does not
+ * list under that spelling, or null. It takes one look with a token for the
+ * whole installation, which is used for that look only, handed back to GitHub
+ * at once, and never kept or returned: every token installationToken gives
+ * out is for one repository.
+ */
+async function repoIdForToken(repo, ask) {
+  const wide = await ask({});
+  if (!wide.ok) return null;
+  const { token } = await wide.json().catch(() => ({}));
+  if (!token) return null;
+  const h = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': UA };
+  try {
+    const r = await fetch(`${GH}/repos/${repo}`, { headers: h });
+    const id = r.ok ? (await r.json().catch(() => ({}))).id : null;
+    return Number.isInteger(id) ? id : null;
+  } catch { return null; }
+  finally { try { await fetch(`${GH}/installation/token`, { method: 'DELETE', headers: h }); } catch { /* it ends within the hour on its own */ } }
+}
+
 async function installationToken(env, repo) {
   const cached = await env.KILN.get(`itok:${repo}`);
   if (cached) return cached;
@@ -4284,7 +4305,19 @@ async function installationToken(env, repo) {
   if (!instRes.ok) return null;
   const inst = await instRes.json();
 
-  const tokRes = await fetch(`${GH}/app/installations/${inst.id}/access_tokens`, { method: 'POST', headers: ghHeaders });
+  // The token is good for this one repository and for no other the
+  // installation covers: in the organization where Kiln keeps sites' files,
+  // one installation covers every customer's repository.
+  const ask = (only) => fetch(`${GH}/app/installations/${inst.id}/access_tokens`, { method: 'POST', headers: { ...ghHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(only) });
+  let tokRes = await ask({ repositories: [String(repo).split('/')[1]] });
+  // GitHub knows no repository of that name in the installation, though the
+  // installation was found by it: the name is spelled as it was before a
+  // rename or a transfer. The repository is asked for by its id instead.
+  if (tokRes.status === 422) {
+    const id = await repoIdForToken(repo, ask);
+    if (id === null) return null;
+    tokRes = await ask({ repository_ids: [id] });
+  }
   if (!tokRes.ok) return null;
   const tok = await tokRes.json();
 

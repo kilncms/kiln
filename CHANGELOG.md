@@ -268,6 +268,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   repository gets, "This sign-in is for one repository only, and this request
   is for something else, so Kiln did not send it to GitHub." An owner who
   signed in with GitHub reads exactly as before.
+- **The token the service uses for a site works on that site's repository
+  only.** The service asked GitHub for a token that was good for every
+  repository of the installation, which in the organization where Kiln keeps
+  sites' files means every customer's repository. It now asks for a token for
+  the one repository, for customers' own repositories as well. Where a site
+  still spells its repository as it was named before a rename, the service
+  looks the repository up once and asks for the token by its id. Making a new
+  site in Kiln's organization still uses a token for the organization, since
+  the repository does not exist yet.
 
 ## [0.6.6] - 2026-11-13
 
