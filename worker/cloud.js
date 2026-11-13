@@ -44,7 +44,7 @@ import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, 
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { hostingOn, hostingSentence } from './hosting.js';
 import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence } from './keeps.js';
-import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies } from './bring.js';
+import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies, MOST_ANSWER } from './bring.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
 import {
@@ -1830,9 +1830,15 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   }
   // The copying job answers here. Nobody is signed in: the answer is signed with CONVERT_SECRET.
   if (path === '/cloud/convert/done' && request.method === 'POST') {
-    if (Number(request.headers.get('Content-Length')) > 300000) return json({ error: 'too large' }, 413);   // before it is read (bring.js: MOST_ANSWER)
+    // The answer is read through a reader that stops at MOST_ANSWER bytes (index.js hands it over as
+    // `tools.readBody`), whatever the request says about its own length: a body sent in pieces has no
+    // Content-Length, and would otherwise be taken into memory whole before its size was looked at.
+    // The reader gives text. A signed answer is JSON in UTF-8, so its signature is the same over the text.
+    if (typeof tools.readBody !== 'function') return json({ error: 'not set up' }, 500);
+    const read = await tools.readBody(request, MOST_ANSWER);
+    if (read.tooLarge) return json({ error: 'too large' }, 413);
     const out = await copyAnswered(env, {
-      body: new Uint8Array(await request.arrayBuffer()), signature: request.headers.get('X-Kiln-Signature'), worker: url.origin, dashboard: dash,
+      body: read.text || '', signature: request.headers.get('X-Kiln-Signature'), worker: url.origin, dashboard: dash,
       trialDays: TRIAL_GRACE_DAYS, sign: appJwt, pkcs1: tools.pkcs1 || null, note: (subject, lines) => notifyOwner(env, subject, lines),
       // A copy that worked goes up on Kiln's hosting by itself, before the job has its answer.
       host: (site) => hostCopied(env, tools, { id: site.id, accountId: site.account_id, worker: url.origin }),

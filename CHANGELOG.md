@@ -222,6 +222,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sentence (`free_days`) that says so. The site can still be subscribed. The
   count is kept in a new table, `kept_starts`, added to
   `worker/migrations/0009_conversions.sql`.
+- **The address the copying job answers on reads no more than an answer can
+  be.** `POST /cloud/convert/done` looked only at the length a request gave
+  for itself, so a body sent in pieces with no length was taken into memory
+  whole before it was refused. It is now read through a reader that stops at
+  300,000 bytes and answers "too large" without waiting for the rest. An
+  answer of the right size is read and checked as before.
 
 ## [0.6.6] - 2026-11-13
 

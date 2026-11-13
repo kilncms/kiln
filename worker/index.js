@@ -168,7 +168,7 @@ async function routeRequest(request, env, ctx) {
       // `pkcs1`: a GitHub App's private key as GitHub hands it out, rewrapped for the signer (keeps.js, for the app that makes repositories).
       // `later`: work that goes on after the answer is sent (a copied site put on Kiln's hosting, bring.js). Absent where nothing can wait.
       const later = ctx && typeof ctx.waitUntil === 'function' ? (work) => ctx.waitUntil(work) : null;
-      const r = await handleCloud(request, env, url, path, { installationToken, editorSession: keptEditorSession, page: html, pkcs1: (pem) => bufToB64(pkcs1PemToPkcs8Der(pem)), later });
+      const r = await handleCloud(request, env, url, path, { installationToken, readBody: readBodyCapped, editorSession: keptEditorSession, page: html, pkcs1: (pem) => bufToB64(pkcs1PemToPkcs8Der(pem)), later });
       if (r) return await cors(env, request, r);
     }
 

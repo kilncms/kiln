@@ -794,3 +794,36 @@ test('the report a customer reads leaves out what only a person at a terminal co
   // a report with nothing of the kind is as it was
   assert.equal(withoutCommands('- Pages copied: 3.\n- Scripts taken out: 2.'), '- Pages copied: 3.\n- Scripts taken out: 2.');
 });
+
+// ─── The answer route reads no more than it takes (security review 0.6.7, L1) ─
+
+test('an answer sent in pieces with no length is given up on at 300,000 bytes, before the rest is read', { skip: d1Skip }, async () => {
+  const w = world();
+  const piece = new Uint8Array(50000).fill(0x61);
+  let sent = 0, stopped = false;
+  const body = new ReadableStream({
+    pull(c) { if (sent >= 200) { c.close(); return; } sent++; c.enqueue(piece); },   // 10,000,000 bytes if all of it were read
+    cancel() { stopped = true; },
+  }, { highWaterMark: 0 });
+  const req = new Request('https://worker.example/cloud/convert/done', { method: 'POST', headers: { 'X-Kiln-Signature': 'sha256=00' }, body, duplex: 'half' });
+  assert.equal(req.headers.get('Content-Length'), null, 'nothing says how long it is');
+  const res = await worker.fetch(req, w.env);
+  assert.deepEqual([res.status, await res.json()], [413, { error: 'too large' }]);
+  assert.equal(stopped, true, 'the rest was not waited for');
+  assert.ok(sent <= 8, `read ${sent} pieces of 50,000 bytes, and 7 are already too many`);
+});
+
+test('an answer of the right size is read the same whether or not it says its length, and its signature still holds over words that are not plain ASCII', { skip: d1Skip }, async () => {
+  const w = world();
+  const raw = JSON.stringify({ job: 'f'.repeat(32), state: 'done', report: 'Café Zoë: señal ✓' });
+  const sig = await signAnswer(SECRET, raw);
+  const bytes = new TextEncoder().encode(raw);
+  const inPieces = () => new ReadableStream({ start(c) { c.enqueue(bytes.slice(0, 31)); c.enqueue(bytes.slice(31)); c.close(); } });
+  for (const body of [raw, inPieces()]) {
+    const res = await worker.fetch(new Request('https://worker.example/cloud/convert/done', { method: 'POST', headers: { 'X-Kiln-Signature': sig }, body, duplex: 'half' }), w.env);
+    assert.deepEqual([res.status, await res.json()], [200, { ok: true, already: true }], 'signed right, and a job nobody knows changes nothing');
+  }
+  // a wrong signature is still refused
+  const bad = await worker.fetch(new Request('https://worker.example/cloud/convert/done', { method: 'POST', headers: { 'X-Kiln-Signature': sig }, body: raw + ' ' }), w.env);
+  assert.equal(bad.status, 401);
+});
