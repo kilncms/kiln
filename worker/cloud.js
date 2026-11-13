@@ -24,6 +24,7 @@
  *   GET  /cloud/sites/domain     → where a hosted site's own domain stands, or a look at a domain that changes nothing (domain.js)
  *   POST /cloud/sites/domain     → set the domain up, ask whether its name servers have changed, or stop a set-up that is not live
  *   GET  /cloud/sites/domain/records → the domain's records as a file, for an owner who moves the domain away
+ *   GET  /cloud/sites/files?site= → GitHub's short-lived link to a zip of a kept site's files, once the site has been paid for
  *   GET  /cloud/portal?site=     → Lemon Squeezy customer-portal link
  *   POST /cloud/webhook/ls       → Lemon Squeezy webhook (signed) → set site status
  *   GET  /admin/cloud/overview   → (owner only) accounts, sites (with the editor build each runs), MRR
@@ -44,7 +45,7 @@ import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } fro
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { hostingOn, hostingSentence, membersGateOn, previewPattern } from './hosting.js';
-import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence } from './keeps.js';
+import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence, keptFilesLink, keptFilesName } from './keeps.js';
 import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies, MOST_ANSWER } from './bring.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
@@ -466,7 +467,11 @@ const GOOGLE_ADDRESS = 'Kiln writes to the address you signed in with. To use an
 // POST /cloud/sites/editor: what a person reads when the editor of a site Kiln keeps the files of cannot be opened.
 const EDITOR_NOT_UP = "Your site is not up yet. Press Put it on Kiln's hosting on the site's row first, then open the editor.";
 const EDITOR_PLAN_ENDED = "Editing is switched off for this site, so its editor cannot be opened. Subscribe on the site's row, then open the editor again.";
-const EDITOR_NOT_KEPT = "This site's files are in a GitHub repository of your own, so its editor opens at the site. Go to your site's address with /kiln at the end, and sign in with GitHub there.";
+// GET /cloud/sites/files: what a person reads when the site's files cannot be handed over.
+const FILES_NOT_KEPT = "This site's files are in a GitHub repository of your own, so there is nothing to download here. Open the repository on GitHub to get them.";
+const FILES_PAID_FIRST = "You can download this site's files once the site has been paid for. Subscribe on the site's row first.";
+const FILES_NOT_NOW = 'GitHub did not answer just now, so Kiln could not get your files ready. Nothing was changed. Try again in a few minutes.';
+const EDITOR_NOT_KEPT ="This site's files are in a GitHub repository of your own, so its editor opens at the site. Go to your site's address with /kiln at the end, and sign in with GitHub there.";
 const EDITOR_NOT_OPENED = 'Kiln could not open the editor just now. Please try again in a few minutes.';
 // GET /cloud/sites/check: a site Kiln keeps the files of has no other host, so until it is on Kiln's hosting there is no address to look at.
 const CHECK_KEPT_NOT_UP = "Your site is not up yet. Press Put it on Kiln's hosting on the site's row, then check again.";
@@ -2704,6 +2709,33 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const opened = await openKeptEditor(env, tools, { site, accountId: sess.account_id, who: () => editorPerson(env, sess) });
     if (!opened.url) return json({ error: opened.error, code: opened.code }, opened.status);
     return json({ ok: true, url: opened.url });
+  // The files of a site Kiln keeps, for an owner who takes the site
+  // elsewhere: the answer is GitHub's own short-lived link to one zip of the
+  // repository, and a name for the file. With editing switched off too. Only
+  // once the site has been paid for, where a site can be paid for at all: a
+  // free trial is not a way to carry a ready-made site off. The link is told
+  // to the dashboard alone and is never logged; the operator hears which
+  // site's files were downloaded.
+  if (path === '/cloud/sites/files' && request.method === 'GET') {
+    const asked = await ownedSite(request, env, url, sess, {}, { needToken: false, needAccess: false });
+    if (asked.response) return asked.response;
+    const { site } = asked;
+    const kept = await keptSite(env, site.id);
+    if (!kept || kept.account_id !== sess.account_id) return json({ error: FILES_NOT_KEPT, code: 'not_kept' }, 403);
+    const more = await env.kiln_cloud.prepare('SELECT name, ls_subscription_id FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).first().catch(() => null);
+    if (lsConfigured(env) && !more?.ls_subscription_id) return json({ error: FILES_PAID_FIRST, code: 'paid_first' }, 403);
+    const link = await keptFilesLink(env, { repo: site.repo, sign: appJwt, pkcs1: tools.pkcs1 || null });
+    if (!link.url) {
+      console.warn(JSON.stringify({ evt: 'kept_files_failed', repo: site.repo, detail: String(link.error || '').slice(0, 300) }));
+      return json({ error: FILES_NOT_NOW, code: 'github' }, 502);
+    }
+    await notifyOwner(env, `Kiln: the files of ${site.repo} were downloaded`, [
+      `By: ${signedInAs(sess)}`, `Site: ${more?.name ? `${more.name}, ` : ''}${site.origin}`,
+      'They asked for the zip of the repository from the dashboard. Nothing was changed.',
+    ]);
+    return json({ ok: true, url: link.url, name: keptFilesName({ name: more?.name, repo: site.repo }) }, 200, { 'Cache-Control': 'no-store' });
+  }
+
   }
 
   if (path === '/cloud/sites/remove' && request.method === 'POST') {

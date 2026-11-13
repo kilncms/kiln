@@ -202,6 +202,42 @@ export async function keptNames(env, accountId) {
   } catch { return {}; }
 }
 
+/**
+ * GitHub's own link to one zip of everything in a kept site's repository, at
+ * its default branch, for an owner who takes the site's files away. GitHub
+ * answers the request for the zip by sending the asker on to the link, and
+ * that is not followed: where it points is the link. The link works for a few
+ * minutes for anyone who holds it, so it is never logged.
+ * Never throws. Answers { url }, or { error } with what went wrong for the log.
+ */
+export async function keptFilesLink(env, { repo, sign, pkcs1 = null } = {}) {
+  const once = async () => {
+    const token = await keepToken(env, { sign, pkcs1 });
+    const about = await gh(token, 'GET', `/repos/${repo}`);
+    if (!about.ok) return { status: about.status, error: `GET /repos/${repo} answered ${about.status}` };
+    const branch = (await about.json().catch(() => ({})))?.default_branch || 'main';
+    const res = await fetch(`https://api.github.com/repos/${repo}/zipball/${refPath(branch)}`, {
+      method: 'GET', redirect: 'manual',
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'kiln-cloud' },
+    });
+    const to = res.headers.get('Location') || '';
+    if (res.status >= 300 && res.status < 400 && /^https:\/\//i.test(to)) return { url: to };
+    return { status: res.status, error: `GET /repos/${repo}/zipball/${branch} answered ${res.status} and gave no link` };
+  };
+  try {
+    let out = await once();
+    if (out.status === 401) { await forgetKeepToken(env); out = await once(); }   // the token Kiln held had stopped working early
+    return out.url ? { url: out.url } : { error: out.error };
+  } catch (e) { return { error: e instanceof KeepError ? `${e.code}: ${e.detail}` : String((e && e.message) || e).slice(0, 200) }; }
+}
+
+/** The name of the file a kept site's files are downloaded as: what the owner called the site, or else the repository's name. */
+export function keptFilesName({ name = '', repo = '' } = {}) {
+  // Nothing a computer refuses in a file's name, and no dots at either end.
+  const clean = (s) => String(s || '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+|\.+$/g, '').trim().slice(0, 80).trim();
+  return `${clean(name) || clean(String(repo).split('/').pop()) || 'site'}.zip`;
+}
+
 /** What the operator is told when a kept site is removed. Its repository is not touched. */
 export function keptRemovedNote({ repo, by = '', now = Date.now() }) {
   const day = new Date(now + KEPT_REPO_DAYS * 86400 * 1000).toISOString().slice(0, 10);
