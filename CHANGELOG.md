@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-12
+
 ### Added
 
 - **The service can set a hosted site up on its owner's own domain.** This is
