@@ -10,6 +10,28 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A person with no GitHub account can start a site, and Kiln keeps its
+  files.** The service now answers for it, though the dashboard has no button
+  yet. `POST /cloud/sites/start` with a name ("Oak Bakery") makes a private
+  repository in a GitHub organization of Kiln's own, fills it with Kiln's
+  starter site, writes the site's own settings file, and registers it to the
+  account that asked, on the free trial every new site gets and with the
+  address Kiln's hosting will give it. The site belongs to that account and to
+  nobody else, however the account signs in, and GitHub is never asked who owns
+  it. An account may have one such site that is not paid for at a time, and the
+  whole service starts at most 30 an hour. Two presses at once make one site.
+  If something fails after the repository was made, the person is told in one
+  sentence, no site is left in their list, and the operator is told the
+  repository's name. Removing such a site works as for any site, and the
+  operator is told that its repository may be removed by hand after 30 days.
+  Nothing in the service deletes, renames or hands over a repository. The
+  ordinary way to add a site refuses a repository in that organization.
+  `/cloud/me` and `/healthz` say `keeps` when the service can do this, and
+  `/cloud/me` says `kept` on each such site. It is switched on with three
+  settings for a second GitHub App that may make repositories there
+  (`KEEP_ORG`, `KEEP_APP_ID`, `KEEP_APP_KEY`, the key as GitHub hands it out),
+  and needs Kiln's hosting; `KEEP_STARTER` names another starter site than
+  `kilncms/kiln-demo`. Without them nothing changes.
 - **A person with no GitHub account can have a Kiln account, and sign in to
   the dashboard with Google.** The service now answers for it, though the
   dashboard has no button yet. `GET /cloud/login/google` sends the person to
