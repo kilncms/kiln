@@ -12,7 +12,7 @@ import { withFetch } from './worker-harness.js';
 import { fakeCloudflare, fakeLookups } from './cloudflare-fake.js';
 import { fakeD1, d1Skip } from './d1-fake.js';
 import {
-  cleanDomain, lookUp, whatStops, sellerHelp, prepareDomain, domainStatus, siteAnswers, detachDomain, removeWaitingDomain, exportRecords,
+  cleanDomain, lookUp, whatStops, sellerHelp, prepareDomain, domainStatus, siteAnswers, certificateReady, detachDomain, removeWaitingDomain, exportRecords,
   domainSentence, publicDomain, domainRow, domainForName, saveDomain, recordKind, kindWords, txtWords, domainsOn, DomainError, LIMITS,
   redirectToOne, alwaysHttps, publicLook, forgetDomain, domainsForAccount, domainsReady,
 } from '../worker/domain.js';
@@ -467,6 +467,24 @@ test('domain: the site gets one address, with www sent on to the bare name or th
   });
   await assert.rejects(() => redirectToOne({}, { zoneId: 'z', name: N }), code('not_set_up'));
   await assert.rejects(() => alwaysHttps({}, { zoneId: 'z' }), code('not_set_up'));
+});
+
+test('domain: the certificate is ready only when Cloudflare calls one active for the bare name and for www', async () => {
+  const w = world();
+  await withFetch(w.cf.handler, async () => {
+    const { zoneId } = await prepareDomain(w.env, { name: N, worker: WORKER, look: await look() });
+    const zone = w.cf.zoneOf(N);
+    // The stand-in answers what the real one does: the pack that serves and a spare.
+    assert.equal(await certificateReady(w.env, { zoneId, name: N }), true);
+    for (const notYet of ['pending_validation', 'initializing', 'pending_issuance', 'pending_deployment', 'backup_issued', 'validation_timed_out']) {
+      zone.certificate = notYet;
+      assert.equal(await certificateReady(w.env, { zoneId, name: N }), false, notYet);
+    }
+    zone.certificate = 'active';
+    assert.equal(await certificateReady(w.env, { zoneId, name: N }), true);
+    await assert.rejects(certificateReady(w.env, { zoneId: 'no-such-zone', name: N }), (e) => e instanceof DomainError);
+  });
+  await assert.rejects(certificateReady({}, { zoneId: 'z', name: N }), code('not_set_up'));
 });
 
 test('domain: the site answers at its domain only with a 200, after three redirects at most that stay on the name or its www', async () => {

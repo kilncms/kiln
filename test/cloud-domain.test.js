@@ -750,8 +750,19 @@ test('own domain: once the name servers have changed and the site answers there,
     assert.equal(w.mails().length, 1, 'only the email with the two name servers has gone');
     assert.equal((w.cf.zoneOf(N).redirects || []).length, 0);
 
-    // It answers there: the domain is live.
+    // It answers this service, but its certificate is still being issued: a
+    // browser would get a failed secure connection, so it is not live yet.
     w.answers(N);
+    w.cf.zoneOf(N).certificate = 'pending_validation';
+    const waiting = await hush(async () => assert.deepEqual(await took(w.env, row, 5000), { live: false }));
+    assert.match(waiting.join('\n'), /domain_certificate_not_ready/);
+    assert.equal((await domainRow(w.env, 'site1')).state, 'waiting');
+    assert.equal(await originOf(w.env), before);
+    assert.equal(w.mails().length, 1, 'nobody is told it is live');
+    assert.equal(w.cf.zoneOf(N).settings.always_use_https, undefined, 'and nobody is sent to https before it works');
+
+    // The certificate is issued: the domain is live.
+    w.cf.zoneOf(N).certificate = 'active';
     await hush(async () => assert.deepEqual(await took(w.env, row, 5000), { live: true }));
     const live = await domainRow(w.env, 'site1');
     assert.deepEqual({ state: live.state, live_at: live.live_at, checked_at: live.checked_at }, { state: 'live', live_at: 5000, checked_at: 5000 });

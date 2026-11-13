@@ -44,7 +44,7 @@ import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHostin
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
 import {
   domainsOn, domainsReady, cleanDomain, lookUp, whatStops, sellerHelp, prepareDomain, domainStatus, removeWaitingDomain, exportRecords,
-  siteAnswers, redirectToOne, alwaysHttps, LIMITS as DOMAIN_LIMITS,
+  siteAnswers, certificateReady, redirectToOne, alwaysHttps, LIMITS as DOMAIN_LIMITS,
   domainSentence, publicDomain, publicLook, domainRow, domainForName, domainsForAccount, saveDomain, forgetDomain, DomainError,
 } from './domain.js';
 
@@ -675,6 +675,16 @@ export async function domainTookHold(env, { site, row, now = Date.now() } = {}) 
     // The button and the five-minute job can both get here: what the other one finished is not done twice.
     const fresh = await domainRow(env, s.id);
     if (fresh && fresh.state === 'live' && fresh.zone_id === row.zone_id) return { live: true };
+    // The certificate first: this service can reach the site inside
+    // Cloudflare's network before a browser can (domain.js certificateReady),
+    // so the site answering here does not mean it answers a visitor.
+    let secure = false;
+    try { secure = await certificateReady(env, { zoneId: row.zone_id, name }); }
+    catch (e) { console.warn(JSON.stringify({ evt: 'domain_certificate_not_asked', repo: s.repo, name, detail: String(e?.detail || e?.message || e).slice(0, 200) })); }
+    if (!secure) {
+      console.log(JSON.stringify({ evt: 'domain_certificate_not_ready', repo: s.repo, name }));
+      return { live };
+    }
     if (!(await siteAnswers(name))) {
       console.log(JSON.stringify({ evt: 'domain_not_answering_yet', repo: s.repo, name }));
       return { live };

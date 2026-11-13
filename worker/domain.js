@@ -537,6 +537,25 @@ export async function domainStatus(env, { zoneId, recheck = false }) {
 }
 
 /**
+ * True when Cloudflare has a working certificate for the bare name and for
+ * `www`. A zone that has just taken hold answers plain http within seconds,
+ * and a request from this service reaches the site inside Cloudflare's own
+ * network with no certificate at all, so `siteAnswers` says yes at once. A
+ * visitor's browser gets a failed secure connection until the certificate is
+ * issued, which takes some minutes. Seen on the staging service, 2026-11-12:
+ * a domain was marked live and https did not answer a browser for minutes
+ * after. So "live" waits for this as well. Only a certificate Cloudflare
+ * calls `active` counts: one that is still being checked does not, and
+ * neither does the spare it keeps in reserve.
+ */
+export async function certificateReady(env, { zoneId, name }) {
+  need(env);
+  const packs = (await cloudflare(env, 'GET', `/zones/${zoneId}/ssl/certificate_packs?status=all`)).result || [];
+  const covers = (host, h) => h === host || (String(h).startsWith('*.') && host.endsWith(String(h).slice(1)) && host.split('.').length === String(h).split('.').length);
+  return [name, `www.${name}`].every(host => packs.some(p => p && p.status === 'active' && (p.hosts || []).some(h => covers(host, bare(h)))));
+}
+
+/**
  * True when https://<name>/ answers 200. A redirect is followed three times at
  * most, and only while it stays on the name or its `www`. The whole check has
  * ten seconds. Never throws.

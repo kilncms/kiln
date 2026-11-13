@@ -41,6 +41,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   start again. When the owner points a live domain's name servers elsewhere,
   the site goes back to its temporary address, nothing is deleted, and the
   owner gets an email saying how to bring the domain back.
+  A domain is called live only once Cloudflare has issued its certificate,
+  for the bare name and for `www`. The first trial on the staging service
+  showed why: the service reaches the site inside Cloudflare's own network,
+  where no certificate is needed, so the site "answered" minutes before a
+  visitor's browser could open it (`certificateReady` in `worker/domain.js`).
+
 - **Kiln can tell where a domain was bought when it asks from the live
   service.** The registry refused the question because it did not say who
   was asking. It says so now.

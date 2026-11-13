@@ -197,6 +197,13 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
           z.batches++;
           return ok(out);
         }
+        if (rest.startsWith('/ssl/certificate_packs') && method === 'GET') {
+          // What the real one answers: the pack that serves, and the spare it keeps (never 'active').
+          return ok([
+            { type: 'universal', status: z.certificate || 'active', hosts: [z.name, `*.${z.name}`], certificate_authority: 'lets_encrypt' },
+            { type: 'universal', status: 'backup_issued', hosts: [z.name, `*.${z.name}`], certificate_authority: 'google' },
+          ]);
+        }
         if (rest === '/settings/always_use_https' && method === 'PATCH') {
           z.settings.always_use_https = JSON.parse(init.body).value;
           return ok({ id: 'always_use_https', value: z.settings.always_use_https });
