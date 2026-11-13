@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-12
+
 ### Fixed
 
 - **Find & replace changes only the words a visitor reads or hears.** The tool
