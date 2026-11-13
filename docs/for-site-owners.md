@@ -229,10 +229,10 @@ font a setting had when Theme was opened stays in its list, and choosing it writ
 original line back exactly. Every other face comes with a fallback of its own kind.
 
 Changes preview live on the page as you drag, and a sentence above the buttons says
-what Apply is about to change ("This changes the mustard colour and the heading font
+what Apply is about to change ("This changes the mustard color and the heading font
 on every page."). **Apply** commits them to the
 stylesheet file itself — one commit per touched stylesheet, byte-exact around the
-edited values, with a message in the same words ("Theme: mustard colour, heading font
+edited values, with a message in the same words ("Theme: mustard color, heading font
 (via Kiln)") — and the status line reports when the live site has picked it up
 ("The new theme is live ✓").
 Because the stylesheet is the source of truth, your CSS *is* the brand kit: nothing
