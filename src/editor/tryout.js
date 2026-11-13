@@ -22,7 +22,7 @@ const REAL = {
   people: ['Nobody is added in the demo', 'the people you add here sign in with Google and edit only what you let them'],
   ai: ['Nothing here in the demo', 'this rewrites, shortens or translates the text you are editing, using the site owner’s own AI key'],
   alt: ['Nothing here in the demo', 'this writes the picture’s description for you, using the site owner’s own AI key'],
-  theme: ['Nothing is saved in the demo', 'Apply puts these colours and sizes on every page'],
+  theme: ['Nothing is saved in the demo', 'Apply puts these colors and sizes on every page'],
   blocks: ['Nothing to add in the demo', 'this lists the ready-made sections the site’s owner has approved'],
 };
 

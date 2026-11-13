@@ -184,7 +184,7 @@ test('Theme names: every setting in the starter\'s style sheet has a name a shop
     '--brine': 'Brine',
     '--dill': 'Dill',
     '--mustard': 'Mustard',
-    '--ink': 'Ink colour',
+    '--ink': 'Ink color',
     '--edge': 'Edge',
     '--cream-2': 'Cream, second shade',
     '--brine-ink': 'Brine ink',
@@ -219,10 +219,10 @@ test('Theme names: what a setting is for is told from its name, and an unknown n
   assert.equal(tokenName('--brand-ink', 'color'), 'Brand ink');
   assert.equal(tokenName('--gray-100', 'color'), 'Gray, shade 100');
   assert.equal(tokenName('--bg', 'color'), 'Background');
-  // the same word means something else in another group: a colour called "body" is not a font
+  // the same word means something else in another group: a color called "body" is not a font
   assert.equal(tokenName('--body', 'color'), 'Body');
   // in the middle of a sentence
-  assert.equal(tokenPhrase('--mustard', 'color'), 'the mustard colour');
+  assert.equal(tokenPhrase('--mustard', 'color'), 'the mustard color');
   assert.equal(tokenPhrase('--cream-2', 'color'), 'the second shade of cream');
   assert.equal(tokenPhrase('--display', 'font'), 'the heading font');
   assert.equal(tokenPhrase('--r-sm', 'size'), 'the small corner roundness');
@@ -298,7 +298,7 @@ test('Theme fonts: no choice pairs a face with a fallback of the wrong kind', ()
   assert.deepEqual(fontChoices(DISPLAY, { faces: ['Fraunces'] }), [{ value: DISPLAY, label: 'Fraunces (as it is now)' }]);
 });
 
-test('Theme: a value that is not a colour, a size or a font shows "Set in the style sheet" and nothing to type in', () => {
+test('Theme: a value that is not a color, a size or a font shows "Set in the style sheet" and nothing to type in', () => {
   const css = ':root{--shadow-sm: 0 1px 2px rgba(42, 39, 34, .06), 0 4px 14px rgba(42, 39, 34, .05);'
     + '--glow: rgba(0, 0, 0, .2) 0 1px 2px;--fade: linear-gradient(90deg, #000, #fff);'
     + '--ease: cubic-bezier(.2, .8, .2, 1);--gutter: clamp(20px, 5vw, 56px);--ink: rgba(42, 39, 34, .9);--r-sm: 8px}';
@@ -315,7 +315,7 @@ test('Theme: a value that is not a colour, a size or a font shows "Set in the st
   }
   // the starter's two shadows and its gutter are among them
   for (const name of ['--shadow-sm', '--shadow-md', '--gutter']) assert.equal(setting(name).kind, 'other', name);
-  // a colour and a size still get their box
+  // a color and a size still get their box
   assert.match(controlHtml(tokens[5], tokens[5].value, [], esc), /<input type="text" value="rgba\(42, 39, 34, \.9\)">/);
   assert.equal(controlHtml(tokens[6], '8px', [], esc), '<input type="text" value="8px">');
   assert.equal(controlHtml(setting('--mustard'), '#e0a72e', [], esc), '<input type="color" value="#e0a72e">');
@@ -323,13 +323,13 @@ test('Theme: a value that is not a colour, a size or a font shows "Set in the st
 
 test('Theme: before Apply publishes, one sentence says what will change', () => {
   const phrases = ['--mustard', '--display', '--r-sm', '--maxw'].map(n => tokenPhrase(n, setting(n).kind));
-  assert.equal(whatChanges(phrases.slice(0, 1)), 'This changes the mustard colour on every page.');
-  assert.equal(whatChanges(phrases.slice(0, 2)), 'This changes the mustard colour and the heading font on every page.');
-  assert.equal(whatChanges(phrases.slice(0, 3)), 'This changes the mustard colour, the heading font and 1 more on every page.');
-  assert.equal(whatChanges(phrases), 'This changes the mustard colour, the heading font and 2 more on every page.');
+  assert.equal(whatChanges(phrases.slice(0, 1)), 'This changes the mustard color on every page.');
+  assert.equal(whatChanges(phrases.slice(0, 2)), 'This changes the mustard color and the heading font on every page.');
+  assert.equal(whatChanges(phrases.slice(0, 3)), 'This changes the mustard color, the heading font and 1 more on every page.');
+  assert.equal(whatChanges(phrases), 'This changes the mustard color, the heading font and 2 more on every page.');
   assert.equal(whatChanges([]), '');
   // nothing is saved in the demo, and the sentence does not say it is
-  assert.equal(whatChanges(phrases.slice(0, 1), { demo: true }), 'On a real site, this changes the mustard colour on every page.');
+  assert.equal(whatChanges(phrases.slice(0, 1), { demo: true }), 'On a real site, this changes the mustard color on every page.');
   // it sits above the buttons and is written whenever a choice is made or taken back
   assert.match(themeSrc, /<p class="kiln-th-what" id="kiln-th-what"><\/p>\n<div class="kiln-modal-actions">/);
   assert.match(themeSrc, /what\.textContent = whatChanges\(/);
@@ -337,9 +337,9 @@ test('Theme: before Apply publishes, one sentence says what will change', () => 
 
 test('Theme: the history entry and the status line say what changed in plain words', () => {
   const phrases = ['--mustard', '--display', '--r-sm', '--maxw'].map(n => tokenPhrase(n, setting(n).kind));
-  assert.equal(themeCommitMessage(phrases.slice(0, 1)), 'Theme: mustard colour (via Kiln)');
-  assert.equal(themeCommitMessage(phrases.slice(0, 2)), 'Theme: mustard colour, heading font (via Kiln)');
-  assert.equal(themeCommitMessage(phrases), 'Theme: mustard colour, heading font and 2 more (via Kiln)');
+  assert.equal(themeCommitMessage(phrases.slice(0, 1)), 'Theme: mustard color (via Kiln)');
+  assert.equal(themeCommitMessage(phrases.slice(0, 2)), 'Theme: mustard color, heading font (via Kiln)');
+  assert.equal(themeCommitMessage(phrases), 'Theme: mustard color, heading font and 2 more (via Kiln)');
   assert.equal(themeCommitMessage([tokenPhrase('--maxw', 'size')]), 'Theme: how wide the page gets (via Kiln)');
   assert.match(themeSrc, /themeCommitMessage\(edits\.map\(e => e\.phrase\)\)/);
   // nobody is told about tokens, and a file is not "committed" to them

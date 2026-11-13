@@ -39,7 +39,7 @@ function classifyValue(value) {
   // References and composites are edited at their source token / in real CSS.
   if (lower.startsWith('var(') || lower.includes('gradient(') || lower.includes('url(')) return 'other';
   if (/^#[0-9a-f]+$/.test(lower) && [4, 5, 7, 9].includes(lower.length)) return 'color';
-  // One colour and nothing after it: a shadow's long value can start with a colour too.
+  // One color and nothing after it: a shadow's long value can start with a color too.
   if (/^(rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\([^()]*\)$/.test(lower)) return 'color';
   if (NAMED_COLORS.has(lower)) return 'color';
   // Fonts: a quoted family name, or a stack ending in a generic family.
@@ -250,7 +250,7 @@ export const THEME_LIVE = 'The new theme is live ✓';
 
 /**
  * The sentence above the buttons, before anything is published: "This changes
- * the mustard colour and the heading font on every page." `phrases` are the
+ * the mustard color and the heading font on every page." `phrases` are the
  * changed settings as names.js tokenPhrase says them. Two are named and the
  * rest are counted. In the demo nothing is saved, and the sentence says so.
  */
@@ -261,7 +261,7 @@ export function whatChanges(phrases, { demo = false } = {}) {
   return `${demo ? 'On a real site, this' : 'This'} changes ${list} on every page.`;
 }
 
-/** The history entry for one style sheet's change: "Theme: mustard colour, heading font (via Kiln)". */
+/** The history entry for one style sheet's change: "Theme: mustard color, heading font (via Kiln)". */
 export function themeCommitMessage(phrases) {
   const names = phrases.map(p => String(p).replace(/^the /, ''));
   const more = names.length - 2;
@@ -336,7 +336,7 @@ function winningTokens(sheets) {
 
 // ─── Panel ───────────────────────────────────────────────────────────────────
 
-const KINDS = [['color', 'Colours'], ['font', 'Fonts'], ['size', 'Sizes'], ['other', 'Other']];
+const KINDS = [['color', 'Colors'], ['font', 'Fonts'], ['size', 'Sizes'], ['other', 'Other']];
 
 /** Build an element; `text` goes through textContent (CSS values stay inert). */
 function el(tag, cls, text) {
@@ -366,7 +366,7 @@ function loadedFontFamilies() {
 /**
  * The control one setting gets, as HTML. `cur` is the value to show (a choice
  * not applied yet, or the style sheet's own); `choices` are a font's, from
- * fontChoices. A value that is not one colour, one size or a font (a shadow, a
+ * fontChoices. A value that is not one color, one size or a font (a shadow, a
  * gradient, a curve) gets words and nothing to type in. A font's raw text is
  * never put on the page: its choice is read back by its place in the list.
  * Pure; exported for tests.
@@ -391,7 +391,7 @@ export function controlHtml(token, cur, choices, esc) {
 export async function openThemePanel() {
   const { state, cfg, mode, modal, setStatus, escapeHtml, journalAdd, djb2 } = deps;
   const m = modal(`<h3>Theme</h3>
-<p class="kiln-dim">The site’s colours and type sizes. A change shows on this page at once;
+<p class="kiln-dim">The site’s colors and type sizes. A change shows on this page at once;
 <strong>Apply</strong> puts it on every page.${mode === 'admin' ? ' <small>For the owner: these are the custom properties on <code>:root</code> in the site’s stylesheet.</small>' : ''}</p>
 <div id="kiln-th-body"><p class="kiln-dim">Reading stylesheets…</p></div>
 <p class="kiln-th-what" id="kiln-th-what"></p>
@@ -441,7 +441,7 @@ export async function openThemePanel() {
     const tokens = [...winningTokens(sheets).values()];
     body.textContent = '';
     if (!tokens.length && mode !== 'admin') {
-      body.innerHTML = '<p class="kiln-dim">This site’s colours and type sizes are not set up to be changed here yet. The site’s owner can set that up.</p>';
+      body.innerHTML = '<p class="kiln-dim">This site’s colors and type sizes are not set up to be changed here yet. The site’s owner can set that up.</p>';
       applyBtn.disabled = true;
       revertBtn.style.display = 'none';
       return;

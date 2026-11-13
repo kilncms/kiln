@@ -47,7 +47,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "Corner roundness, small", "Widest the page gets", "Space at the page's
   edges", "Shadow, small", "Cream, second shade", "Heading font", "Text font".
   A name Kiln does not know keeps its own words ("Brand ink"), and a name of
-  two or three letters is given the word for what it is ("Ink colour"). The
+  two or three letters is given the word for what it is ("Ink color"). The
   owner still sees the style sheet's own name in small print under it.
 - **A font is shown by its name, and the one the site had can always be put
   back.** The list of fonts showed raw CSS and offered "Inter, serif", a
@@ -62,11 +62,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A value Theme cannot change safely shows "Set in the style sheet".** A
   shadow's long value, a gradient or a curve was printed raw beside its name.
   It now shows those words and nothing to type in. A shadow that starts with
-  a colour is no longer taken for a colour.
+  a color is no longer taken for a color.
 - **Theme says what Apply will change before it publishes.** A sentence above
-  the buttons names what is about to change: "This changes the mustard colour
+  the buttons names what is about to change: "This changes the mustard color
   and the heading font on every page." Two settings are named and the rest are
-  counted. The history entry says the same ("Theme: mustard colour, heading
+  counted. The history entry says the same ("Theme: mustard color, heading
   font (via Kiln)") where it said "Theme: 2 tokens". The dialog says "Saved 2
   changes", and the status line ends on "The new theme is live ✓". It no
   longer offers "View site" for a theme change, which opened the style sheet.
@@ -715,7 +715,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   number of things the publish sheet lists: one change is one.
 - **Text pasted into a paragraph or a heading can no longer break the page.**
   Text copied from a web page went into a paragraph with its heading, its
-  own paragraphs, its colours, its classes and its pictures. A browser ends a
+  own paragraphs, its colors, its classes and its pictures. A browser ends a
   paragraph at the first heading inside it, so on the site the paragraph came
   out empty and too small to click, and the pasted pieces sat outside
   anything the editor could reach. Now a paste into a part that is one
@@ -2002,7 +2002,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   show a readable name made from the field's name ("Hero headline", "Hero
   picture"; the stored name is the label's title). Search & jump no longer
   matches a scatter of letters ("history" found "hero img"). Theme says "The
-  site's colours and type sizes" and names its settings in words, with the
+  site's colors and type sizes" and names its settings in words, with the
   stylesheet's names as small print for the owner.
 - **On a phone** the first tip lay on the page's own buttons, the pencil on
   the last items of the menu, and a block's opened buttons on the next block's

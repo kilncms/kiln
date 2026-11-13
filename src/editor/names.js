@@ -106,7 +106,7 @@ function setting(name, kind) {
   if (!known && words.length > 1 && (SIZE[last] || /^\d+$/.test(last))) cut = words.length - 1;
   const tail = words.slice(cut);
   const base = known ? known[1] : words.slice(0, cut).map(w => WORDS[w] || w).join(' ');
-  const thing = known ? known[2] : `the ${base}${kind === 'color' && !/colou?r/.test(base) ? ' colour' : ''}`;
+  const thing = known ? known[2] : `the ${base}${kind === 'color' && !/colou?r/.test(base) ? ' color' : ''}`;
 
   let label = capital(base);
   let phrase = thing;
@@ -126,13 +126,13 @@ function setting(name, kind) {
     phrase = thing.startsWith('the ') ? `the ${which} ${thing.slice(4)}` : `${thing}, ${which}`;
   }
   // A name of two or three letters says too little alone: it is given the word for what it is.
-  if (label.replace(/[^a-z]/gi, '').length < 4) label += kind === 'color' ? ' colour' : kind === 'size' ? ' size' : ' setting';
+  if (label.replace(/[^a-z]/gi, '').length < 4) label += kind === 'color' ? ' color' : kind === 'size' ? ' size' : ' setting';
   return { label, phrase };
 }
 
 /**
  * A theme setting's name as a shop owner reads it: "--r-sm" → "Corner roundness, small",
- * "--maxw" → "Widest the page gets", "--cream-2" under Colours → "Cream, second shade",
+ * "--maxw" → "Widest the page gets", "--cream-2" under Colors → "Cream, second shade",
  * "--display" under Fonts → "Heading font", "--color-ink-soft" → "Ink soft". A name Kiln
  * does not know is shown with its dashes as spaces: "--brand-ink" → "Brand ink".
  * `kind` is the group it is listed in ('color', 'font', 'size', 'other').
@@ -141,7 +141,7 @@ export function tokenName(name, kind = 'other') {
   return setting(name, kind).label;
 }
 
-/** The same setting in the middle of a sentence: "the mustard colour", "the heading font", "how wide the page gets". */
+/** The same setting in the middle of a sentence: "the mustard color", "the heading font", "how wide the page gets". */
 export function tokenPhrase(name, kind = 'other') {
   return setting(name, kind).phrase;
 }

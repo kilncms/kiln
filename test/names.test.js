@@ -59,7 +59,7 @@ test('names: in the middle of a sentence the name is in small letters, and "a se
 test('names: a theme setting is named without the stylesheet\'s dashes, or the word its group already says', () => {
   assert.equal(tokenName('--color-peri', 'color'), 'Peri');
   assert.equal(tokenName('--color-ink-soft', 'color'), 'Ink soft');
-  assert.equal(tokenName('--colour-accent', 'color'), 'Accent');
+  assert.equal(tokenName('--color-accent', 'color'), 'Accent');
   // a font is named for what it is used for (0.6.5): "Sans" and "Display" said nothing to a shop owner
   assert.equal(tokenName('--font-sans', 'font'), 'Text font');
   assert.equal(tokenName('--font-display', 'font'), 'Heading font');
@@ -105,7 +105,7 @@ test('names: every place the editor showed a raw field name shows the readable o
 test('names: Theme speaks to an editor, and shows the stylesheet\'s names to the owner only', () => {
   const theme = read('theme.js');
   assert.equal(/CSS custom properties\./.test(theme.slice(theme.indexOf('export async function openThemePanel('))), false, 'the editor is told about CSS custom properties');
-  assert.match(theme, /The site’s colours and type sizes\./);
+  assert.match(theme, /The site’s colors and type sizes\./);
   assert.match(theme, /tokenName\(token\.name, token\.kind\)/);
   // the raw name is the row's title for anyone, and small print for the owner
   assert.match(theme, /title="\$\{escapeHtml\(token\.name\)\}"/);

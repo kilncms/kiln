@@ -10046,7 +10046,7 @@ function injectStyles() {
   style.setAttribute('data-kiln', '1');
   style.textContent = `
 /* The editor's dark surfaces (menu, toolbars, search, bars, the line of words)
-   are all this colour. It was see-through enough to need the blur behind it:
+   are all this color. It was see-through enough to need the blur behind it:
    where a browser does not draw the blur, the page's own words showed sharply
    through a menu. It is solid enough to read on its own now, and the blur,
    where it is drawn, only softens the little that is left. */
