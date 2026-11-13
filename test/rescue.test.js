@@ -949,3 +949,39 @@ test('shownLine: says how many parts were made visible, where, and what to check
   assert.ok(/Open those pages and check/.test(many));
   assert.ok(!many.includes('—') && !one.includes('—'));
 });
+
+// ─── a shop's layout without the shop's scripts ─────────────────────────────
+import { shopChangesOf, shopChangeLines } from '../cli/rescue.mjs';
+
+test('cleanPage: a WooCommerce page gets the class its script would have set, so the shop keeps its layout', () => {
+  const shop = '<html><head></head><body class="archive woocommerce woocommerce-page woocommerce-no-js ast-desktop columns-3"><ul class="products"><li class="product">Shoes</li></ul><script>document.body.className = document.body.className.replace(/woocommerce-no-js/, "woocommerce-js");</script></body></html>';
+  const c = cleanPage(shop, { baseUrl: SITE + '/store/' });
+  assert.ok(c.html.includes('<body class="archive woocommerce woocommerce-page woocommerce-no-js ast-desktop columns-3 woocommerce-js">'), c.html);
+  // the class a theme writes the shop's layout against is set once, and never on a page that is not a shop's
+  const again = cleanPage(c.html, { baseUrl: SITE + '/store/' });
+  assert.equal(again.html.split('woocommerce-js').length, 2, 'not added twice');
+  const plain = cleanPage('<html><head></head><body class="home page no-js"><p>Hello</p></body></html>', { baseUrl: SITE + '/' });
+  assert.ok(plain.html.includes('<body class="home page no-js">'), 'a page with no shop is left alone, and no-js stays no-js');
+  // with the scripts kept, the script still does this itself
+  const kept = cleanPage(shop, { baseUrl: SITE + '/store/', keepScripts: true });
+  assert.ok(kept.html.includes('woocommerce-no-js ast-desktop columns-3">'), kept.html);
+});
+
+test('shopChangesOf and shopChangeLines: the report says what on a shop\'s pages looks different without scripts', () => {
+  assert.equal(shopChangesOf([{ href: '/', html: '<p>Hello</p><ul class="tabs"><li>x</li></ul>' }]), null);
+  assert.deepEqual(shopChangeLines(null), []);
+  const found = shopChangesOf([
+    { href: '/store/', html: '<div class="widget woocommerce widget_price_filter"><form><div class="price_slider_wrapper"><div class="price_slider" style="display:none;"></div><div class="price_slider_amount"><input id="min_price"><input id="max_price"></div></div></form></div>' },
+    { href: '/product/shoes/', html: '<div class="woocommerce-product-gallery images" style="opacity: 0"></div><div class="woocommerce-tabs wc-tabs-wrapper"><ul class="tabs wc-tabs"><li>Description</li></ul></div>' },
+    { href: '/about/', html: '<p>About</p>' },
+  ]);
+  assert.deepEqual(found, { tabs: ['/product/shoes/'], slider: ['/store/'], gallery: ['/product/shoes/'] });
+  const text = shopChangeLines(found).join('\n');
+  assert.ok(/all show, one under the other.*This is on \/product\/shoes\/\./.test(text), text);
+  assert.ok(/two boxes with a number in each.*This is on \/store\/\./.test(text));
+  assert.ok(/does not zoom\. This is on \/product\/shoes\/\./.test(text));
+  assert.ok(!text.includes('—'));
+  // only what was found is said
+  const tabsOnly = shopChangeLines({ tabs: ['/p/'], slider: [], gallery: [] }).join('\n');
+  assert.ok(/behind tabs/.test(tabsOnly) && !/price filter/.test(tabsOnly) && !/zoom/.test(tabsOnly));
+});

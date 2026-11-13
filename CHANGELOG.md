@@ -216,6 +216,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   editable parts, and is told that the rest stays
   (`src/editor/restore-page.js`).
 
+- **A rescued WooCommerce shop keeps its layout.** The store page and the
+  category pages of a copied shop came out squeezed: the products in a narrow
+  strip with the result count on top of them, and the small pictures in the
+  side column blown up to its full width. The cause was one class. WooCommerce
+  writes `woocommerce-no-js` on every page and its script adds
+  `woocommerce-js` the moment it runs, and themes write the shop's whole
+  layout against the second one (Astra alone has 600 such rules). The copy has
+  no scripts, so rescue now adds that class itself, and the pages lay out as
+  they did on the old site. Three things on a shop's pages cannot look as they
+  did without the shop's scripts, and the report now says so under "This site
+  is a shop", with the pages they are on: a product's tabs all show one under
+  the other, the price slider shows as two boxes with a number in each, and a
+  product's pictures do not swap or zoom when clicked.
 - **A rescued copy shows the parts the old site showed with a script.** Many
   sites keep a heading, a picture or a whole section hidden until a script
   fades it in. The copy has no scripts, so those parts stayed invisible: a

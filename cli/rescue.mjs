@@ -523,6 +523,16 @@ export function cleanPage(html, opts = {}) {
         break;
       }
       case 'form': rwAttr(n, 'action', 'plain'); break;
+      case 'body': {
+        // WooCommerce prints woocommerce-no-js on every page of a shop, and
+        // the first thing its script does is add woocommerce-js. Themes write
+        // the shop's layout against the second (Astra has 600 such rules), so
+        // without it the products and the side column come out squeezed.
+        // The first class stays too: its rules open what a script would have.
+        const cls = classesOf(n);
+        if (!opts.keepScripts && cls.includes('woocommerce-no-js') && !cls.includes('woocommerce-js')) setAttr(n, 'class', [...cls, 'woocommerce-js'].join(' '));
+        break;
+      }
     }
     if (n.attrs && getAttr(n, 'style')?.includes('url(')) setAttr(n, 'style', rwCssText(getAttr(n, 'style')));
   });
@@ -901,6 +911,39 @@ export function shopLines(shop) {
   if (!shop) return [];
   return ['## This site is a shop', '',
     `The shop itself does not come across. The copy keeps the shop's pages as they looked on the day of the copy, with their words, pictures and prices. The cart, the checkout, the filters and the stock count were worked out by the old site (${shop.kind}) each time a visitor asked, and a folder of plain pages cannot do that: the buttons are still drawn, and they do nothing. There are two ways forward. Keep the shop where it is, and link to it from the new pages. Or put a payment link (from Stripe, PayPal or a similar service) on each product page in place of its button. Shop parts were found on ${whereList(shop.on)}.`, ''];
+}
+
+/**
+ * What a WooCommerce shop's pages still show differently once its scripts are
+ * gone, for the report: a product's tabs, the price slider, a product's
+ * pictures. pages: [{ href, html }]. Returns { tabs, slider, gallery }, each
+ * a list of hrefs, or null when no page has any of them.
+ */
+export function shopChangesOf(pages) {
+  const found = { tabs: [], slider: [], gallery: [] };
+  for (const { href, html } of pages) {
+    const has = { tabs: false, slider: false, gallery: false };
+    walkTree(parse(String(html)), n => {
+      if (!n.attrs) return;
+      const cls = classesOf(n);
+      if (cls.includes('wc-tabs')) has.tabs = true;
+      if (cls.includes('price_slider_wrapper') || cls.includes('price_slider')) has.slider = true;
+      if (cls.includes('woocommerce-product-gallery')) has.gallery = true;
+    });
+    for (const k of Object.keys(found)) if (has[k]) found[k].push(href);
+  }
+  return found.tabs.length || found.slider.length || found.gallery.length ? found : null;
+}
+
+/** The report's lines for shopChangesOf: what the owner will see on the shop's pages, and what to do. */
+export function shopChangeLines(c) {
+  if (!c) return [];
+  const lines = ['The shop\'s pages keep their layout. These parts of them look different from the old site, because the old site drew them with a script. Nothing is missing from them, and you may want to tidy them:', ''];
+  if (c.tabs.length) lines.push(`- A product's sections (such as Description, Additional information and Reviews) all show, one under the other. The old site showed one at a time, behind tabs. The row of tab names is still there, and clicking a name jumps down to its section. This is on ${whereList(c.tabs)}.`);
+  if (c.slider.length) lines.push(`- The price filter shows as two boxes with a number in each, and a button. On the old site it was a slider. It filters nothing in the copy, so you can take it out of the page. This is on ${whereList(c.slider)}.`);
+  if (c.gallery.length) lines.push(`- A product's pictures show as one large picture with the others small in a row under it. Clicking one opens that picture on its own. It does not move into the large one's place, and the large one does not zoom. This is on ${whereList(c.gallery)}.`);
+  lines.push('');
+  return lines;
 }
 
 /** The report's line for links whose ending after the question mark was dropped. '' when there are none. */
@@ -1374,7 +1417,7 @@ export async function rescueCmd(startUrl, args = {}) {
   const plainLost = renderer ? [] : staticLostLines(hrefPages, origin, { menuLine });
   // what the dry run and the real run both say
   const shared = {
-    folder, outside: [...outside], maxPages, wantKiln: !args['no-tag'], shop: shopOf(hrefPages),
+    folder, outside: [...outside], maxPages, wantKiln: !args['no-tag'], shop: shopOf(hrefPages), shopLooks: renderer || keepScripts ? null : shopChangesOf(hrefPages),
     leftOut: { signin: [...leftOut.signin], feeds: [...leftOut.feeds], queryLinks: [...leftOut.queryLinks] },
     noHome: !new Set(pageMap.values()).has('index.html'), firstHref: fileToHref(pageMap.get([...pages.keys()][0])),
   };
@@ -1620,7 +1663,7 @@ function printReport(r) {
   if (leftOutSays) lines.push(leftOutSays);
   if (queriesSay) lines.push(queriesSay);
   lines.push('');
-  lines.push(...shopLines(r.shop));
+  lines.push(...shopLines(r.shop), ...shopChangeLines(r.shopLooks));
   lines.push(...blankLines(r.blank));
   if (!r.dry) lines.push(...notCopiedLines(notCopied, r.again));
   if (r.rendered) {
