@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * fill-github-ids — print the SQL that writes GitHub's number on accounts made
+ * fill-github-ids: print the SQL that writes GitHub's number on accounts made
  * before accounts had one (migration 0012_github_id.sql).
  *
  *   node scripts/fill-github-ids.mjs <login> [<login> …]
