@@ -83,7 +83,7 @@ const UA = 'kiln-auth-worker';
 // step with package.json "version" when cutting a release.
 const WORKER_VERSION = '0.6.6';
 
-import { handleCloud, googleDashboardSignIn, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
+import { handleCloud, googleDashboardSignIn, keptOwnerAtSite, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
 import { keepsReady, keptStands } from './keeps.js';
 import { githubTrouble, googleTrouble, troubleBody, troubleLog, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
@@ -847,10 +847,11 @@ function ownerArrival(origin, returnTo, { id, login, exp }) {
  * whose site it is, that Kiln keeps its files, that it is up and that it may
  * be edited. Here the repository's id is read with the app's installation
  * token, the name is put on record as that repository (as a GitHub sign-in
- * does), and the session is made. Answers { url, exp }, or null when the
+ * does), and the session is made. `returnTo` is the page of the site the
+ * person lands on (the sign-in page unless they came from another). Answers { url, exp }, or null when the
  * repository could not be read or its name is on record as another one.
  */
-async function keptEditorSession(env, { accountId, name, email, repo, origin }) {
+async function keptEditorSession(env, { accountId, name, email, repo, origin, returnTo = '/kiln' }) {
   if (!accountId || !name || !REPO_RE.test(String(repo || ''))) return null;
   let site = '';
   try { site = new URL(origin).origin; } catch { return null; }
@@ -861,7 +862,8 @@ async function keptEditorSession(env, { accountId, name, email, repo, origin }) 
   if (!access || access.id === null) return null;
   if (!(await admitRepo(env, repo, { id: access.id, name: repo }))) return null;
   const { id, exp } = await createKeptSession(env, { accountId, login: name, email, repo, rid: access.id, origin: site });
-  return { url: ownerArrival(site, '/kiln', { id, login: name, exp }), exp };
+  const back = typeof returnTo === 'string' && returnTo.startsWith('/') ? returnTo : '/kiln';
+  return { url: ownerArrival(site, back, { id, login: name, exp }), exp };
 }
 
 /** Write a session back (a renewed token) without moving the day it ends. */
@@ -2975,6 +2977,21 @@ async function googleCallback(url, env) {
   if (!(await originServesRepo(env, state.origin, state.repo))) return html('<h1>This sign-in link is for a different site</h1><p>The address in the link does not belong to the site it asks to sign you in to, so nothing happened. Sign in from the site itself.</p>', 403);
 
   const email = String(info.email).toLowerCase();
+
+  // The owner of a site whose files Kiln keeps has no GitHub account, so this
+  // button is their way back in at the site. They get the owner session that
+  // "Open the editor" in the dashboard makes (cloud.js, keptOwnerAtSite), and
+  // they get it whether or not they are also on the list of people. Nobody
+  // else is answered there: they go on to the list, as before.
+  const own = await keptOwnerAtSite(env, { sub: info.sub, email, name: info.name, repo: state.repo, origin: state.origin, returnTo: state.returnTo }, { editorSession: keptEditorSession });
+  if (own && own.url) return Response.redirect(own.url, 302);
+  if (own) {
+    return html(`<h1>${esc(own.title)}</h1>
+      <p>You signed in as <strong>${esc(email)}</strong>. ${esc(own.words)}</p>
+      <p><a class="btn" href="${esc(own.dashboard)}">Open your dashboard</a></p>
+      <p><a href="${esc(state.origin + state.returnTo)}">Back to the site</a></p>`, own.status);
+  }
+
   const person = (await getPeople(env, state.repo)).find(p => p.email === email);
   if (!person) {
     return html(`<h1>You're not on the list (yet)</h1>

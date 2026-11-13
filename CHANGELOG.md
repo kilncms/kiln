@@ -46,7 +46,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   to the repository, and every change carries the person's name and email as
   its author, a scheduled change included. If the plan ends, the owner can
   still open the editor and read the site, and nothing is published until the
-  plan is renewed. An owner who signs in with GitHub sees no change.
+  plan is renewed. The owner also gets back in at the site itself: on its
+  sign-in page, Continue with Google gives the site's owner the same sign-in
+  and returns them to the page they came from. It is given only to the Google
+  person whose Kiln account owns that very site. Anybody else who presses the
+  button is looked up in the site's list of people, as before, and a site whose
+  files Kiln does not keep is unchanged. Where the dashboard would refuse, a
+  plain page says what to do. An owner who signs in with GitHub sees no change.
 
 - **A person with no GitHub account can have a Kiln account, and sign in to
   the dashboard with Google.** The service now answers for it, though the

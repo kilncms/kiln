@@ -1349,6 +1349,81 @@ async function ownedSite(request, env, url, sess, tools = {}, { needToken = true
 }
 
 /**
+ * Opens the editor of a site whose files Kiln keeps, for the account that owns
+ * it. This is the one piece of code behind "Open the editor" in the dashboard
+ * (POST /cloud/sites/editor) and behind "Continue with Google" at the site
+ * itself (keptOwnerAtSite, below). The caller has already settled whose site
+ * it is and that Kiln keeps its files. Answers { url }, the address that
+ * carries the new owner session, or { error, code, status } with nothing made.
+ * `who` answers the name and email the person goes by (editorPerson). `at` is
+ * the address the person is signing in from: the session then goes there and
+ * nowhere else, and only if that address is this site for certain.
+ */
+async function openKeptEditor(env, tools, { site, accountId, who, at = null, returnTo = '/kiln' }) {
+  if (!siteHasAccess(site)) return { error: EDITOR_PLAN_ENDED, code: 'plan_ended', status: 403 };
+  const row = hostingOn(env) ? await hostingRow(env, site.id) : null;
+  const hosting = row ? publicHosting(row, { repo: site.repo }) : null;
+  const up = !!(hosting && hosting.url && (hosting.state === 'live' || hosting.serving));
+  // The session goes only to an address that is this site for certain: the
+  // one on record, or the temporary one while a domain of its own still
+  // waits for its name servers (what answers there is not this site yet).
+  const isThisSite = async (address) => {
+    try {
+      const s = await cloudSiteForOrigin(env, new URL(address).origin);
+      return !!s && (s.id === site.id || String(s.repo || '').toLowerCase() === String(site.repo).toLowerCase());
+    } catch { return false; }
+  };
+  const address = !up ? null
+    : at ? ((await isThisSite(at)) ? at : null)
+      : (await isThisSite(site.origin)) ? site.origin : (await isThisSite(hosting.url)) ? hosting.url : null;
+  if (!address) return { error: EDITOR_NOT_UP, code: 'not_up', status: 409 };
+  const person = await who();
+  let made = null;
+  try {
+    made = typeof tools.editorSession === 'function'
+      ? await tools.editorSession(env, { accountId, name: person.name, email: person.email, repo: site.repo, origin: address, returnTo }) : null;
+  } catch { made = null; }
+  if (!made || !made.url) return { error: EDITOR_NOT_OPENED, code: 'not_opened', status: 502 };
+  return { url: made.url };
+}
+
+// What the owner of a site Kiln keeps reads when they pressed Continue with Google at their site and its editor cannot be opened.
+const AT_SITE_REFUSED = {
+  plan_ended: { title: 'Editing is switched off for this site', words: "This is your site, but editing is switched off for it, so its editor cannot be opened. Open your Kiln dashboard and press Subscribe on the site's row, then sign in here again." },
+  not_up: { title: 'Your site is not up at this address yet', words: "This is your site, but it is not up at this address yet. Open your Kiln dashboard, press Put it on Kiln's hosting on the site's row, then press Open the editor there." },
+  not_opened: { title: 'Kiln could not open the editor just now', words: 'This is your site, but Kiln could not open its editor just now. Please try again in a few minutes.' },
+};
+
+/**
+ * "Continue with Google" at a site (index.js, googleCallback), for the owner
+ * of a site whose files Kiln keeps. Such an owner has no GitHub account, so
+ * that button is their way back in once their session has ended. `sub` is who
+ * Google says the person is, `repo` and `origin` the site the sign-in was
+ * started from. Only an account whose `google_sub` is that person, and which
+ * owns a kept site (`kept = 1`) with that very repository, is answered:
+ * { url }, the address with the owner session POST /cloud/sites/editor makes,
+ * or, when that route would refuse, { refused, status, title, words,
+ * dashboard } for a plain page. Everybody else, and any trouble finding out,
+ * is answered null: they go on to the site's list of people as before.
+ */
+export async function keptOwnerAtSite(env, { sub, email = null, name = null, repo, origin, returnTo = '/kiln' } = {}, tools = {}) {
+  if (!env.kiln_cloud || typeof sub !== 'string' || !sub || !repo || !origin) return null;
+  let account = null, site = null;
+  try {
+    account = await env.kiln_cloud.prepare('SELECT id FROM accounts WHERE google_sub = ?').bind(sub).first();
+    if (!account || !account.id) return null;
+    const find = (columns) => env.kiln_cloud.prepare(`SELECT ${columns} FROM sites WHERE account_id = ? AND lower(repo) = lower(?) AND kept = 1`).bind(account.id, String(repo)).first();
+    site = await withAccessUntil(() => find('id, repo, origin, plan, status, access_until'), () => find('id, repo, origin, plan, status'));
+  } catch { return null; }   // a database that cannot say whose site this is gives nobody an owner session
+  if (!site) return null;
+  const sess = { account_id: account.id, google: { email, name } };
+  const opened = await openKeptEditor(env, tools, { site, accountId: account.id, who: () => editorPerson(env, sess), at: origin, returnTo });
+  if (opened.url) return { url: opened.url };
+  const said = AT_SITE_REFUSED[opened.code] || AT_SITE_REFUSED.not_opened;
+  return { refused: opened.code, status: opened.status, title: said.title, words: said.words, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' };
+}
+
+/**
  * The last step of a Google sign-in to the dashboard. index.js's
  * /google/callback hands it over when the state it kept says
  * `for: 'dashboard'` (written by /cloud/login/google below), together with
@@ -2095,32 +2170,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   if (path === '/cloud/sites/editor' && request.method === 'POST') {
     const asked = await ownedSite(request, env, url, sess, {}, { needToken: false, needAccess: false });
     if (asked.response) return asked.response;
-    const { site, access } = asked;
+    const { site } = asked;
     const kept = await keptSite(env, site.id);
     if (!kept || kept.account_id !== sess.account_id) return json({ error: EDITOR_NOT_KEPT, code: 'not_kept' }, 403);
-    if (!access) return json({ error: EDITOR_PLAN_ENDED, code: 'plan_ended' }, 403);
-    const row = hostingOn(env) ? await hostingRow(env, site.id) : null;
-    const hosting = row ? publicHosting(row, { repo: site.repo }) : null;
-    const up = !!(hosting && hosting.url && (hosting.state === 'live' || hosting.serving));
-    // The session goes only to an address that is this site for certain: the
-    // one on record, or the temporary one while a domain of its own still
-    // waits for its name servers (what answers there is not this site yet).
-    const isThisSite = async (address) => {
-      try {
-        const s = await cloudSiteForOrigin(env, new URL(address).origin);
-        return !!s && (s.id === site.id || String(s.repo || '').toLowerCase() === String(site.repo).toLowerCase());
-      } catch { return false; }
-    };
-    const address = !up ? null : (await isThisSite(site.origin)) ? site.origin : (await isThisSite(hosting.url)) ? hosting.url : null;
-    if (!address) return json({ error: EDITOR_NOT_UP, code: 'not_up' }, 409);
-    const who = await editorPerson(env, sess);
-    let made = null;
-    try {
-      made = typeof tools.editorSession === 'function'
-        ? await tools.editorSession(env, { accountId: sess.account_id, name: who.name, email: who.email, repo: site.repo, origin: address }) : null;
-    } catch { made = null; }
-    if (!made || !made.url) return json({ error: EDITOR_NOT_OPENED, code: 'not_opened' }, 502);
-    return json({ ok: true, url: made.url });
+    const opened = await openKeptEditor(env, tools, { site, accountId: sess.account_id, who: () => editorPerson(env, sess) });
+    if (!opened.url) return json({ error: opened.error, code: opened.code }, opened.status);
+    return json({ ok: true, url: opened.url });
   }
 
   if (path === '/cloud/sites/remove' && request.method === 'POST') {
