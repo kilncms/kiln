@@ -38,7 +38,7 @@ import { customerMailOn, mailAddress, sendOnce, siteAddedMail, trialEndingMail, 
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages } from './prepare.js';
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
-import { checkSite, editingOffLine } from './sitecheck.js';
+import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { hostingOn, hostingSentence } from './hosting.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
@@ -1613,8 +1613,17 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const down = hosting && !up
       ? hosting.error || (hosting.state === 'ended' ? 'Kiln took this site down from its hosting.' : 'Kiln is putting this site up now. Check again in a minute.')
       : null;
-    const lookAt = up ? hosting.url : site.origin;
-    const checks = await checkSite({ token, repo: site.repo, origin: lookAt, hosted: up, down, worker: url.origin, installUrl: INSTALL_URL, canAdd: access });
+    // Once the site's own domain is live, that is where it is looked at
+    // (still as a hosted site: Kiln publishes there). A domain that still
+    // waits for its name servers is not asked for anything: the address the
+    // hosting gave is looked at, and one more line says what the domain waits for.
+    const dom = up ? await domainRow(env, site.id) : null;
+    const onDomain = !!(dom && dom.state === 'live' && dom.name);
+    const lookAt = !up ? site.origin
+      : !onDomain ? hosting.url
+        : [dom.name, `www.${dom.name}`].includes(hostName(site.origin)) ? site.origin : `https://${dom.name}`;
+    const checks = await checkSite({ token, repo: site.repo, origin: lookAt, hosted: up, ownDomain: onDomain, down, worker: url.origin, installUrl: INSTALL_URL, canAdd: access });
+    if (dom && dom.state === 'waiting' && dom.name) checks.push(domainWaitingLine({ name: dom.name, seller: publicDomain(dom, { records: false })?.seller?.name }));
     if (!access) {
       let sub = null;
       try { sub = await env.kiln_cloud.prepare('SELECT ls_subscription_id FROM sites WHERE id = ?').bind(site.id).first(); } catch { /* worded as a trial that ended */ }

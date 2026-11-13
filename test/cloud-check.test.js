@@ -14,6 +14,7 @@ import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { KILN_TAGS, KILN_PAGE, kilnConfigFile, SETUP_COMMAND } from '../worker/prepare.js';
 import { checkSite, refusedAddress, LIMITS } from '../worker/sitecheck.js';
+import { saveDomain, domainRow, publicDomain } from '../worker/domain.js';
 
 const SITE = 'https://club.example';
 const WWW = 'https://www.club.example';
@@ -595,4 +596,72 @@ test('check: with hosting switched off for the service, or a site on the hosting
   ({ body, by } = await check(w));
   assert.equal(body.looked_at, SITE);
   assert.equal(by.address.detail, `${SITE} answers.`);
+});
+
+// ─── A hosted site on its owner's own domain ─────────────────────────────────
+// Once the domain is live the site is looked at there. While the domain still
+// waits for its name servers, the address the hosting gave is looked at and
+// one more line says what the domain waits for.
+
+const OWN = 'oakbakery.test';
+const DOMAIN = `https://${OWN}`;
+/** An address serving `served` the way the hosting does. */
+const servedAt = (base, served) => Object.fromEntries([['/', 'index.html'], ['/kiln', 'kiln.html'], ['/assets/kiln.js', 'assets/kiln.js']].map(([at, name]) =>
+  [`${base}${at}`, () => (served[name] == null ? new Response('Not found', { status: 404 }) : new Response(served[name], { status: 200, headers: { 'Content-Type': 'text/html' } }))]));
+const ownDomain = (w, state, more = {}) => saveDomain(w.env, 'site-1', { name: OWN, zone_id: 'zone-1', state, ns1: 'ada.ns.cloudflare.com', ns2: 'bob.ns.cloudflare.com', seller: 'GoDaddy.com, LLC', seller_id: 146, ...more });
+
+test('check, hosted: a site whose own domain is live is looked at there, and the lines still say that Kiln publishes', { skip: d1Skip }, async () => {
+  const files = withKiln();
+  let w = hostedWorld(files, { over: servedAt(DOMAIN, files) });
+  await ownDomain(w, 'live');
+  w.env.kiln_cloud.exec("UPDATE sites SET origin = ? WHERE id = 'site-1'", DOMAIN);
+  let { res, body, by } = await check(w);
+  assert.equal(res.status, 200);
+  assert.equal(body.looked_at, DOMAIN);
+  assert.deepEqual(body.checks.map(c => c.id), ALL);
+  for (const c of body.checks) assert.equal(c.ok, true, `${c.id}: ${c.detail}`);
+  assert.equal(by.address.detail, `${DOMAIN} answers. That is this site's own domain, and Kiln's hosting answers there.`);
+  assert.equal(by.signin.detail, `The sign-in page is at ${DOMAIN}/kiln. Open it to sign in and edit.`);
+  assert.equal(urls(w).some(u => u.startsWith(HOSTED)), false, 'the temporary address is asked for nothing');
+  noHostWords(body);
+
+  // The domain does not answer: the line says what the owner can have changed, and what to press.
+  w = hostedWorld(files, { over: servedAt(DOMAIN, {}) });
+  await ownDomain(w, 'live');
+  w.env.kiln_cloud.exec("UPDATE sites SET origin = ? WHERE id = 'site-1'", DOMAIN);
+  ({ body, by } = await check(w));
+  assert.equal(body.looked_at, DOMAIN);
+  assert.equal(by.address.ok, false);
+  assert.match(by.address.detail, / That is this site's own domain, which is live on Kiln's hosting\. If you changed its name servers away from Kiln, change them back where you bought the domain\. If you did not, press Publish again on the site's row and check again in a minute\. If it still does not answer, write to /);
+  for (const c of body.checks) assert.doesNotMatch(c.detail, /[—–]/);
+  noHostWords(body);
+});
+
+test('check, hosted: while a domain waits for its name servers, the address the hosting gave is looked at, and one more line says what the domain waits for', { skip: d1Skip }, async () => {
+  let w = hostedWorld(withKiln());
+  await ownDomain(w, 'waiting');
+  const seller = publicDomain(await domainRow(w.env, 'site-1')).seller.name;
+  let { body, by } = await check(w);
+  assert.equal(body.looked_at, HOSTED);
+  assert.deepEqual(body.checks.map(c => c.id), [...ALL, 'domain']);
+  assert.equal(by.address.detail, `${HOSTED} answers. That is the address Kiln's hosting gave this site.`);
+  assert.deepEqual(by.domain, { id: 'domain', ok: true, title: 'The site\'s own domain is ready on Kiln\'s side',
+    detail: `${OWN} is ready on Kiln's side and waits for its name servers to be changed at ${seller}. The site's row in the dashboard shows the two names to enter there. Until then, this check looks at the address Kiln's hosting gave the site.` });
+  assert.doesNotMatch(by.domain.detail, /[—–]|undefined|null/);
+  assert.equal(body.all_ok, true);
+  assert.equal(urls(w).some(u => u.includes(OWN)), false, 'the domain is asked for nothing');
+  noHostWords(body);
+
+  // Nobody could say where the domain was bought: the line still says where to go.
+  w = hostedWorld(withKiln());
+  await ownDomain(w, 'waiting', { seller: null, seller_id: null });
+  ({ by } = await check(w));
+  assert.match(by.domain.detail, /to be changed at the company you bought the domain from\. /);
+
+  // A set-up that was put away: the address the hosting gave, and no line about a domain.
+  w = hostedWorld(withKiln());
+  await ownDomain(w, 'put_away', { reason: 'not_changed' });
+  ({ body } = await check(w));
+  assert.equal(body.looked_at, HOSTED);
+  assert.deepEqual(body.checks.map(c => c.id), ALL);
 });

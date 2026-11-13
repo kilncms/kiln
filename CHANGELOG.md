@@ -60,6 +60,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the answer to removing a site. When Cloudflare does not answer, that is
   logged and the site comes down or is removed all the same
   (`worker/hosted.js`, `worker/cloud.js`, `worker/domain.js`).
+- **"Check this site" knows about a site's own domain.** Once the domain is
+  live, the check looks at the site there, and its lines still say that Kiln
+  publishes a change. When the domain does not answer, the line says what
+  the owner can have changed (its name servers) and what to press. While a
+  domain still waits for its name servers, the check looks at the address
+  the hosting gave the site and adds one line: the domain is ready on Kiln's
+  side, it waits for its name servers to be changed where it was bought, and
+  the site's row in the dashboard shows the two names to enter
+  (`worker/sitecheck.js`, `worker/cloud.js`).
 
 ### Fixed
 

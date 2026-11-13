@@ -49,6 +49,7 @@ const TITLES = {
   address: 'The site\'s address answers',
   live: 'The live site loads Kiln',
   signin: 'The sign-in page answers',
+  domain: 'The site\'s own domain is ready on Kiln\'s side',
 };
 const line = (id, ok, detail, more = {}) => ({ id, ok, title: TITLES[id], detail, ...more });
 const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
@@ -253,12 +254,14 @@ function problemSentence(res, what, timeoutMs) {
 }
 
 /** Line `address`, from the answer to the home page. */
-function addressLine(home, base, timeoutMs, hosted = false) {
-  if (home.status === 200) return line('address', true, hosted ? `${base} answers. That is the address Kiln's hosting gave this site.` : `${base} answers.`);
+function addressLine(home, base, timeoutMs, hosted = false, ownDomain = false) {
+  if (home.status === 200) return line('address', true, !hosted ? `${base} answers.` : ownDomain ? `${base} answers. That is this site's own domain, and Kiln's hosting answers there.` : `${base} answers. That is the address Kiln's hosting gave this site.`);
   const open = { fix: { url: base, label: 'Open your site' } };
   const said = problemSentence(home, base, timeoutMs);
   // The address is Kiln's own and so is the host: there is nothing for the
   // owner to look at anywhere else, and publishing again is what puts it right.
+  // Its own domain, live on Kiln's hosting: what the owner can have changed is where its name servers point.
+  if (hosted && ownDomain) return line('address', false, `${said} That is this site's own domain, which is live on Kiln's hosting. If you changed its name servers away from Kiln, change them back where you bought the domain. If you did not, press Publish again on the site's row and check again in a minute. If it still does not answer, write to ${HELP}.`, open);
   if (hosted) return line('address', false, `${said} That is the address Kiln's hosting gave this site, so there is nothing for you to change at a host. Press Publish again on the site's row and check again in a minute. If it still does not answer, write to ${HELP}.`, open);
   switch (home.problem) {
     case 'not_an_address': return line('address', false, `This site was added with "${base}", which is not a full web address, so Kiln cannot look at it. Write to ${HELP} and we will change the address.`);
@@ -338,9 +341,11 @@ async function liveLines(home, base, plan, timeoutMs, hosted = false) {
  * never send its owner to "your host". When that site is not online (it was
  * taken down, or has not gone up yet) `down` is the sentence that says why:
  * no address is asked for anything, and the three lines about the live site
- * say that instead.
+ * say that instead. A hosted site whose own domain is live is looked at
+ * there: `origin` is then the domain and `ownDomain` is true, so the line
+ * about the address says whose address it is.
  */
-export async function checkSite({ token, repo, origin, worker, installUrl = INSTALL_URL, canAdd = true, timeoutMs = LIMITS.timeoutMs, hosted = false, down = null }) {
+export async function checkSite({ token, repo, origin, worker, installUrl = INSTALL_URL, canAdd = true, timeoutMs = LIMITS.timeoutMs, hosted = false, ownDomain = false, down = null }) {
   const checks = [];
   try {
     let base = String(origin || '');
@@ -355,7 +360,7 @@ export async function checkSite({ token, repo, origin, worker, installUrl = INST
       const why = 'Not checked, because the site is not online.';
       checks.push(line('address', false, String(down)), line('live', null, why), line('signin', null, why));
     } else {
-      checks.push(addressLine(home, base, timeoutMs, hosted));
+      checks.push(addressLine(home, base, timeoutMs, hosted, hosted && ownDomain));
       checks.push(...await liveLines(home, base, plan, timeoutMs, hosted));
     }
   } catch (e) {
@@ -371,6 +376,16 @@ export async function checkSite({ token, repo, origin, worker, installUrl = INST
  * The line that goes at the top when editing is switched off for a site: why,
  * and which of the row's own buttons switches it back on.
  */
+/**
+ * Line `domain`, for a hosted site whose own domain still waits for its name
+ * servers: the check goes on looking at the address the hosting gave the
+ * site, and this line says what the domain waits for. `seller` is the name of
+ * the company the domain was bought from, when Kiln knows it.
+ */
+export function domainWaitingLine({ name, seller = null }) {
+  return line('domain', true, `${name} is ready on Kiln's side and waits for its name servers to be changed at ${seller || 'the company you bought the domain from'}. The site's row in the dashboard shows the two names to enter there. Until then, this check looks at the address Kiln's hosting gave the site.`);
+}
+
 export function editingOffLine({ status, subscribed }) {
   if (status === 'past_due') {
     return line('editing', false, 'Editing is switched off for this site, because a payment did not go through. Update your card under Manage billing to switch it back on. Your site and its files are untouched.', { fix: { action: 'portal', label: 'Manage billing' } });
