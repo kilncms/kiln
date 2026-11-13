@@ -122,17 +122,20 @@ const bareAddress = (address) => String(address || '').replace(/^https?:\/\//i, 
  * Sent once when a site that was brought in from somewhere else is copied
  * (bring.js, the job's answer). Its reader may have no GitHub account, so
  * nothing here speaks of one or of a repository. `name`: the site's name.
- * `address`: its temporary address on Kiln's hosting. `from`: the old site's
- * address. `pages`: how many pages were copied. `endsAt`: when its free trial
- * runs out (ms).
+ * `address`: its temporary address on Kiln's hosting. `up`: Kiln has put the
+ * site up there already; when it could not, the mail says which button does.
+ * `from`: the old site's address. `pages`: how many pages were copied.
+ * `endsAt`: when its free trial runs out (ms).
  */
-export function siteCopiedMail({ name, address, from, pages, endsAt, dashboard }) {
+export function siteCopiedMail({ name, address, up = false, from, pages, endsAt, dashboard }) {
   const site = String(name || '').replace(/[\s\u0000-\u001f]+/g, ' ').trim() || 'Your site';
   const day = dayWords(endsAt), at = String(address).replace(/\/+$/, '');
   return message('Your site is copied', [
     'Hello,',
     `Kiln copied ${pagesWords(Number(pages) || 0)} from ${bareAddress(from)} into a new site called ${site}. Kiln keeps its files for you, so there is nothing to install and nothing to store. Your old site was only read, and nothing on it was changed.`,
-    `Kiln is putting the copy up at its temporary address, ${at}. Open your dashboard to see it there. If the site's row has a button that says Put it on Kiln's hosting, press it, and the site is up about a minute later.`,
+    up
+      ? `The copy is up at its temporary address, ${at}. Open that address to see your site.`
+      : `The copy is not up yet. Open your dashboard and press Put it on Kiln's hosting on the site's row. The site is then up at its temporary address, ${at}, about a minute later.`,
     "Some things did not come across: shops and carts, forms that posted to the old site, logins and members' areas. The report on the site's row in your dashboard lists what to check.",
     'To edit the site, open your dashboard and press Open the editor on the site\'s row. There is no password. Click any outlined words or picture, change them, and press Publish.',
     ...keptFreeDays(day),

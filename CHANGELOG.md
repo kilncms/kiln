@@ -52,9 +52,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `POST /cloud/convert/done` and signs its answer with a shared secret
   (`X-Kiln-Signature`, the HMAC-SHA256 of the body). A wrong or missing
   signature changes nothing, and an answer that arrives twice is taken once.
-  When the copy worked, the service writes the site's own settings file and
-  its owner gets the mail "Your site is copied": how many pages, the temporary
-  address, what did not come across, how the editor opens, and the free days.
+  When the copy worked, the service writes the site's own settings file,
+  marks the copy done, and puts the site on Kiln's hosting by itself, with the
+  same code that runs when a signed-in owner presses Put it on Kiln's hosting:
+  Kiln is added to the site, pages get their character-set line, a first pass
+  marks what can be edited, and the site is published. Nobody is signed in
+  then, so those changes carry the account's own name and address, and the
+  operator's note says "By: Kiln, after a copy". The job has its answer at
+  once and the site goes up after it. The owner then gets the mail "Your site
+  is copied": how many pages, that the site is up and its temporary address,
+  what did not come across, how the editor opens, and the free days. When the
+  site could not be put up, or is not up 20 seconds after the answer, the copy
+  still counts as done, the mail says that Put it on Kiln's hosting on the
+  site's row puts it up, and the operator is told what went wrong.
   When it did not, the owner gets "The copy of (the address) did not work"
   with the reason, what to try, and that nothing was charged, and `POST
   /cloud/sites/bring/again` starts the copy once more, three tries for a site
@@ -68,9 +78,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in the organization where Kiln keeps files. When GitHub answers 401 to the
   start of the job, the token the service remembered is forgotten and the
   start is tried once more with a new one, so a token that stopped working
-  early does not fail every copy until it runs out. The service does not put
-  the copied site on Kiln's hosting by itself yet: the dashboard's own step
-  does that. Nothing here deletes, renames or hands over a repository.
+  early does not fail every copy until it runs out. Nothing here deletes,
+  renames or hands over a repository.
 
 - **The owner of a site Kiln keeps the files of can edit it, with no GitHub
   account.** The service now answers for it, though the dashboard has no

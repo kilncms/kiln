@@ -14,13 +14,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createHmac } from 'node:crypto';
 import worker from '../worker/index.js';
-import { bringOn, convertRepo, convertWorkflow, cleanAddress, bringSentence, copySentence, copyTrouble, cutReport, signAnswer, signedRight, sweepCopies, MOST_TRIES, COPY_MINUTES } from '../worker/bring.js';
-import { sweepBrings } from '../worker/cloud.js';
+import { copyAnswered, bringOn, convertRepo, convertWorkflow, cleanAddress, bringSentence, copySentence, copyTrouble, cutReport, signAnswer, signedRight, sweepCopies, MOST_TRIES, COPY_MINUTES } from '../worker/bring.js';
+import { sweepBrings, accountAuthor } from '../worker/cloud.js';
 import { keepSentence } from '../worker/keeps.js';
 import { kilnConfigFile } from '../worker/prepare.js';
 import { siteCopiedMail, copyFailedMail, siteStartedMail } from '../worker/mail.js';
 import { fakeKV, withFetch, jsonRes } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
+import { fakeGitHub } from './github-fake.js';
+import { fakeCloudflare } from './cloudflare-fake.js';
 
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const PEM = privateKey.export({ type: 'pkcs8', format: 'pem' });
@@ -113,13 +115,35 @@ const plain = (t) => {
 /** The signature as a shell script would make it: HMAC-SHA256 of the body's bytes, in hex. Not the service's own code. */
 const sig = (raw, secret = SECRET) => `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`;
 /** The runner's answer. `signature: null` sends none; `raw` sends other bytes than were signed. */
-const answer = (w, said, { signature, raw = JSON.stringify(said) } = {}) => withFetch(w.hub.handler, async (calls) => {
+const answer = (w, said, { signature, raw = JSON.stringify(said), handler = w.hub.handler } = {}) => withFetch(handler, async (calls) => {
   const res = await worker.fetch(new Request('https://worker.example/cloud/convert/done', {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(signature === null ? {} : { 'X-Kiln-Signature': signature || sig(raw) }) }, body: raw,
   }), w.env);
   return { status: res.status, json: await res.json().catch(() => null), calls };
 });
 const REPORT = '# What was copied\n\n25 pages.\n\n## Check these\n\n- The contact form posted to the old site.\n\n## Next steps\n\ngit init && gh repo create\n';
+/** Kiln's release branch, as far as putting a site up reads it. */
+const RELEASE = 'https://raw.githubusercontent.com/kilncms/kiln/release';
+const OUT = {
+  'dist/VERSION': Buffer.from('r2\n'), 'dist/kiln.js': Buffer.from('(function(){"use strict";var t=window.KILN||{};window.KILN_VERSION="r2";})();\n'),
+  'dist/kiln-editor.js': Buffer.from('/* editor r2 */\n'), 'dist/kiln-features.js': Buffer.from('/* features r2 */\n'), 'templates/_headers': Buffer.from('/*\n  X-Content-Type-Options: nosniff\n'),
+};
+const copiedPage = (title) => `<!doctype html>\n<html lang="en">\n<head>\n  <title>${title}</title>\n</head>\n<body>\n  <h1>${title}</h1>\n  <p>Words about ${title} that its owner will want to change one day.</p>\n</body>\n</html>\n`;
+/**
+ * The same world once the runner has pushed the copy: a GitHub that holds the
+ * copied files of `repo` and a Cloudflare that takes them, so the site can go
+ * up. Everything else is still asked of `w.hub`.
+ */
+function copied(w, repo) {
+  const gh = fakeGitHub({ repo, files: { 'index.html': copiedPage('Home'), 'about.html': copiedPage('About'), 'assets/site.css': 'h1{}' } });
+  const cf = fakeCloudflare({ account: 'cf-acct', token: 'cf-token' });
+  w.env.KILN.map.set(`itok:${repo}`, 'inst-token');
+  const handler = async (url, init) => {
+    if (url.startsWith(`${RELEASE}/`)) { const f = OUT[url.slice(RELEASE.length + 1)]; return f ? new Response(f) : undefined; }
+    return (await cf.handler(url, init)) || (await gh.handler(url, init)) || w.hub.handler(url, init);
+  };
+  return { gh, cf, handler };
+}
 const SHOWN_REPORT = '# What was copied\n\n25 pages.\n\n## Check these\n\n- The contact form posted to the old site.';
 
 // ─── Settings, the address, the sentences ─────────────────────────────────────
@@ -380,7 +404,7 @@ test('the job\'s answer is taken only with the right signature of the very bytes
   assert.deepEqual([good.status, good.json], [200, { ok: true, state: 'done' }]);
 });
 
-test('a copy that worked: this site\'s settings are written over the copy\'s own, the copy is done with its pages and its report, and its owner is written to once', { skip: d1Skip }, async () => {
+test('a copy that worked: this site\'s settings are written over the copy\'s own, the copy is done with its pages and its report, and its owner is written to once. A site that could not be put up leaves the copy done, and its owner and the operator are told', { skip: d1Skip }, async () => {
   const w = world({ mail: true });
   const { json } = await bring(w);
   const repo = w.hub.made[0], job = copies(w.env)[0].id;
@@ -397,9 +421,13 @@ test('a copy that worked: this site\'s settings are written over the copy\'s own
   assert.deepEqual([copy.state, copy.reason, copy.pages, copy.rendered, copy.report, typeof copy.done_at], ['done', null, 25, 1, SHOWN_REPORT, 'number']);
   // the mail
   assert.equal(w.sent.length, 1);
-  const expected = siteCopiedMail({ name: 'Oak Bakery', address: json.site.origin, from: 'https://www.oakbakery.com', pages: 25, endsAt: sites(w.env)[0].created_at + 7 * 86400e3, dashboard: 'https://app.example' });
+  const expected = siteCopiedMail({ name: 'Oak Bakery', address: json.site.origin, up: false, from: 'https://www.oakbakery.com', pages: 25, endsAt: sites(w.env)[0].created_at + 7 * 86400e3, dashboard: 'https://app.example' });
   assert.deepEqual({ to: w.sent[0].to, subject: w.sent[0].subject, text: w.sent[0].text }, { to: 'rosa@example.com', subject: 'Your site is copied', text: expected.text });
-  assert.ok(w.sent[0].text.includes(`its temporary address, ${json.site.origin}.`));
+  // this GitHub and this Cloudflare cannot put a site up: the copy is done all the same, and the mail says which button puts it up
+  assert.ok(w.sent[0].text.includes(`The copy is not up yet. Open your dashboard and press Put it on Kiln's hosting on the site's row. The site is then up at its temporary address, ${json.site.origin}, about a minute later.`));
+  assert.equal(w.env.kiln_cloud.row('SELECT COUNT(*) n FROM hosting WHERE site_id = ?', json.site.id).n, 0);
+  assert.match(w.notes.at(-1), /What went wrong: \w+: /);
+  assert.match(w.notes.at(-1), /The copy is done and stays done\. Its owner was told that Put it on Kiln's hosting on the site's row puts the site up\./);
 
   // the same answer again, another answer for the same job, and an answer for a job nobody knows
   for (const more of [said, { job, ok: false, reason: 'unreachable' }, { job: 'f'.repeat(32), ok: true, pages: 3 }, { job: 'not a job', ok: true, pages: 3 }, { ok: true }]) {
@@ -413,6 +441,90 @@ test('a copy that worked: this site\'s settings are written over the copy\'s own
   assert.equal(cutReport('a'.repeat(25000)).length, 20000);
   assert.equal(cutReport('Pages\nSee ## Next steps below\n'), 'Pages\nSee ## Next steps below', 'only a line that starts with it');
   assert.equal(cutReport(undefined), '');
+});
+
+test('a copy that worked goes up on Kiln\'s hosting by itself: Kiln is added in the account\'s own name, the operator reads who did it, and the mail says the site is up and where', { skip: d1Skip }, async () => {
+  const w = world({ mail: true });
+  const { json } = await bring(w);
+  const repo = w.hub.made[0], job = copies(w.env)[0].id, before = w.notes.length;
+  const up = copied(w, repo);
+  const done = await answer(w, { job, ok: true, pages: 2, report: REPORT }, { handler: up.handler });
+  assert.deepEqual([done.status, done.json], [200, { ok: true, state: 'done' }]);
+  assert.equal(copies(w.env)[0].state, 'done');
+  // the site is up, made from files Kiln was added to and marked for editing
+  const hosting = w.env.kiln_cloud.row('SELECT * FROM hosting WHERE site_id = ?', json.site.id);
+  assert.equal(hosting.state, 'live');
+  const home = up.gh.read('index.html');
+  assert.match(home, /<h1 [^>]*data-cms/);
+  assert.equal(up.cf.serve(hosting.name, '/index.html')?.bytes.toString(), home);
+  assert.ok(up.gh.read('assets/kiln-config.js').includes(repo), 'the settings are this site\'s own');
+  // nobody is signed in: the changes carry the account's own name and address
+  const by = [...up.gh.commits.values()].filter(c => c.author.name !== 'Site Owner').map(c => `${c.author.name} <${c.author.email}>`);
+  assert.ok(by.length >= 2, `${by.length} changes`);
+  assert.deepEqual([...new Set(by)], ['Rosa Diaz (via Kiln) <rosa@example.com>']);
+  const told = w.notes.slice(before);
+  assert.equal(told.length, 1);
+  assert.match(told[0], /By: Kiln, after a copy/);
+  assert.ok(told[0].includes(`Address: ${json.site.origin}`));
+  // the mail
+  assert.equal(w.sent.length, 1);
+  const expected = siteCopiedMail({ name: 'Oak Bakery', address: json.site.origin, up: true, from: 'https://www.oakbakery.com', pages: 2, endsAt: sites(w.env)[0].created_at + 7 * 86400e3, dashboard: 'https://app.example' });
+  assert.deepEqual({ to: w.sent[0].to, subject: w.sent[0].subject, text: w.sent[0].text }, { to: 'rosa@example.com', subject: 'Your site is copied', text: expected.text });
+  assert.ok(w.sent[0].text.includes(`The copy is up at its temporary address, ${json.site.origin}. Open that address to see your site.`));
+  // its owner can still publish it again from the dashboard, as before
+  const again = await withFetch(up.handler, () => send(w.env, 'POST', '/cloud/sites/hosting', { id: json.site.id }, 'rosa'));
+  assert.deepEqual([again.status, again.json.ok, again.json.hosting.state], [200, true, 'live']);
+  assert.deepEqual([w.sent.length, w.hub.unsafe.length], [1, 0]);
+});
+
+test('where a request can go on after its answer, the job has its answer before the site is up, and the mail follows when it is', { skip: d1Skip }, async () => {
+  const w = world({ mail: true });
+  await bring(w);
+  const repo = w.hub.made[0], job = copies(w.env)[0].id;
+  const up = copied(w, repo), waits = [], raw = JSON.stringify({ job, ok: true, pages: 2 });
+  await withFetch(up.handler, async () => {
+    const res = await worker.fetch(new Request('https://worker.example/cloud/convert/done', { method: 'POST', headers: { 'X-Kiln-Signature': sig(raw) }, body: raw }), w.env, { waitUntil: (work) => waits.push(work) });
+    assert.deepEqual([res.status, await res.json()], [200, { ok: true, state: 'done' }]);
+    assert.deepEqual([copies(w.env)[0].state, w.sent.length, waits.length], ['done', 0, 1], 'done at once, and the rest goes on');
+    await Promise.all(waits);
+  });
+  assert.equal(w.env.kiln_cloud.row('SELECT state FROM hosting WHERE site_id = ?', sites(w.env)[0].id).state, 'live');
+  assert.equal(w.sent.length, 1);
+  assert.ok(w.sent[0].text.includes('The copy is up at its temporary address, '));
+});
+
+test('a site that is slow to go up after the answer: its owner is written to in time, told which button puts it up, and the operator is told', { skip: d1Skip }, async () => {
+  const w = world({ mail: true });
+  await bring(w);
+  const job = copies(w.env)[0].id, raw = JSON.stringify({ job, ok: true, pages: 2 }), waits = [], notes = [];
+  const out = await withFetch(w.hub.handler, async () => {
+    const r = await copyAnswered(w.env, { body: raw, signature: sig(raw), worker: 'https://worker.example', dashboard: 'https://app.example', note: async (subject, lines) => { notes.push([subject, ...lines].join('\n')); },
+      host: () => new Promise(() => {}), later: (work) => waits.push(work), hostWait: 5 });
+    await Promise.all(waits);
+    return r;
+  });
+  assert.deepEqual([out.status, out.body, copies(w.env)[0].state], [200, { ok: true, state: 'done' }, 'done']);
+  assert.equal(w.sent.length, 1);
+  assert.ok(w.sent[0].text.includes("The copy is not up yet. Open your dashboard and press Put it on Kiln's hosting on the site's row."));
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /^Kiln could not put kiln-sites\/oak-bakery-[0-9a-f]{8} on its hosting after its copy\n/);
+  assert.match(notes[0], /What went wrong: slow: the site was not up after 0 seconds, and it may still go up/);
+  // a host that throws is the same to its owner
+  const w2 = world({ mail: true });
+  await bring(w2);
+  const raw2 = JSON.stringify({ job: copies(w2.env)[0].id, ok: true, pages: 1 });
+  const out2 = await withFetch(w2.hub.handler, () => copyAnswered(w2.env, { body: raw2, signature: sig(raw2), worker: 'https://worker.example', dashboard: 'https://app.example', host: async () => { throw new Error('Cloudflare is away'); } }));
+  assert.deepEqual([out2.body, copies(w2.env)[0].state, w2.sent.length], [{ ok: true, state: 'done' }, 'done', 1]);
+  assert.ok(w2.sent[0].text.includes('The copy is not up yet.'));
+});
+
+test('whose name a change carries when nobody is signed in: the account\'s own, as a signed-in person\'s would be', { skip: d1Skip }, async () => {
+  const w = world();
+  assert.deepEqual(await accountAuthor(w.env, 'acct-g'), { name: 'Rosa Diaz (via Kiln)', email: 'rosa@example.com' });
+  w.env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES (?, ?, ?, NULL, NULL, 1)', 'acct-h', 'grace', 'grace@example.com');
+  assert.deepEqual(await accountAuthor(w.env, 'acct-h'), { name: 'grace', email: 'grace@users.noreply.github.com' });
+  w.env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES (?, NULL, ?, NULL, ?, 1)', 'acct-n', 'lena@example.com', 'g-3003');
+  assert.deepEqual(await accountAuthor(w.env, 'acct-n'), { name: 'lena (via Kiln)', email: 'lena@example.com' });
 });
 
 test('settings that cannot be written leave the copy as it was, so the job can answer again', { skip: d1Skip }, async () => {
@@ -591,9 +703,9 @@ test('the five-minute job gives up on a copy that has said nothing for 30 minute
 
 // ─── The two mails ────────────────────────────────────────────────────────────
 
-test('the mail for a copy that worked: how many pages, where the site is going up, what did not come across, how the editor opens, and the free days as the welcome mail says them', () => {
+test('the mail for a copy that worked: how many pages, that the site is up and where or which button puts it up, what did not come across, how the editor opens, and the free days as the welcome mail says them', () => {
   const endsAt = Date.UTC(2026, 10, 20, 12);
-  const mail = siteCopiedMail({ name: 'Oak Bakery', address: 'https://oak-bakery-1a2b3c4d.kiln-sites.workers.dev/', from: 'https://www.oakbakery.com/', pages: 25, endsAt, dashboard: 'https://app.example' });
+  const mail = siteCopiedMail({ name: 'Oak Bakery', address: 'https://oak-bakery-1a2b3c4d.kiln-sites.workers.dev/', up: true, from: 'https://www.oakbakery.com/', pages: 25, endsAt, dashboard: 'https://app.example' });
   const welcome = siteStartedMail({ name: 'Oak Bakery', address: 'https://x.example', endsAt, dashboard: 'https://app.example' }).text.split('\n\n');
   const free = welcome.filter(p => p.startsWith('The site is free until') || p.startsWith('If you do not subscribe by'));
   assert.equal(free.length, 2);
@@ -601,7 +713,7 @@ test('the mail for a copy that worked: how many pages, where the site is going u
   assert.deepEqual(mail.text.split('\n\n'), [
     'Hello,',
     'Kiln copied 25 pages from www.oakbakery.com into a new site called Oak Bakery. Kiln keeps its files for you, so there is nothing to install and nothing to store. Your old site was only read, and nothing on it was changed.',
-    "Kiln is putting the copy up at its temporary address, https://oak-bakery-1a2b3c4d.kiln-sites.workers.dev. Open your dashboard to see it there. If the site's row has a button that says Put it on Kiln's hosting, press it, and the site is up about a minute later.",
+    'The copy is up at its temporary address, https://oak-bakery-1a2b3c4d.kiln-sites.workers.dev. Open that address to see your site.',
     "Some things did not come across: shops and carts, forms that posted to the old site, logins and members' areas. The report on the site's row in your dashboard lists what to check.",
     "To edit the site, open your dashboard and press Open the editor on the site's row. There is no password. Click any outlined words or picture, change them, and press Publish.",
     ...free,
@@ -612,6 +724,13 @@ test('the mail for a copy that worked: how many pages, where the site is going u
   assert.match(siteCopiedMail({ name: 'Oak Bakery', address: 'https://a.example', from: 'https://b.example.org', pages: 1, endsAt, dashboard: 'https://app.example' }).text, /Kiln copied 1 page from b\.example\.org /);
   assert.equal(/GitHub|repositor|—|–|undefined/.test(mail.text + mail.html), false);
   assert.ok(mail.html.includes('<a href="https://app.example"'));
+  // the site could not be put up: the same mail, except for the one paragraph that says which button does it
+  const notUp = siteCopiedMail({ name: 'Oak Bakery', address: 'https://oak-bakery-1a2b3c4d.kiln-sites.workers.dev/', from: 'https://www.oakbakery.com/', pages: 25, endsAt, dashboard: 'https://app.example' });
+  const [was, is] = [mail.text.split('\n\n'), notUp.text.split('\n\n')];
+  assert.equal(notUp.subject, 'Your site is copied');
+  assert.equal(is[2], "The copy is not up yet. Open your dashboard and press Put it on Kiln's hosting on the site's row. The site is then up at its temporary address, https://oak-bakery-1a2b3c4d.kiln-sites.workers.dev, about a minute later.");
+  assert.deepEqual(is.filter((_, i) => i !== 2), was.filter((_, i) => i !== 2));
+  assert.equal(/GitHub|repositor|—|–|undefined/.test(notUp.text + notUp.html), false);
 });
 
 test('the mail for a copy that did not work: the reason, what to try, that nothing was charged, and where Try again is', () => {

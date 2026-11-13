@@ -256,6 +256,21 @@ export async function commitAuthor(env, sess) {
   return { name: `${name} (via Kiln)`, email };
 }
 
+/**
+ * Whose name a change carries when the service makes it for an account and
+ * nobody is signed in (a site put up after its copy, bring.js): the account's
+ * own name and address, in the form commitAuthor gives for that account. The
+ * account's row does not keep GitHub's number for a person, so a GitHub
+ * account's address is the one without it.
+ */
+export async function accountAuthor(env, accountId) {
+  let acct = null;
+  // `name` arrives with migration 0008: ask for it, then for the older columns alone.
+  try { acct = await env.kiln_cloud.prepare('SELECT github_login, name, email FROM accounts WHERE id = ?').bind(accountId).first(); }
+  catch { try { acct = await env.kiln_cloud.prepare('SELECT github_login, email FROM accounts WHERE id = ?').bind(accountId).first(); } catch { acct = null; } }
+  return commitAuthor(env, { account_id: accountId, login: (acct && acct.github_login) || null, uid: null, google: { name: (acct && acct.name) || '', email: (acct && acct.email) || null } });
+}
+
 // ─── Lemon Squeezy ────────────────────────────────────────────────────────────
 
 function lsConfigured(env) { return !!(env.LS_API_KEY && env.LS_STORE_ID); }
@@ -1351,6 +1366,88 @@ async function ownedSite(request, env, url, sess, tools = {}, { needToken = true
   return { site, token, write, body, access };
 }
 
+const BUSY = 'Kiln is already putting this site up. Give it a minute, then reload this page.';
+/** Who is acting, for the operator's note, when the service puts a site up after its copy and nobody is signed in. */
+export const AFTER_A_COPY = 'Kiln, after a copy';
+
+/**
+ * Puts a site on Kiln's hosting for the first time, or publishes it again.
+ * This is the one piece of code behind POST /cloud/sites/hosting, for a
+ * signed-in owner, and behind the copying job's answer (hostCopied, below),
+ * where nobody is signed in. Nobody is asked who they are here: the caller has
+ * settled whose site it is, and hands in plain values.
+ *
+ *   site       the site's row: id, repo, origin, plan
+ *   token      the token that reads and writes its repository
+ *   accountId  the account the site is on, for the count of free hosted sites
+ *   author     whose name the commits carry, { name, email }, or a function
+ *              that answers it, which is asked only when a commit may be made
+ *   by         who is acting, for the operator's note
+ *   worker     this service's address
+ *
+ * Answers { status, body }, which the route sends as they are.
+ */
+export async function putOnHosting(env, { site, token, accountId, author, by, worker }) {
+  if (!hostingOn(env)) return { status: 503, body: { error: hostingSentence('not_set_up'), code: 'not_set_up' } };
+  if (site.plan !== 'managed') {
+    return { status: 403, body: { error: 'Hosting is part of the Kiln Cloud + hosting plan. This site is on Kiln Cloud, where it stays on your own host.', code: 'not_on_plan' } };
+  }
+  const row = await hostingRow(env, site.id);
+  // Until an account has paid for a site, it may have this many hosted ones.
+  if (!row) {
+    const unpaid = await env.kiln_cloud.prepare(
+      "SELECT COUNT(*) n FROM hosting h JOIN sites s ON s.id = h.site_id WHERE s.account_id = ? AND s.ls_subscription_id IS NULL AND h.state != 'removing'").bind(accountId).first().catch(() => ({ n: 0 }));
+    const paid = await env.kiln_cloud.prepare('SELECT COUNT(*) n FROM sites WHERE account_id = ? AND ls_subscription_id IS NOT NULL').bind(accountId).first().catch(() => ({ n: 0 }));
+    if (!Number(paid?.n) && Number(unpaid?.n) >= FREE_HOSTED_SITES) {
+      return { status: 403, body: { error: `During the free days Kiln hosts ${FREE_HOSTED_SITES === 1 ? 'one site' : `${FREE_HOSTED_SITES} sites`} for an account. Subscribe for one of your sites, then put this one up.`, code: 'free_limit' } };
+    }
+  }
+  let care = null;
+  if (!row || !row.deployed_at || await careOwed(env, site.id)) {
+    const who = typeof author === 'function' ? await author() : author;
+    care = await lookAfter(env, {
+      site, token, worker,
+      author: who,
+      firstpassAt: (await preparedTimes(env, accountId))[site.id]?.firstpass_at || null,
+      record: { prepared: (sha) => markPrepared(env, site.id, sha), firstPass: (sha) => markFirstPass(env, site.id, sha) },
+    });
+    if (!care) return { status: 409, body: { error: BUSY, code: 'busy' } };
+  }
+  const looked = care ? { looked_after: care } : {};
+  const out = await publishSite(env, { site, token });
+  if (out.state === 'busy') return { status: 409, body: { error: BUSY, code: 'busy', ...looked } };
+  if (out.state === 'failed') return { status: 502, body: { error: out.error || hostingSentence(out.reason), code: out.reason || 'cloudflare', hosting: out, ...looked } };
+  if (out.state === 'live' && !row) {
+    await notifyOwner(env, `Kiln hosts ${site.repo}`, [`By: ${by}`, `Address: ${out.url}`, `Files: ${out.files}`,
+      ...(care || []).map(c => `${c.step}: ${c.state}${c.code ? ` (${c.code})` : ''}${c.commit ? ` ${c.commit.url}` : ''}`)]);
+  }
+  return { status: 200, body: { ok: out.state === 'live', hosting: out, ...looked, ...(out.state !== 'live' ? { error: out.error, code: out.reason } : {}) } };
+}
+
+/**
+ * Puts a site on Kiln's hosting right after its copy (bring.js), with nobody
+ * signed in. Whose site it is was settled when the copy was asked for: it is
+ * the account on the copy's row. The commits carry that account's own name
+ * and address (accountAuthor). Answers { ok: true, url }, or { ok: false,
+ * code, detail } with the site left as it was. Never throws.
+ */
+async function hostCopied(env, tools, { id, accountId, worker }) {
+  try {
+    const site = await withAccessUntil(
+      () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id || '', accountId).first(),
+      () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id || '', accountId).first(),
+    );
+    if (!site) return { ok: false, code: 'no_such_site', detail: 'the site is not on the account any more' };
+    if (!siteHasAccess(site)) return { ok: false, code: 'plan_ended', detail: 'editing is switched off for the site' };
+    const token = typeof tools.installationToken === 'function' ? await tools.installationToken(env, site.repo) : null;
+    if (!token) return { ok: false, code: 'no_access', detail: `no token for ${site.repo}` };
+    const put = await putOnHosting(env, { site, token, accountId, author: () => accountAuthor(env, accountId), by: AFTER_A_COPY, worker });
+    const hosting = put.body.hosting || null;
+    if (put.status === 200 && put.body.ok === true && hosting && hosting.url) return { ok: true, url: hosting.url };
+    return { ok: false, code: String(put.body.code || (hosting && hosting.reason) || 'not_up'), detail: String(put.body.error || (hosting && hosting.error) || `answered ${put.status}`).slice(0, 300) };
+  } catch (e) { return { ok: false, code: 'error', detail: String((e && (e.detail || e.message)) || e).slice(0, 300) }; }
+}
+
 /**
  * Opens the editor of a site whose files Kiln keeps, for the account that owns
  * it. This is the one piece of code behind "Open the editor" in the dashboard
@@ -1727,6 +1824,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const out = await copyAnswered(env, {
       body: new Uint8Array(await request.arrayBuffer()), signature: request.headers.get('X-Kiln-Signature'), worker: url.origin, dashboard: dash,
       trialDays: TRIAL_GRACE_DAYS, sign: appJwt, pkcs1: tools.pkcs1 || null, note: (subject, lines) => notifyOwner(env, subject, lines),
+      // A copy that worked goes up on Kiln's hosting by itself, after the job has its answer where the request can wait (index.js: `later`).
+      host: (site) => hostCopied(env, tools, { id: site.id, accountId: site.account_id, worker: url.origin }),
+      later: typeof tools.later === 'function' ? tools.later : null,
     });
     return json(out.body, out.status);
   }
@@ -1890,49 +1990,17 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const asked = await ownedSite(request, env, url, sess, tools, write ? {} : { needToken: false, needAccess: false });
     if (asked.response) return asked.response;
     const { site, token } = asked;
-    const available = hostingOn(env);
-    const row = available ? await hostingRow(env, site.id) : null;
     if (!write) {
+      const available = hostingOn(env);
+      const row = available ? await hostingRow(env, site.id) : null;
       const care = row ? await lookedAfter(env, site.id) : null;
       // A hosted site that may not be edited any more: the rest of its row says when it comes down.
       const rest = row && !asked.access
         ? await env.kiln_cloud.prepare('SELECT created_at, ls_subscription_id FROM sites WHERE id = ?').bind(site.id).first().catch(() => null) : null;
       return json({ ok: true, available, on_plan: site.plan === 'managed', hosting: await shownHosting(env, row, { ...site, ...(rest || {}) }), ...(care ? { looked_after: care } : {}) });
     }
-    if (!available) return json({ error: hostingSentence('not_set_up'), code: 'not_set_up' }, 503);
-    if (site.plan !== 'managed') {
-      return json({ error: 'Hosting is part of the Kiln Cloud + hosting plan. This site is on Kiln Cloud, where it stays on your own host.', code: 'not_on_plan' }, 403);
-    }
-    // Until an account has paid for a site, it may have this many hosted ones.
-    if (!row) {
-      const unpaid = await env.kiln_cloud.prepare(
-        "SELECT COUNT(*) n FROM hosting h JOIN sites s ON s.id = h.site_id WHERE s.account_id = ? AND s.ls_subscription_id IS NULL AND h.state != 'removing'").bind(sess.account_id).first().catch(() => ({ n: 0 }));
-      const paid = await env.kiln_cloud.prepare('SELECT COUNT(*) n FROM sites WHERE account_id = ? AND ls_subscription_id IS NOT NULL').bind(sess.account_id).first().catch(() => ({ n: 0 }));
-      if (!Number(paid?.n) && Number(unpaid?.n) >= FREE_HOSTED_SITES) {
-        return json({ error: `During the free days Kiln hosts ${FREE_HOSTED_SITES === 1 ? 'one site' : `${FREE_HOSTED_SITES} sites`} for an account. Subscribe for one of your sites, then put this one up.`, code: 'free_limit' }, 403);
-      }
-    }
-    const BUSY = 'Kiln is already putting this site up. Give it a minute, then reload this page.';
-    let care = null;
-    if (!row || !row.deployed_at || await careOwed(env, site.id)) {
-      const author = await commitAuthor(env, sess);
-      care = await lookAfter(env, {
-        site, token, worker: url.origin,
-        author,
-        firstpassAt: (await preparedTimes(env, sess.account_id))[site.id]?.firstpass_at || null,
-        record: { prepared: (sha) => markPrepared(env, site.id, sha), firstPass: (sha) => markFirstPass(env, site.id, sha) },
-      });
-      if (!care) return json({ error: BUSY, code: 'busy' }, 409);
-    }
-    const looked = care ? { looked_after: care } : {};
-    const out = await publishSite(env, { site, token });
-    if (out.state === 'busy') return json({ error: BUSY, code: 'busy', ...looked }, 409);
-    if (out.state === 'failed') return json({ error: out.error || hostingSentence(out.reason), code: out.reason || 'cloudflare', hosting: out, ...looked }, 502);
-    if (out.state === 'live' && !row) {
-      await notifyOwner(env, `Kiln hosts ${site.repo}`, [`By: ${signedInAs(sess)}`, `Address: ${out.url}`, `Files: ${out.files}`,
-        ...(care || []).map(c => `${c.step}: ${c.state}${c.code ? ` (${c.code})` : ''}${c.commit ? ` ${c.commit.url}` : ''}`)]);
-    }
-    return json({ ok: out.state === 'live', hosting: out, ...looked, ...(out.state !== 'live' ? { error: out.error, code: out.reason } : {}) });
+    const put = await putOnHosting(env, { site, token, accountId: sess.account_id, author: () => commitAuthor(env, sess), by: signedInAs(sess), worker: url.origin });
+    return json(put.body, put.status);
   }
 
   // A hosted site on its owner's own domain (domain.js). GET says where the

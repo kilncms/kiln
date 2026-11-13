@@ -35,6 +35,7 @@ export const COPY_MINUTES = 30;         // a job that has said nothing for this 
 export const BROUGHT_DAYS = 30;         // how long one free copy of a site stands in the way of the next
 export const MOST_ANSWER = 300000;      // bytes of the job's answer
 export const MOST_REPORT = 20000;       // characters of the report that are kept
+export const HOST_SECONDS = 20;        // how long the owner's mail waits for the site to go up, where the work goes on after the answer
 const SWEEP_AT_ONCE = 10;
 const LOCK_S = 60;
 
@@ -373,16 +374,46 @@ async function writeSettings(env, { site, branch, worker, sign, pkcs1 }) {
 }
 
 /** The mail a copy ends with: once for a try, and only where customer mail is on and the account has an address (sendOnce). */
-async function tellOwner(env, row, { site, state, reason, pages = 0, dashboard, trialDays }) {
+async function tellOwner(env, row, { site, state, reason, pages = 0, dashboard, trialDays, up = false, address = null }) {
   try {
     const to = await ownerEmail(env, row.account_id);
     if (state === 'done') {
-      await sendOnce(env, `copied:${row.id}`, to, siteCopiedMail({ name: site.name, address: site.origin, from: row.address, pages, endsAt: trialEndsAt(site.created_at, trialDays), dashboard }));
+      // `up`: the site is on Kiln's hosting already, at `address`. Otherwise the mail says which button puts it up.
+      await sendOnce(env, `copied:${row.id}`, to, siteCopiedMail({ name: site.name, address: (up && address) || site.origin, up, from: row.address, pages, endsAt: trialEndsAt(site.created_at, trialDays), dashboard }));
     } else {
       const again = Number(row.tries) < MOST_TRIES;
       await sendOnce(env, `copyfailed:${row.id}`, to, copyFailedMail({ address: row.address, ...copyTrouble(reason, { again }), again, dashboard }));
     }
   } catch { /* a mail that could not go changes nothing about the copy */ }
+}
+
+/**
+ * What follows a copy that worked: the site is put on Kiln's hosting, and then
+ * its owner is written to. A site that could not be put up changes nothing
+ * about the copy, which stays done: the mail says which button puts it up, and
+ * the operator is told. `wait` (ms) is how long the mail waits for the site,
+ * where this runs after the answer and has little time left: a site that is
+ * slower than that is written about as not up yet, and may still go up.
+ * Never throws.
+ */
+async function putUpAndTell(env, row, { site, pages, dashboard, trialDays, host, note, wait = 0 }) {
+  let up = null, timer = null;
+  try {
+    const going = Promise.resolve().then(() => host(site));
+    going.catch(() => {});
+    const slow = new Promise((answer) => { if (wait > 0) timer = setTimeout(() => answer({ ok: false, code: 'slow', detail: `the site was not up after ${Math.round(wait / 1000)} seconds, and it may still go up` }), wait); });
+    up = await Promise.race([going, slow]);
+  } catch (e) { up = { ok: false, code: 'error', detail: String((e && (e.detail || e.message)) || e).slice(0, 300) }; }
+  finally { if (timer) clearTimeout(timer); }
+  const isUp = !!up && up.ok === true;
+  await tellOwner(env, row, { site, state: 'done', pages, dashboard, trialDays, up: isUp, address: isUp ? up.url : null });
+  if (isUp) return;
+  const detail = `${(up && up.code) || 'not_up'}: ${String((up && up.detail) || 'no reason was given').replace(/\s+/g, ' ').slice(0, 300)}`;
+  console.warn(JSON.stringify({ evt: 'bring_not_hosted', job: row.id, repo: site.repo, detail }));
+  try {
+    await note(`Kiln could not put ${site.repo} on its hosting after its copy`, [`Job: ${row.id}`, `What went wrong: ${detail}`,
+      "The copy is done and stays done. Its owner was told that Put it on Kiln's hosting on the site's row puts the site up."]);
+  } catch { /* logged above */ }
 }
 
 /**
@@ -392,13 +423,26 @@ async function tellOwner(env, row, { site, state, reason, pages = 0, dashboard, 
  *   signature   its X-Kiln-Signature header
  *   worker      this service's address, for the site's settings file
  *   dashboard, trialDays   for the mail
+ *   host        (site) → puts the copied site on Kiln's hosting (cloud.js
+ *               hostCopied) and answers { ok: true, url } or { ok: false,
+ *               code, detail }. Without it the site is not put up, and the
+ *               mail says which button does that.
+ *   later       (promise) → lets work go on after the answer is sent
+ *               (`ctx.waitUntil`). With it the job has its answer at once and
+ *               the site goes up afterwards; without it the answer waits.
+ *
+ * A copy that worked is marked done first. Then the site is put on Kiln's
+ * hosting and its owner is written to: that the site is up and where, or,
+ * when it could not be put up, that the copy is there and which button puts
+ * it up. The copy is done either way.
  *
  * Answers { status, body }. A wrong or missing signature is 401 and changes
  * nothing. An answer for a job that is not being copied any more (a second
  * delivery, a try that was given up on, a job nobody knows) is 200 with
  * `already: true` and changes nothing.
  */
-export async function copyAnswered(env, { body, signature, worker, dashboard = '', trialDays = 7, sign, pkcs1 = null, note = async () => {}, now = Date.now() } = {}) {
+export async function copyAnswered(env, { body, signature, worker, dashboard = '', trialDays = 7, sign, pkcs1 = null, note = async () => {}, host = null, later = null,
+  hostWait = HOST_SECONDS * 1000, now = Date.now() } = {}) {
   const size = typeof body === 'string' ? body.length : (body ? body.byteLength : 0);
   if (size > MOST_ANSWER) return { status: 413, body: { error: 'too large' } };
   if (!(await signedRight(convertSecret(env), body || '', signature))) return { status: 401, body: { error: 'bad signature' } };
@@ -434,7 +478,11 @@ export async function copyAnswered(env, { body, signature, worker, dashboard = '
   const took = await env.kiln_cloud.prepare("UPDATE conversions SET state = ?, reason = ?, pages = ?, rendered = ?, report = ?, done_at = ?, updated_at = ? WHERE id = ? AND state = 'copying'")
     .bind(state, reason, pages, rendered, cutReport(said.report), now, now, job).run();
   if (!changed(took)) return { status: 200, body: { ok: true, already: true } };
-  if (site) await tellOwner(env, row, { site, state, reason, pages, dashboard, trialDays });
+  if (site && state === 'done' && typeof host === 'function') {
+    const waits = typeof later === 'function';
+    const work = putUpAndTell(env, row, { site, pages, dashboard, trialDays, host, note, wait: waits ? hostWait : 0 });
+    if (waits) later(work); else await work;
+  } else if (site) await tellOwner(env, row, { site, state, reason, pages, dashboard, trialDays });
   if (reason === 'tool') {
     try { await note(`Kiln's copy of ${row.address} stopped`, [`Job: ${job}`, `Repository: ${site.repo}`, `What the job said: ${String(said.reason || 'nothing').replace(/\s+/g, ' ').slice(0, 300)}`, `Try: ${row.tries} of ${MOST_TRIES}`]); }
     catch { /* the row says it */ }
