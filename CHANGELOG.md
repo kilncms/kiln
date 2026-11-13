@@ -133,6 +133,31 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   when the only thing waiting is an uploaded file, where it used to do
   nothing (`src/editor/edit-count.js`).
 
+- **On a phone, a tall block's buttons open where they can be seen.** A tap
+  on a block's "more" button opens its buttons in a row at the foot of the
+  block. On a tall block, such as a product card with a picture, that row is
+  a long way from the button. With the card halfway down the screen the row
+  opened below the screen, and the tap seemed to do nothing. Higher up, it
+  opened under the editor's own buttons along the bottom of the screen: Undo,
+  Redo and Publish, the demo's banner, and the guide's "Now publish it." tip.
+  Now the page moves just far enough to show the whole row, clear of all of
+  those and of a bar the site keeps at the top, and it stays where it is when
+  the row already shows (`src/editor/in-view.js`).
+
+### Changed
+
+- **The browser check passes on the test demo with nothing left failing.**
+  `scripts/ui-check.mjs` had 26 checks that failed on every run against the
+  test demo, which made a new failure easy to miss. Its count of requests
+  outside the local server no longer includes a stylesheet that the site's own
+  page asks for in its own file (the demo's fonts). Everything Kiln's code asks
+  for still counts, and the list is no longer emptied when Help or "Put Kiln
+  on my site" opens a tab. The guide's first tip may sit on the heading's own
+  line, after its words, as the editor has put it since October where there
+  are words to read both over and under the heading. A block is brought clear
+  of a header the site keeps at the top of the screen before its buttons are
+  reached for, because they are hidden under one on purpose.
+
 ## [0.6.3] - 2026-11-12
 
 ### Fixed
@@ -689,33 +714,6 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   count only as the first folder of a path, so a page at
   `lists/public/index.html` is looked after like any other
   (`worker/prepare.js`, `isSitePage`).
-
-### Fixed
-
-- **On a phone, a tall block's buttons open where they can be seen.** A tap
-  on a block's "more" button opens its buttons in a row at the foot of the
-  block. On a tall block, such as a product card with a picture, that row is
-  a long way from the button. With the card halfway down the screen the row
-  opened below the screen, and the tap seemed to do nothing. Higher up, it
-  opened under the editor's own buttons along the bottom of the screen: Undo,
-  Redo and Publish, the demo's banner, and the guide's "Now publish it." tip.
-  Now the page moves just far enough to show the whole row, clear of all of
-  those and of a bar the site keeps at the top, and it stays where it is when
-  the row already shows (`src/editor/in-view.js`).
-
-### Changed
-
-- **The browser check passes on the test demo with nothing left failing.**
-  `scripts/ui-check.mjs` had 26 checks that failed on every run against the
-  test demo, which made a new failure easy to miss. Its count of requests
-  outside the local server no longer includes a stylesheet that the site's own
-  page asks for in its own file (the demo's fonts). Everything Kiln's code asks
-  for still counts, and the list is no longer emptied when Help or "Put Kiln
-  on my site" opens a tab. The guide's first tip may sit on the heading's own
-  line, after its words, as the editor has put it since October where there
-  are words to read both over and under the heading. A block is brought clear
-  of a header the site keeps at the top of the screen before its buttons are
-  reached for, because they are hidden under one on purpose.
 
 ## [0.6.0] - 2026-11-12
 
