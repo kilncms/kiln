@@ -181,6 +181,87 @@ export function domainNameServersMail({ origin, name, nameServers = [], seller =
   ], whyLine(host));
 }
 
+const trimmed = (url) => String(url || '').replace(/\/+$/, '');
+
+/**
+ * Sent once when a hosted site has gone live at its owner's domain. `address`
+ * is the site's address from now on (https://<name>, or the `www` one),
+ * `tempUrl` the address Kiln's hosting gave it, and `oneAddress` true when
+ * the other of the two names is sent on to `address` and HTTPS is always on.
+ */
+export function domainLiveMail({ name, address, tempUrl = null, oneAddress = false, dashboard }) {
+  const at = trimmed(address), other = hostOf(at) === name ? `www.${name}` : name;
+  return message(`Your site is live at ${name}`, [
+    'Hello,',
+    `The name servers of ${name} now point at Kiln, and your site is live at its new address.`,
+    at,
+    ...(oneAddress ? [`A visitor who types ${other} is sent on to that address, and everyone gets the secure https version of it.`] : []),
+    ...(tempUrl ? ['The temporary address keeps working, so a link you have already shared still opens the site.', trimmed(tempUrl)] : []),
+    `Your email and the other records of ${name} are untouched. They answer the way they did before the change.`,
+    `To edit the site, open ${at}/kiln and sign in the way you did before. Click any outlined words or picture, change them, and press Publish.`,
+    'The site\'s row in your dashboard shows the domain and the records Kiln keeps for it.',
+    dashboard,
+  ], whyLine(name));
+}
+
+/**
+ * Sent once, 14 days into a set-up whose name servers have not been changed:
+ * the two name servers again, the seller's page, and the day the set-up is
+ * put away. The fields are the ones domainNameServersMail takes.
+ */
+export function domainReminderMail({ origin, name, nameServers = [], seller = null, helpUrl = null, givesUpAt = null, dashboard }) {
+  const at = seller?.name || 'the company you bought the domain from';
+  return message(`${name} is still waiting for its two name servers`, [
+    'Hello,',
+    `Kiln has everything ready for your site to answer at ${name}, and the name servers of ${name} have not been changed yet. That one step is left, and only you can take it: sign in at ${at}, and replace the name servers of ${name} with these two.`,
+    ...nameServers,
+    ...(helpUrl ? [seller?.name ? `The domain was bought at ${seller.name}. This page explains how to change its name servers:` : 'This page explains how to change a domain\'s name servers:', helpUrl] : []),
+    `Until that change takes hold, your site and your email keep working exactly where they are now. Kiln notices the change by itself and writes to you when your site is live at ${name}.`,
+    ...(givesUpAt ? [`If the name servers are not changed by ${dayWords(givesUpAt)}, Kiln puts this set-up away. Nothing of yours is changed by that, and you can start again any time.`] : []),
+    `If you no longer want to use ${name}, you can stop the set-up on the site's row in your dashboard.`,
+    dashboard,
+  ], whyLine(hostOf(origin)));
+}
+
+/**
+ * Sent once when a set-up that never went live is put away. `reason` says
+ * why: 'not_changed' (the name servers were not changed within `waitDays`),
+ * 'moved' (they were changed and then changed away again), or anything else
+ * for a set-up Kiln's hosting no longer holds.
+ */
+export function domainPutAwayMail({ origin, name, reason = 'not_changed', waitDays = 25, dashboard }) {
+  const site = trimmed(origin);
+  const why = reason === 'not_changed' ? `because the name servers of ${name} were not changed within ${waitDays} days`
+    : reason === 'moved' ? `because the name servers of ${name} were pointed at Kiln and then pointed somewhere else before your site was live there`
+      : 'because Cloudflare, which runs Kiln\'s hosting, no longer holds it';
+  return message(`The set-up for ${name} was put away`, [
+    'Hello,',
+    `Kiln put the set-up for ${name} away, ${why}.`,
+    `Kiln changed nothing of yours. ${name}, its email and its other records are where you keep them, and your site is still up at the address it had.`,
+    site,
+    `To start again, open your dashboard and set up ${name} on the site's row. It takes a minute, and Kiln writes to you again with the two name servers to enter.`,
+    dashboard,
+  ], whyLine(hostOf(origin)));
+}
+
+/**
+ * Sent once when a domain that was live has had its name servers pointed
+ * away from Kiln. `tempUrl` is the address Kiln's hosting gave the site,
+ * which is its address on record again.
+ */
+export function domainMovedMail({ name, tempUrl, dashboard }) {
+  const back = trimmed(tempUrl);
+  return message(`${name} was moved away from Kiln`, [
+    'Hello,',
+    `The name servers of ${name} no longer point at Kiln, so your site does not answer at ${name} any more.`,
+    ...(back ? ['Your site is back at its temporary address, and it is still up there.', back] : []),
+    `Nothing was deleted. Your pages and your repository are as they were.${back ? ` To edit the site, open ${back}/kiln and sign in the way you did before.` : ''}`,
+    `If email at ${name} has stopped arriving, the company whose name servers the domain uses now needs its email records. Reply to this email and we will help you with that.`,
+    `To bring ${name} back, open your dashboard and set it up again on the site's row. Kiln writes to you again with the two name servers to enter.`,
+    dashboard,
+  ], whyLine(name));
+}
+
 /** True when this worker is set up to write to customers at all. */
 export function customerMailOn(env) {
   return !!(env && env.NOTIFY && typeof env.NOTIFY.send === 'function' && mailAddress(env.CUSTOMER_MAIL_FROM));

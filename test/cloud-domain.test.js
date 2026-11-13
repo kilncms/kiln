@@ -20,7 +20,7 @@ import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare, fakeLookups } from './cloudflare-fake.js';
 import { domainSentence, domainRow, saveDomain, LIMITS } from '../worker/domain.js';
 import { domainTookHold, siteHasAccess } from '../worker/cloud.js';
-import { domainNameServersMail, dayWords } from '../worker/mail.js';
+import { domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, dayWords } from '../worker/mail.js';
 
 const N = 'oakbakery.test';
 const WORKER = 'club-site1';
@@ -619,4 +619,100 @@ test('own domain: the email says which two name servers to enter and where, what
     assert.doesNotMatch(text, /[—–]/);
     assert.doesNotMatch(text, /undefined|null|\[object/);
   }
+});
+
+// ─── The four emails that follow a set-up ─────────────────────────────────────
+
+const TEMP = `https://${WORKER}.kiln-sites.workers.dev`;
+const letter = (paragraphs, host) => `${paragraphs.join('\n\n')}\n\nKiln\nYou are getting this because ${host} was added to Kiln Cloud with this email address. Reply to this email to reach a person.\n`;
+const clean = (...mails) => { for (const m of mails) for (const text of [m.subject, m.text, m.html]) { assert.doesNotMatch(text, /[—–]/); assert.doesNotMatch(text, /undefined|null|\[object/); } };
+
+test('own domain: the "live" email gives the address, says the temporary one keeps working and email is untouched, and how to open the editor', () => {
+  const about = { name: N, address: `https://${N}`, tempUrl: TEMP, oneAddress: true, dashboard: 'https://app.example' };
+  const mail = domainLiveMail(about);
+  assert.equal(mail.subject, 'Your site is live at oakbakery.test');
+  assert.equal(mail.text, letter([
+    'Hello,',
+    'The name servers of oakbakery.test now point at Kiln, and your site is live at its new address.',
+    'https://oakbakery.test',
+    'A visitor who types www.oakbakery.test is sent on to that address, and everyone gets the secure https version of it.',
+    'The temporary address keeps working, so a link you have already shared still opens the site.',
+    TEMP,
+    'Your email and the other records of oakbakery.test are untouched. They answer the way they did before the change.',
+    'To edit the site, open https://oakbakery.test/kiln and sign in the way you did before. Click any outlined words or picture, change them, and press Publish.',
+    'The site\'s row in your dashboard shows the domain and the records Kiln keeps for it.',
+    'https://app.example',
+  ], N));
+  assert.ok(mail.html.includes('<a href="https://oakbakery.test"'));
+  // A site whose address is the www one is told that one, and that the bare name is sent on to it.
+  const www = domainLiveMail({ ...about, address: `https://www.${N}/` });
+  assert.ok(www.text.includes('\n\nhttps://www.oakbakery.test\n\nA visitor who types oakbakery.test is sent on to that address'));
+  assert.ok(www.text.includes('open https://www.oakbakery.test/kiln and sign in'));
+  // When the other name could not be sent on, the email does not say that it is. With no temporary address it names none.
+  const plainer = domainLiveMail({ ...about, oneAddress: false, tempUrl: null });
+  assert.doesNotMatch(plainer.text, /is sent on|temporary address/);
+  clean(mail, www, plainer);
+});
+
+test('own domain: the reminder gives the two name servers again, the seller\'s page, and the day the set-up is put away', () => {
+  const givesUpAt = Date.UTC(2026, 11, 7);
+  const about = { origin: TEMP, name: N, nameServers: ['ada1.ns.cloudflare.com', 'bob1.ns.cloudflare.com'], seller: { name: 'GoDaddy' }, helpUrl: GODADDY, givesUpAt, dashboard: 'https://app.example' };
+  const mail = domainReminderMail(about);
+  assert.equal(mail.subject, 'oakbakery.test is still waiting for its two name servers');
+  assert.equal(mail.text, letter([
+    'Hello,',
+    'Kiln has everything ready for your site to answer at oakbakery.test, and the name servers of oakbakery.test have not been changed yet. That one step is left, and only you can take it: sign in at GoDaddy, and replace the name servers of oakbakery.test with these two.',
+    'ada1.ns.cloudflare.com',
+    'bob1.ns.cloudflare.com',
+    'The domain was bought at GoDaddy. This page explains how to change its name servers:',
+    GODADDY,
+    'Until that change takes hold, your site and your email keep working exactly where they are now. Kiln notices the change by itself and writes to you when your site is live at oakbakery.test.',
+    `If the name servers are not changed by ${dayWords(givesUpAt)}, Kiln puts this set-up away. Nothing of yours is changed by that, and you can start again any time.`,
+    'If you no longer want to use oakbakery.test, you can stop the set-up on the site\'s row in your dashboard.',
+    'https://app.example',
+  ], `${WORKER}.kiln-sites.workers.dev`));
+  assert.equal(dayWords(givesUpAt), 'Monday, December 7');
+  // Nobody could say who sold the domain: the general page, and no seller is named.
+  const unknown = domainReminderMail({ ...about, seller: null, helpUrl: GENERAL });
+  assert.ok(unknown.text.includes('sign in at the company you bought the domain from, and replace'));
+  assert.ok(unknown.text.includes(`This page explains how to change a domain's name servers:\n\n${GENERAL}\n\n`));
+  clean(mail, unknown);
+});
+
+test('own domain: the "put away" email says why, that nothing of theirs was changed, and how to start again', () => {
+  const about = { origin: TEMP, name: N, reason: 'not_changed', waitDays: LIMITS.waitDays, dashboard: 'https://app.example' };
+  const mail = domainPutAwayMail(about);
+  assert.equal(mail.subject, 'The set-up for oakbakery.test was put away');
+  assert.equal(mail.text, letter([
+    'Hello,',
+    'Kiln put the set-up for oakbakery.test away, because the name servers of oakbakery.test were not changed within 25 days.',
+    'Kiln changed nothing of yours. oakbakery.test, its email and its other records are where you keep them, and your site is still up at the address it had.',
+    TEMP,
+    'To start again, open your dashboard and set up oakbakery.test on the site\'s row. It takes a minute, and Kiln writes to you again with the two name servers to enter.',
+    'https://app.example',
+  ], `${WORKER}.kiln-sites.workers.dev`));
+  const moved = domainPutAwayMail({ ...about, reason: 'moved' });
+  assert.ok(moved.text.includes('Kiln put the set-up for oakbakery.test away, because the name servers of oakbakery.test were pointed at Kiln and then pointed somewhere else before your site was live there.'));
+  const gone = domainPutAwayMail({ ...about, reason: 'gone' });
+  assert.ok(gone.text.includes('Kiln put the set-up for oakbakery.test away, because Cloudflare, which runs Kiln\'s hosting, no longer holds it.'));
+  clean(mail, moved, gone);
+  plain(domainSentence('gone', { name: N }));
+});
+
+test('own domain: the "moved away" email says the site is back at its temporary address, that nothing was deleted, and how to bring the domain back', () => {
+  const mail = domainMovedMail({ name: N, tempUrl: `${TEMP}/`, dashboard: 'https://app.example' });
+  assert.equal(mail.subject, 'oakbakery.test was moved away from Kiln');
+  assert.equal(mail.text, letter([
+    'Hello,',
+    'The name servers of oakbakery.test no longer point at Kiln, so your site does not answer at oakbakery.test any more.',
+    'Your site is back at its temporary address, and it is still up there.',
+    TEMP,
+    `Nothing was deleted. Your pages and your repository are as they were. To edit the site, open ${TEMP}/kiln and sign in the way you did before.`,
+    'If email at oakbakery.test has stopped arriving, the company whose name servers the domain uses now needs its email records. Reply to this email and we will help you with that.',
+    'To bring oakbakery.test back, open your dashboard and set it up again on the site\'s row. Kiln writes to you again with the two name servers to enter.',
+    'https://app.example',
+  ], N));
+  const nowhere = domainMovedMail({ name: N, tempUrl: null, dashboard: 'https://app.example' });
+  assert.doesNotMatch(nowhere.text, /temporary address|\/kiln/);
+  clean(mail, nowhere);
 });
