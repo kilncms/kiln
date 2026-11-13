@@ -1049,8 +1049,8 @@ export function missingLines(gone) {
 export function lostLines(pages) {
   const list = pages.filter(p => p.rendered);
   if (!list.length) return [];
-  const L = ['## What freezing cost', '',
-    'These pages are now plain HTML. Whatever the app did with script after a page was drawn has stopped. Check each item below.', ''];
+  const L = ['## What to check', '',
+    'These pages are plain files now, with nothing running behind them. Anything the old site worked out as it went, or did with a script after a page was drawn, no longer happens. Check each item below.', ''];
   const where = (hrefs) => { const u = [...new Set(hrefs)]; return u.length > 4 ? `${u.slice(0, 4).join(', ')} and ${u.length - 4} more` : u.join(', '); };
   const group = (items, keyOf) => { const m = new Map(); for (const it of items) { const k = keyOf(it); if (!m.has(k)) m.set(k, []); m.get(k).push(it.href); } return m; };
 
@@ -1071,7 +1071,7 @@ export function lostLines(pages) {
   const withMenu = list.filter(p => p.rendered.menu?.found);
   const shimmed = withMenu.filter(p => p.rendered.menu.shimmed);
   if (!withMenu.length) L.push('- Phone menu: no menu button found.');
-  else if (shimmed.length === withMenu.length) L.push(`- Phone menu: works. The button "${withMenu[0].rendered.menu.label}" opens it through assets/kiln-menu.js, a small script with no dependencies, on ${where(shimmed.map(p => p.href))}.`);
+  else if (shimmed.length === withMenu.length) L.push(`- Phone menu: works. The button "${withMenu[0].rendered.menu.label}" opens it through assets/kiln-menu.js, a small script of Kiln's own, on ${where(shimmed.map(p => p.href))}.`);
   else if (shimmed.length) L.push(`- Phone menu: works on ${where(shimmed.map(p => p.href))}. On ${where(withMenu.filter(p => !p.rendered.menu.shimmed).map(p => p.href))} the button could not be made to work: add the links to the page by hand.`);
   else if (list.some(p => p.rendered.menu?.tried)) L.push(`- Phone menu: the button "${withMenu[0].rendered.menu.label}" does not open, and --menu-shim could not work out what it shows. Add the links to the page by hand.`);
   else L.push(`- Phone menu: the button "${withMenu[0].rendered.menu.label}" does not open. Run again with --menu-shim to add a small script that opens it.`);
@@ -1087,7 +1087,7 @@ export function lostLines(pages) {
 
   const invisible = list.filter(p => p.rendered.lost.invisible.length);
   if (invisible.length) {
-    L.push(`- Text that was invisible when frozen (it was waiting for an animation) on ${where(invisible.map(p => p.href))}:`);
+    L.push(`- Text that was invisible when the page was saved (it was waiting for an animation) on ${where(invisible.map(p => p.href))}:`);
     for (const p of invisible) for (const t of p.rendered.lost.invisible) L.push(`  - "${t}"`);
   }
   const count = (key) => list.filter(p => p.rendered.lost[key] > 0).map(p => p.href);
@@ -1142,8 +1142,8 @@ export function staticLostLines(pages, origin, opts = {}) {
   if (!dead.length && !outside.length && !searches.length && !comments.length && !logins.size && !opts.menuLine) return [];
   const where = (hrefs) => { const u = [...new Set(hrefs)]; return u.length > 4 ? `${u.slice(0, 4).join(', ')} and ${u.length - 4} more` : u.join(', '); };
   const group = (items, keyOf) => { const m = new Map(); for (const it of items) { const k = keyOf(it); if (!m.has(k)) m.set(k, []); m.get(k).push(it.href); } return m; };
-  const L = ['## What freezing cost', '',
-    'These pages are plain HTML now, with nothing running behind them. Check each item below.', ''];
+  const L = ['## What to check', '',
+    'These pages are plain files now, with nothing running behind them, so anything the old site worked out as it went no longer happens. Check each item below.', ''];
   if (dead.length) {
     // the number is the number of lines under it: one form on four pages is one form
     const forms = group(dead, f => `"${f.label}" (${f.fields} field${f.fields === 1 ? '' : 's'}${f.action ? `, posted to ${f.action}` : ''})`);
@@ -1152,7 +1152,7 @@ export function staticLostLines(pages, origin, opts = {}) {
     for (const [k, hrefs] of forms) L.push(`  - ${k} on ${where(hrefs)}`);
   } else L.push('- Forms that posted into the old site: none.');
   if (outside.length) {
-    L.push(`- Forms that post to an outside service, which should still work — send one test from the new site:`);
+    L.push(`- Forms that post to an outside service, which should still work. Send one test from the new site:`);
     for (const [k, hrefs] of group(outside, f => `"${f.label}" (posts to ${f.host})`)) L.push(`  - ${k} on ${where(hrefs)}`);
   }
   if (searches.length) L.push(`- Search boxes on ${where(searches)}: the old server answered them, and it is gone. Remove them, or point them at a search service.`);
@@ -1697,25 +1697,37 @@ window.KILN = {
 function printReport(r) {
   const written = new Set(r.pageMap.values()).size;
   const lines = [];
-  lines.push(`# Rescue report: ${r.origin}${r.folder ? r.folder + '/' : ''}`);
+  lines.push(`# ${r.dry ? 'What would be copied from' : 'What was copied from'} ${r.origin}${r.folder ? r.folder + '/' : ''}`);
   lines.push('');
-  const more = r.unvisited ? ` ${r.unvisited} more address${r.unvisited === 1 ? ' was' : 'es were'} found and not tried, because --max-pages stopped the run at ${r.maxPages}. To copy ${r.unvisited === 1 ? 'it' : 'them'} too, run again with a bigger --max-pages.` : '';
-  lines.push(`- Pages crawled: ${r.pages.size}${r.dry ? ' (dry run, nothing written)' : `, written: ${written}`}.${more}`);
+  const more = r.unvisited ? ` ${r.unvisited} more address${r.unvisited === 1 ? ' was' : 'es were'} found and not tried, because the run was set to stop after ${r.maxPages} page${r.maxPages === 1 ? '' : 's'} (--max-pages). To copy ${r.unvisited === 1 ? 'it' : 'them'} too, run again with a bigger --max-pages.` : '';
+  // Blank pages have a line of their own just below, and addresses that were
+  // skipped have theirs further down, so this line counts what was copied.
+  const noFile = r.pages.size - written;
+  lines.push(r.dry
+    ? `- Pages found: ${r.pages.size}. This was a trial run, so nothing was copied.${more}`
+    : `- Pages copied: ${written}.${noFile > 0 ? ` ${r.pages.size} pages were read, and ${noFile} of them ${noFile === 1 ? 'was' : 'were'} not given a file of ${noFile === 1 ? 'its' : 'their'} own.` : ''}${more}`);
   lines.push(...folderLines(r));
   if (r.noHome) lines.push(`- Check this: the copy has no home page. A site opens the file index.html at its top first, and this copy has none there, because the address given was not the site's home page. The first page copied is at ${r.firstHref}. Run the rescue on the address of the home page, or copy the file of the page you want as the home page to index.html at the top of this folder.`);
   lines.push(r.dry
-    ? `- Assets to localize: at least ${r.planned}. Style sheets usually bring in more (fonts, background pictures), and those are counted when they are copied.`
-    : `- Assets localized: ${r.localized.length} (${mb(r.localizedBytes)})`);
-  if (r.sitemapNote) lines.push(`- Sitemap ${r.sitemapNote.path}: ${r.sitemapNote.found} pages listed (${r.sitemapNote.read} sitemap file${r.sitemapNote.read === 1 ? '' : 's'} read${r.sitemapNote.skipped ? `; ${r.sitemapNote.skipped} more beyond the cap` : ''})`);
+    ? `- Pictures, styles, fonts and other files to copy: at least ${r.planned}. Style sheets usually bring in more (fonts, background pictures), and those are counted when they are copied.`
+    : `- Pictures, styles, fonts and other files copied: ${r.localized.length} (${mb(r.localizedBytes)})`);
+  if (r.sitemapNote) {
+    const sm = r.sitemapNote, was = (n) => (n === 1 ? 'was' : 'were');
+    const files = sm.skipped
+      ? ` The list is split into several files: ${sm.read} ${was(sm.read)} read and ${sm.skipped} more ${was(sm.skipped)} not, because the rescue reads only so many in one run.`
+      : sm.read > 1 ? ` The list is split into ${sm.read} files, and all of them were read.` : '';
+    lines.push(`- The site's own list of its pages (${sm.path}) names ${sm.found} page${sm.found === 1 ? '' : 's'}.${files}`);
+  }
   const kindsLine = r.scripts ? scriptKindsLine(r.kinds) : '';
-  lines.push(`- Scripts stripped: ${r.scripts}${r.cruft ? ` (+ ${r.cruft} builder cruft tags removed)` : ''}${kindsLine ? `. ${kindsLine}` : ''}`);
+  lines.push(`- Scripts taken out: ${r.scripts}${r.cruft ? ` (and ${r.cruft} leftover tag${r.cruft === 1 ? '' : 's'} of the tool that built the site)` : ''}${kindsLine ? `. ${kindsLine}` : ''}`);
   const shownSays = shownLine(r.shown);
   if (shownSays) lines.push(shownSays);
   if (r.previews && r.folder) lines.push(`- The picture for link previews (og:image, twitter:image) is in the copy, and the pages name it by its place there, /assets/rescued/…. The services that draw previews need a full address, and the copy has none yet: the old site lived in the folder ${r.folder}/, and this copy is made to be the top of a site. When the copy is live, put its address in front on each page, like https://your-address/assets/rescued/….`);
   else if (r.previews) lines.push(`- The picture for link previews (og:image, twitter:image) is written with this site's full address, ${r.origin}/assets/rescued/…, because the services that draw previews need a full address. If the copy goes live at a different address, change it on each page.`);
   if (r.firstTitle) lines.push(`- Check this first: the first page is titled "${r.firstTitle}". If that is an error page, the address is wrong or the site is not published, and this is a copy of the error.`);
-  if (r.rendered && !r.dry) lines.push(`- Rendered in a browser: every page was opened, scrolled to the end and saved as it looked. App scripts left in the pages: ${r.left}. Requests the browser made to do it: ${r.requests}`);
-  if (r.tally) lines.push(`- Kiln-tagged: ${r.tally.fields} text fields · ${r.tally.images} images · ${r.tally.repeats} block lists · ${r.tally.menu} menus`);
+  if (r.rendered && !r.dry) lines.push(`- Opened in a browser: every page was opened, scrolled to the end and saved as it looked. Scripts of the old site left in the pages: ${r.left}. Times the browser asked a website for something along the way: ${r.requests}`);
+  const some = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  if (r.tally) lines.push(`- Marked so you can edit them: ${some(r.tally.fields, 'piece of text', 'pieces of text')}, ${some(r.tally.images, 'picture', 'pictures')}, ${some(r.tally.repeats, 'list of blocks', 'lists of blocks')}, ${some(r.tally.menu, 'menu', 'menus')}`);
   // The file names every skipped address. The terminal names the first ten
   // when there are many: hundreds of lines would bury everything else.
   const SKIPPED_HERE = '\u0000skipped';
@@ -1733,7 +1745,7 @@ function printReport(r) {
   const emit = () => {
     const text = (block) => lines.flatMap(l => (l === SKIPPED_HERE ? block : [l])).join('\n');
     if (!r.dry) writeFileSync(path.join(r.out, 'RESCUE-REPORT.md'), text(skippedFull) + '\n');
-    hr(r.dry ? 'Report (dry run)' : 'Report');
+    hr(r.dry ? 'Report (trial run, nothing copied)' : 'Report');
     console.log(text(skippedShort).split('\n').map(l => `  ${l}`).join('\n'));
     if (!r.dry) (r.blank?.drawn ? info : ok)(`full report saved to ${path.join(r.out, 'RESCUE-REPORT.md')}`);
   };
@@ -1746,7 +1758,7 @@ function printReport(r) {
   if (gone) lines.push(`- Files already missing on the old site: ${gone} (see "Files already missing on the old site" below)`);
   const left = r.offOrigin.filter(u => !r.localized.includes(u) && !notCopied.some(f => f.url === u) && !fromFontService(u));
   if (left.length) {
-    lines.push(`- Off-origin references left as-is: ${left.length}`);
+    lines.push(`- Things the pages still load from other websites, left as they were: ${left.length}`);
     for (const u of left.slice(0, 30)) lines.push(`  - ${u}`);
     if (left.length > 30) lines.push(`  - …and ${left.length - 30} more`);
   }

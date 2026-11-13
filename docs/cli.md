@@ -34,9 +34,9 @@ sitemap *indexes* WordPress and Yoast publish (`sitemap.xml`,
 one file under 25 MB, the most Cloudflare Pages accepts). A file that is not
 copied still shows, loaded from the old site at its full address, and the
 report lists it under **Files not copied** with the command that copies it:
-those files disappear when the old site is switched off. The report ends with **What freezing cost** — the
+those files disappear when the old site is switched off. The report has a section named **What to check**: the
 contact and search forms that posted into the CMS and now send nowhere, the
-comment threads that are kept as shown, and any links to the old sign-in — so
+comment threads that are kept as shown, and any links to the old sign-in, so
 nothing stops silently.
 
 ## If your AI built a React app

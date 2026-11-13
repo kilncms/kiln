@@ -141,7 +141,7 @@ test('render: the report says what stopped working, page by page', () => {
     { href: '/about/', rendered: { lost: lost({ controls: [{ kind: 'button', label: 'Order now' }] }), menu: { found: true, label: 'Menu', shimmed: false }, changed: null } },
     { href: '/plain/', rendered: null },
   ]).join('\n');
-  assert.match(lines, /## What freezing cost/);
+  assert.match(lines, /## What to check/);
   assert.match(lines, /Forms: 1\./);
   assert.match(lines, /"Contact us" \(3 fields\) on \//);
   assert.match(lines, /Controls that needed script: 1\./);
@@ -287,7 +287,7 @@ test('render: a page drawn by script into #root is saved with its words, tagged,
   assert.ok(html.includes('<script src="/assets/kiln-config.js"></script>\n<script src="/assets/kiln.js" defer></script>'));
   for (const f of ['kiln.js', 'kiln-editor.js', 'kiln-features.js']) assert.ok(existsSync(path.join(s.out, 'assets', f)), f);
   assert.ok(!existsSync(path.join(s.out, 'assets', 'kiln-config.js')), 'no config: the wizard writes the real one');
-  assert.match(s.report, /App scripts left in the pages: 0/);
+  assert.match(s.report, /Scripts of the old site left in the pages: 0/);
   assert.match(s.report, /Forms: 1\./);
   assert.match(s.report, /"Write to us" \(2 fields\) on \//);
   assert.match(s.report, /button "Order now" on \//);
@@ -305,7 +305,7 @@ test('render: routes reached by link, by button and from the sitemap each become
   assert.ok(s.read('index.html').includes('<a href="/about/">About</a>'), 'links point at the saved pages');
   for (const f of ['index.html', 'about/index.html', 'prices/index.html', 'contact/index.html']) assert.equal(appScripts(s.read(f)), 0, f);
   assert.match(s.report, /The button "Prices" changed page by script \(it went to \/prices\)/);
-  assert.match(s.report, /Pages crawled: 4, written: 4/);
+  assert.match(s.report, /Pages copied: 4\./);
 });
 
 test('render: styles that existed only in memory are written into the page', { skip: SKIP }, () => {

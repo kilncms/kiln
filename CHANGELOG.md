@@ -141,6 +141,20 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   owner is told to open the editor again from their Kiln dashboard at
   app.kilncms.com. Everybody else reads every sentence exactly as before.
 
+- **The report `kiln rescue` writes now reads in everyday words.**
+  `RESCUE-REPORT.md`, and the same lines printed at the end of a run, say
+  "Pages copied", "Pictures, styles, fonts and other files copied", "Scripts
+  taken out" and "Marked so you can edit them" where they said "Pages
+  crawled", "Assets localized", "Scripts stripped" and "Kiln-tagged". The
+  report opens with "What was copied from" and the address, and the section
+  "What freezing cost" is now "What to check". The line about the site's own
+  list of its pages, the count of things still loaded from other websites and
+  the note about `--max-pages` are reworded the same way. Nothing the tool
+  copies, counts or decides has changed. The section "Next steps" is still
+  last, the sentence "This site draws its pages with JavaScript" and the exit
+  code are as they were, and anything that read the old wording by machine
+  needs the new words.
+
 ### Fixed
 
 - **What you type counts as an edit while you type it.** A person who

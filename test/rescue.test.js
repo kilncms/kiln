@@ -275,7 +275,7 @@ test('rescue: staticLostLines — dead forms, outside forms, search, comments, o
 </body></html>`;
   const L = staticLostLines([{ href: '/', html: page }], 'https://site.com');
   const text = L.join('\n');
-  assert.ok(text.includes('## What freezing cost'));
+  assert.ok(text.includes('## What to check'));
   assert.ok(/Forms that posted into the old site: 1\b/.test(text), 'one dead form');
   assert.ok(text.includes('"contact" (3 fields, posted to /wp-admin/admin-post.php)'), text);
   assert.ok(text.includes('posts to app.formspree.io'), 'outside form named by host');
@@ -444,7 +444,7 @@ test('rescue: a site drawn by JavaScript is not called copied: blank pages are l
   assert.match(privacy, /<h1 data-cms="[^"]+">Privacy<\/h1>/);
   assert.ok(readFileSync(path.join(s.out, 'terms', 'index.html'), 'utf8').includes('What we keep about you'));
   const report = readFileSync(path.join(s.out, 'RESCUE-REPORT.md'), 'utf8');
-  assert.match(report, /- Pages crawled: 2, written: 2/);
+  assert.match(report, /- Pages copied: 2\./);
   assert.match(report, /- Blank pages left out: 3 of the 5 read/);
   assert.match(report, /## This copy is not finished/);
   assert.match(report, /- \/browse\n/);
@@ -558,7 +558,7 @@ test('rescue: the written report names the kinds of script and the preview pictu
   const r = await rescueRun([s.url, `--out=${s.out}`, '--delay=0']);
   assert.equal(r.code, 0, r.stdout);
   const report = readFileSync(path.join(s.out, 'RESCUE-REPORT.md'), 'utf8');
-  assert.match(report, /- Scripts stripped: 2 \(\+ 1 builder cruft tags removed\)\. Of these, 1 was the old site's own, 1 counted visitors \(static\.cloudflareinsights\.com\)\. Whatever those did is gone from the copy/);
+  assert.match(report, /- Scripts taken out: 2 \(and 1 leftover tag of the tool that built the site\)\. Of these, 1 was the old site's own, 1 counted visitors \(static\.cloudflareinsights\.com\)\. Whatever those did is gone from the copy/);
   assert.match(report, /- The picture for link previews \(og:image, twitter:image\) is written with this site's full address, http:\/\/127\.0\.0\.1:\d+\/assets\/rescued\/…/);
   const html = readFileSync(path.join(s.out, 'index.html'), 'utf8');
   assert.match(html, new RegExp(`<meta property="og:image" content="${s.url.replace(/[.:/]/g, '\\$&')}/assets/rescued/[0-9a-f]{8}-og\\.png">`));
@@ -706,7 +706,7 @@ test('rescue: the report offers --menu-shim for a plain copy, and says when it w
   assert.equal(plainMenuLine([{ href: '/', found: false }], false, cmds), '');
   assert.doesNotMatch(offer + odd, /—/);
   const L = staticLostLines([{ href: '/', html: '<p>Hi</p>' }], SITE, { menuLine: offer }).join('\n');
-  assert.match(L, /## What freezing cost/);
+  assert.match(L, /## What to check/);
   assert.ok(L.includes(offer), 'the menu line is reported even when nothing else stopped working');
 });
 
@@ -818,11 +818,11 @@ test('rescue: a WordPress shop with plain addresses, living in a folder, comes o
   assert.ok(!html.includes('kiln-menu'), 'no menu script unless it was asked for');
 
   const report = readFileSync(path.join(out, 'RESCUE-REPORT.md'), 'utf8');
-  assert.match(report, /^# Rescue report: http:\/\/127\.0\.0\.1:\d+\/demo\/\n/);
-  assert.match(report, /- Pages crawled: 4, written: 4\.\n/);
+  assert.match(report, /^# What was copied from http:\/\/127\.0\.0\.1:\d+\/demo\/\n/);
+  assert.match(report, /- Pages copied: 4\.\n/);
   assert.match(report, /- This is a copy of the part of http:\/\/127\.0\.0\.1:\d+ that lives in the folder \/demo\/\./);
   assert.match(report, /- Links to pages of 127\.0\.0\.1:\d+ outside \/demo\/: 1 \(\/other\)\./);
-  assert.match(report, /- Sitemap \/sitemap\.xml: 2 pages listed/, 'only the two entries under /demo/ count');
+  assert.match(report, /- The site's own list of its pages \(\/sitemap\.xml\) names 2 pages\./, 'only the two entries under /demo/ count');
   assert.match(report, /- The picture for link previews \(og:image, twitter:image\) is in the copy, and the pages name it by its place there/);
   assert.match(report, /- Left out on purpose: 1 sign-in or admin address of the old site \(wp-login, wp-admin\) and 1 feed\./);
   assert.match(report, /- Links not followed: 1 address ends in a question mark and more, like \?orderby=price\./);
@@ -832,7 +832,7 @@ test('rescue: a WordPress shop with plain addresses, living in a folder, comes o
   assert.doesNotMatch(report, /## Files not copied|will disappear|no home page/);
   assert.match(report, /- Forms that posted into the old site: 1\. /);
   assert.match(report, /- Phone menu: the button "Open menu" does not open the menu on a phone \(on \/\)\.[^\n]+ --out=[^\n]+ --max-pages=12 --delay=0 --menu-shim`/);
-  assert.ok(report.indexOf('## This site is a shop') < report.indexOf('## What freezing cost'), 'the shop paragraph is near the top');
+  assert.ok(report.indexOf('## This site is a shop') < report.indexOf('## What to check'), 'the shop paragraph is near the top');
 
   // asked for, the menu script is added and the button and its box are marked
   const out2 = path.join(s.dir, 'copy-menu');
@@ -849,8 +849,8 @@ test('rescue: a WordPress shop with plain addresses, living in a folder, comes o
   // the dry run uses the same words for the same things
   const r3 = await rescueRun([`${s.url}/demo/`, `--out=${path.join(s.dir, 'never')}`, '--delay=0', '--dry']);
   assert.equal(r3.code, 0, r3.stdout);
-  assert.match(r3.stdout, /- Pages crawled: 4 \(dry run, nothing written\)\./);
-  assert.match(r3.stdout, /- Assets to localize: at least 3\./);
+  assert.match(r3.stdout, /- Pages found: 4\. This was a trial run, so nothing was copied\./);
+  assert.match(r3.stdout, /- Pictures, styles, fonts and other files to copy: at least 3\./);
   assert.match(r3.stdout, /3\. Connect Kiln: /);
   assert.match(r3.stdout, /## This site is a shop/);
   assert.ok(!existsSync(path.join(s.dir, 'never')), 'a dry run writes nothing');
