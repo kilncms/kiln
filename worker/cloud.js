@@ -44,6 +44,7 @@ import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, 
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { hostingOn, hostingSentence } from './hosting.js';
 import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept } from './keeps.js';
+import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies } from './bring.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
 import {
@@ -1460,6 +1461,20 @@ export async function googleDashboardSignIn(env, state, { identity = null, page 
 
 // ─── Router ───────────────────────────────────────────────────────────────────
 
+/** A site in the form /cloud/me lists it, from /cloud/me's own code, so the two can never differ. Null when it is not listed. */
+async function listedSite(request, env, url, tools, id) {
+  try {
+    const me = new URL('/cloud/me', url);
+    const listed = await handleCloud(new Request(me, { headers: { Authorization: request.headers.get('Authorization') || '' } }), env, me, '/cloud/me', tools);
+    return ((await listed.json()).sites || []).find(s => s.id === id) || null;
+  } catch { return null; }
+}
+
+/** The five-minute job's step for sites being brought in (bring.js): a copy whose job has said nothing for half an hour is given up on. Never throws. */
+export function sweepBrings(env, { now = Date.now() } = {}) {
+  return sweepCopies(env, { now, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com', note: (subject, lines) => notifyOwner(env, subject, lines) });
+}
+
 export async function handleCloud(request, env, url, path, tools = {}) {
   const dash = env.CLOUD_DASHBOARD || 'https://app.kilncms.com';
 
@@ -1589,7 +1604,11 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const keptHere = await keptIds(env, sess.account_id);
     const called = keptHere.size ? await keptNames(env, sess.account_id) : {};
     for (const r of rows) if (keptHere.has(r.id)) { r.kept = true; if (called[r.id]) r.name = called[r.id]; }
-    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env) });
+    // `brings`: this service can copy a site in from somewhere else (bring.js).
+    // A site that was brought in says in `bring` how its copy stands.
+    const brought = keptHere.size ? await copiesForAccount(env, sess.account_id) : {};
+    for (const r of rows) if (brought[r.id]) r.bring = brought[r.id];
+    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env), brings: can && bringOn(env) });
   }
 
   // The address notices about the account's own sites go to (mail.js). The
@@ -1667,14 +1686,49 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const to = await accountEmail(env, sess.account_id);
       await sendOnce(env, `started:${out.site.id}`, to, siteStartedMail({ name: typed || name, address: out.site.origin, endsAt: trialEndsAt(out.site.created_at, TRIAL_GRACE_DAYS), dashboard: dash }));
     } catch { /* a mail that could not go is not a reason to fail the start */ }
-    // The site in the form /cloud/me lists it, from /cloud/me's own code, so the two can never differ.
-    let site = null;
-    try {
-      const me = new URL('/cloud/me', url);
-      const listed = await handleCloud(new Request(me, { headers: { Authorization: request.headers.get('Authorization') || '' } }), env, me, '/cloud/me', tools);
-      site = ((await listed.json()).sites || []).find(s => s.id === out.site.id) || null;
-    } catch { /* the plain row, below */ }
+    const site = await listedSite(request, env, url, tools, out.site.id);
     return json({ ok: true, site: site || { ...out.site, kept: true } });
+  }
+
+  // Bring my site in (bring.js): a site Kiln keeps the files of, started empty,
+  // and a job outside the service that copies the person's old site into it.
+  // The service never reads the address itself.
+  if (path === '/cloud/sites/bring' && request.method === 'POST') {
+    if (!sess) return json({ error: 'not signed in' }, 401);
+    const { address, name, mine } = await request.json().catch(() => ({}));
+    const out = await bringIn(env, {
+      accountId: sess.account_id, address, name, mine, worker: url.origin, dashboard: dash, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
+      register: ({ id, repo, origin, name }) => registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name }),
+      forget: (id) => env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(),
+      note: (subject, lines) => notifyOwner(env, subject, lines),
+    });
+    if (!out.site) return json({ error: out.error, code: out.code }, out.status);
+    const site = await listedSite(request, env, url, tools, out.site.id) || { ...out.site, kept: true, bring: out.bring };
+    // The site is made either way. When its job could not be started, the answer says so and still carries the site.
+    return out.ok ? json({ ok: true, site }) : json({ error: out.error, code: out.code, site }, out.status);
+  }
+  // How a site's copy stands, with the report of what was left out.
+  if (path === '/cloud/sites/bring' && request.method === 'GET') {
+    if (!sess) return json({ error: 'not signed in' }, 401);
+    const out = await copyOf(env, { accountId: sess.account_id, id: url.searchParams.get('site') });
+    return out.ok ? json({ ok: true, bring: out.bring }) : json({ error: out.error, code: out.code }, out.status);
+  }
+  // One more try for a copy that failed or has said nothing for half an hour.
+  if (path === '/cloud/sites/bring/again' && request.method === 'POST') {
+    if (!sess) return json({ error: 'not signed in' }, 401);
+    const asked = await request.json().catch(() => ({}));
+    const out = await bringAgain(env, { accountId: sess.account_id, id: asked.id ?? asked.site, worker: url.origin, sign: appJwt, pkcs1: tools.pkcs1 || null,
+      note: (subject, lines) => notifyOwner(env, subject, lines) });
+    return out.ok ? json({ ok: true, site: out.site, bring: out.bring }) : json({ error: out.error, code: out.code, ...(out.bring ? { bring: out.bring } : {}) }, out.status);
+  }
+  // The copying job answers here. Nobody is signed in: the answer is signed with CONVERT_SECRET.
+  if (path === '/cloud/convert/done' && request.method === 'POST') {
+    if (Number(request.headers.get('Content-Length')) > 300000) return json({ error: 'too large' }, 413);   // before it is read (bring.js: MOST_ANSWER)
+    const out = await copyAnswered(env, {
+      body: new Uint8Array(await request.arrayBuffer()), signature: request.headers.get('X-Kiln-Signature'), worker: url.origin, dashboard: dash,
+      trialDays: TRIAL_GRACE_DAYS, sign: appJwt, pkcs1: tools.pkcs1 || null, note: (subject, lines) => notifyOwner(env, subject, lines),
+    });
+    return json(out.body, out.status);
   }
 
   // Add Kiln to the site's repository (prepare.js), so nobody needs a terminal.

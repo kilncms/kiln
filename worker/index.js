@@ -86,6 +86,8 @@ const WORKER_VERSION = '0.6.6';
 import { handleCloud, googleDashboardSignIn, keptOwnerAtSite, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting } from './hosted.js';
 import { keepsReady, keptStands } from './keeps.js';
+import { bringOn } from './bring.js';
+import { sweepBrings } from './cloud.js';
 import { githubTrouble, googleTrouble, troubleBody, troubleLog, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkNewPageWrite, templatePathsFor, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
@@ -127,6 +129,8 @@ export default {
       await sweepDomains(env);
       // A forwarded email address at such a domain: switched on once its inbox has confirmed, reminded, given up on (cloud.js). It never throws either.
       await sweepForwards(env);
+      // A site being brought in whose copying job has said nothing for half an hour: given up on, its owner and the operator told (bring.js). It never throws either.
+      await sweepBrings(env);
       return sweepHosting(env, { installationToken, hasAccess: siteHasAccess, endReason: hostingEndReason,
         endsAt: (site) => hostingDownAt(env, site, { deployed: !!site.deployed_at }), ended: (site, reason, domain) => hostingEndedNote(env, site, reason, domain),
         care: { prepared: (id, sha) => markPrepared(env, id, sha), firstPass: (id, sha) => markFirstPass(env, id, sha) } });
@@ -185,7 +189,7 @@ async function routeRequest(request, env, ctx) {
       // `ownerSessions`: an owner's GitHub sign-in can stay on this worker
       // (/auth/login keep=server, /auth/session, /auth/adopt), and the owner's
       // calls then go through /gh/* with a session, as an invited editor's do.
-      const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, aiConfigured: !!env.AI_API_KEY, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ownerSessions: true, keeps: keepsReady(env), ...deployedBuild(env) };
+      const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, aiConfigured: !!env.AI_API_KEY, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ownerSessions: true, keeps: keepsReady(env), brings: bringOn(env), ...deployedBuild(env) };
       // ?deep=1 asks the things publishing depends on. A plain GET stays a
       // constant 200 that touches nothing, as every editor and monitor expects.
       if (url.searchParams.get('deep') === '1') {
