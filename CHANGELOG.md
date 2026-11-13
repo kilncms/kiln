@@ -143,6 +143,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **What you type counts as an edit while you type it.** A person who
+  clicked into a part of the page, typed, and did not click anywhere else saw
+  no count on the Kiln button and a Publish button that still read "Publish",
+  and closing the tab then asked nothing. The editor took the change in only
+  when the part was left. Now, a short moment after the last key, the count
+  goes up and the button reads "Publish 1 edit", and the copy of the edits
+  kept in the browser remembers that number for "Pick up where you left
+  off?". Closing or reloading the tab while still in the part asks "Leave
+  site?", even right after the last key. Typing more in the same part is
+  still one edit, words put back as they were bring the count back down, and
+  Undo takes back everything typed in a part in one step, as before.
 - **A button of the Kiln menu that is meant to be hidden is hidden.**
   "Entries & drafts" opens the entries of a site that keeps collections of
   them. On a site with none it was drawn in the menu all the same, and did

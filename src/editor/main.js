@@ -61,6 +61,7 @@ import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } fro
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
 import { draftRecord, readDraft, draftHolds, TYPED, openBoxEdit, openListEdit } from './saved-edits.js';
+import { TYPING_PAUSE, afterLastKey } from './typing-counts.js';
 import { wayOf, onLoadFailure, endedNotice, notStartedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
 import { writeBlocks, keepAside, forgetBlocks } from './keep-blocks.js';
@@ -449,7 +450,12 @@ async function init() {
     // as it always has, and while a save or a publish is still on its way to the
     // service (sending.js): "Save to all pages" takes ten seconds or more, and
     // leaving in that time lost the save without a word.
-    const unpublished = !!(state.pending.size || state.pendingBinaries.size || state.pendingStructural.length
+    // A part the person is typing in counts as well, although the short moment
+    // after the last key may not have passed (typing-counts.js): the count and
+    // the copy kept in the browser are brought up to date before the page goes.
+    let edits = state.pending;
+    try { saveTypingNow(); edits = withOpenBox(state.pending); } catch { /* the staged edits are still asked about */ }
+    const unpublished = !!(edits.size || state.pendingBinaries.size || state.pendingStructural.length
       || state.pendingSource.size);
     if (asksBeforeLeaving({ toSignIn: leavingToSignIn, unpublished, sending: state.sending.any })) { e.preventDefault(); e.returnValue = ''; }
   });
@@ -2552,6 +2558,7 @@ function cancelEditing() {
   state.active = null;
   activeOriginalHtml = null;
   removeToolbar();
+  refreshPublishButton();   // what was being typed is no longer counted (typing-counts.js)
   savePendingToStorage();   // what was being typed is no longer kept either
   // Esc leaves the box and the keyboard stays on it (keyboard.js)
   if (isReachable(el) && el.isConnected) { atRest(el, key); el.focus({ preventScroll: true }); }
@@ -2865,9 +2872,11 @@ function commitEdit(el, key) {
       // Record the un-stage as a normal undo step so ⌘Z still restores it.
       pushUndoEntry({ steps: [{ key, prevEntry: JSON.parse(JSON.stringify(prev)), nextEntry: undefined,
         beforeHtml: prev.html, afterHtml: base }] });
-      refreshPublishButton();
     }
     state.active = null;
+    // Drawn again whether or not a staged edit went: the count may hold words that were
+    // typed here and put back before the short moment had passed (typing-counts.js).
+    refreshPublishButton();
     removeToolbar();
     atRest(el, key);
     return;
@@ -3675,7 +3684,9 @@ function publishItems({ light = false } = {}) {
     try { tidyBlocks(box); } catch { /* a list in an element the cleaner will not start from: read as it is */ }
     return [...box.children].map(c => c.outerHTML);
   };
-  for (const [key, v] of state.pending) {
+  // The words in a part that is still open are read as if it had been left
+  // (withOpenBox): the number on Publish is right while a person types (typing-counts.js).
+  for (const [key, v] of withOpenBox(state.pending)) {
     const el = elementForKey(key);
     const isList = !!el && el.getAttribute('data-cms-repeat') === key;
     const parts = [], images = [], warnings = [], links = [];
@@ -10013,6 +10024,8 @@ function savePendingToStorage() {
 function withOpenBox(pending) {
   const el = state.active, key = el && el.getAttribute('data-cms');
   if (!key || el.hasAttribute(SOURCE_ATTR)) return pending;
+  // A part that is being left is not open any more: what leaves it stages its words, or gives them up.
+  if (el.contentEditable !== 'true') return pending;
   const list = el.closest('[data-cms-repeat]');
   if (list) {
     const plain = el.hasAttribute('data-cms-plain');
@@ -10032,13 +10045,19 @@ function openListHtml(list, el, value) {
   twin.innerHTML = value;
   return stagedListHtml(clone);
 }
-let typingSaveTimer = 0;
+// What is typed counts while it is typed (typing-counts.js). A short moment
+// after the last key the count and the Publish button's words are drawn again
+// and the copy kept in the browser is written (refreshPublishButton ends by
+// writing it), all reading the staged edits with the open part laid over them.
+// Nothing is staged here and Undo is given no step: the part is staged once,
+// when it is left, so one Undo still takes back all that was typed in it.
+const typingPause = afterLastKey(() => { if (state.active) refreshPublishButton(); }, TYPING_PAUSE);
 document.addEventListener('input', (e) => {
   if (!state.active || !state.active.contains(e.target)) return;
-  clearTimeout(typingSaveTimer);
-  typingSaveTimer = setTimeout(savePendingToStorage, 600);
+  typingPause.key();
 }, true);
-const saveTypingNow = () => { if (state.active) { clearTimeout(typingSaveTimer); savePendingToStorage(); } };
+// The page is going, or going out of sight: at once, not after the short moment.
+const saveTypingNow = () => { if (state.active) typingPause.now(); };
 window.addEventListener('pagehide', saveTypingNow);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveTypingNow(); });
 

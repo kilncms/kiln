@@ -77,7 +77,9 @@ test('sending: the editor counts the menu save and every publish, and asks from 
   assert.equal(listeners, 1);
   const leave = between("window.addEventListener('beforeunload'", '\n  });');
   assert.ok(leave.includes('asksBeforeLeaving({ toSignIn: leavingToSignIn, unpublished, sending: state.sending.any })'));
-  assert.match(leave, /const unpublished = !!\(state\.pending\.size \|\| state\.pendingBinaries\.size \|\| state\.pendingStructural\.length\s+\|\| state\.pendingSource\.size\);/);
+  // The edits asked about are the staged ones with the part the person is typing in laid over them (typing-counts.js).
+  assert.ok(leave.includes('let edits = state.pending;') && leave.includes('edits = withOpenBox(state.pending);'));
+  assert.match(leave, /const unpublished = !!\(edits\.size \|\| state\.pendingBinaries\.size \|\| state\.pendingStructural\.length\s+\|\| state\.pendingSource\.size\);/);
   // The count is part of `state`, which is made above the line that starts the editor.
   assert.ok(main.indexOf('sending: makeSending(),') > 0 && main.indexOf('sending: makeSending(),') < main.indexOf('\ninit().catch('));
   // The demo sends nothing, so it is not counted.

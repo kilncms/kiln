@@ -46,7 +46,7 @@ test('a box in a list opened and not changed, or a list that could not be made s
 
 test('the editor keeps an open box inside a list too', () => {
   const src = readFileSync(new URL('../src/editor/main.js', import.meta.url), 'utf8');
-  const fn = src.slice(src.indexOf('function withOpenBox('), src.indexOf('let typingSaveTimer'));
+  const fn = src.slice(src.indexOf('function withOpenBox('), src.indexOf('const typingPause'));
   assert.doesNotMatch(fn, /closest\('\[data-cms-repeat\]'\) \|\|/);
   assert.match(fn, /openListEdit\(/);
 });
