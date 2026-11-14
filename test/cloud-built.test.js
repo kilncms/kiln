@@ -84,8 +84,15 @@ async function liveWorld(files = withFile(), pages = built(), options = {}) {
 
 test('built site: the build file is the template, short enough to read and with no secret in it', () => {
   assert.equal(BUILD_FILE_TEXT, WORKFLOW, 'worker/hosting.js and templates/kiln-build.yml hold the same text');
-  assert.ok(WORKFLOW.split('\n').length <= 46, 'about forty lines');
+  assert.ok(WORKFLOW.split('\n').length <= 58, 'short enough to read on one screen or two');
   assert.doesNotMatch(WORKFLOW, /secrets\./, 'no secret but the run\'s own token');
+  // The site's own install and build steps run code the site's owner did not write (its packages), so the run's
+  // token is kept from them: it is not left on disk by the checkout, not set for the whole job, and given only to
+  // the steps that mark the change and hand the pages over.
+  assert.match(WORKFLOW, /uses: actions\/checkout@v4\n\s+with:\n\s+persist-credentials: false\n/);
+  assert.doesNotMatch(WORKFLOW, /\n    env:\n(?:      [^\n]*\n)*      GH_TOKEN:/, 'not for the whole job');
+  assert.match(WORKFLOW, /\n      - run: npm ci\n      - run: npm run build\n      #/, 'the two steps that run the site\'s code carry no env of their own');
+  assert.equal((WORKFLOW.match(/GH_TOKEN: \$\{\{ github\.token \}\}/g) || []).length, 4, 'pending, hand over, success, failure');
   assert.match(WORKFLOW, /Built from \$GITHUB_SHA/);
   assert.match(WORKFLOW, /contents: write[^\n]*\n\s+statuses: write/);
   assert.match(WORKFLOW, /cancel-in-progress: true/);
