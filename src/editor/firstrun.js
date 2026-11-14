@@ -84,7 +84,7 @@ export function guideCardCopy({ invited = false, undone = false, edits = 1, mess
     ? { title: 'That is published', diff: true, message: null,
       sub: 'Your change is saved to the site and goes live in about a minute. For ten seconds you can undo it, and every version is kept, so nothing is lost for good.' }
     : { title: 'That was a Git commit', diff: true, message,
-      sub: 'A commit is a saved change with a note. On your own site, Kiln saves each edit to your GitHub repo this way, and your host puts it live in about a minute.' };
+      sub: 'A commit is a saved change with a note. On your own site, Kiln saves each edit to your GitHub repository this way, and your host puts it live in about a minute.' };
 }
 
 const squash = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();

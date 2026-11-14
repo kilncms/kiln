@@ -142,7 +142,7 @@ async function sendSuggestionNow(note, onStatus) {
   // scratch-branch write fails (no branch-deploy host, network blip, …).
   let branch = null, baseSha = null, previewSkipped = false;
   if (cfg.preview) {
-    onStatus('Writing the preview branch…');
+    onStatus('Making the preview…');
     try { ({ branch, baseSha } = await writePreviewBranch(edits)); }
     catch (err) { console.warn('[kiln] suggest preview', err); previewSkipped = true; }
     onStatus('Sending your suggestion…');
@@ -339,7 +339,7 @@ async function renderSuggestions(m) {
     data = await ask(`/suggestions?repo=${encodeURIComponent(cfg.repo)}`);
   } catch (e) {
     list.textContent = '';
-    list.appendChild(el('p', 'kiln-dim', stopped(e) || 'Could not load suggestions.'));
+    list.appendChild(el('p', 'kiln-dim', stopped(e) || 'The suggestions could not be read just now. Try again in a moment.'));
     return;
   }
   const all = data.suggestions || [];
@@ -361,7 +361,7 @@ async function renderSuggestions(m) {
         el('small', '', ` ${s.page}${s.note ? ` · “${s.note}”` : ''} · ${s.status} ${s.decided?.ts ? timeAgo(s.decided.ts) : ''}${s.decided?.note ? ` · “${s.decided.note}”` : ''}`),
       );
       row.appendChild(span);
-      if (s.commit?.url) row.appendChild(extLink(s.commit.url, 'commit ↗'));
+      if (s.commit?.url) row.appendChild(extLink(s.commit.url, 'See the change ↗'));
       det.appendChild(row);
     }
     decidedBox.appendChild(det);
@@ -463,14 +463,14 @@ function suggestionRow(m, sug) {
         // a note typed for the editor (in a dialog, now closed) is offered as a copy
         err.textContent = stopped(e2, approve ? 'approved' : 'declined', note ? { name: 'your note', text: note } : null) || (e2.status === 409
           ? 'The page changed while approving. Try again.'
-          : `Could not ${approve ? 'approve' : 'decline'}: ${e2.data.error || e2.status}${e2.data.detail ? ` (${e2.data.detail})` : ''}`);
+          : notDone(approve ? 'That was not approved.' : 'That was not declined.', e2));
         err.hidden = false;
         approveBtn.disabled = declineBtn.disabled = false;
         return;
       }
       if (approve) {
         const commit = data.suggestion?.commit;
-        if (commit?.url) setStatus('Approved ✓ View the commit', 'saved', { href: commit.url });
+        if (commit?.url) setStatus('Approved ✓ See the change', 'saved', { href: commit.url });
         else setStatus('Approved ✓ The page already matched', 'saved');
       } else {
         setStatus('Declined. Nothing changed', 'idle');
@@ -518,7 +518,7 @@ export async function sharePreviewPanel() {
   if (state.pending.size) return;  // draft failed — saveDraft already said why; no stale link
   const url = previewUrl('kiln-drafts', cfg.preview);
   const m = modal(`<h3>Preview link</h3>
-    <p class="kiln-dim">Saved to the draft branch. Nothing is live. Your host builds the preview in
+    <p class="kiln-dim">Saved as a draft. Nothing is live. Your host builds the preview in
     about a minute; the status line reports when it's up.</p>
     <p><a class="kiln-sug-preview-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a></p>
     <label id="kiln-prev-byhand" hidden>This browser did not let Kiln copy it. The link is selected here, to copy by hand:
