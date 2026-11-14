@@ -254,9 +254,18 @@ test('money: in the whole service one line sends the registering call and one li
   assert.equal(asyncs, 1);
   assert.equal(callers.length, 1, callers.join(', '));
   assert.match(callers[0], /^register\.js:\d+$/);
-  // The door for looking has no call that changes anything about a registration.
+  // Every call in the file that is not a plain read, by name: the price check (a question, sent as a POST), the one
+  // change of whether a name renews, and the registering call itself. A fourth would be a new way to spend or to change.
   const source = readFileSync(new URL('register.js', dir), 'utf8');
-  assert.equal(/method: '(POST|PUT|PATCH|DELETE)', path: [`'"]\/registrations/.test(source), false);
+  const notReads = source.split('\n').map(l => l.trim()).filter(l => /method: '(POST|PUT|PATCH|DELETE)'/.test(l));
+  assert.equal(notReads.length, 3, notReads.join(' | '));
+  assert.match(notReads[0], /^check: .*method: 'POST', path: '\/domain-check'/);
+  assert.match(notReads[1], /^return through\(env, 'renewal', \{ name, on \}, \{ method: 'PATCH', path, json: \{ auto_renew: on \} \}\);$/, 'the renewal change sends auto_renew and nothing else');
+  assert.equal(notReads[2], "method: 'POST',", 'the registering call, inside registerOnce');
+  // The renewal change has one caller too, and the looking door knows no call that changes a registration.
+  const renewers = source.split('\n').map(l => l.trim()).filter(l => /\bsetRenewal\(/.test(l) && !l.startsWith('*') && !l.startsWith('//') && !l.startsWith('export async function setRenewal('));
+  assert.equal(renewers.length, 1, renewers.join(' | '));
+  assert.equal(/method: '(PUT|PATCH|DELETE)', path: [`'"]\/registrations/.test(source), false);
 });
 
 // ─── The switch ───────────────────────────────────────────────────────────────
