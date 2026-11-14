@@ -161,7 +161,7 @@ export function cancelQuestion(row = {}, { root = '', locale, now } = {}) {
 
 /** After a cancel. `shownHere`: this page still shows the words that were scheduled. */
 export function cancelledLine({ shownHere = false } = {}) {
-  return 'That scheduled change was cancelled. Nothing was published.'
+  return 'That scheduled change was canceled. Nothing was published.'
     + (shownHere ? ' This page still shows the scheduled words. Reload it to see the page as it is on the site.' : '');
 }
 

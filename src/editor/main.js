@@ -946,10 +946,10 @@ async function loadPageSource() {
       // The URL doesn't map to an HTML file in the repo — almost always a site
       // built by a generator (Hugo/Jekyll/11ty/Next export) where the served
       // page has no matching source file. Explain it instead of a dead console error.
-      err.kilnFriendly = ownerWords("Kiln edits the HTML file for this page in your repo, but couldn't find one", state.kept)
+      err.kilnFriendly = ownerWords("Kiln edits the HTML file for this page in your repository, but couldn't find one", state.kept)
         + ` (looked for: ${candidates.join(', ')}). This usually means the site is produced by a`
-        + ` build tool, so the page you see isn't committed as-is. Kiln works on sites whose pages`
-        + ` are committed as HTML. See the docs.`;
+        + ` build tool, so the page you see is not kept as a file the way you see it. Kiln works on sites whose pages`
+        + ` are kept as HTML files. See the docs.`;
     }
     throw err;
   }
@@ -2151,7 +2151,7 @@ function addGalleryPhotos(container, key, add) {
       setStatus(`${files.length} photo${files.length > 1 ? 's' : ''} added. Publish to put them live`, 'saved');
     } catch (err) {
       console.error('[kiln] gallery upload', err);
-      setStatus('Photo upload failed', 'error');
+      setStatus(notDone('The photo upload did not go through.', err), 'error');
     }
   };
   input.click();
@@ -3009,7 +3009,7 @@ function enableImageDragResize(img, key, stage = true) {
   document.querySelectorAll('.kiln-img-handle').forEach(h => h.remove());   // one at a time
   const handle = document.createElement('div');
   handle.className = 'kiln-img-handle';
-  handle.title = 'Drag to resize. The file is re-sampled to fit';
+  handle.title = 'Drag to resize. The file is remade at the new size.';
   document.body.appendChild(handle);
   const place = () => {
     const r = img.getBoundingClientRect();
@@ -3104,7 +3104,7 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     // upload from pendingBinaries (publishing a page that references a file
     // that never gets committed). Bail instead.
     if (!img.isConnected) {
-      setStatus('That image changed while re-sampling. Click it and resize again', 'error');
+      setStatus('That picture changed while Kiln was resizing it. Click it and resize again.', 'error');
       return;
     }
 
@@ -3114,7 +3114,7 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     if (cfg.sandbox) {
       img.src = `data:${scaled.type};base64,${base64}`;
       if (stage) stageImageEl(img, key);
-      setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB). Publish to keep it`, 'saved');
+      setStatus(`Sized to ${cssWidth}px, and the file was remade at that size (${Math.round(blob.size / 1024)} KB). Publish to keep it.`, 'saved');
       return;
     }
     // Repeated drag-resizes supersede each other: drop the previous (uncommitted)
@@ -3131,7 +3131,7 @@ async function resampleToDisplay(img, key, cssWidth, stage = true) {
     img.src = URL.createObjectURL(blob);
     img.setAttribute('data-kiln-src', `/assets/uploads/${name}`);
     if (stage) stageImageEl(img, key);
-    setStatus(`Sized to ${cssWidth}px and re-sampled (${Math.round(blob.size / 1024)} KB). Publish to put it live`, 'saved');
+    setStatus(`Sized to ${cssWidth}px, and the file was remade at that size (${Math.round(blob.size / 1024)} KB). Publish to put it live.`, 'saved');
   } catch (err) {
     console.error('[kiln] resize', err);
     setStatus(notDone('The picture was not resized.', err), 'error');
@@ -3534,7 +3534,7 @@ function uploadAnyFile() {
         resolve({ path: `/${dir}/${safe}`, name: file.name, size: file.size });
       } catch (err) {
         console.error('[kiln] file upload', err);
-        setStatus('File upload failed', 'error');
+        setStatus(notDone('The file was not uploaded.', err), 'error');
         resolve(null);
       }
     };
@@ -4358,7 +4358,7 @@ async function initSourceFields() {
     ref: el.getAttribute(SOURCE_ATTR), cms: el.hasAttribute('data-cms'),
   })));
   for (const i of scan.dual) {
-    console.warn('[kiln] element carries both data-cms and data-kiln-source — source wins:', els[i]);
+    console.warn('[kiln] element carries both data-cms and data-kiln-source, so source wins:', els[i]);
   }
   state.sourceFields = new Map();
   for (const f of scan.fields) {
@@ -4377,7 +4377,7 @@ async function initSourceFields() {
   if (mode === 'editor' && state.scope?.mode === 'review') return;
   for (const m of scan.malformed) {
     // §8.1: malformed provenance → field not editable, ONE console warn with the element.
-    console.warn(`[kiln] malformed ${SOURCE_ATTR} — field is not editable:`, els[m.indexes[0]].outerHTML);
+    console.warn(`[kiln] malformed ${SOURCE_ATTR}, so the field is not editable:`, els[m.indexes[0]].outerHTML);
     for (const i of m.indexes) lockSourceField(els[i], lockReason({ parsed: null }));
   }
   // Capability handshake (§13), once per boot. The sandbox stages locally.
@@ -5235,7 +5235,7 @@ async function openEntryPanel(file) {
         say('Reading the order…');
         let list;
         try { list = await Promise.all(same.map(async e => ({ file: e.file, order: entryValue(e.file, rules.order, (await readEntry(e.file)).fields) }))); }
-        catch (err) { say(stopped(err) || 'The order could not be read just now.'); return; }
+        catch (err) { say(stopped(err) || 'The order could not be read just now. Try again in a moment.'); return; }
         const plan = moveEntry(list, at, step);
         if (!plan.length) { say(step < 0 ? 'It is first already.' : 'It is last already.'); return; }
         for (const p of plan) {
@@ -5406,7 +5406,7 @@ async function entriesPanel(collection = null) {
     const tree = await state.gh.request('GET', `/repos/${cfg.repo}/git/trees/${encodeURIComponent(cfg.branch || 'main')}?recursive=1`);
     const pre = col.folder ? `${col.folder}/` : '';
     files = (tree.tree || []).filter(t => t.type === 'blob' && t.path.startsWith(pre) && /\.(md|mdx|markdown)$/i.test(t.path)).map(t => t.path).slice(0, 60);
-  } catch (err) { list.textContent = stopped(err) || 'The entries could not be read just now.'; return; }
+  } catch (err) { list.textContent = stopped(err) || 'The entries could not be read just now. Try again in a moment.'; return; }
   if (!files.length) { list.textContent = 'There are no entries in this collection yet.'; return; }
   const read = [];
   for (let i = 0; i < files.length; i += 6) {
@@ -5474,7 +5474,7 @@ async function sourceHistoryPanel(file = null) {
   };
   let versions;
   try { versions = (await entryCall('/source/history', { file: current })).versions || []; }
-  catch (err) { list.textContent = stopped(err) || 'The history could not be read just now.'; return; }
+  catch (err) { list.textContent = stopped(err) || 'The history could not be read just now. Try again in a moment.'; return; }
   list.textContent = versions.length ? '' : 'No versions yet.';
   versions.forEach((v, i) => {
     const row = document.createElement('div');
@@ -5537,7 +5537,7 @@ async function previewVersion(file, v, back) {
   m.querySelector('#kiln-pv-back').onclick = () => { m._kilnClose(); back(); };
   let r;
   try { r = await entryCall('/source/fields', { file, at: v.sha }); }
-  catch (err) { m.querySelector('#kiln-pv-state').textContent = stopped(err) || 'This version could not be read just now.'; return; }
+  catch (err) { m.querySelector('#kiln-pv-state').textContent = stopped(err) || 'This version could not be read just now. Try again in a moment.'; return; }
   m.querySelector('#kiln-pv-state').textContent = `${v.when ? new Date(v.when).toLocaleString() : ''}${v.who ? ` · ${v.who}` : ''}`;
   const box = m.querySelector('#kiln-pv');
   const dl = document.createElement('dl');
@@ -5565,7 +5565,7 @@ async function sourcePageSettings() {
   m.classList.add('kiln-keeps-edit');
   let read;
   try { read = await readEntry(pe.file); }
-  catch (err) { m.querySelector('#kiln-sp-state').textContent = stopped(err) || 'This page’s entry could not be read just now.'; return; }
+  catch (err) { m.querySelector('#kiln-sp-state').textContent = stopped(err) || 'This page’s entry could not be read just now. Try again in a moment.'; return; }
   await loadSiteSchema();
   const props = Object.keys(state.siteSchema?.collections?.[pe.collection]?.properties || {});
   const has = (n) => Object.hasOwn(read.fields, n) || props.includes(n);
@@ -6506,7 +6506,7 @@ function runJournal() {
         try {
           const ds = await deployState(state.gh, cfg.repo, e.sha);
           if (ds === 'failure' || ds === 'error') {
-            setStatus(ownerWords('Build failed: open commit', state.kept), 'error',
+            setStatus(ownerWords('Build failed. See the change on GitHub to find out why.', state.kept), 'error',
               state.kept ? undefined : { href: `https://github.com/${cfg.repo}/commit/${e.sha}` });
             failed = true;
             continue;                       // drop the entry — it will never go live
@@ -6645,7 +6645,7 @@ function newContent() {
     form.style.display = 'none';
     body.style.display = '';
     body.innerHTML = `<h3>Publishing “${escapeHtml(title)}”</h3>
-      <p class="kiln-np-step" id="kiln-np-status">${ownerWords('Committing to GitHub…', state.kept)}</p>
+      <p class="kiln-np-step" id="kiln-np-status">${ownerWords('Saving to GitHub…', state.kept)}</p>
       <div class="kiln-modal-actions">
         <button class="kiln-btn-ghost" data-close>Close</button>
         <button class="kiln-btn-publish" id="kiln-np-open" disabled>Open it →</button>
@@ -6679,7 +6679,7 @@ function newContent() {
         if (!fillable.length) return html;
         status.textContent = 'Drafting the content with AI…';
         const r = await draftFill(brief, fillable);
-        status.textContent = ownerWords('Committing to GitHub…', state.kept);
+        status.textContent = ownerWords('Saving to GitHub…', state.kept);
         if (r.error) { draftFailed = r.error; return html; }
         const edits = Object.entries(r.fields).map(([key, text]) => ({ key, html: escapeHtml(text) }));
         return edits.length ? applyEdits(html, edits).html : html;
@@ -6780,7 +6780,7 @@ function menuEditor() {
   const m = modal(`
     <h3>Site menu</h3>
     <p class="kiln-dim">Changes apply to <strong>every page</strong> of the site (and to the
-    templates, so new pages get the updated menu) in one commit.</p>
+    templates, so new pages get the updated menu) in one saved change.</p>
     <div id="kiln-menu-rows"></div>
     <button class="kiln-btn-ghost" id="kiln-menu-add">+ Add menu item</button>
     <div class="kiln-modal-actions">
@@ -7049,7 +7049,7 @@ async function invitePanel() {
       head.className = 'kiln-pick-group';
       head.textContent = g.path + (g.path === thisPage ? '  · this page' : '');
       box.appendChild(head);
-      if (g.err) { const p = document.createElement('p'); p.className = 'kiln-dim'; p.style.margin = '2px'; p.textContent = "Couldn't load this page."; box.appendChild(p); continue; }
+      if (g.err) { const p = document.createElement('p'); p.className = 'kiln-dim'; p.style.margin = '2px'; p.textContent = 'This page could not be read just now. Try again in a moment.'; box.appendChild(p); continue; }
       if (!g.sections.length) { const p = document.createElement('p'); p.className = 'kiln-dim'; p.style.margin = '2px'; p.textContent = 'No named sections.'; box.appendChild(p); continue; }
       any = true;
       const prefixes = [...new Set(g.sections.map(s => (s.key.match(/^[a-z0-9]+_/i) || [])[0]).filter(Boolean))];
@@ -7356,7 +7356,7 @@ function previewRestore(changes, label, note, removals = [], whole = null) {
     }
     for (const r of removed) r.node.style.display = '';
     bar.remove();
-    setStatus('Preview cancelled. The page is back to how it was.', 'idle');
+    setStatus('Preview canceled. The page is back to how it was.', 'idle');
   };
   return applied.length + removed.length || (whole ? 1 : 0);
 }
@@ -8264,7 +8264,7 @@ function schedulePanel(at, opts) {
         try {
           await whileSending(() => ask('/schedule/cancel', { method: 'POST', body: { repo: cfg.repo, id: s.id } }));
         } catch (err) {
-          status.textContent = stopped(err, 'cancelled') || notDone('That was not cancelled.', err);
+          status.textContent = stopped(err, 'canceled') || notDone('That was not canceled.', err);
           drawRow(row, s);
           return;
         }
@@ -8296,7 +8296,7 @@ function schedulePanel(at, opts) {
         list.appendChild(row);
       }
     } catch (err) {
-      list.innerHTML = `<p class="kiln-dim">${escapeHtml(stopped(err) || 'Could not load.')}</p>`;
+      list.innerHTML = `<p class="kiln-dim">${escapeHtml(stopped(err) || 'The scheduled changes could not be read just now. Try again in a moment.')}</p>`;
     }
   }
   refreshList();
@@ -8402,7 +8402,7 @@ function settingsPanel() {
         <span><strong>Publish without the preview</strong><br><small>Publish goes live at once, without first showing what will change.</small></span></label>
     </div>
     ${isAdmin ? `
-    <h4>${ownerWords('This site (applies to everyone, committed to the repo)', state.kept)}</h4>
+    <h4>${ownerWords('This site (applies to everyone, saved to the repository)', state.kept)}</h4>
     <label class="kiln-role"><input type="checkbox" id="kiln-set-google" ${auth.google !== false ? 'checked' : ''}>
       <span><strong>Google sign-in</strong><br><small>Invited editors and members sign in with their Google account at yoursite.com/kiln.</small></span></label>` : ''}
     <div class="kiln-modal-actions">
@@ -8423,7 +8423,7 @@ function settingsPanel() {
       if (uiChanged) setTimeout(() => location.reload(), 600);
       return;
     }
-    status.textContent = 'Committing site settings…';
+    status.textContent = 'Saving the site settings…';
     try {
       const cfgPath = (cfg.root ? cfg.root.replace(/\/+$/, '') + '/' : '') + 'assets/kiln-config.js';
       const result = await whileSending(() => editFile(state.gh, cfg.repo, cfgPath, cfg.branch || 'main', (text) => {

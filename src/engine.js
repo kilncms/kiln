@@ -95,7 +95,7 @@ export function indexHtml(raw) {
       // Repeated keys inside a data-cms-repeat are expected (every card reuses them);
       // only the splice index dedupes them. Only warn for duplicates OUTSIDE a repeat.
       if (!ancestorHasAttr(node, 'data-cms-repeat')) {
-        warnings.push(`duplicate data-cms key "${key}" — using first occurrence`);
+        warnings.push(`duplicate data-cms key "${key}", so the first one is used`);
       }
       return;
     }
@@ -259,7 +259,7 @@ export function applyEdits(raw, edits) {
   for (const s of splices) {
     const prev = clean[clean.length - 1];
     if (prev && s.start < prev.end) {
-      skipped.push({ key: s.key, reason: `overlaps edit of "${prev.key}" (nested data-cms) — skipped` });
+      skipped.push({ key: s.key, reason: `overlaps edit of "${prev.key}" (nested data-cms), so it was skipped` });
       continue;
     }
     clean.push(s);

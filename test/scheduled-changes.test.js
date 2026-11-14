@@ -93,8 +93,8 @@ test('scheduled changes: Cancel asks one question, and says afterwards that noth
   assert.equal(cancelQuestion({ kind: 'source', path: 'src/content/events/gala.md', desc: 'Gala night goes on the site', at }, us), 'Cancel “Gala night goes on the site”, scheduled for Thursday 12 November at 8:45 PM?');
   assert.equal(cancelQuestion({ kind: 'source', path: 'src/content/events/gala.md', at }, us), 'Cancel the change to the file gala.md, scheduled for Thursday 12 November at 8:45 PM?');
   assert.equal(cancelQuestion(home, us).match(/\?/g).length, 1, 'one question');
-  assert.equal(cancelledLine(), 'That scheduled change was cancelled. Nothing was published.');
-  assert.equal(cancelledLine({ shownHere: true }), 'That scheduled change was cancelled. Nothing was published. This page still shows the scheduled words. Reload it to see the page as it is on the site.');
+  assert.equal(cancelledLine(), 'That scheduled change was canceled. Nothing was published.');
+  assert.equal(cancelledLine({ shownHere: true }), 'That scheduled change was canceled. Nothing was published. This page still shows the scheduled words. Reload it to see the page as it is on the site.');
   assert.equal(CANCEL_YES, 'Yes, cancel it');
   assert.equal(CANCEL_NO, 'No, keep it');
 });

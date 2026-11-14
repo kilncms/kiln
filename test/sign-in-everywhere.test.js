@@ -18,7 +18,7 @@ const sources = () => readdirSync(EDITOR).filter(f => f.endsWith('.js')).map(f =
 const staged = (over = {}) => ({ edits: 0, source: 0, structural: 0, files: 0, ...over });
 const ended = (did, counts, kept = { saved: true }, more = {}) => publishEnded({ way: 'google', counts, survives: whatSurvives(counts, kept), did, ...more });
 /** Every word the editor uses for "what was being done". */
-const DID = ['published', 'saved', 'scheduled', 'cancelled', 'sent', 'posted', 'changed', 'deleted', 'undone', 'created', 'replaced', 'added', 'removed', 'approved', 'declined'];
+const DID = ['published', 'saved', 'scheduled', 'canceled', 'sent', 'posted', 'changed', 'deleted', 'undone', 'created', 'replaced', 'added', 'removed', 'approved', 'declined'];
 
 function assertPlain(text) {
   assert.equal(/!/.test(text), false, `an exclamation mark in: ${text}`);

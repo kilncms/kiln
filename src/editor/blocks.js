@@ -352,14 +352,14 @@ function onRemoveClick() {
     if (i !== -1) state.pendingStructural.splice(i, 1);
     sec.remove();
     pushUndoEntry({ steps: [{ structural: { node: sec, op: cfg.sandbox ? null : info.pendingOp, html: info.pendingOp.html, unstaged: true, place } }] });
-    setStatus('Section removed (it was never published) — ⌘Z restores it', 'saved');
+    setStatus('Section removed (it was never published). ⌘Z restores it.', 'saved');
   } else {
     const op = cfg.sandbox ? null : { op: 'removeSection', key: info.key };
     if (op) state.pendingStructural.push(op);
     sec.remove();
     pushUndoEntry({ steps: [{ structural: { node: sec, op, html: null, removed: true, place } }] });
-    setStatus(cfg.sandbox ? 'Section removed (demo) — ⌘Z undoes'
-      : 'Section removed — Publish to make it real (⌘Z undoes)', 'saved');
+    setStatus(cfg.sandbox ? 'Section removed (demo). ⌘Z undoes it.'
+      : 'Section removed. Publish to make it real (⌘Z undoes).', 'saved');
   }
   refreshPublishButton();
   scheduleRefresh();
@@ -421,7 +421,7 @@ async function openPicker(anchor) {
   const m = modal(`
     <h3>Add a section</h3>
     <p class="kiln-dim" id="kiln-blk-sub">Ready-made sections from this site's block library
-    ${ownerWords('(<code>_blocks/</code> in the repo)', deps.state.kept)} — the one you pick lands where you clicked.</p>
+    ${ownerWords('(<code>_blocks/</code> in the repository)', deps.state.kept)}. The one you pick lands where you clicked.</p>
     <div id="kiln-blk-list" class="kiln-inv-list"><p class="kiln-dim">Loading blocks…</p></div>
     <div class="kiln-modal-actions"><button class="kiln-btn-ghost" data-close>Cancel</button></div>`);
   m.querySelector('.kiln-modal-card').classList.add('kiln-blk-card');
@@ -502,7 +502,7 @@ function insertBlock(block, anchor) {
   const wrap = document.createElement('div');
   wrap.innerHTML = html.trim();
   let node = wrap.firstElementChild;
-  if (!node) { setStatus('That block is empty after sanitizing', 'error'); return; }
+  if (!node) { setStatus('That block was not added. Nothing is left of it once Kiln takes out the code it does not allow. Pick another block, or ask whoever builds the site to look at its file.', 'error'); return; }
   if (wrap.children.length > 1) {
     // The convention is ONE top-level element; wrap a multi-root block so the
     // insert (and a later remove) treats it as one section.
@@ -523,7 +523,7 @@ function insertBlock(block, anchor) {
   if (node.hasAttribute('data-cms-repeat')) setupRepeat(node, node.getAttribute('data-cms-repeat'));
   node.querySelectorAll('[data-cms-repeat]').forEach(c => setupRepeat(c, c.getAttribute('data-cms-repeat')));
   node.querySelectorAll('[data-cms]').forEach(n => decorateField(n, n.getAttribute('data-cms')));
-  setStatus(`“${block.title}” added — edit it, then Publish (⌘Z undoes)`, 'saved');
+  setStatus(`“${block.title}” added. Edit it, then Publish (⌘Z undoes).`, 'saved');
   scheduleRefresh();
 }
 
@@ -534,9 +534,9 @@ function renderEmptyState(m, anchor) {
   m.querySelector('#kiln-blk-sub')?.remove();
   m.querySelector('#kiln-blk-list').innerHTML = `
     <p class="kiln-dim">No block library yet. A block is a ready-made, on-brand section anyone
-    editing the site can drop between sections — no code involved. Whoever builds the site (a
+    editing the site can drop between sections, with no code involved. Whoever builds the site (a
     developer, or an AI given <code>KILN_PROMPT.md</code>) creates them: each <code>.html</code>
-    file in <code>_blocks/</code> ${ownerWords('at the repo root', deps.state.kept)} is one block — a single top-level element
+    file in <code>_blocks/</code> ${ownerWords('at the repository root', deps.state.kept)} is one block, made of a single top-level element
     with <code>data-cms</code> fields, named by an optional first-line manifest comment.
     Blocks are content-only: scripts and event handlers are stripped on insert.</p>
     <pre class="kiln-blk-ex">${escapeHtml(EXAMPLE_BLOCK)}</pre>
@@ -548,16 +548,16 @@ function renderEmptyState(m, anchor) {
   btn.onclick = async () => {
     const status = m.querySelector('#kiln-blk-exstatus');
     btn.disabled = true;
-    status.textContent = 'Committing the block…';
+    status.textContent = 'Saving the block…';
     try {
       await putRepoFile('_blocks/feature-cards.html', {
         text: EXAMPLE_BLOCK,
         branch: cfg.branch || 'main',
-        message: 'Add _blocks/feature-cards.html — starter block (via Kiln)',
+        message: 'Add _blocks/feature-cards.html, a starter block (via Kiln)',
       });
       _blocksPromise = null;                 // the library just changed
       m.remove();
-      setStatus('Example block committed ✓', 'saved');
+      setStatus('Example block saved ✓', 'saved');
       openPicker(anchor);
     } catch (err) {
       console.error('[kiln] example block', err);

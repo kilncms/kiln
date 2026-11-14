@@ -43,7 +43,7 @@ test('kept words: an owner without GitHub reads no sentence that names GitHub or
   }
   assert.equal(ownerWords('Publishing: saving to GitHub…', true), 'Publishing: saving…');
   assert.equal(ownerWords('Published to GitHub ✓', true), 'Published ✓');
-  assert.equal(ownerWords('Committing to GitHub…', true), 'Saving…');
+  assert.equal(ownerWords('Saving to GitHub…', true), 'Saving…');
   assert.equal(ownerWords('Can’t reach GitHub right now. Check your connection and reload.', true),
     'Kiln cannot reach your site’s files right now. Check your connection and reload.');
   assert.equal(ownerWords(PEOPLE_WORDS.membersRead, true),

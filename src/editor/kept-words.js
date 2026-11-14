@@ -25,20 +25,20 @@ const KEPT = new Map([
   ['Can’t reach GitHub right now. Check your connection and reload.',
     'Kiln cannot reach your site’s files right now. Check your connection and reload.'],
   // The line that led to the commit on github.com, which this owner cannot open.
-  ['Build failed: open commit', 'Build failed. The site still shows the version from before.'],
+  ['Build failed. See the change on GitHub to find out why.', 'Build failed. The site still shows the version from before.'],
   // A new page being made.
-  ['Committing to GitHub…', 'Saving…'],
+  ['Saving to GitHub…', 'Saving…'],
   // A page with no file of its own.
-  ["Kiln edits the HTML file for this page in your repo, but couldn't find one",
+  ["Kiln edits the HTML file for this page in your repository, but couldn't find one",
     "Kiln edits the HTML file for this page in your site’s files, but couldn't find one"],
   // Settings.
-  ['This site (applies to everyone, committed to the repo)', 'This site (applies to everyone)'],
+  ['This site (applies to everyone, saved to the repository)', 'This site (applies to everyone)'],
   // People.
   ['Members-only pages are kept in your site’s GitHub repository, so every editor you invite can read them.',
     'Members-only pages are kept with the rest of your site’s files, so every editor you invite can read them.'],
   // Add a section.
-  ['(<code>_blocks/</code> in the repo)', '(<code>_blocks/</code> in your site’s files)'],
-  ['at the repo root', 'at the top of your site’s files'],
+  ['(<code>_blocks/</code> in the repository)', '(<code>_blocks/</code> in your site’s files)'],
+  ['at the repository root', 'at the top of your site’s files'],
 ]);
 
 /** Every sentence a kept owner reads differently, as [written, read] pairs (for the tests and the notes). */

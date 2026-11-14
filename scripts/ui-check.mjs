@@ -2979,7 +2979,7 @@ async function runSignInEverywhere(browser, size) {
     await press(page.locator('#kiln-sc-list .kiln-inv-row button').first());
     // Cancel asks first now ("Yes, cancel it"): the ended sign-in is found when the answer is yes.
     await press(page.locator('#kiln-sc-list [data-yes]').first());
-    await ended(name, `Nothing was cancelled. Your edit is saved in this browser and will be back on this page ${BACK}.`);
+    await ended(name, `Nothing was canceled. Your edit is saved in this browser and will be back on this page ${BACK}.`);
     await notNow();
     check(scope, `${name}: nothing was cancelled, and the list is as it was`, worker.cancelled.length === 0 && (await page.locator('#kiln-modal #kiln-sc-list .kiln-inv-row').count()) === 1);
   });
