@@ -37,8 +37,9 @@ export const RUNBOOK_HTML = `<!doctype html>
   .fact strong{font-weight:700}
 
   /* ---- layout: index rail + column ---- */
-  .grid{display:grid;grid-template-columns:210px minmax(0,1fr);gap:44px;align-items:start;padding:38px 0 80px}
+  .grid{display:grid;grid-template-columns:210px minmax(0,1fr);gap:44px;align-items:start;padding:38px 28px 80px}
   @media(max-width:900px){.grid{grid-template-columns:1fr;gap:0}}
+  @media(max-width:760px){.wrap,.grid{padding-left:16px;padding-right:16px}}
   nav.index{position:sticky;top:20px;font-family:var(--mono);font-size:12.5px;line-height:1.5}
   @media(max-width:900px){nav.index{position:static;border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:22px 0;background:var(--panel)}}
   nav.index .lbl{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin:0 0 10px}
