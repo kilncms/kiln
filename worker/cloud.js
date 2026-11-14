@@ -1366,6 +1366,8 @@ export async function sweepDomains(env, { now = Date.now() } = {}) {
         await saveDomain(env, s.id, { state: 'put_away', reason, checked_at: now });
         await tellAboutDomain(env, 'away', s, r, domainPutAwayMail({ origin: r.origin, name, reason, waitDays: DOMAIN_LIMITS.waitDays, dashboard }));
         console.log(JSON.stringify({ evt: 'domain_put_away', repo: s.repo, name, reason }));
+        // The operator hears of it too: the owner may write next, and the playbook says what each reason means.
+        await notifyOwner(env, `Kiln: the set-up of ${name} was put away`, [`Site: ${s.repo}, ${r.origin || ''}`, `Why: ${reason}`, 'Its owner was told by email. Nothing is needed from you unless they write.']);
         out.putAway++;
       };
       // A set-up that took up the zone its last try left can find that zone still "moved": the name servers moved away
@@ -3159,7 +3161,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     }
     if (path === '/admin/cloud/remove' && request.method === 'POST') {
       const { site_id, force } = await request.json().catch(() => ({}));
-      const site = await env.kiln_cloud.prepare('SELECT id, ls_subscription_id FROM sites WHERE id = ?').bind(site_id || '').first();
+      const site = await env.kiln_cloud.prepare('SELECT id, repo, account_id, ls_subscription_id FROM sites WHERE id = ?').bind(site_id || '').first();
       if (!site) return json({ ok: true });
       // Same rule as the customer's own Remove. `force` is for the operator who
       // has already ended the subscription in Lemon Squeezy by hand.
@@ -3167,8 +3169,14 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       if (!cancel.ok) {
         return json({ error: `subscription ${site.ls_subscription_id} could not be cancelled (${cancel.state}); cancel it in Lemon Squeezy, then remove with force`, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
       }
+      const kept = await keptSite(env, site.id);   // asked before the row goes
       const gone = await forgetHosting(env, site.id);
       await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ?').bind(site.id).run();
+      // What the owner's own Remove does after the row is gone: their editing session ends, the site is marked as gone,
+      // and for a site Kiln kept the files of, the operator gets the note that names the day its repository may be deleted.
+      if (kept && site.repo) { try { await env.KILN.delete(keptStandsKey(site.account_id, site.repo)); } catch { /* it is forgotten within the minute anyway */ } }
+      if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
+      if (kept && site.repo) { const told = keptRemovedNote({ repo: site.repo, by: `${signedInAs(sess)}, from the admin page` }); await notifyOwner(env, told.subject, told.lines); }
       return json({ ok: true, subscription: cancel.state, ...domainLeft(gone) });
     }
     // Per-site troubleshooting: app-install check, live-site reachability, /kiln

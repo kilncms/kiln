@@ -905,7 +905,7 @@ test('own domain: when the owner points a live domain\'s name servers elsewhere,
 });
 
 test('own domain: a set-up that waits gets one reminder after 14 days, and after 25 its waiting zone is removed, it is put away, and the owner is told', { skip: d1Skip }, async () => {
-  const w = world();
+  const w = world({ env: { NOTIFY_TO: 'ops@example.com' } });
   await withFetch(w.handler, async () => {
     await setup(w.env);
     const row = await domainRow(w.env, 'site1');
@@ -926,6 +926,10 @@ test('own domain: a set-up that waits gets one reminder after 14 days, and after
     const run = await sweep(w.env, made + 25 * DAY);
     assert.deepEqual(run.out, tally({ looked: 1, putAway: 1 }));
     assert.match(run.lines, /domain_put_away/);
+    // The operator hears of it once, with the reason.
+    const away = w.notes().filter(m => /was put away/.test(m.raw));
+    assert.equal(away.length, 1);
+    assert.match(away[0].raw, /not_changed/);
     assert.equal(w.cf.zoneOf(N), null, 'the zone that never took hold is removed');
     assert.deepEqual(await where(w.env), { state: 'put_away', reason: 'not_changed', checked_at: made + 25 * DAY });
     assert.equal(w.mails().length, 3);

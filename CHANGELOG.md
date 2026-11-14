@@ -105,6 +105,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The operator is told when the set-up of a domain is put away, and when a
+  site Kiln keeps the files of is removed from the admin page.** A set-up
+  that was put away only wrote a log line, so the operator learned of it when
+  the customer wrote. And Remove on the admin page left out what the owner's
+  own Remove does for a kept site: the note that names the day its repository
+  may be deleted, and the mark that ends its owner's editing session at once.
+
 - **The same old site can be copied in three times in 30 days.** "Bring my
   site in" already let one account copy a site once in 30 days. Accounts
   that pay for nothing can now have the same old address copied three times

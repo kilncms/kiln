@@ -309,7 +309,7 @@ npx wrangler secret list --env production</pre>
           <tr><td><span class="chip c-warn">Hand</span>Kiln could not write the settings of REPOSITORY after its copy</td><td>The copy's last step failed. The job may send its answer again.</td><td>Wait half an hour. If the copy is still shown as being made, treat it as a copy that gave no answer.</td></tr>
         </tbody>
       </table></div>
-      <p>Kiln does not write to you when a domain is put away. The customer gets an email, and the logs get a line <code>domain_put_away</code> with the reason (section 09).</p>
+      <p>When the set-up of a domain is put away you get "Kiln: the set-up of DOMAIN was put away", with the reason (section 09 says what each one means). The customer gets an email, and the logs get a line <code>domain_put_away</code>. Nothing is needed from you unless they write.</p>
     </section>
 
     <section id="s5">
@@ -472,7 +472,7 @@ npx wrangler secret list --env production</pre>
         <li>On the admin page, press Remove on the site's row and confirm.</li>
         <li>Kiln cancels the subscription at Lemon Squeezy, takes the site's Worker away, and deletes the site's row. The repository is not touched. A domain's zone stays (section 09).</li>
         <li>If Remove fails and the page shows an error with the number 502, the subscription could not be cancelled. Cancel it in Lemon Squeezy yourself, then press Remove again.</li>
-        <li>If it was a kept site, write down today's date and the repository's name. Removing from the admin page sends you no "Kiln no longer uses" note, and the 30 days of section 16 still apply.</li>
+        <li>If it was a kept site, you get the same note as when its owner removes it, naming the day its repository may be deleted. The 30 days of section 16 apply.</li>
       </ol>
       <p>There is no button that takes a site down and keeps it on the customer's account. Setting a site to <code>canceled</code> on the admin page stops editing at once, and the site then comes down by the timer's rules below.</p>
 
@@ -745,15 +745,12 @@ npx wrangler d1 execute kiln-cloud --env production --remote --command "SELECT n
       <ul class="plain">
         <li><span class="chip c-warn">Hand</span><strong>A removed kept site's repository is deleted by hand,</strong> 30 days later. Nothing reminds you but the note.</li>
         <li><span class="chip c-warn">Hand</span><strong>No button puts a removed kept site back,</strong> and the steps for doing it in the database are not written.</li>
-        <li><span class="chip c-warn">Hand</span><strong>Handing a kept site's repository to a customer</strong> is done on GitHub, and what Kiln's record needs afterwards has not been tried.</li>
+        <li><span class="chip c-warn">Hand</span><strong>Handing a kept site to a customer's own GitHub account</strong> goes through the download of its files (section 05). Moving the repository itself has not been tried.</li>
         <li><span class="chip c-warn">Hand</span><strong>A file of a domain's records after Remove</strong> comes from you.</li>
         <li><span class="chip c-warn">Hand</span><strong>A domain bought at Cloudflare</strong> cannot be set up by Kiln, and no steps are written for doing it by hand.</li>
         <li><span class="chip c-warn">Missing</span><strong>No way to take one hosted site down and keep it on the account.</strong> Remove is the only way that works at once.</li>
-        <li><span class="chip c-warn">Missing</span><strong>Removing a kept site from the admin page sends no note</strong> about its repository.</li>
-        <li><span class="chip c-warn">Missing</span><strong>No note to you when a domain is put away.</strong> Only the log line and the customer's email.</li>
         <li><span class="chip c-warn">Missing</span><strong>No way to give a copy more than three tries,</strong> or to raise how many kept sites an account may start.</li>
-        <li><span class="chip c-warn">Edge</span><strong>Free days for sites added before the free-day marks existed.</strong> Such a repository or account has no mark until it next adds a site, so each can have one more round of free days. Kept sites are counted apart from sites in a customer's own repository.</li>
-        <li><span class="chip c-warn">Edge</span><strong>The files of a kept site can be asked for without limit,</strong> and each time sends you a note.</li>
+        <li><span class="chip c-warn">Edge</span><strong>Free days of kept sites are counted apart</strong> from sites in a customer's own repository, so one person can have seven free days of each kind.</li>
         <li><span class="chip c-warn">Edge</span><strong>The preview limit of section 08:</strong> an editor of the whole site can show old content at a preview address.</li>
         <li><span class="chip c-warn">Open</span><strong>"Worker exceeded memory limit" on the test service:</strong> seen once, cause not found (section 14).</li>
         <li><span class="chip c-good">Later</span><strong>Billing is not open to the public yet</strong> (section 15).</li>

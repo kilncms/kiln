@@ -126,3 +126,22 @@ test('S5 admin remove: the operator is held to the same rule, and can force it a
     assert.equal(siteCount(env), 0);
   });
 });
+
+test('admin remove: for a site Kiln keeps the files of, the operator gets the same note about its repository as when its owner removes it', { skip: d1Skip }, async () => {
+  const notes = [];
+  const env = cloudEnv(fakeKV(), { CLOUD_ADMIN: 'ada', NOTIFY: { send: async (m) => { notes.push(m.raw); } }, NOTIFY_TO: 'ops@example.com' });
+  addSite(env, { account_id: 'someone-else', repo: 'kiln-sites/oak-bakery-1a2b3c4d', origin: 'https://oak.example' });
+  env.kiln_cloud.exec("UPDATE sites SET kept = 1 WHERE id = 'site-1'");
+  await withFetch(async () => jsonRes({}, 404), async () => {
+    assert.deepEqual(await (await post(env, '/admin/cloud/remove', { site_id: 'site-1' })).json(), { ok: true, subscription: 'none' });
+  });
+  assert.equal(siteCount(env), 0);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /kiln-sites\/oak-bakery-1a2b3c4d/);
+  assert.match(notes[0], /from the admin page/);
+  assert.ok(await env.KILN.get('cloudgone:kiln-sites/oak-bakery-1a2b3c4d'), 'the site is marked as gone, as after its owner\'s own Remove');
+  // A site in its owner's own repository sends no such note.
+  addSite(env, { account_id: 'someone-else' });
+  await withFetch(async () => jsonRes({}, 404), async () => { await post(env, '/admin/cloud/remove', { site_id: 'site-1' }); });
+  assert.equal(notes.length, 1);
+});
