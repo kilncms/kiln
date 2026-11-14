@@ -112,6 +112,8 @@ test('astro reader: only the template is read, not the code fence, the head, scr
   counts('<!-- <p>Old words</p> -->\n<p>New words</p>', 1);
   counts('{/* <p>Old words</p> */}\n<p>New words</p>', 1);
   counts('<!doctype html>\n<p>Words</p>', 1);
+  // Parts whose content a visitor's browser does not hold as elements.
+  counts('<noscript><p>Turn on JavaScript</p></noscript><template><p>Kept for later</p></template><textarea><p>Typed</p></textarea><p>Shown</p>', 1);
   // A script that closes itself has no body: what follows it is the template.
   assert.deepEqual(words('<script type="application/ld+json" set:html={JSON.stringify({ "@type": "Thing", a: { b: 1 } })} />\n<h1>After it</h1>\n<script>let x = 1;</script>'), ['After it']);
 });
@@ -225,6 +227,8 @@ test('astro reader: a file it cannot follow answers unread, and nothing throws',
     '\u0000\u0001<<<{{{>>>`${',
     '{`${'.repeat(50000),
     '<a '.repeat(3) + '{'.repeat(200000),
+    '<div>'.repeat(100000),                              // nested far deeper than any template
+    '<p>'.repeat(100000),
   ];
   for (const g of garbage) assert.deepEqual(readAstro(g), { unread: true }, JSON.stringify(g.slice(0, 40)));
   for (const g of [undefined, null, 7, {}, [], Buffer.from('<p>x</p>')]) assert.deepEqual(readAstro(g), { unread: true });

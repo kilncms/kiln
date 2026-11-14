@@ -33,7 +33,9 @@
  *   - neither it nor an element around it is already marked (`data-cms`,
  *     `data-kiln-source`, or a spread of kilnSource, kilnBody or kilnEntry);
  *   - it is in the template: not in the code fence, `<head>`, `<script>`,
- *     `<style>` or a comment (inside a component's slot is fine);
+ *     `<style>` or a comment (inside a component's slot is fine), and not in
+ *     `<noscript>`, `<template>` or `<textarea>`, whose content a visitor's
+ *     browser does not hold as elements;
  *   - it has at least one letter.
  * Every other element with one of those tags is counted under one reason, the
  * first of these that fits:
@@ -54,6 +56,9 @@ export const TEXT_TAGS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'blockquote',
 const TEXT = new Set(TEXT_TAGS);
 const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
 const RAW = new Set(['script', 'style']);
+const UNSEEN = new Set(['head', 'noscript', 'template', 'textarea']);   // text elements inside these are not counted
+const MAX_OPEN = 512;        // elements open at once; a template nested deeper than this is not followed
+const MAX_OPEN_TEXT = 32;    // text elements open inside one another
 const HELPER = /\bkiln(?:Source|Body|Entry)\s*\(/;   // any of Kiln's helpers marks the element itself
 const HELPER_INSIDE = /\bkiln(?:Source|Body)\s*\(/;   // these two also make what is inside it editable
 const NBSP = /&(?:nbsp|#160|#x[aA]0);/y;
@@ -202,7 +207,7 @@ function read(text) {
   const more = { unclosed: 0, noWords: 0, holdsText: 0, attrValue: 0 };
   const stack = [];   // what is open: elements and `{`
   const open = [];    // the text elements among them, outermost first
-  let braces = 0, marked = 0, head = 0;
+  let braces = 0, marked = 0, head = 0;   // how many `{`, marked elements and unseen parts (UNSEEN) are open
   let breaks = null;
 
   const lineOf = (pos) => {
@@ -257,9 +262,11 @@ function read(text) {
     } : null;
     if (a.self || VOID.has(name)) { if (field) settle(field, a.end, a.end); return a.end; }
     if (RAW.has(name)) return rawEnd(text, a.end, name);
-    stack.push({ name, field, inside: !!a.inside, head: name === 'head' });
+    if (stack.length >= MAX_OPEN || open.length >= MAX_OPEN_TEXT) return -1;
+    const unseen = UNSEEN.has(name);
+    stack.push({ name, field, inside: !!a.inside, head: unseen });
     if (a.inside) marked++;
-    if (name === 'head') head++;
+    if (unseen) head++;
     if (field) open.push(field);
     return a.end;
   };
