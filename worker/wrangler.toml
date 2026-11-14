@@ -116,7 +116,8 @@ HOSTING_PREFIX = "stg-"
 # This service's own address. A hosted site's members gate asks it whether a
 # signed-in member is still on the list. With the secret HOSTING_MEMBER_KEY it
 # switches the members area on for hosted sites; without both, pages under
-# members/ on a hosted site are open to anyone.
+# members/ are left out when a hosted site goes up and answer "not found".
+# They are never served openly.
 HOSTING_SERVICE_URL = "https://kiln-auth-staging.erikkwilder.workers.dev"
 
 [[env.staging.kv_namespaces]]

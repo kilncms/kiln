@@ -60,8 +60,14 @@ There is no button for this yet: the operator does it.
    `atok:`, `esess:` and `msess:` entries whose value names the repository
    (`npx wrangler kv key list --binding KILN --remote --prefix <prefix>`, then
    `npx wrangler kv key delete --binding KILN --remote <key>`).
-4. Delete `firstseen:<origin>` for each site address only if the person is not
-   to be offered a second trial; otherwise leave it.
+4. The marks that count the free days hold nothing but a time:
+   `firstseen:<site address>`, `firstseen:repo:<GitHub's number for the
+   repository>`, `firstseen:gh:<GitHub's number for the account>` and
+   `firstseen:domain:<domain>`. They are what stops free days from being
+   started again, so deleting them lets the same site, repository, account or
+   domain have free days once more. Delete them when the person asks for
+   everything to go. `copied:<address>`, which counts how often an old site
+   was copied in, goes by itself 30 days after the last copy.
 5. Ask them to uninstall the Kiln GitHub App from their repositories. Until
    they do, an API token or a schedule left in KV could still commit, so step 3
    comes before telling them it is done.

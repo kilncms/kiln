@@ -296,7 +296,7 @@ npx wrangler secret list --env production</pre>
           <tr><td>Kiln billing: EVENT → STATUS</td><td>Lemon Squeezy told Kiln about a subscription.</td><td>Nothing, unless a line says the plan on record could not be changed. Then set it on the admin page.</td></tr>
           <tr><td>Kiln: N trials expired unpaid</td><td>Free days ran out with no subscription. Editing stopped for those sites.</td><td>Nothing.</td></tr>
           <tr><td>Kiln took REPOSITORY down from its hosting</td><td>The free days ran out and three more days passed, or the plan ended and 30 days passed.</td><td>Nothing, if you expected it. If the customer is paying, see section 07, "Putting a site back".</td></tr>
-          <tr><td>Kiln: the files of REPOSITORY were downloaded</td><td>A customer downloaded the files of their kept site from the dashboard.</td><td>Nothing. Many of these in a row for one site means a page is asking in a loop: write to the customer.</td></tr>
+          <tr><td>Kiln: the files of REPOSITORY were downloaded</td><td>A customer downloaded the files of their kept site from the dashboard. You get this at most once an hour for one site, however often they press.</td><td>Nothing. It may mean they are about to move away: section 10 has what they may ask you for.</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln no longer uses REPOSITORY</td><td>A customer removed a kept site. Kiln did not touch the repository in <code>kiln-sites</code>.</td><td>Delete the repository by hand on the day the note names, 30 days later, never sooner. Steps in section 16, the weekly look.</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln may have made REPOSITORY and no site uses it</td><td>Starting a kept site failed at a point where Kiln cannot tell whether the repository was made.</td><td>Look for it in <code>kiln-sites</code> on GitHub. If it is there, delete it.</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln made REPOSITORY and could not finish starting the site</td><td>The repository was made and the site was not. The customer was asked to try again.</td><td>Delete the leftover repository in <code>kiln-sites</code>.</td></tr>
@@ -369,13 +369,13 @@ npx wrangler secret list --env production</pre>
       </ol>
 
       <h3 class="sub">Handing a kept site's repository over</h3>
-      <p>No button does this. It is done on GitHub, by hand.</p>
+      <p>No button moves a repository to a customer's own GitHub account. What works today, without you, is the download:</p>
       <ol class="steps">
-        <li>Ask the customer, from the address they signed up with, for the name of their GitHub account.</li>
-        <li>On GitHub, open the repository in <code>kiln-sites</code>, then Settings. At the bottom, press "Transfer ownership" and enter their account's name.</li>
-        <li>The customer accepts the transfer in an email from GitHub.</li>
-        <li>On the admin page, press Diagnose on the site's row. If a check fails, stop and plan a working session: what Kiln's record needs after a transfer has not been tried.</li>
+        <li>The customer presses "Download the site's files" on the site's row, or in "Moving away" there. It is open once the site has been paid for, and gives them one zip of the whole site, with Kiln in it.</li>
+        <li>If they want the site in a GitHub account of their own, they make a repository there and upload those files. It can then be added to Kiln like any site that is on GitHub, from "Set up your site" in the dashboard, after they sign in with GitHub.</li>
+        <li>When the new site works, they press Remove on the old one. You then get the note about its repository (section 04).</li>
       </ol>
+      <p>Moving the repository itself with GitHub's "Transfer ownership" has not been tried. Kiln's record of the site would still say that Kiln keeps its files, and the download and the editor's sign-in would then ask the wrong place. If a customer asks for exactly that, plan a working session and try it on the test service first.</p>
 
       <h3 class="sub">A file of a domain's records</h3>
       <p>While a site is in the customer's dashboard, they download this file themselves with "Download the domain's records". After they remove the site, that button is gone and the zone is still in the hosting account.</p>
@@ -663,6 +663,8 @@ npx wrangler tail --env production</pre>
           <tr><td><code>forward_failed</code>, <code>forward_on</code></td><td>A forwarded address failed, or was switched on.</td></tr>
           <tr><td><code>bring_job_not_started</code>, <code>bring_not_hosted</code></td><td>A copy of a site could not start, or could not be put up afterwards.</td></tr>
           <tr><td><code>keep_start_failed</code>, <code>kept_not_reached</code></td><td>A kept site could not be started, or its repository could not be read.</td></tr>
+          <tr><td><code>kept_files_failed</code></td><td>A customer pressed "Download the site's files" and GitHub gave no link. The line holds what GitHub answered. They were told to try again in a few minutes.</td></tr>
+          <tr><td><code>domain_free_days_over</code></td><td>A site that was not paid for went live on a domain that has had its free days (section 06), and was closed for editing.</td></tr>
           <tr><td><code>signin_trouble</code></td><td>A sign-in failed, with the reason.</td></tr>
           <tr><td><code>webhook_rejected</code></td><td>A notice about billing arrived that was not signed properly.</td></tr>
           <tr><td><code>notify_failed</code>, <code>customer_mail_failed</code></td><td>A note to you, or an email to a customer, could not be sent.</td></tr>
