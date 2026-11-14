@@ -135,6 +135,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   own Remove does for a kept site: the note that names the day its repository
   may be deleted, and the mark that ends its owner's editing session at once.
 
+- **Saving a picture holds one copy of it in the service's memory, not two.**
+  The service kept a picture's text twice for as long as it waited on GitHub;
+  the second copy is now let go once its size has been checked, and a picture
+  whose request is 5 MB or less has its GitHub token asked for before the
+  picture is read, not while it is held. The end-to-end scripts print the
+  first 300 characters of an answer of 500 or more on the line of the check
+  that failed, so GitHub's own 500 can be told from the service's.
 - **The same old site can be copied in three times in 30 days.** "Bring my
   site in" already let one account copy a site once in 30 days. Accounts
   that pay for nothing can now have the same old address copied three times

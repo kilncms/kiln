@@ -3629,6 +3629,17 @@ const PROXY_RULES = [
 // The largest body the proxy will read from an editor session: one file at the
 // upload ceiling, base64-encoded, plus room for the JSON around it.
 const PROXY_BODY_MAX = Math.ceil(UPLOAD_MAX_BYTES * 4 / 3) + 256 * 1024;
+// The longest body of a new blob that no check on the body can refuse, going
+// by its declared length alone. A blob is refused when what it holds is over
+// the upload ceiling, and that is counted after decoding: base64 text decodes
+// to three quarters of its length, plain text to at most three bytes for each
+// byte sent (a byte that is not UTF-8 is read as U+FFFD, which is three). So a
+// body of a third of the ceiling or less passes whatever is in it.
+const BLOB_NEVER_REFUSED_MAX = Math.floor(UPLOAD_MAX_BYTES / 3);
+function blobNeverRefused(request) {
+  const declared = request.headers.get('Content-Length') || '';
+  return /^\d+$/.test(declared) && Number(declared) <= BLOB_NEVER_REFUSED_MAX;
+}
 // Git modes for an ordinary file. Symlinks (120000) and submodules (160000)
 // are never something an editor session commits.
 const REGULAR_FILE_MODES = ['100644', '100755'];
@@ -3937,6 +3948,18 @@ async function ghProxy(request, env, ghPath) {
   // body, which every guard below treats as "nothing to vouch for".
   let rawBody = '';
   let parsedBody = null;
+  // A picture arrives as POST …/git/blobs, and its body is the largest thing
+  // an editor session sends. When its declared length says that no check
+  // below can refuse it (BLOB_NEVER_REFUSED_MAX), the installation token is
+  // asked for now, so the body is not held while the service waits on KV or
+  // on GitHub. Every other blob keeps the order it had (body, checks, token),
+  // so a request refused for what its body holds still costs no token.
+  const isBlobPost = request.method === 'POST' && /\/git\/blobs$/.test(cleanPath);
+  let itok = null;
+  if (isBlobPost && blobNeverRefused(request)) {
+    itok = await installationToken(env, sess.repo);
+    if (!itok) return json({ error: 'app not installed on repo', repo: sess.repo }, 503);
+  }
   if (isWrite) {
     const read = await readBodyCapped(request, PROXY_BODY_MAX);
     if (read.tooLarge) return json({ error: FILE_MESSAGES.size, code: 'file_size' }, 413);
@@ -4021,6 +4044,13 @@ async function ghProxy(request, env, ghPath) {
     const size = parsedBody.encoding === 'base64' ? base64Bytes(parsedBody.content) : new TextEncoder().encode(parsedBody.content).length;
     if (size > UPLOAD_MAX_BYTES) return json({ error: FILE_MESSAGES.size, code: 'file_size' }, 413);
   }
+  // Nothing below reads a blob's parsed body again: the tree check is for
+  // /git/trees, the ref check for /git/refs, and the author stamp for
+  // /contents/ and /git/commits. It is the picture's base64 text a second
+  // time, so it is let go here, and one copy, not two, is held through the
+  // wait on GitHub. A repository whose own name puts one of those words in
+  // the path keeps it, and is checked and stamped as it always was.
+  if (isBlobPost && !/\/git\/refs(\/|$)/.test(cleanPath) && !ghPath.includes('/contents/') && !ghPath.includes('/git/commits')) parsedBody = null;
   // Non-JSON body — the allowlist already gated the route.
   if (request.method === 'POST' && /\/git\/trees$/.test(cleanPath) && parsedBody && Array.isArray(parsedBody.tree)) {
     const tree = parsedBody.tree;
@@ -4051,7 +4081,7 @@ async function ghProxy(request, env, ghPath) {
     }
   }
 
-  const itok = await installationToken(env, sess.repo);
+  if (!itok) itok = await installationToken(env, sess.repo);
   if (!itok) return json({ error: 'app not installed on repo', repo: sess.repo }, 503);
 
   // Git-data write scope (C1): `git/trees` is peeked above, but `git/commits`
