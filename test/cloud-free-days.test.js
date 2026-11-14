@@ -172,6 +172,9 @@ test('free days: the clock starts at the earliest mark, whichever it is', { skip
   assert.deepEqual(await ask(), { began: now - 5 * DAY, over: false, sentence: "This repository's free days began when it was first added to Kiln, so this site has 2 free days left. Subscribe on the site's row before they end to keep editing it." });
   assert.deepEqual(await ask({ repoId: null }), { began: now - 3 * DAY, over: false, sentence: left('4 free days') });
   assert.deepEqual(await ask({ repoId: null, ghId: null }), { began: now - 1 * DAY, over: false, sentence: "This address's free days began when a site was first added to Kiln at it, so this site has 6 free days left. Subscribe on the site's row before they end to keep editing it." });
+  // days that began three hours ago are still all seven: nothing is said
+  env.KILN.map.set('firstseen:https://b.example', String(now - 3 * 3600 * 1000));
+  assert.deepEqual(await freeDayClock(env, { accountId: 'acct-1', origin: 'https://b.example', now }), { began: now - 3 * 3600 * 1000, over: false, sentence: null });
   // both the repository's days and the account's are over: the repository is named
   env.KILN.map.set('firstseen:repo:5', String(now - 20 * DAY));
   env.KILN.map.set('firstseen:gh:9', String(now - 20 * DAY));

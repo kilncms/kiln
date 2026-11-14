@@ -561,7 +561,8 @@ export async function freeDayClock(env, { accountId, origin, repoId = null, ghId
     // Counted as keeps.js freeDaysSentence counts them: part of a day is a day, and the last day is "less than one".
     const whole = Math.ceil((ends(began) - now) / day);
     const much = whole >= 2 ? `${whole} free days` : 'less than one free day';
-    sentence = account && account === began ? accountDaysLeft(much) : repository && repository === began ? repoDaysLeft(much) : addressDaysLeft(much);
+    // Days that began a few hours ago still count as all seven, and then there is nothing to tell.
+    if (whole < TRIAL_GRACE_DAYS) sentence = account && account === began ? accountDaysLeft(much) : repository && repository === began ? repoDaysLeft(much) : addressDaysLeft(much);
   }
   return { began, over, sentence };
 }
