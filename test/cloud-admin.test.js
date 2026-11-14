@@ -52,6 +52,7 @@ test('KLR-08 end to end: sign-in records the numeric id, and /admin/cloud/* answ
     'Kiln no longer uses REPOSITORY', 'never sooner',                       // the notes to the operator
     'Kiln cannot confirm that inbox by itself', 'Transfer ownership',       // when a customer writes
     'firstseen:repo:', 'copied:', "SET status = 'trialing'",                // free days
+    'Handing a domain over to a customer who leaves', 'Free this row', 'Switching renewal off by hand', 'REGISTER_DOMAINS',   // a new domain through Kiln (switched off)
     'Publish again', 'three more days', 'hosting_members_left_out',         // hosting
     'at most <strong>five</strong> previews', 'One known limit',            // previews
     'put_away', 'not_changed', 'Activity log',                              // own domains and email forwarding
