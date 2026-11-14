@@ -114,6 +114,9 @@ const KEPT_FILES = "Kiln keeps your site's files. You can download them from the
 // One more paragraph for a site that is live at a domain of its own: what becomes of the domain, and where the steps for moving are.
 const liveAtDomain = (domain) => `Your site is at ${domain}. When the site comes down, ${domain} stops showing it, and email at ${domain} keeps working. If you would rather move, press Moving away on the site's row in your dashboard for the three steps.`;
 
+// One more sentence for a site whose domain Kiln registered (register.js): `registered` is { name, until }, the name and the day its year ends.
+const staysRegistered = ({ name, until }) => `${name} stays registered until ${dateWords(until)}. Reply to this email and we hand it over to you at no charge.`;
+
 const whyLine = (host) => `You are getting this because ${host} was added to Kiln Cloud with this email address. Reply to this email to reach a person.`;
 
 /** Sent once when a site is added. `endsAt`: when its free trial runs out (ms). */
@@ -256,7 +259,7 @@ const takeUpAgain = (plan, pastDue, before = '') => (pastDue
  * Kiln keeps the site's files. `domain`: the domain of its own the site is
  * live at, if it is.
  */
-export function editingStoppedMail({ origin, plan, repo, endsAt, pastDue = false, dashboard, kept = false, domain = null }) {
+export function editingStoppedMail({ origin, plan, repo, endsAt, pastDue = false, dashboard, kept = false, domain = null, registered = null }) {
   const host = hostOf(origin), day = dayWords(endsAt);
   return message(`Editing is off for ${host}, and the site stays online until ${day}`, [
     'Hello,',
@@ -269,11 +272,12 @@ export function editingStoppedMail({ origin, plan, repo, endsAt, pastDue = false
     // With a domain of its own, the last paragraph says how to move, so this one does not say it a second time.
     `${kept ? KEPT_FILES : `Everything on the site is still in your own GitHub repository${repo ? ` (${repo})` : ''}.`}${domain ? '' : ' If you would rather move the site to another host, you can do that at any time.'}`,
     ...(domain ? [liveAtDomain(domain)] : []),
+    ...(registered && registered.name ? [staysRegistered(registered)] : []),
   ], whyLine(host));
 }
 
 /** Sent once, seven days before a site Kiln hosts comes down because its paid plan has ended. */
-export function hostingEndingMail({ origin, plan, repo, endsAt, pastDue = false, dashboard, kept = false, domain = null }) {
+export function hostingEndingMail({ origin, plan, repo, endsAt, pastDue = false, dashboard, kept = false, domain = null, registered = null }) {
   const host = hostOf(origin), day = dayWords(endsAt);
   return message(`${host} comes down on ${day}`, [
     'Hello,',
@@ -286,6 +290,7 @@ export function hostingEndingMail({ origin, plan, repo, endsAt, pastDue = false,
       ? `If you do nothing, the site goes offline on ${day}. Nothing is lost. ${KEPT_FILES} You can subscribe later and put the site back up, or move it to another host.`
       : `If you do nothing, the site goes offline on ${day}. Nothing is lost. Every file stays in your own GitHub repository${repo ? ` (${repo})` : ''}, so you can subscribe later and put the site back up, or move it to another host.`,
     ...(domain ? [liveAtDomain(domain)] : []),
+    ...(registered && registered.name ? [staysRegistered(registered)] : []),
   ], whyLine(host));
 }
 
@@ -358,6 +363,29 @@ export function nameYoursMail({ name, origin = null, runsUntil = null, dashboard
     'The name is registered to Wilder Idea LLC, the company behind Kiln, for you to use. It is yours to take with you: when you ask, we hand it over at no charge. The rules for domain names allow that from 60 days after it is registered.',
     'If your plan ends, the name stops renewing and stays registered until the end of its year. Ask us before then and we hand it over to you at no charge.',
     'The site\'s row in your dashboard shows the name.',
+    dashboard,
+  ], whyLine(origin ? hostOf(origin) : name));
+}
+
+/**
+ * Sent once when registering a name failed (`kind` 'failed'), and once when
+ * it stopped part way and a person at Kiln must look ('stuck'). `sentence` is
+ * register.js's own, the one the dashboard shows.
+ */
+export function nameNewsMail({ kind, name, sentence, origin = null, dashboard }) {
+  return message(kind === 'stuck' ? `Registering ${name} stopped part way` : `${name} could not be registered`, [
+    'Hello,',
+    sentence,
+    dashboard,
+  ], whyLine(origin ? hostOf(origin) : name));
+}
+
+/** Sent 30 days and again 7 days before a name Kiln registered runs out, when it will not renew. */
+export function nameRunsOutMail({ name, runsUntil, origin = null, dashboard }) {
+  const day = dateWords(runsUntil);
+  return message(`${name} runs out on ${day}`, [
+    'Hello,',
+    `${name} runs out on ${day} and will not renew. To keep it, pay for a yearly plan again or ask us to hand it over. After that day the name can be lost for good.`,
     dashboard,
   ], whyLine(origin ? hostOf(origin) : name));
 }
