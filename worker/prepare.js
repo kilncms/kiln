@@ -77,6 +77,35 @@ export const MAX_ASTRO_FILES = 400;           // more .astro files than this is 
 const ASTRO_SETTINGS = /^astro\.config\.(mjs|js|cjs|ts|mts)$/i;
 
 /**
+ * What a site's Astro settings file says, as far as Kiln reads it, from the
+ * listing of the repository (`entries`). { state: 'ok', publicDir, src }:
+ * the public folder, and the file's text with its comments left out ('' for a
+ * site with no settings file). { state: 'astro_unusual', src } when the file
+ * names a base, a source folder, a build folder or a public folder that is
+ * not a plain name, or is not text. { state: 'github' } when GitHub would not
+ * hand it over. Adding Kiln (planPrepareAstro) and Kiln's hosting (hosting.js)
+ * both ask here, so the two never disagree about which sites are unusual.
+ */
+export async function readAstroSettings({ token, repo, entries }) {
+  let publicDir = 'public', src = '';
+  const settings = (entries || []).find(e => ASTRO_SETTINGS.test(e.path));
+  if (settings) {
+    const file = Number(settings.size) > MAX_PAGE_BYTES ? { notText: true } : await readText(token, repo, settings.sha);
+    if (file.failed) return { state: 'github' };
+    if (typeof file.text !== 'string') return { state: 'astro_unusual', src };
+    // Comments are left out, so a setting that is only talked about does not count.
+    src = file.text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    if (/\b(?:base|srcDir|outDir)\s*:/.test(src)) return { state: 'astro_unusual', src };
+    if (/\bpublicDir\s*:/.test(src)) {
+      const named = src.match(/\bpublicDir\s*:\s*['"`](?:\.\/)?([^'"`]+?)\/?['"`]/)?.[1];
+      if (!named || !/^[\w.-]+(\/[\w.-]+)*$/.test(named) || named.split('/').some(d => d === '.' || d === '..')) return { state: 'astro_unusual', src };
+      publicDir = named;
+    }
+  }
+  return { state: 'ok', publicDir, src };
+}
+
+/**
  * Kiln's own files in a site, each with the place it goes. `astro` is an
  * Astro plan's `astro` ({ publicDir }); with none, the places of a plain site.
  */
@@ -523,21 +552,10 @@ export async function planPrepareAstro({ token, repo, worker, site }) {
   const base = { branch: site.branch, head: site.head, treeSha: site.treeSha, generator: site.generator };
   const stop = (state) => ({ ...base, state });
 
-  let publicDir = 'public';
-  const settings = entries.find(e => ASTRO_SETTINGS.test(e.path));
-  if (settings) {
-    const file = Number(settings.size) > MAX_PAGE_BYTES ? { notText: true } : await readText(token, repo, settings.sha);
-    if (file.failed) return { state: 'github' };
-    if (typeof file.text !== 'string') return stop('astro_unusual');
-    // Comments are left out, so a setting that is only talked about does not count.
-    const src = file.text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-    if (/\b(?:base|srcDir|outDir)\s*:/.test(src)) return stop('astro_unusual');
-    if (/\bpublicDir\s*:/.test(src)) {
-      const named = src.match(/\bpublicDir\s*:\s*['"`](?:\.\/)?([^'"`]+?)\/?['"`]/)?.[1];
-      if (!named || !/^[\w.-]+(\/[\w.-]+)*$/.test(named) || named.split('/').some(d => d === '.' || d === '..')) return stop('astro_unusual');
-      publicDir = named;
-    }
-  }
+  const settings = await readAstroSettings({ token, repo, entries });
+  if (settings.state === 'github') return { state: 'github' };
+  if (settings.state !== 'ok') return stop(settings.state);
+  const publicDir = settings.publicDir;
 
   const astro = entries
     .filter(e => e.path.startsWith('src/') && e.path.endsWith('.astro') && !e.path.split('/').some(d => d.startsWith('.') || d === 'node_modules'))
