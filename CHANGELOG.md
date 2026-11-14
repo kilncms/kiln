@@ -6,6 +6,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A change the service saves for a site's owner carries the owner's name.**
+  On a site a generator builds, a change saved in the editor by the owner was
+  signed "admin" in the repository's history. It now carries the owner's
+  GitHub name, as a change they save with their own GitHub sign-in does.
+- **After a site Astro builds is put on Kiln's hosting, the steps say where
+  its first pass is made.** They said a developer and the setup tool do it.
+  They now point to Mark what can be edited on the site's row, which shows
+  first what it would move out of the templates.
+
 ## [0.6.9] - 2026-11-13
 
 ### Added

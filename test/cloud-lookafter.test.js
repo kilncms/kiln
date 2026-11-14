@@ -635,12 +635,14 @@ test('look after: a site Astro builds gets Kiln the way the button adds it, in t
     const body = await res.json();
     // No previews step: a suggestion's branch holds source on a site Astro builds, not pages, so it gets no preview.
     const [kiln, charset, marks] = body.looked_after;
-    assert.deepEqual(states(body.looked_after), [['kiln', 'done'], ['charset', 'not_done'], ['marks', 'not_done']]);
+    assert.deepEqual(states(body.looked_after), [['kiln', 'done'], ['charset', 'not_done'], ['marks', 'nothing']]);
     assert.equal(kiln.detail, 'Kiln added its files to ada/club, and 1 layout file now loads the editor.');
     assert.deepEqual(w.gh.commits.get(kiln.commit.sha).parents, [before]);
     // The steps that work on a site's own pages say what they said before.
     assert.match(charset.detail, /^This site is built by Astro before it is published/);
-    assert.match(marks.detail, /^This site is built by Astro before it is published/);
+    // The first pass of an Astro site is made from the dashboard's button, which shows first what would move.
+    assert.equal(marks.code, 'astro_button');
+    assert.match(marks.detail, /^On a site Astro builds, Kiln does not mark text by itself\. Press Mark what can be edited on this row/);
     // Kiln's hosting takes a site Astro builds (cloud-built.test.js). This repository has no lock file, so it is told its installer is not one Kiln's build file knows.
     assert.equal(body.code, 'build_tool');
   });

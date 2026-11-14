@@ -295,6 +295,8 @@ export async function lookAfter(env, { site, token, author, worker, firstpassAt 
     const marksSay = (code) => firstPassSentence(code, { generator: (plan || unread)?.generator }) || prepareSentence(code, { repo, generator: (plan || unread)?.generator, branch: shut || plan?.branch || undefined });
     try {
       if (firstpassAt) steps.push({ step: 'marks', state: 'nothing', detail: 'A first pass at what can be edited was already made on this site.' });
+      // A site Astro builds is marked from the dashboard, where its owner sees first what would move out of the templates.
+      else if (unread && unread.state === 'built' && (unread.kind === 'astro' || /astro/i.test(String(unread.generator || '')))) steps.push({ step: 'marks', state: 'nothing', code: 'astro_button', detail: 'On a site Astro builds, Kiln does not mark text by itself. Press Mark what can be edited on this row: Kiln shows first how much of the text in your templates it can take, and moves it when you say.' });
       else if (unread) steps.push({ step: 'marks', state: 'not_done', code: unread.state, detail: marksSay(unread.state) });
       else if (shut) steps.push({ step: 'marks', state: 'not_done', code: 'protected', detail: marksSay('protected') });
       else {

@@ -468,3 +468,19 @@ test('an invited editor session never reaches the owner branch, and an owner ses
     assert.equal(calls.length, 0);
   });
 });
+
+test('a change the service saves for the owner of a site a generator builds carries the owner\'s name, not "admin"', async () => {
+  const { fakeGitHub } = await import('./github-fake.js');
+  const FILE = 'src/content/events/one.md';
+  const gh = fakeGitHub({ repo: REPO, files: { [FILE]: '---\ntitle: Old title\n---\nBody\n' } });
+  const owner = github();
+  // The owner's own token answers who they are and whether they may change the repository; everything else is the repository.
+  const handler = async (url, init) => (url === `${GH}/repos/${REPO}` || url === `${GH}/user` ? owner(url, init) : gh.handler(url, init));
+  const e = withOwner();
+  await withFetch(handler, async () => {
+    const r = await owned(e, '/source/commit', { method: 'POST', body: { repo: REPO, adapter: 'astro', file: FILE, edits: [{ pointer: '/frontmatter/title', value: 'New title', type: 'text', key: 't' }] } });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+  });
+  const authors = [...gh.commits.values()].map(c => c.author && c.author.name).filter(n => /via Kiln/.test(n || ''));
+  assert.deepEqual(authors, ['rosa (via Kiln)']);
+});

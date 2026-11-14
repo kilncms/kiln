@@ -1231,8 +1231,10 @@ async function authActor(request, env, repo) {
     // The owner of a site whose files Kiln keeps is an admin like any owner.
     // `kept` says who they are, for what they schedule (schedAuthor).
     const owner = owners.get(request);
-    if (owner && isKeptSession(owner.sess)) return { name: 'admin', admin: true, kept: { account_id: owner.sess.account_id, name: owner.sess.login, email: owner.sess.email || null } };
-    return { name: 'admin', admin: true };
+    // A change the service saves for the owner carries their name, as one they save with their own GitHub token does.
+    const who = owner && owner.sess && typeof owner.sess.login === 'string' && owner.sess.login.trim() ? owner.sess.login.trim().slice(0, 60) : 'admin';
+    if (owner && isKeptSession(owner.sess)) return { name: who, admin: true, kept: { account_id: owner.sess.account_id, name: owner.sess.login, email: owner.sess.email || null } };
+    return { name: who, admin: true };
   }
   return null;
 }
