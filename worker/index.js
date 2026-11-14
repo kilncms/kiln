@@ -81,7 +81,7 @@ const GH = 'https://api.github.com';
 const UA = 'kiln-auth-worker';
 // Reported by /healthz for the editor's capability handshake (§13). Keep in
 // step with package.json "version" when cutting a release.
-const WORKER_VERSION = '0.6.8';
+const WORKER_VERSION = '0.6.9';
 
 import { startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { handleCloud, googleDashboardSignIn, keptOwnerAtSite, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, userPushAnswer, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
