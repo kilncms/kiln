@@ -128,6 +128,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Putting up a hosted site with many pictures takes less of the service's
+  memory.** While it copied a group of files to Cloudflare, the service held
+  every file's bytes beside their base64 text until the whole group was sent.
+  It now keeps the text alone, reads no more than 20 MB of files from GitHub
+  at one moment, and writes one log line, `hosting_copied`, with the size of
+  each copy. A group still goes in one request, so a very large group can
+  still be more than the service may hold.
+
 - **The operator is told when the set-up of a domain is put away, and when a
   site Kiln keeps the files of is removed from the admin page.** A set-up
   that was put away only wrote a log line, so the operator learned of it when

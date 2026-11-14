@@ -39,7 +39,7 @@
  * page, is plain files as before. See "The members area" below.
  */
 
-import { gh, inTurn, refPath, base64, prepareSentence, readAstroSettings } from './prepare.js';
+import { gh, refPath, prepareSentence, readAstroSettings } from './prepare.js';
 import { detectGenerators } from '../src/adapters/detect.js';
 import { dayWords } from './mail.js';
 import { MEMBERS_GATE_MODULE } from './members-gate.js';
@@ -52,6 +52,8 @@ export const LIMITS = {
   fileBytes: 25 * 1024 * 1024,     // Cloudflare refuses a larger file
   newFiles: 5000,                  // files sent in one copy; more than this is not a small business site
   settingsBytes: 100 * 1024,       // a _headers or _redirects file larger than this is not read
+  readFiles: 6,                    // files of one group read from GitHub at the same moment (a Worker waits on six connections at a time)
+  readBytes: 20 * 1024 * 1024,     // and no more of them than this at the same moment, by the sizes the repository lists; a larger file is read alone
 };
 
 export class HostingError extends Error {
@@ -242,6 +244,43 @@ async function fileBytes(token, repo, sha) {
   return r.arrayBuffer();
 }
 
+/**
+ * A file's bytes as base64 text, in pieces. The bytes are worked through in
+ * slices whose length is a multiple of three, so each slice's text is whole
+ * groups of four letters and the pieces, joined, are the very text the whole
+ * file gives at once (base64() in prepare.js). Only one slice at a time is
+ * held as a binary string: base64() builds that string for the whole file,
+ * which is a second copy of a picture of up to 25 MB.
+ */
+export const BASE64_SLICE = 3 * 8192;
+export function base64Pieces(buf) {
+  const u = new Uint8Array(buf), pieces = [];
+  for (let i = 0; i < u.length; i += BASE64_SLICE) pieces.push(btoa(String.fromCharCode.apply(null, u.subarray(i, i + BASE64_SLICE))));
+  return pieces;
+}
+
+/**
+ * Run `fn` over `items`, keeping their order, a few at a time: never more than
+ * LIMITS.readFiles of them together, and never more than LIMITS.readBytes by
+ * `sizeOf`, except that an item larger than that goes alone.
+ */
+async function inTurnBySize(items, sizeOf, fn) {
+  const out = new Array(items.length);
+  for (let i = 0; i < items.length;) {
+    let n = 0, bytes = 0;
+    while (i + n < items.length && n < LIMITS.readFiles) {
+      const size = sizeOf(items[i + n]);
+      if (n && bytes + size > LIMITS.readBytes) break;
+      bytes += size;
+      n++;
+    }
+    const part = await Promise.all(items.slice(i, i + n).map((it, j) => fn(it, i + j)));
+    part.forEach((v, j) => { out[i + j] = v; });
+    i += n;
+  }
+  return out;
+}
+
 async function settingsText(token, repo, entry) {
   if (!entry || Number(entry.size) > LIMITS.settingsBytes) return null;
   try { return new TextDecoder('utf-8', { fatal: true }).decode(await fileBytes(token, repo, entry.sha)); }
@@ -286,6 +325,7 @@ async function settingsText(token, repo, entry) {
  */
 export async function deploySite(env, { token, repo, name, first = false, siteId = null, branch = null, commit = null, preview = false, have = null }) {
   if (!hostingOn(env)) throw new HostingError('not_set_up');
+  const started = Date.now();
   let tree = await readTree({ token, repo, branch, commit });
   if (tree.state !== 'ok') return tree;
   let built = null;
@@ -326,16 +366,26 @@ export async function deploySite(env, { token, repo, name, first = false, siteId
   // With nothing to send, the first answer already carries the token that
   // says "every file is here". Otherwise it comes with the last upload.
   let done = buckets.length ? null : session.jwt;
+  // A Worker may hold 128 MB at one moment, for everything it is doing, so a group is held in one form only.
+  // Each file is read, turned into base64 text and let go at once: until the group is sent, what is kept of a
+  // file is its text (inside its File), never its bytes beside it. A group is still sent in one request, as
+  // Cloudflare lays the groups out, so a whole group's text is held, and held once more while it is written out.
+  let bytesSent = 0, largest = 0;
   for (const bucket of buckets) {
-    const parts = await inTurn(bucket, async (hash) => {
+    let groupBytes = 0;
+    const parts = await inTurnBySize(bucket, (hash) => byHash.get(hash)?.size || 0, async (hash) => {
       const f = byHash.get(hash);
       if (!f) throw new HostingError('cloudflare', `asked for a file that is not in the list: ${hash}`);
-      return { hash, path: f.path, bytes: await fileBytes(token, repo, f.sha) };
+      const bytes = await fileBytes(token, repo, f.sha);
+      groupBytes += bytes.byteLength;
+      return { hash, file: new File(base64Pieces(bytes), hash, { type: contentType(f.path) }) };
     });
     const form = new FormData();
-    for (const p of parts) form.append(p.hash, new File([base64(p.bytes)], p.hash, { type: contentType(p.path) }), p.hash);
+    for (const p of parts) form.append(p.hash, p.file, p.hash);
     const sent = await cloudflare(env, 'POST', '/workers/assets/upload?base64=true', { form, bearer: session.jwt });
     if (sent.result?.jwt) done = sent.result.jwt;
+    bytesSent += groupBytes;
+    if (groupBytes > largest) largest = groupBytes;
   }
   if (!done) throw new HostingError('cloudflare', 'every file was sent but Cloudflare did not say the set is complete');
 
@@ -368,6 +418,8 @@ export async function deploySite(env, { token, repo, name, first = false, siteId
   // again later would only repeat it.
   if (first) await cloudflare(env, 'POST', `${script}/subdomain`, { json: { enabled: true, previews_enabled: false } });
 
+  // One line for each copy that ends, with its size, so a fault of the service can be set beside what was being copied.
+  console.log(JSON.stringify({ evt: 'hosting_copied', repo, files: files.length, sent: wanted, bytes: bytesSent, groups: buckets.length, largest, ms: Date.now() - started }));
   // A built site's commit is the source commit its pages were built from: that is the one its owner knows.
   return say({ state: 'live', url: siteAddress(env, name), commit: built ? built.from || built.source : tree.head, branch: tree.branch, files: files.length, sent: wanted, skipped, ...(members ? { members } : {}) });
 }

@@ -10,7 +10,9 @@ import assert from 'node:assert/strict';
 import { withFetch, githubWrites } from './worker-harness.js';
 import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare } from './cloudflare-fake.js';
-import { deploySite, removeSite, publishedFiles, fingerprint, buildManifest, siteName, siteAddress, contentType, hostingOn, hostingSentence, HostingError, LIMITS } from '../worker/hosting.js';
+import { randomBytes } from 'node:crypto';
+import { deploySite, removeSite, publishedFiles, fingerprint, buildManifest, siteName, siteAddress, contentType, hostingOn, hostingSentence, HostingError, LIMITS, base64Pieces, BASE64_SLICE } from '../worker/hosting.js';
+import { base64 } from '../worker/prepare.js';
 
 const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0x80]);
 const site = {
@@ -202,4 +204,95 @@ test('hosting: a site with no 404 page and no settings files, a settings file th
   });
   // The token for the hosting account is the only credential Cloudflare is shown.
   assert.ok(w.cf.calls.every(c => c.auth === w.cf.token || c.auth.startsWith('sess-')));
+});
+
+// ─── What the service holds while it copies ──────────────────────────────────
+
+test('hosting: a file encoded a slice at a time gives the same base64 text as the same file encoded whole', () => {
+  assert.equal(BASE64_SLICE % 3, 0, 'a slice is whole groups of three bytes, so its text ends without padding');
+  for (const n of [0, 1, 2, 3, BASE64_SLICE - 1, BASE64_SLICE, BASE64_SLICE + 1, 2 * BASE64_SLICE, 3 * 1024 * 1024 + 1]) {
+    const bytes = randomBytes(n);
+    const pieces = base64Pieces(bytes);
+    assert.equal(pieces.length, Math.ceil(n / BASE64_SLICE), `${n} bytes: one piece for each slice`);
+    assert.equal(pieces.join(''), base64(bytes), `${n} bytes: the same text as the encoder the rest of the service uses`);
+    assert.equal(pieces.join(''), bytes.toString('base64'), `${n} bytes: the same text as Node's own encoder`);
+  }
+  const read = new Uint8Array(randomBytes(BASE64_SLICE + 5)).buffer;
+  assert.equal(base64Pieces(read).join(''), Buffer.from(read).toString('base64'), 'an ArrayBuffer, which is what a read from GitHub gives');
+});
+
+test('hosting: a group of files that cross the slice of the encoder reaches Cloudflare byte for byte, in one request', async () => {
+  const files = {
+    'index.html': '<!doctype html><h1>Home</h1>',
+    'img/under.jpg': randomBytes(BASE64_SLICE - 1),
+    'img/exact.jpg': randomBytes(BASE64_SLICE),
+    'img/over.jpg': randomBytes(BASE64_SLICE + 1),
+    'img/many.png': randomBytes(5 * BASE64_SLICE + 2),
+  };
+  const w = world(files, { bucketSize: 100 });
+  const received = [];
+  await withFetch(w.handler, async (calls) => {
+    const out = await go(w);
+    assert.deepEqual({ state: out.state, files: out.files, sent: out.sent }, { state: 'live', files: 5, sent: 5 });
+    const uploads = calls.filter(c => /\/workers\/assets\/upload/.test(c.url));
+    assert.equal(uploads.length, 1, 'the group is sent in one request');
+    for (const [hash, file] of uploads[0].body.entries()) {
+      const text = await file.text();
+      assert.match(text, /^[A-Za-z0-9+/]*={0,2}$/, 'one run of base64 text, with padding only at its end');
+      received.push({ hash, name: file.name, bytes: Buffer.from(text, 'base64') });
+    }
+  });
+  assert.equal(received.length, 5);
+  for (const [p, body] of Object.entries(files)) {
+    const want = Buffer.from(body);
+    const got = received.filter(r => r.bytes.equals(want));
+    assert.equal(got.length, 1, `${p} is in the request, byte for byte`);
+    assert.equal(got[0].name, got[0].hash, 'under the name Cloudflare asked for it by');
+    assert.deepEqual(w.cf.serve('club-12345678', `/${p}`).bytes, want, `a visitor gets ${p} as the repository holds it`);
+  }
+});
+
+test('hosting: no more of a group is read from GitHub at one moment than the ceiling, and a file over the ceiling is read alone', async () => {
+  const files = { 'index.html': '<!doctype html><h1>Home</h1>', 'img/big.jpg': randomBytes(1500) };
+  for (let i = 1; i <= 9; i++) files[`img/p${i}.jpg`] = randomBytes(600);
+  const copy = async () => {
+    const w = world(files, { bucketSize: 100 });
+    let reading = 0, most = 0;
+    const handler = async (url, init) => {
+      const blob = /\/git\/blobs\//.test(url);
+      if (blob) most = Math.max(most, ++reading);
+      try { await new Promise(r => setTimeout(r, 1)); return await w.handler(url, init); } finally { if (blob) reading--; }
+    };
+    await withFetch(handler, async () => { assert.equal((await go(w)).state, 'live'); });
+    for (const [p, body] of Object.entries(files)) assert.deepEqual(w.cf.serve('club-12345678', `/${p}`).bytes, Buffer.from(body), p);
+    return most;
+  };
+  assert.equal(await copy(), LIMITS.readFiles, 'small files are read six at a time, as before');
+  const was = LIMITS.readBytes;
+  LIMITS.readBytes = 1000;
+  try {
+    // Two pictures of 600 bytes are over 1,000 together; only the home page (28 bytes) fits beside one.
+    const most = await copy();
+    assert.ok(most >= 1 && most <= 2, `at most a picture and the home page at once, and there were ${most}`);
+  } finally { LIMITS.readBytes = was; }
+});
+
+test('hosting: a copy that ends writes one line with its size, and never a token or a file', async () => {
+  const w = world(site, { bucketSize: 3 });
+  const lines = [], log = console.log;
+  console.log = (s) => { lines.push(String(s)); };
+  try {
+    await withFetch(w.handler, async () => { await go(w); await go(w, { first: false }); });
+  } finally { console.log = log; }
+  const copied = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(l => l?.evt === 'hosting_copied');
+  assert.equal(copied.length, 2, 'one line for each copy');
+  const published = ['404.html', 'README.md', 'about.html', 'assets/kiln.js', 'assets/site.css', 'blog/first.html', 'img/logo.png', 'index.html'];
+  const total = published.reduce((n, p) => n + Buffer.byteLength(site[p]), 0);
+  const [first, second] = copied;
+  assert.deepEqual(Object.keys(first), ['evt', 'repo', 'files', 'sent', 'bytes', 'groups', 'largest', 'ms']);
+  assert.deepEqual({ ...first, largest: 0, ms: 0 }, { evt: 'hosting_copied', repo: 'ada/club', files: 8, sent: 8, bytes: total, groups: 3, largest: 0, ms: 0 });
+  assert.ok(first.largest >= total / 3 && first.largest < total, 'the largest of three groups');
+  assert.ok(Number.isInteger(first.ms) && first.ms >= 0);
+  assert.deepEqual({ ...second, ms: 0 }, { evt: 'hosting_copied', repo: 'ada/club', files: 8, sent: 0, bytes: 0, groups: 0, largest: 0, ms: 0 }, 'a copy with nothing new says so');
+  for (const l of lines) for (const secret of ['inst-token', w.cf.token, site['index.html']]) assert.ok(!l.includes(secret), 'no token and no contents in a line');
 });
