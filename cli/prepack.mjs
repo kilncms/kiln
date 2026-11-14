@@ -31,6 +31,7 @@ const items = [
   ['worker/hosted.js', 'worker/hosted.js'],                 // ditto — the record of hosted sites, the push webhook, the sweep
   ['worker/domain-mail.js', 'worker/domain-mail.js'],       // imported by worker/cloud.js: one forwarded email address on a hosted site's own domain
   ['worker/domain.js', 'worker/domain.js'],                 // imported by worker/cloud.js: a hosted site on its owner's own domain
+  ['worker/register.js', 'worker/register.js'],             // imported by worker/cloud.js: a new domain through Kiln for a yearly hosting plan (switched off unless REGISTER_DOMAINS is "on")
   ['worker/bring.js', 'worker/bring.js'],                   // imported by worker/cloud.js and worker/index.js: bringing a site in from somewhere else, copied by a job outside the service
   ['worker/keeps.js', 'worker/keeps.js'],                   // imported by worker/cloud.js and worker/index.js: a site whose files Kiln keeps, for someone with no GitHub account
   ['worker/prepare.js', 'worker/prepare.js'],               // ditto — adding Kiln to a repository from the dashboard

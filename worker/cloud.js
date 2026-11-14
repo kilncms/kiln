@@ -59,6 +59,7 @@ import {
   mailStop, saysNoMail, switchMailOn, inboxState, addInbox, askAgain, canAskAgain, forward, stopForwarding, cleanLocal, cleanInbox, mailSentence,
   forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, dropOtherAskings, inboxInUse, forgetInboxesOf, takeInboxLock, dropInboxLock, whatWaits, NO_CHANGE, MailError, MAIL_LIMITS,
 } from './domain-mail.js';
+import { registerReady, holderOf, registerSentence, offersForAccount, searchNames } from './register.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -672,7 +673,18 @@ export async function accountAuthor(env, accountId) {
 
 function lsConfigured(env) { return !!(env.LS_API_KEY && env.LS_STORE_ID); }
 
-function lsVariant(env, plan) { return plan === 'managed' ? env.LS_VARIANT_MANAGED : env.LS_VARIANT_CLOUD; }
+/**
+ * True when this service sells the hosting plan by the year as well: the
+ * yearly variant, LS_VARIANT_MANAGED_YEARLY, is set. Its price lives in Lemon
+ * Squeezy. Where it is not set, nothing here knows of a yearly plan.
+ */
+export function yearlyOn(env) { return !!(env && env.LS_VARIANT_MANAGED_YEARLY && env.LS_VARIANT_MANAGED); }
+
+// The yearly form is for the hosting plan only; any other asking gets the plan's monthly variant, as before.
+function lsVariant(env, plan, period = 'month') {
+  if (plan === 'managed') return period === 'year' && yearlyOn(env) ? env.LS_VARIANT_MANAGED_YEARLY : env.LS_VARIANT_MANAGED;
+  return env.LS_VARIANT_CLOUD;
+}
 
 // Live/test mode of the LS store, inferred from whether the Cloud variant is published
 // (variants sit `pending` until the store is activated for live payments, then `published`).
@@ -727,8 +739,15 @@ export function planForVariant(env, variantId) {
   if (variantId == null || variantId === '') return null;
   const v = String(variantId);
   if (env.LS_VARIANT_MANAGED && v === String(env.LS_VARIANT_MANAGED)) return 'managed';
+  if (yearlyOn(env) && v === String(env.LS_VARIANT_MANAGED_YEARLY)) return 'managed';
   if (env.LS_VARIANT_CLOUD && v === String(env.LS_VARIANT_CLOUD)) return 'cloud';
   return null;
+}
+
+/** Whether a Lemon Squeezy variant is paid by the 'month' or by the 'year', or null for one this worker does not sell. */
+export function periodForVariant(env, variantId) {
+  if (!planForVariant(env, variantId)) return null;
+  return yearlyOn(env) && String(variantId) === String(env.LS_VARIANT_MANAGED_YEARLY) ? 'year' : 'month';
 }
 
 /**
@@ -739,8 +758,8 @@ export function planForVariant(env, variantId) {
  * customer back to the dashboard once they have paid: without `redirect_url`
  * they are left on Lemon Squeezy's own page with no way back to their site.
  */
-async function lsCheckout(env, site, { email = null } = {}) {
-  const variant = lsVariant(env, site.plan);
+async function lsCheckout(env, site, { email = null, period = 'month' } = {}) {
+  const variant = lsVariant(env, site.plan, period);
   if (!lsConfigured(env) || !variant) return null;
   let back = env.CLOUD_DASHBOARD || 'https://app.kilncms.com', after = back;
   try { const u = new URL(back); u.searchParams.set('subscribed', site.id); after = u.toString(); back = new URL(back).toString(); } catch { /* a dashboard address that is no URL: sent as it is */ }
@@ -2140,7 +2159,15 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // A site that was brought in says in `bring` how its copy stands.
     const brought = keptHere.size ? await copiesForAccount(env, sess.account_id) : {};
     for (const r of rows) if (brought[r.id]) r.bring = brought[r.id];
-    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env), brings: can && bringOn(env) });
+    // `registers`: this service gets a new domain for a site on the yearly hosting plan (register.js). False unless it is
+    // switched on. Each site's `new_domain` is then { offered: true } when its owner may choose a name, and null otherwise.
+    const registers = can && await registerReady(env);
+    if (registers) {
+      const offers = await offersForAccount(env, sess.account_id, { up: (id) => isUp(hosted[id]), domains: owned, now });
+      for (const r of rows) r.new_domain = offers[r.id]?.offered ? { offered: true } : null;
+    }
+    // `yearly`: the hosting plan can be paid by the year here (`/cloud/checkout?site=…&period=year`). Absent where it cannot.
+    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env), brings: can && bringOn(env), registers, ...(lsConfigured(env) && yearlyOn(env) ? { yearly: true } : {}) });
   }
 
   // Which repositories Kiln's GitHub App can reach for the person signed in:
@@ -2543,6 +2570,25 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   // live ("stop"). A site whose editing is switched off cannot start anything
   // new, and can still check, stop and take its records away, so nobody is
   // trapped. None of it reads the repository, so the App's token is not asked for.
+  // A new domain through Kiln for a site on the yearly hosting plan (register.js). So far: where a site
+  // stands, and the search. Nothing here registers a name. With the switch off this is no route at all.
+  //   GET /cloud/sites/newdomain?site=ID        → { ok, offered, holder, registration }
+  //   GET /cloud/sites/newdomain?site=ID&q=…    → { ok, asked, searches_left, names: [{ name, can, why?, sentence? }] }
+  if (path === '/cloud/sites/newdomain' && request.method === 'GET' && await registerReady(env)) {
+    const asked = await ownedSite(request, env, url, sess, tools, { needToken: false, needAccess: false });
+    if (asked.response) return asked.response;
+    const { site } = asked;
+    const own = await domainRow(env, site.id);
+    const up = isUp(await hostingRow(env, site.id));
+    const offer = (await offersForAccount(env, sess.account_id, { up: () => up, domains: { [site.id]: own } }))[site.id] || { offered: false, why: 'search_failed', name: null };
+    const typed = url.searchParams.get('q');
+    if (typed === null) return json({ ok: true, offered: offer.offered, holder: holderOf(env), registration: null });
+    if (!offer.offered) return json({ error: registerSentence(offer.why, { name: offer.name || undefined }), code: offer.why }, offer.why === 'not_paid' ? 403 : offer.why === 'search_failed' ? 503 : 409);
+    const found = await searchNames(env, sess.account_id, typed, { timeZone: request.cf?.timezone || null });
+    if (found.stop) return json({ error: registerSentence(found.stop, { time: found.time }), code: found.stop, ...(found.more || {}) }, found.status);
+    return json(found);
+  }
+
   if (path === '/cloud/sites/domain' && (request.method === 'GET' || request.method === 'POST')) {
     const asked = await ownedSite(request, env, url, sess, tools, { needToken: false, needAccess: false });
     if (asked.response) return asked.response;
@@ -3037,7 +3083,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         ? 'This subscription is cancelled but paid up for now: resume it under Manage billing instead of paying again.'
         : 'This site already has a subscription. Use Manage billing to change it.' }, 409);
     }
-    const checkout = await lsCheckout(env, site, { email: await accountEmail(env, sess.account_id) });
+    // `period=year` asks for the yearly form of the hosting plan, where this service sells one.
+    const period = url.searchParams.get('period') === 'year' ? 'year' : 'month';
+    const checkout = await lsCheckout(env, site, { email: await accountEmail(env, sess.account_id), period });
     return checkout ? json({ url: checkout }) : json({ error: 'The payment page could not be opened just now. Nothing was charged. Try again in a minute, and write to info@kilncms.com if it keeps happening.', code: 'billing_not_configured' }, 503);
   }
 
@@ -3106,6 +3154,21 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         () => env.kiln_cloud.prepare(`UPDATE sites SET ${setUntil}, status = ? WHERE ls_subscription_id = ?`).bind(...untilArgs, status, subId).run(),
         () => env.kiln_cloud.prepare('UPDATE sites SET status = ? WHERE ls_subscription_id = ?').bind(status, subId).run(),
       );
+    }
+    // Paid by the month or by the year, and up to when (migration 0016). The
+    // end of the paid period is `renews_at` while the subscription is active
+    // (Lemon Squeezy: the end of the current billing cycle), and `ends_at`
+    // once it is cancelled. In any other state the day on the row is kept:
+    // for a failed payment `renews_at` is the next try, which nobody has paid
+    // for. A variant this worker does not sell writes nothing, and neither
+    // does a database the migration has not reached.
+    const period = periodForVariant(env, attrs.variant_id);
+    if (period && (siteId || subId)) {
+      const paidUntil = state.access === 'yes' && status === 'active' ? ms(attrs.renews_at) : state.access === 'until' ? ms(attrs.ends_at) : null;
+      const set = paidUntil === null ? 'billing_period = ?' : 'billing_period = ?, paid_until = ?';
+      const args = paidUntil === null ? [period] : [period, paidUntil];
+      try { await env.kiln_cloud.prepare(`UPDATE sites SET ${set} WHERE ${siteId ? 'id' : 'ls_subscription_id'} = ?`).bind(...args, siteId || subId).run(); }
+      catch (e) { if (!/billing_period|paid_until/.test(String((e && e.message) || e))) throw e; }
     }
     await env.KILN.put(evtKey, '1', { expirationTtl: 7 * 24 * 3600 });
     const siteRow = siteId || subId
