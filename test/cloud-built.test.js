@@ -364,3 +364,19 @@ test('built site: on a database migration 0014 has not reached, a built site and
     assert.equal(p.cf.serve(NAME, '/index.html').bytes.toString(), 'changed again');
   });
 });
+
+test('built site: "Check this site" says nothing about previews for a site that gets none', { skip: d1Skip }, async () => {
+  const page = '<!doctype html><html><head><script src="/assets/kiln-config.js"></script><script src="/assets/kiln.js" defer></script></head><body><h1>Home</h1></body></html>';
+  const w = await liveWorld(withFile(), built({ 'index.html': page, 'kiln.html': fixture['public/kiln.html'], 'assets/kiln-config.js': fixture['public/assets/kiln-config.js'], 'assets/kiln.js': '// the editor' }));
+  // The check opens the site's own address: here Cloudflare's stand-in answers for it.
+  const address = `https://${NAME}.kiln-sites.workers.dev`;
+  const handler = async (url, init) => (String(url).startsWith(address) ? w.cf.visit(NAME, new Request(url, init)) : w.handler(url, init));
+  await withFetch(handler, async () => {
+    const res = await ask(w.env, 'GET', '/cloud/sites/check?site=site1');
+    assert.equal(res.status, 200);
+    const { checks } = await res.json();
+    assert.ok(checks.length >= 4, 'the site was checked');
+    assert.match(JSON.stringify(checks), /public\/assets\/kiln-config\.js/, 'the settings file was found where an Astro site keeps it');
+    assert.doesNotMatch(JSON.stringify(checks), /preview/i, 'no line promises a preview');
+  });
+});
