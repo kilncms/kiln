@@ -41,7 +41,36 @@ test('KLR-08 end to end: sign-in records the numeric id, and /admin/cloud/* answ
   const runbook = (token) => worker.fetch(new Request('https://worker.example/admin/cloud/runbook', { headers: { Authorization: `Bearer ${token}` } }), env);
   const operator = await signIn('n1', { login: 'erikkwilder', id: 4242 });
   assert.equal(JSON.parse(kv.map.get(`csess:${operator}`)).uid, 4242);
-  assert.equal((await runbook(operator)).status, 200);
+  const page = await runbook(operator);
+  assert.equal(page.status, 200);
+  // The playbook speaks of every part of the service the operator now runs, in a few of each part's own words.
+  const text = await page.text();
+  for (const words of [
+    'Kiln Hosting', 'kiln-sites', 'kiln-converter',                         // the map
+    '--env production', 'wrangler secret list', 'HOSTING_MEMBER_KEY',       // the switches and the secrets
+    'Every five minutes', 'Every minute',                                   // the timers
+    'Kiln no longer uses REPOSITORY', 'never sooner',                       // the notes to the operator
+    'Kiln cannot confirm that inbox by itself', 'Transfer ownership',       // when a customer writes
+    'firstseen:repo:', 'copied:', "SET status = 'trialing'",                // free days
+    'Publish again', 'three more days', 'hosting_members_left_out',         // hosting
+    'at most <strong>five</strong> previews', 'One known limit',            // previews
+    'put_away', 'not_changed', 'Activity log',                              // own domains and email forwarding
+    'Moving away', 'Download the domain\'s records',                        // leaving
+    "GitHub's permanent number", 'docs/deleting-data.md',                   // accounts
+    'npm run deploy:prod', 'GitHub 500', 'Retry deployment',                // releasing
+    'wrangler rollback VERSION_ID', 'does not roll back with the code',     // rolling back
+    'wrangler tail --env production', 'Worker exceeded memory limit',       // looking at what happened
+    'Lemon Squeezy', 'While billing is not set up',                         // billing
+    'Every day, in five minutes', 'Every week',                             // the two looks
+    'Known gaps',
+  ]) assert.ok(text.includes(words), `the playbook says nothing of "${words}"`);
+  assert.equal(text.includes('—'), false, 'the playbook has an em dash in it');
+  // Nothing in it runs, and nothing is loaded from another address.
+  assert.equal(/<script|<link|<img|<iframe|src=|@import|url\(/i.test(text), false);
+  // Every wrangler command that reaches a store, the database or the service names its environment.
+  for (const line of text.split('\n').filter(l => /npx wrangler (kv|d1|secret|rollback|deployments|tail)/.test(l))) {
+    assert.match(line, /--env (production|staging)/, `a command without its environment: ${line.trim().slice(0, 80)}`);
+  }
   // The old username, registered by someone else: same login, different id.
   const squatter = await signIn('n2', { login: 'erikkwilder', id: 777 });
   assert.equal((await runbook(squatter)).status, 403);
