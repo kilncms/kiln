@@ -8,6 +8,29 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A new domain through Kiln: renewal, ending and leaving (the service's
+  part, and still switched off).** The whole piece is OFF on the test service
+  and on production (`REGISTER_DOMAINS` is not set), and with it off none of
+  this can be reached. A name stops renewing within five minutes of its
+  yearly plan being canceled, and renews again when the plan is paid again:
+  the service asks Cloudflare for the change, reads the registration back,
+  and believes only what it then reads. When the change does not show, the
+  operator is told once a day to switch it by hand. Once a day each name's
+  end date is read back. The owner of a name that will not renew is written
+  to 30 days and 7 days before it runs out. Past that day the name is marked
+  as run out, the site's domain is put away and the operator is told. A
+  customer can ask to take the name away ("Take this name with me"), before
+  or after its first 60 days, also for a site that was removed, and the
+  service can list an account's registrations for the dashboard. The operator
+  has three actions for a registration nobody heard back about and for a
+  name that has left (free this row, mark registered, handed over). A
+  customer now hears by email when a registration fails or stops part way.
+  The emails about a site coming down, and the answer to Remove, say that a
+  registered name stays registered and how to ask for it. Nothing in this
+  part can register a name, and the earlier tests that prove one press
+  registers once pass unchanged. The playbook's pages for it wait in
+  `worker/runbook-new-domain.md` until the new playbook is joined to this
+  branch.
 - **A new domain through Kiln: the chosen name is registered, once, and the
   site is put on it (the service's part, and still switched off).** The whole
   piece is OFF on the test service and on production (`REGISTER_DOMAINS` is
