@@ -15,6 +15,13 @@
  * that calls it. `registrar`, the door for looking, knows no call that
  * registers, changes or renews a name, and must never learn one.
  *
+ * ONE other function changes anything at Cloudflare: `setRenewal`, which
+ * switches a name's renewing by itself off or on and can say nothing else.
+ * It goes out through the same door as the looking, and `renewalTo`, in the
+ * timer's second half at the end of this file, is the only place that calls
+ * it. Renewal, ending and leaving are in that last part. Nothing there can
+ * register a name.
+ *
  * Settings (all read here and nowhere else):
  *   REGISTER_DOMAINS   the switch. On only when it is exactly "on". Absent on
  *                      the test service and on production until matters
@@ -38,7 +45,7 @@
 import { hostingOn } from './hosting.js';
 import { domainsOn, prepareDomain, saveDomain, domainRow } from './domain.js';
 import { hostingRow } from './hosted.js';
-import { customerMailOn, mailAddress, addressSql, sendOnce, nameYoursMail, dateWords } from './mail.js';
+import { customerMailOn, mailAddress, addressSql, sendOnce, nameYoursMail, nameNewsMail, nameRunsOutMail, dateWords } from './mail.js';
 
 const CF = 'https://api.cloudflare.com/client/v4';
 const HOUR = 3600 * 1000;
@@ -142,6 +149,11 @@ export function registerSentence(code, { name = 'this name', time = '' } = {}) {
     case 'off': return 'Kiln is not registering new domains right now. Nothing was changed. Try again later, or email info@kilncms.com.';
     case 'busy': return 'Kiln is already working on this site. Wait a moment and look again.';
     case 'check_failed': return 'Kiln could not check this name just now. Nothing was registered for you. Try again in a minute.';
+    // Taking a name away, and a site that is removed. `time` is a day in words.
+    case 'leave_early': return `A new name cannot be moved in its first 60 days. That is a rule for all domain names. We have noted your request and will email you on ${time} with what to do next. Your site stays on the name until then.`;
+    case 'leave_now': return `We have your request. A person at Kiln will email you within three working days with a code to move ${name}. Kiln charges nothing. The company you move it to charges its own price, which usually adds a year to the name.`;
+    case 'no_name': return 'There is no name registered through Kiln on this account to take with you. Email info@kilncms.com if you expected one.';
+    case 'site_removed': return `This site's domain, ${name}, was registered through Kiln. Removing the site does not hand the name over. Ask us for it before ${time}.`;
     default: return 'Kiln could not search just now. Nothing was changed. Try again in a minute.';
   }
 }
@@ -245,6 +257,8 @@ const CALLS = {
   check: ({ names }) => ({ method: 'POST', path: '/domain-check', json: { domains: (names || []).slice(0, LIMITS.namesChecked) } }),
   /** How far a registration that was asked for has got. HTTP 404 for a name never asked for. */
   status: ({ name }) => ({ method: 'GET', path: `/registrations/${encodeURIComponent(String(name ?? ''))}/registration-status` }),
+  /** A registration as Cloudflare holds it: the day it runs out, and whether it renews by itself. */
+  read: ({ name }) => ({ method: 'GET', path: `/registrations/${encodeURIComponent(String(name ?? ''))}` }),
 };
 
 /**
@@ -257,12 +271,32 @@ const CALLS = {
  */
 export async function registrar(env, ask, args = {}) {
   if (!Object.prototype.hasOwnProperty.call(CALLS, ask)) throw new RegisterError('not_a_call', ask);
+  return through(env, ask, args, CALLS[ask](args));
+}
+
+/**
+ * THE ONE CHANGE this service ever asks of a registration: whether the name
+ * renews by itself (`on` true or false, and nothing else is sent). It is not
+ * one of the looking calls above, and it goes out through the same door, so
+ * with the stand-in nothing leaves the service. Whether Cloudflare accepts
+ * this change has never been tried: the caller must not believe the answer,
+ * and reads the registration back. One place calls it: `renewalTo`.
+ * Throws RegisterError('off') with the switch off.
+ */
+export async function setRenewal(env, name, on) {
+  if (!registerOn(env)) throw new RegisterError('off');
+  if (!mayAsk(name) || typeof on !== 'boolean') throw new RegisterError('not_a_name');
+  const path = `/registrations/${encodeURIComponent(name)}`;
+  return through(env, 'renewal', { name, on }, { method: 'PATCH', path, json: { auto_renew: on } });
+}
+
+// The door itself: the stand-in or Cloudflare, and never both.
+async function through(env, ask, args, { method, path, json }) {
   if (standInAsked(env)) {
     if (!standInAllowed(env)) throw new RegisterError('standin_refused', 'REGISTER_STANDIN is for a service whose HOSTING_PREFIX is "stg-"');
     return standIn(env, ask, args);
   }
   if (!domainsOn(env)) throw new RegisterError('not_set_up');
-  const { method, path, json } = CALLS[ask](args);
   const headers = { Authorization: `Bearer ${env.HOSTING_API_TOKEN}` };
   let body;
   if (json !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(json); }
@@ -301,7 +335,28 @@ function standIn(env, ask, args) {
     return answer(['com', 'net', 'org', 'us', 'info', 'site'].map(e => standInLine(`${label}.${e}`)));
   }
   if (ask === 'check') return answer((args.names || []).slice(0, LIMITS.namesChecked).map(standInLine));
+  if (ask === 'read') return standInRead(env, String(args.name ?? '').toLowerCase());
+  if (ask === 'renewal') return standInRenewal(env, String(args.name ?? '').toLowerCase(), args.on === true);
   return standInStatus(env, String(args.name ?? '').toLowerCase());
+}
+// Renewal with the stand-in: a name that begins with "norenew" refuses the
+// change, and for every other name the change is kept (in KV) and read back.
+const standInRenewKey = (name) => `regstandin:renew:${name}`;
+async function standInRead(env, name) {
+  let row = null;
+  try { row = await env.kiln_cloud.prepare("SELECT asked_at, registered_at, expires_at, created_at FROM registrations WHERE name = ? AND state IN ('registered', 'stuck') ORDER BY created_at DESC LIMIT 1").bind(name).first(); } catch { row = null; }
+  if (!row) return { http: 404, ok: false, result: null, errors: [{ code: 10000, message: `No registration found for ${name}` }] };
+  const began = Number(row.registered_at || row.asked_at || row.created_at) || Date.now();
+  let off = false;
+  try { off = (await env.KILN.get(standInRenewKey(name))) === 'off'; } catch { off = false; }
+  const iso = (ms) => new Date(ms).toISOString();
+  return { http: 200, ok: true, errors: [], result: { domain_name: name, status: 'active', created_at: iso(began), expires_at: iso(Number(row.expires_at) || began + 365 * DAY), auto_renew: !off, privacy_mode: 'redaction', locked: true } };
+}
+async function standInRenewal(env, name, on) {
+  const parts = nameParts(name);
+  if (!parts || parts.label.startsWith('norenew')) return { http: 400, ok: false, result: null, errors: [{ code: 10000, message: 'The stand-in refuses to change renewal for every name that begins with "norenew".' }] };
+  await env.KILN.put(standInRenewKey(name), on ? 'on' : 'off');
+  return { http: 200, ok: true, errors: [], result: { domain_name: name, auto_renew: on } };
 }
 const STANDIN_SLOW_MS = 3 * 60 * 1000;
 async function standInStatus(env, name) {
@@ -853,4 +908,371 @@ export async function sweepRegistrations(env, { notify = null, up = () => false,
     console.warn(JSON.stringify({ evt: 'register_sweep_failed', detail: short(e?.message || e) }));
   }
   return out;
+}
+
+// ─── Renewal, ending and leaving ──────────────────────────────────────────────
+//
+// What becomes of a name after it is registered. It stops renewing when the
+// yearly plan it came with ends, and renews again when that plan is paid
+// again. Its owner is reminded before it runs out. It runs out, or it leaves
+// with its owner. Nothing in this part can register a name: it looks
+// (`registrar`), and `renewalTo` alone asks for the one change `setRenewal`
+// can send. The operator's three actions are here too, and none of them
+// sends anything but a look.
+
+const LATER = {
+  readEveryMs: DAY,        // each registered name is read back from Cloudflare this often
+  renewEveryMs: DAY,       // a renewal change that did not take is tried again, and the operator told again, this often
+  remindDays: [30, 7],     // the customer is written to this many days before a name that will not renew runs out
+  tellWithinMs: 7 * DAY,   // a try that failed or stuck longer ago than this is not written about any more
+};
+const untilOf = (row) => Number(row.expires_at) || (Number(row.registered_at) ? Number(row.registered_at) + TIMES.yearMs : null);
+const leaveFrom = (row) => (Number(row.registered_at) || Number(row.created_at) || 0) + TIMES.leaveAfterMs;
+const dashboardOf = (env) => env.CLOUD_DASHBOARD || 'https://app.kilncms.com';
+const siteWords = (site, row) => `Site: ${site && site.repo ? site.repo : site ? 'not known' : 'removed'} (${row.site_id})`;
+const siteRow = async (env, id) => { try { return (await env.kiln_cloud.prepare('SELECT * FROM sites WHERE id = ?').bind(id).first()) || null; } catch { return null; } };
+// The address of the account a name belongs to. It is found by account, since the row outlives its site. Never logged.
+const addressOf = async (env, accountId) => { try { return (await env.kiln_cloud.prepare(`SELECT ${await addressSql(env)} FROM accounts a WHERE a.id = ?`).bind(accountId).first())?.email || null; } catch { return null; } };
+const no = (code, status, error) => ({ status, body: { error, code } });
+
+/** The customer hears, once, that a registration failed ('failed') or stopped part way ('stuck'). True when an email went. Never throws. */
+async function tellCustomer(env, row, kind) {
+  try {
+    const email = await addressOf(env, row.account_id);
+    if (!customerMailOn(env) || !mailAddress(email)) return false;
+    const site = await siteRow(env, row.site_id);
+    const res = await sendOnce(env, `name-${kind}:${row.id}`, email, nameNewsMail({ kind, name: row.name, sentence: registerSentence(kind, { name: row.name }), origin: site && site.origin, dashboard: dashboardOf(env) }));
+    return !!(res && res.ok);
+  } catch { return false; }
+}
+
+/**
+ * Whether a name should renew by itself: its site is still there, on the
+ * subscription the name came with, paid by the year, and that plan is active
+ * (or a payment failed and its grace has not run out; `access` is cloud.js
+ * siteHasAccess). A canceled plan stops the renewing at once, though site and
+ * name work until the paid year ends.
+ */
+export function shouldRenew(row, site, { access = () => false, now = Date.now() } = {}) {
+  if (!row || !site || !site.ls_subscription_id || String(site.ls_subscription_id) !== String(row.subscription_id)) return false;
+  if (site.plan !== 'managed' || site.billing_period !== 'year') return false;
+  if (site.status === 'active') return true;
+  return site.status === 'past_due' && !!access(site, now);
+}
+
+/**
+ * Renewal switched to what it should be (`want`), for one registered name.
+ * THE ONE CALLER of `setRenewal`. The change is asked for, then the
+ * registration is read back, and `renews` is written only from what
+ * Cloudflare then shows. When the change was refused or does not show, the
+ * reason is left on the row, the operator is told to switch it by hand, and
+ * the next try (and the next note) is a day later. Answers 'off', 'on',
+ * 'failed', or 'waiting' when a failed try is less than a day old.
+ */
+async function renewalTo(env, row, want, { notify = null, site = null, now = Date.now() } = {}) {
+  const db = env.kiln_cloud;
+  const mine = await db.prepare("UPDATE registrations SET renew_changed_at = ?, updated_at = ? WHERE id = ? AND state = 'registered' AND (reason IS NULL OR COALESCE(renew_changed_at, 0) <= ?)")
+    .bind(now, now, row.id, now - LATER.renewEveryMs).run();
+  if (!changed(mine)) return 'waiting';
+  const why = (e) => short(e instanceof RegisterError ? `${e.code} ${e.detail}` : e?.message || e, 200);
+  let sent = null, shown = null, none = '';
+  try { sent = await setRenewal(env, row.name, want); } catch (e) { none = why(e); }
+  try { shown = await registrar(env, 'read', { name: row.name }); } catch (e) { none = none || why(e); }
+  const reg = shown && shown.ok && shown.result ? shown.result : null;
+  const reads = reg && typeof reg.auto_renew === 'boolean' ? reg.auto_renew : null;
+  const word = want ? 'on' : 'off';
+  if (reads === want) {
+    await db.prepare('UPDATE registrations SET renews = ?, reason = NULL, expires_at = COALESCE(?, expires_at), checked_at = ?, updated_at = ? WHERE id = ?')
+      .bind(want ? 1 : 0, Date.parse(reg.expires_at) || null, now, now, row.id).run();
+    console.log(JSON.stringify({ evt: want ? 'renewal_on' : 'renewal_off', site: row.site_id, name: row.name }));
+    return word;
+  }
+  const said = sent ? short(`${sent.http} ${sent.errors.map(e => `${e.code} ${e.message}`).join('; ') || (sent.ok ? 'accepted' : 'refused')}`, 200) : `no answer (${none || 'not known'})`;
+  const showed = reads === null ? `nothing Kiln could read (${shown ? shown.http : none || 'no answer'})` : `renewal ${reads ? 'on' : 'off'}`;
+  await db.prepare('UPDATE registrations SET reason = ?, checked_at = CASE WHEN ? = 1 THEN ? ELSE checked_at END, updated_at = ? WHERE id = ?')
+    .bind(short(`renewal could not be switched ${word}: ${said}`), reg ? 1 : 0, now, now, row.id).run();
+  console.warn(JSON.stringify({ evt: want ? 'renewal_on_failed' : 'renewal_off_failed', site: row.site_id, name: row.name, answer: said, shows: showed }));
+  const runs = untilOf(row);
+  await teller(env, notify)(`Switch renewal ${word} by hand for ${row.name}`, [
+    `Domain: ${row.name}`,
+    siteWords(site, row),
+    want ? 'The yearly plan this name came with is paid again, so the name should renew.' : 'The yearly plan this name came with is canceled, unpaid or gone, so the name must stop renewing.',
+    `Kiln asked Cloudflare to switch renewal ${word}. Cloudflare answered: ${said}. Read back, it showed: ${showed}.`,
+    `In Cloudflare's dashboard, Kiln Hosting account: Domains, Manage domains, ${row.name}, Configuration. Switch auto-renew ${word} there.`,
+    want ? `Until it reads on, the name runs out${runs ? ` on ${dateWords(runs)}` : ' at the end of its year'}.` : `Until it reads off, Cloudflare charges the hosting account for another year${runs ? ` on ${dateWords(runs)}` : ' when this one ends'}.`,
+    'Kiln tries again tomorrow and writes to you once a day until Cloudflare shows it changed.',
+  ]);
+  return 'failed';
+}
+
+// The daily read-back: the day a name runs out and whether it renews, as Cloudflare shows them. A look only.
+async function readBack(env, row, now) {
+  const db = env.kiln_cloud;
+  await db.prepare('UPDATE registrations SET checked_at = ? WHERE id = ?').bind(now, row.id).run();
+  let shown = null;
+  try { shown = await registrar(env, 'read', { name: row.name }); } catch { shown = null; }
+  const reg = shown && shown.ok && shown.result ? shown.result : null;
+  if (reg) {
+    await db.prepare('UPDATE registrations SET expires_at = COALESCE(?, expires_at), renews = COALESCE(?, renews) WHERE id = ?')
+      .bind(Date.parse(reg.expires_at) || null, typeof reg.auto_renew === 'boolean' ? (reg.auto_renew ? 1 : 0) : null, row.id).run();
+  }
+  return (await rowById(env, row.id)) || row;
+}
+
+/**
+ * The five-minute job's second half, after `sweepRegistrations`. First the
+ * customer hears, once each, of a try that failed and of one that stopped
+ * part way. Then, for every registered name, in this order:
+ *   (c) renewal is switched off when the yearly plan the name came with is
+ *       canceled, past its grace or gone, and back on when it is paid again
+ *       (`renewalTo`)
+ *   (d) once a day the registration is read back and the day it runs out and
+ *       whether it renews are stored
+ *   (f) a name that does not renew and is past its day becomes `ran_out`, the
+ *       site's domain row is put away and the operator is told
+ *   (e) a name that will not renew: its owner is written to 30 days and
+ *       7 days before it runs out
+ *   and the operator is told on the first day a name may leave whose owner
+ *       asked for it before that day.
+ * It registers nothing. Never throws; a database without the table is left alone.
+ */
+export async function sweepRenewals(env, { notify = null, access = () => false, now = Date.now() } = {}) {
+  const out = { told: 0, renewalOff: 0, renewalOn: 0, renewalFailed: 0, read: 0, reminded: 0, ranOut: 0, leaveNotes: 0 };
+  try {
+    if (!env || !env.kiln_cloud || !(await registerReady(env))) return out;
+    const db = env.kiln_cloud;
+    const tell = teller(env, notify);
+
+    const news = (await db.prepare("SELECT * FROM registrations WHERE state IN ('failed', 'stuck') AND told_at IS NULL AND updated_at > ? ORDER BY updated_at ASC LIMIT ?").bind(now - LATER.tellWithinMs, PER_RUN).all()).results || [];
+    for (const r of news) {
+      if (await tellCustomer(env, r, r.state)) out.told++;
+      await db.prepare('UPDATE registrations SET told_at = ? WHERE id = ? AND told_at IS NULL').bind(now, r.id).run();
+    }
+
+    const held = (await db.prepare("SELECT * FROM registrations WHERE state = 'registered' ORDER BY COALESCE(checked_at, 0) ASC LIMIT ?").bind(PER_RUN * 5).all()).results || [];
+    for (const first of held) {
+      let r = first;
+      try {
+        const site = await siteRow(env, r.site_id);
+        // (c) Renewal follows the plan.
+        const want = shouldRenew(r, site, { access, now });
+        if (!!r.renews !== want) {
+          const did = await renewalTo(env, r, want, { notify, site, now });
+          if (did === 'off') out.renewalOff++; else if (did === 'on') out.renewalOn++; else if (did === 'failed') out.renewalFailed++;
+          r = (await rowById(env, r.id)) || r;
+        } else if (r.reason) {
+          await db.prepare('UPDATE registrations SET reason = NULL WHERE id = ?').bind(r.id).run();   // a change that did not take is no longer wanted
+        }
+        // (d) The daily read-back.
+        if (Number(r.checked_at || 0) <= now - LATER.readEveryMs) { r = await readBack(env, r, now); out.read++; }
+        const until = untilOf(r);
+        // (f) Past its day, and not renewing.
+        if (!r.renews && until && now >= until) {
+          // One last look: a name somebody renewed by hand has a later day, and stays.
+          let later = null;
+          try { const shown = await registrar(env, 'read', { name: r.name }); later = shown.ok && shown.result ? Date.parse(shown.result.expires_at) || null : null; } catch { later = null; }
+          if (later && later > now) { await db.prepare('UPDATE registrations SET expires_at = ?, checked_at = ? WHERE id = ?').bind(later, now, r.id).run(); continue; }
+          const set = await db.prepare("UPDATE registrations SET state = 'ran_out', updated_at = ? WHERE id = ? AND state = 'registered'").bind(now, r.id).run();
+          if (!changed(set)) continue;
+          out.ranOut++;
+          let put = false;
+          try {
+            const own = await domainRow(env, r.site_id);
+            if (own && own.name === r.name) { await saveDomain(env, r.site_id, { state: 'put_away', reason: 'ran_out', checked_at: now }); put = true; }
+          } catch { put = false; }
+          console.log(JSON.stringify({ evt: 'name_ran_out', site: r.site_id, name: r.name }));
+          await tell(`${r.name} ran out`, [
+            `Domain: ${r.name}`,
+            siteWords(site, r),
+            `It was not renewing and its year ended on ${dateWords(until)}. Where the account has an address, its owner was written to 30 days and 7 days before.`,
+            put ? 'Kiln put the site\'s set-up for this domain away.' : 'The site had no set-up for this domain to put away.',
+            `Nothing was deleted at Cloudflare. Remove the zone of ${r.name} in its dashboard when you are sure nobody needs its records.`,
+          ]);
+          continue;
+        }
+        // (e) The reminders, 30 days and 7 days before.
+        if (!r.renews && until) {
+          const days = (until - now) / DAY;
+          const which = LATER.remindDays.filter(d => days <= d).pop();
+          if (which && !(Number(r.reminded_at) >= until - which * DAY)) {
+            const email = await addressOf(env, r.account_id);
+            if (customerMailOn(env) && mailAddress(email)) {
+              const res = await sendOnce(env, `name-runs-out:${which}:${r.id}:${new Date(until).toISOString().slice(0, 10)}`, email,
+                nameRunsOutMail({ name: r.name, runsUntil: until, origin: site && site.origin, dashboard: dashboardOf(env) }));
+              if (res && res.ok) out.reminded++;
+              await db.prepare('UPDATE registrations SET reminded_at = ? WHERE id = ?').bind(now, r.id).run();
+            }
+          }
+        }
+        // The first day a name may leave, for an owner who asked before it.
+        if (r.leave_asked_at) {
+          const from = leaveFrom(r);
+          const marker = `regnote:leave60:${r.id}`;
+          if (now >= from && Number(r.leave_asked_at) < from && !(await env.KILN.get(marker))) {
+            await env.KILN.put(marker, String(now));
+            out.leaveNotes++;
+            await tell(`${r.name} may leave from today`, [
+              `Domain: ${r.name}`,
+              siteWords(site, r),
+              `Its owner asked on ${dateWords(Number(r.leave_asked_at))} to take it away, and was told we would email on ${dateWords(from)} with what to do next.`,
+              'Follow "Handing a domain over to a customer who leaves" in the playbook.',
+            ]);
+          }
+        }
+      } catch (e) {
+        console.warn(JSON.stringify({ evt: 'register_sweep_failed', name: r && r.name, detail: short(e?.message || e) }));
+      }
+    }
+  } catch (e) {
+    console.warn(JSON.stringify({ evt: 'register_sweep_failed', detail: short(e?.message || e) }));
+  }
+  return out;
+}
+
+/** An account's registrations that did not fail, for the dashboard: also one whose site was removed (`site` is then null). Never throws. */
+export async function registrationsForAccount(env, accountId) {
+  try {
+    const rows = (await env.kiln_cloud.prepare("SELECT r.*, s.id AS site_there FROM registrations r LEFT JOIN sites s ON s.id = r.site_id WHERE r.account_id = ? AND r.state != 'failed' ORDER BY r.created_at DESC").bind(accountId).all()).results || [];
+    return rows.map(r => ({
+      name: r.name, state: r.state, site: r.site_there || null,
+      runs_until: untilOf(r), renews: r.state === 'registered' && !!r.renews,
+      leave_from: Number(r.registered_at) ? leaveFrom(r) : null, leave_asked: !!r.leave_asked_at,
+    }));
+  } catch { return []; }
+}
+
+/** The name Kiln registered for a site and still holds, as { name, until }, or null. Null with the switch off. Never throws. */
+export async function registeredFor(env, siteId) {
+  try {
+    if (!(await registerReady(env))) return null;
+    const r = await env.kiln_cloud.prepare("SELECT * FROM registrations WHERE site_id = ? AND state = 'registered' ORDER BY created_at DESC LIMIT 1").bind(siteId).first();
+    return r ? { name: r.name, until: untilOf(r) } : null;
+  } catch { return null; }
+}
+/** What the answer to removing a site says of the name Kiln registered for it. */
+export const removedNote = ({ name, until }) => registerSentence('site_removed', { name, time: dateWords(until) });
+
+/**
+ * "Take this name with me". The registration is found by account: by `name`,
+ * by `site`, or the account's one registered name when neither is given, so
+ * it works for a site whose hosting has ended and for one that was removed.
+ * The first press is written down and the operator is told at once; a later
+ * press is answered the same way and tells nobody again. Answers
+ * { status, body } with the design's sentence for before or after day 60.
+ */
+export async function leaveName(env, accountId, { site = null, name = null } = {}, { notify = null, now = Date.now() } = {}) {
+  if (!registerOn(env)) return no('off', 503, registerSentence('off'));
+  const db = env.kiln_cloud;
+  const mine = (await db.prepare("SELECT * FROM registrations WHERE account_id = ? AND state = 'registered' ORDER BY created_at DESC").bind(accountId).all()).results || [];
+  const byName = String(name ?? '').trim().toLowerCase(), bySite = String(site ?? '');
+  const row = byName ? mine.find(r => r.name === byName) : bySite ? mine.find(r => r.site_id === bySite) : mine.length === 1 ? mine[0] : null;
+  if (!row) return no('no_name', 404, registerSentence('no_name'));
+  const from = leaveFrom(row), early = now < from;
+  const first = await db.prepare('UPDATE registrations SET leave_asked_at = ?, updated_at = ? WHERE id = ? AND leave_asked_at IS NULL').bind(now, now, row.id).run();
+  if (changed(first)) {
+    console.log(JSON.stringify({ evt: 'name_leave_asked', site: row.site_id, name: row.name, early }));
+    await teller(env, notify)(`The owner of ${row.name} wants to take it away`, [
+      `Domain: ${row.name}`,
+      siteWords(await siteRow(env, row.site_id), row),
+      `Registered: ${dateWords(Number(row.registered_at) || now)}. The rules for domain names let it leave from ${dateWords(from)}.`,
+      early
+        ? `That day has not come. The customer was told we will email on ${dateWords(from)} with what to do next. Kiln writes to you again on that day.`
+        : 'It may leave now. The customer was told a person at Kiln will email within three working days with a code. Follow "Handing a domain over to a customer who leaves" in the playbook.',
+    ]);
+  }
+  const fresh = (await rowById(env, row.id)) || row;
+  return { status: 200, body: { ok: true, when: early ? 'later' : 'now', sentence: registerSentence(early ? 'leave_early' : 'leave_now', { name: row.name, time: dateWords(from) }), registration: publicRegistration(fresh) } };
+}
+
+// ─── The operator's three actions ─────────────────────────────────────────────
+//
+// For a registration Kiln never heard back about, and for a name that has
+// left. They are reached only from the admin routes (cloud.js checks that the
+// operator is asking). None of them can lead to a registration call: the only
+// thing any of them asks of Cloudflare's registrar is one look.
+
+const operatorForm = (r) => (r ? {
+  id: r.id, name: r.name, state: r.state, reason: r.reason || null, site: r.site_id, repo: r.repo || null, account: r.account_id,
+  asked_at: Number(r.asked_at) || null, registered_at: Number(r.registered_at) || null, runs_until: untilOf(r), renews: !!r.renews,
+  leave_from: Number(r.registered_at) ? leaveFrom(r) : null, leave_asked_at: Number(r.leave_asked_at) || null, handed_at: Number(r.handed_at) || null,
+  price_first: r.price_first ?? null, price_renew: r.price_renew ?? null,
+} : null);
+const operatorRow = async (env, id) => { try { return (await env.kiln_cloud.prepare('SELECT r.*, s.repo FROM registrations r LEFT JOIN sites s ON s.id = r.site_id WHERE r.id = ?').bind(String(id ?? '')).first()) || null; } catch { return null; } };
+
+/** Every registration, newest first, for the operator's page. */
+export async function registrationsForOperator(env) {
+  try { return ((await env.kiln_cloud.prepare('SELECT r.*, s.repo FROM registrations r LEFT JOIN sites s ON s.id = r.site_id ORDER BY r.created_at DESC LIMIT 200').all()).results || []).map(operatorForm); }
+  catch { return []; }
+}
+
+/**
+ * "Free this row": a `stuck` row, or one still `asking` fifteen minutes after
+ * it was asked, becomes `failed`, so the customer's right is free again. Only
+ * for an operator who has looked in Cloudflare and seen that no name was
+ * registered, and who typed the name out (`name`). A registered row is never
+ * freed. It asks nothing of Cloudflare. The customer is written to.
+ */
+export async function freeRow(env, { id = null, name: typed = null } = {}, { now = Date.now() } = {}) {
+  if (!registerOn(env)) return no('off', 503, registerSentence('off'));
+  const row = await operatorRow(env, id);
+  if (!row) return no('no_such_row', 404, 'There is no such registration. Load the page again.');
+  if (row.state !== 'stuck' && row.state !== 'asking') return no('not_free', 409, `${row.name} is ${row.state.replace('_', ' ')}. Only a row that is stuck, or still asking after 15 minutes, can be freed.`);
+  if (row.state === 'asking' && now - Number(row.asked_at || row.created_at || now) < TIMES.stuckAfterMs) return no('too_soon', 409, `Kiln asked for ${row.name} less than 15 minutes ago and is still waiting for Cloudflare's word. Look again after that.`);
+  if (String(typed ?? '').trim().toLowerCase() !== row.name) return no('type_name', 400, `Type ${row.name} exactly to free this row. Do it only after you have looked in Cloudflare and seen that no name was registered.`);
+  const reason = short(`freed by the operator. Before that: ${row.reason || row.state}`);
+  const set = await env.kiln_cloud.prepare("UPDATE registrations SET state = 'failed', reason = ?, updated_at = ? WHERE id = ? AND state IN ('stuck', 'asking')").bind(reason, now, row.id).run();
+  if (!changed(set)) return no('busy', 409, 'This row changed while you pressed. Load the page again and look.');
+  console.log(JSON.stringify({ evt: 'register_failed', site: row.site_id, name: row.name, reason }));
+  const told = await tellCustomer(env, row, 'failed');
+  await env.kiln_cloud.prepare('UPDATE registrations SET told_at = ? WHERE id = ?').bind(now, row.id).run();
+  return { status: 200, body: { ok: true, registration: operatorForm(await operatorRow(env, row.id)), customer_told: told } };
+}
+
+/**
+ * "Mark registered": a `stuck` row becomes `registered` and goes on to its
+ * site, for an operator who has seen the name in Cloudflare. It asks
+ * Cloudflare for one look at the registration, for its dates, and says in
+ * `cloudflare` whether the name showed ('shown', 'not_shown', 'not_read');
+ * the operator's word decides either way. The customer gets the email that
+ * the name is theirs.
+ */
+export async function markRegistered(env, { id = null } = {}, { up = () => false, now = Date.now() } = {}) {
+  if (!registerOn(env)) return no('off', 503, registerSentence('off'));
+  const row = await operatorRow(env, id);
+  if (!row) return no('no_such_row', 404, 'There is no such registration. Load the page again.');
+  if (row.state !== 'stuck') return no('not_stuck', 409, `${row.name} is ${row.state.replace('_', ' ')}. Only a row that is stuck can be marked registered.`);
+  let reg = null, cloudflare = 'not_shown';
+  try { const shown = await registrar(env, 'read', { name: row.name }); if (shown.ok && shown.result) { reg = shown.result; cloudflare = 'shown'; } } catch { cloudflare = 'not_read'; }
+  const at = (reg && Date.parse(reg.created_at)) || Number(row.asked_at) || now;
+  const won = await env.kiln_cloud.prepare("UPDATE registrations SET state = 'registered', reason = NULL, registered_at = ?, expires_at = ?, renews = ?, checked_at = ?, updated_at = ? WHERE id = ? AND state = 'stuck'")
+    .bind(at, (reg && Date.parse(reg.expires_at)) || null, reg && reg.auto_renew === false ? 0 : 1, now, now, row.id).run();
+  if (!changed(won)) return no('busy', 409, 'This row changed while you pressed. Load the page again and look.');
+  const fresh = await rowById(env, row.id);
+  const runsUntil = untilOf(fresh);
+  console.log(JSON.stringify({ evt: 'registered', site: row.site_id, name: row.name, runs_until: runsUntil, by: 'operator' }));
+  let told = false;
+  try {
+    const email = await addressOf(env, row.account_id), site = await siteRow(env, row.site_id);
+    if (customerMailOn(env) && mailAddress(email)) told = !!(await sendOnce(env, `name-yours:${row.id}`, email, nameYoursMail({ name: row.name, origin: site && site.origin, runsUntil, dashboard: dashboardOf(env) }))).ok;
+  } catch { told = false; }
+  const went = await ontoSite(env, fresh, { up, now });
+  return { status: 200, body: { ok: true, registration: operatorForm(await operatorRow(env, row.id)), cloudflare, customer_told: told, on_site: !!went.done, ...(went.done ? {} : { waiting_for: went.why || 'not known' }) } };
+}
+
+/**
+ * "Handed over": a `registered` row becomes `handed_over` once the name has
+ * left with its customer, and the site's domain row is forgotten. Nothing is
+ * asked of Cloudflare: the operator deletes the zone there by hand afterwards.
+ */
+export async function handedOver(env, { id = null } = {}, { now = Date.now() } = {}) {
+  if (!registerOn(env)) return no('off', 503, registerSentence('off'));
+  const row = await operatorRow(env, id);
+  if (!row) return no('no_such_row', 404, 'There is no such registration. Load the page again.');
+  if (row.state !== 'registered') return no('not_registered', 409, `${row.name} is ${row.state.replace('_', ' ')}. Only a registered name can be marked handed over.`);
+  const set = await env.kiln_cloud.prepare("UPDATE registrations SET state = 'handed_over', handed_at = ?, renews = 0, updated_at = ? WHERE id = ? AND state = 'registered'").bind(now, now, row.id).run();
+  if (!changed(set)) return no('busy', 409, 'This row changed while you pressed. Load the page again and look.');
+  let forgot = false;
+  try { forgot = changed(await env.kiln_cloud.prepare('DELETE FROM domains WHERE site_id = ? AND name = ?').bind(row.site_id, row.name).run()); } catch { forgot = false; }
+  console.log(JSON.stringify({ evt: 'name_handed_over', site: row.site_id, name: row.name }));
+  return { status: 200, body: { ok: true, registration: operatorForm(await operatorRow(env, row.id)), domain_forgotten: forgot, next: `Delete the zone of ${row.name} in Cloudflare's dashboard now.` } };
 }

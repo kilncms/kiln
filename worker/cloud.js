@@ -59,7 +59,8 @@ import {
   mailStop, saysNoMail, switchMailOn, inboxState, addInbox, askAgain, canAskAgain, forward, stopForwarding, cleanLocal, cleanInbox, mailSentence,
   forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, dropOtherAskings, inboxInUse, forgetInboxesOf, takeInboxLock, dropInboxLock, whatWaits, NO_CHANGE, MailError, MAIL_LIMITS,
 } from './domain-mail.js';
-import { registerReady, holderOf, registerSentence, offersForAccount, searchNames, registerName, siteRegistration, standingForAccount, publicRegistration, sweepRegistrations as sweepRegistered } from './register.js';
+import { registerReady, holderOf, registerSentence, offersForAccount, searchNames, registerName, siteRegistration, standingForAccount, publicRegistration, sweepRegistrations as sweepRegistered,
+  sweepRenewals as sweepRenewed, registrationsForAccount, leaveName, registeredFor, removedNote, registrationsForOperator, freeRow, markRegistered, handedOver } from './register.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -1633,7 +1634,7 @@ export async function noticeEndingHosting(env, now = Date.now()) {
       if (!end) { undated.push(r); continue; }
       // Not for a site that never went up: nothing of it is online.
       if (!mailOn || out.sent >= MAILS_PER_RUN || !r.deployed_at || !mailAddress(r.email)) continue;
-      const about = { origin: r.origin, plan: r.plan, repo: r.repo, endsAt: end, pastDue: r.status === 'past_due', dashboard, kept: !!r.kept, domain: r.domain || null };
+      const about = { origin: r.origin, plan: r.plan, repo: r.repo, endsAt: end, pastDue: r.status === 'past_due', dashboard, kept: !!r.kept, domain: r.domain || null, registered: await registeredFor(env, r.id) };
       let res;
       if (now >= end - HOSTING_NOTICE_DAYS * 86400 * 1000) {
         // The last notice names the day the site really comes down: its own
@@ -2595,7 +2596,14 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   //   GET  /cloud/sites/newdomain?site=ID        → { ok, offered, holder, registration, domain? }
   //   GET  /cloud/sites/newdomain?site=ID&q=…    → { ok, asked, searches_left, names: [{ name, can, why?, sentence? }] }
   //   POST /cloud/sites/newdomain { id, action: "register", name, checked: true } → { ok, registration } or { error, code }
+  //   GET  /cloud/sites/newdomain                → { ok, holder, registrations: [{ name, state, site, runs_until, renews, leave_from, leave_asked }] }
+  //   POST /cloud/sites/newdomain { action: "leave", id?, name? } → { ok, when, sentence, registration } (found by account: the site may be gone)
   if (path === '/cloud/sites/newdomain' && request.method === 'GET' && await registerReady(env)) {
+    // Without a site: the account's own registrations, also one whose site was removed.
+    if (!url.searchParams.get('site')) {
+      if (!sess) return json({ error: 'not signed in' }, 401);
+      return json({ ok: true, holder: holderOf(env), registrations: await registrationsForAccount(env, sess.account_id) });
+    }
     const asked = await ownedSite(request, env, url, sess, tools, { needToken: false, needAccess: false });
     if (asked.response) return asked.response;
     const { site } = asked;
@@ -2617,6 +2625,13 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   // The press that registers. register.js writes the row first and sends the one call that can spend money
   // only for the request whose insert wrote it. An action this service does not know is no route.
   if (path === '/cloud/sites/newdomain' && request.method === 'POST' && await registerReady(env)) {
+    // "Take this name with me" is answered by account, before any site is looked for: the name outlives its site.
+    const peek = await request.clone().json().catch(() => ({}));
+    if (peek && String(peek.action || '') === 'leave') {
+      if (!sess) return json({ error: 'not signed in' }, 401);
+      const left = await leaveName(env, sess.account_id, { site: peek.id ?? peek.site, name: peek.name }, registerTools());
+      return json(left.body, left.status);
+    }
     const asked = await ownedSite(request, env, url, sess, tools, { needToken: false, needAccess: false });
     if (asked.response) return asked.response;
     if (String(asked.body.action || '') === 'register') {
@@ -2999,7 +3014,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
     // The repository of a site Kiln kept the files of is never touched here. The operator is told that nothing uses it now.
     if (kept && site.repo) { const told = keptRemovedNote({ repo: site.repo, by: signedInAs(sess) }); await notifyOwner(env, told.subject, told.lines); }
-    return json({ ok: true, subscription: cancel.state, ...(cancel.ends_at ? { ends_at: cancel.ends_at } : {}), ...domainLeft(gone) });
+    return json({ ok: true, subscription: cancel.state, ...(cancel.ends_at ? { ends_at: cancel.ends_at } : {}), ...domainLeft(gone), ...(await nameLeft(env, site.id)) });
   }
 
   // Bring the Kiln editor in the site's repository up to the released one
@@ -3291,7 +3306,22 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       if (kept && site.repo) { try { await env.KILN.delete(keptStandsKey(site.account_id, site.repo)); } catch { /* it is forgotten within the minute anyway */ } }
       if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
       if (kept && site.repo) { const told = keptRemovedNote({ repo: site.repo, by: `${signedInAs(sess)}, from the admin page` }); await notifyOwner(env, told.subject, told.lines); }
-      return json({ ok: true, subscription: cancel.state, ...domainLeft(gone) });
+      return json({ ok: true, subscription: cancel.state, ...domainLeft(gone), ...(await nameLeft(env, site.id)) });
+    }
+    // A name Kiln registered (register.js): the list for the operator's page, and the three actions for a
+    // registration nobody heard back about and for a name that has left. None of them can register anything.
+    // With the switch off these are no routes.
+    //   GET  /admin/cloud/registrations                          → { ok, registrations: [...] }
+    //   POST /admin/cloud/registration/free       { id, name }   a stuck row becomes failed (the name typed out)
+    //   POST /admin/cloud/registration/registered { id }         a stuck row becomes registered and goes on to its site
+    //   POST /admin/cloud/registration/handed     { id }         a registered row becomes handed_over
+    if (path.startsWith('/admin/cloud/registration') && await registerReady(env)) {
+      if (path === '/admin/cloud/registrations' && request.method === 'GET') return json({ ok: true, registrations: await registrationsForOperator(env) });
+      const act = request.method === 'POST' ? { '/admin/cloud/registration/free': freeRow, '/admin/cloud/registration/registered': markRegistered, '/admin/cloud/registration/handed': handedOver }[path] : null;
+      if (act) {
+        const done = await act(env, await request.json().catch(() => ({})), registerTools());
+        return json(done.body, done.status);
+      }
     }
     // Per-site troubleshooting: app-install check, live-site reachability, /kiln
     // entry check, editability (is the origin actually in the active/trialing
@@ -3380,7 +3410,23 @@ function buildInsights(rows, accountCount, price) {
 }
 
 // What register.js is handed from here: how the operator is written to, and what "up on Kiln's hosting" means.
-function registerTools() { return { notify: notifyOwner, up: isUp }; }
+function registerTools() { return { notify: notifyOwner, up: isUp, access: siteHasAccess }; }
+
+/** What the answer to removing a site says of a name Kiln registered for it: the name stays registered, and removing the site does not hand it over. */
+async function nameLeft(env, siteId) {
+  const held = await registeredFor(env, siteId);
+  return held ? { registration: { name: held.name, runs_until: held.until, note: removedNote(held) } } : {};
+}
+
+/**
+ * Such a name later on, in the five-minute job after `sweepRegistrations`
+ * (register.js): renewal follows the plan, the registration is read back once
+ * a day, its owner is reminded before it runs out, and the operator hears of
+ * a name that ran out or may leave. It registers nothing. Never throws.
+ */
+export function sweepRenewals(env, { now = Date.now() } = {}) {
+  return sweepRenewed(env, { ...registerTools(), now });
+}
 
 /**
  * A name Kiln registered for a site on the yearly hosting plan, in the
