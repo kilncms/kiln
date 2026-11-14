@@ -32,6 +32,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   site that is live at its own domain, the emails add that the domain stops
   showing the site, that email at the domain keeps working, and that the
   three steps for moving are under Moving away on the site's row.
+- **The operator's playbook covers the service as it runs today.** The page at `/admin/cloud/runbook` now has the hosting account, the switches and secrets by name, the timers, every note Kiln sends the operator, each case where a customer is told to write in, free days, hosting, previews, own domains and email forwarding, leaving, accounts, releasing, rolling back, the logs, and a daily and a weekly look.
 - **The service can tell the dashboard which repositories Kiln can reach for
   the person who is signed in.** On the plan where a site lives in your own
   GitHub repository, the dashboard had no way to know whether Kiln's GitHub
