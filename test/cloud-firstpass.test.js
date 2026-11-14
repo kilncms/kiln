@@ -308,7 +308,7 @@ function fixtureFiles(dir = new URL('./fixtures/astro-site/', import.meta.url), 
   return out;
 }
 const COUNTS_SENTENCE = 'This counts the text written in your page templates. A line inside a list that repeats counts once here, however many times it shows on the site.';
-const NOT_YET = 'Kiln cannot mark these by itself yet. This report shows what it will be able to do.';
+const NOT_YET = 'There is nothing here that Kiln can mark by itself. The report shows where this site\'s text comes from.';
 const FIXTURE_LEFT = { mixed: 0, from_code: 0, with_tags: 0, in_loop: 0, marked: 4 };
 const FIXTURE_REPORT = {
   files: 1, total: 5, safe: 1, left: FIXTURE_LEFT,
@@ -321,6 +321,8 @@ const FIXTURE_BEFORE = [
   'The other 4 come from your content files or from code, or mix words with a value, and a developer marks those with one line each.',
   COUNTS_SENTENCE,
 ];
+// After the pass has been made, a later look says so: what Kiln could take is marked, and it does not speak of "yet".
+const DONE_ALREADY = "Kiln has nothing more to mark by itself on this site's templates. 5 headings and paragraphs are marked already. The rest come from your content files or from code, or mix words with a value, and a developer marks those with one line each.";
 const NOTHING_SAFE = 'Kiln found no text in this site\'s templates that it can mark by itself. The words on your pages come from content files or from code, and a developer marks those with one line each.';
 
 test('first pass: for a site Astro builds, looking says what one press will move out of the templates, with the report, and writes nothing', { skip: d1Skip }, async () => {
@@ -382,7 +384,7 @@ test('first pass: for a site Astro builds, one press moves the words into a file
     assert.equal(seen.state, 'report');
     assert.equal(seen.move, undefined);
     assert.deepEqual({ safe: seen.report.safe, total: seen.report.total, marked: seen.report.left.marked }, { safe: 0, total: 5, marked: 5 });
-    assert.deepEqual(seen.sentences, [NOTHING_SAFE, COUNTS_SENTENCE]);
+    assert.deepEqual(seen.sentences, [DONE_ALREADY, COUNTS_SENTENCE]);
     const res = await press(env);
     assert.equal(res.status, 409);
     const body = await res.json();
@@ -390,7 +392,7 @@ test('first pass: for a site Astro builds, one press moves the words into a file
     assert.equal(body.code, 'report');
     assert.equal(body.error, NOT_YET);
     assert.equal(body.state, 'report');
-    assert.deepEqual(body.sentences, [NOTHING_SAFE, COUNTS_SENTENCE]);
+    assert.deepEqual(body.sentences, [DONE_ALREADY, COUNTS_SENTENCE]);
     assert.deepEqual(githubWrites(calls), []);
   });
   assert.equal(gh.head(), after);

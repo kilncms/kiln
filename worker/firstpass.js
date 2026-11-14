@@ -190,7 +190,10 @@ const couldNotRead = (f) => `Kiln could not read ${f} of the template files, so 
 export function astroReportSentences(report) {
   const n = report.safe, m = report.total, k = m - n, f = report.unread.length;
   const out = [];
-  if (!n) out.push('Kiln found no text in this site\'s templates that it can mark by itself. The words on your pages come from content files or from code, and a developer marks those with one line each.');
+  // Nothing to take: either there never was, or the first pass has been made and what it could take is marked.
+  const marked = Number(report.left && report.left.marked) || 0;
+  if (!n && marked) out.push(`Kiln has nothing more to mark by itself on this site's templates. ${count(marked, 'heading or paragraph is', 'headings and paragraphs are')} marked already. The rest come from your content files or from code, or mix words with a value, and a developer marks those with one line each.`);
+  else if (!n) out.push('Kiln found no text in this site\'s templates that it can mark by itself. The words on your pages come from content files or from code, and a developer marks those with one line each.');
   else if (!k) out.push(`Kiln can make every heading and paragraph on this site's templates editable by itself, ${n} in all.`);
   else out.push(`Kiln can make ${n} of ${m} headings and paragraphs on this site's templates editable by itself. ${theRest(k)}`);
   out.push(COUNTS);
@@ -293,6 +296,6 @@ async function applyAstroChange({ token, repo, plan, author }) {
 export function firstPassSentence(code, { generator = '' } = {}) {
   if (code === 'built') return `This site is built by ${generator || 'a site generator'} before it is published, so what can be edited is set in the files it is built from, not on its pages. The setup tool and the guide for source mode cover those.`;
   if (code === 'busy') return 'Kiln is already marking this site. Give it a minute, then reload this page.';
-  if (code === 'report') return 'Kiln cannot mark these by itself yet. This report shows what it will be able to do.';
+  if (code === 'report') return 'There is nothing here that Kiln can mark by itself. The report shows where this site\'s text comes from.';
   return null;
 }
