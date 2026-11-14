@@ -168,6 +168,27 @@ export function realIo(cfg) {
   };
 }
 
+/** Anything shaped like a key: GitHub's tokens, a session or API token (64 hex characters), a signed token, a Bearer value. */
+const KEY_LIKE = /\b(?:gh[pousr]_\w{20,}|github_pat_\w{20,}|[a-f0-9]{64,}|eyJ[\w-]{10,}\.[\w.-]+)\b|Bearer\s+\S+/gi;
+const SERVER_ERROR_BODY_MAX = 300;
+/**
+ * What to say about an answer of 500 or more: its status, who gave it (host
+ * and path, never the query string), and the first 300 characters of its
+ * body. Only the answer is looked at, never the request, so no header and no
+ * token that was sent can end up in it; anything key-like in the answer
+ * itself is hidden too. The answer is read from a copy and stays whole for
+ * whoever asked for it.
+ */
+export async function serverErrorNote(res, url) {
+  let from = '';
+  try { const u = new URL(String(url)); from = ` from ${u.host}${u.pathname}`.replace(KEY_LIKE, '[hidden]'); } catch { /* not a URL: leave it out */ }
+  let body = '';
+  try { if (typeof res.clone === 'function') body = await res.clone().text(); } catch { /* an unreadable body is an empty one */ }
+  // Hidden first, cut second, so a key is never left half shown at the cut.
+  const shown = String(body).slice(0, 4000).replace(KEY_LIKE, '[hidden]').replace(/\s+/g, ' ').trim().slice(0, SERVER_ERROR_BODY_MAX);
+  return `an answer of ${res.status}${from} began: ${shown || '(nothing in it)'}`;
+}
+
 /**
  * The bookkeeping both end-to-end scripts share (this one and e2e-source.mjs):
  * a list of named checks, steps that must succeed, and requests that must be
@@ -176,7 +197,24 @@ export function realIo(cfg) {
  */
 export function checklist(io) {
   const checks = [];
-  const record = (name, ok, detail = '') => { checks.push({ name, ok, detail }); io.log(`${ok ? '✅' : '❌'} ${name}${detail ? ` — ${detail}` : ''}`); };
+  // The last answer of 500 or more since the check before this one. When the
+  // check it happened in fails, the start of its body goes on the failure
+  // line, so GitHub's own 500 can be told from the service's.
+  let serverError = '';
+  if (typeof io.fetch === 'function') {
+    const send = io.fetch;
+    io.fetch = async (url, init) => {
+      const res = await send(url, init);
+      if (res && res.status >= 500) serverError = await serverErrorNote(res, url);
+      return res;
+    };
+  }
+  const record = (name, ok, detail = '') => {
+    if (!ok && serverError) detail = `${detail}${detail ? ' — ' : ''}${serverError}`;
+    serverError = '';
+    checks.push({ name, ok, detail });
+    io.log(`${ok ? '✅' : '❌'} ${name}${detail ? ` — ${detail}` : ''}`);
+  };
   /** A step that must succeed. A failure is recorded and ends the run (cleanup still happens). */
   const step = async (name, fn) => {
     try { const detail = await fn(); record(name, true, detail || ''); }

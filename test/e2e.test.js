@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import worker from '../worker/index.js';
-import { run, readConfig, Stop, STAGING_WORKER } from '../scripts/e2e.mjs';
+import { run, readConfig, checklist, Stop, STAGING_WORKER } from '../scripts/e2e.mjs';
 import { fakeKV, withFetch } from './worker-harness.js';
 import { fakeGitHub } from './github-fake.js';
 
@@ -359,7 +359,7 @@ test('--rename: if GitHub will not rename it back, the run fails and prints the 
   assert.equal(r.ok, false);
   const back = r.checks.find(c => c.name === 'rename: the repository has its own name back');
   assert.equal(back.ok, false);
-  assert.match(back.detail, /rename it back by hand: gh api -X PATCH repos\/acme\/kiln-e2e-renamed-\w+ -f name=kiln-e2e$/);
+  assert.match(back.detail, /rename it back by hand: gh api -X PATCH repos\/acme\/kiln-e2e-renamed-\w+ -f name=kiln-e2e — an answer of 500 from api\.github\.com\/repos\/acme\/kiln-e2e-renamed-\w+ began: \{"message":"Server Error"\}$/);
   assert.notEqual(s.ren.name(), REPO);
   assert.deepEqual(stored(s), [], 'what was stored is removed even so');
 });
@@ -428,4 +428,48 @@ test('owner session: with no address given, the owner steps are left out and nam
   assert.match(s.out(), /an owner session \(set KILN_E2E_ORIGIN, or KILN_E2E_SITE/);
   assert.equal(readConfig({ KILN_E2E_REPO: REPO, GH_TOKEN: 't', KILN_E2E_SITE: 'https://site.example/blog/' }).origin, 'https://site.example');
   assert.equal(readConfig({ KILN_E2E_REPO: REPO, GH_TOKEN: 't', KILN_E2E_ORIGIN: 'not an address' }).origin, '');
+});
+
+test('a check that fails on an answer of 500 or more shows how that answer began, and nothing that was sent', async () => {
+  const lines = [];
+  const answers = [];
+  const SESSION_ID = 'c'.repeat(64);
+  const SENT_TOKEN = `ghp_${'x'.repeat(36)}`;
+  const io = { log: (l) => lines.push(l), fetch: async () => answers.shift() };
+  const { step, refused, checks } = checklist(io);
+  const ask = () => io.fetch(`https://worker.example/gh/repos/acme/site/git/blobs?session=${SESSION_ID}`,
+    { method: 'POST', headers: { 'X-Kiln-Session': SESSION_ID, Authorization: `Bearer ${SENT_TOKEN}` }, body: '{}' });
+  const began = () => lines.at(-1).split(' began: ')[1];
+
+  // GitHub's own 500, handed on by the service. The check itself can still read the answer.
+  answers.push(new Response(JSON.stringify({ message: 'Server Error', documentation_url: 'https://docs.github.com/rest' }), { status: 500 }));
+  await assert.rejects(step('a picture is saved', async () => {
+    const res = await ask();
+    if (res.status !== 201) throw new Error(`answered ${res.status} ${(await res.json()).message}`);
+  }), Stop);
+  assert.equal(lines.at(-1), '❌ a picture is saved — answered 500 Server Error — an answer of 500 from worker.example/gh/repos/acme/site/git/blobs began: '
+    + '{"message":"Server Error","documentation_url":"https://docs.github.com/rest"}');
+
+  // The service's own failure, which is not JSON: 300 characters of it, on one line.
+  answers.push(new Response(`<html>\n  <h1>Worker exceeded memory limit</h1>\n${'x'.repeat(900)}</html>`, { status: 503 }));
+  await assert.rejects(refused('a stranger is turned away', ask, 401), Stop);
+  assert.match(lines.at(-1), /^❌ a stranger is turned away — expected 401, got 503 \{\} — an answer of 503 from worker\.example\/gh\/repos\/acme\/site\/git\/blobs began: <html> <h1>Worker exceeded memory limit<\/h1> x+$/);
+  assert.equal(began().length, 300);
+
+  // A key in the answer itself is hidden.
+  answers.push(new Response(`{"error":"boom","token":"ghs_${'A'.repeat(36)}","session":"${'d'.repeat(64)}","auth":"Bearer abc.def"}`, { status: 502 }));
+  await assert.rejects(step('a page is published', async () => { const res = await ask(); if (!res.ok) throw new Error(`answered ${res.status}`); }), Stop);
+  assert.equal(began(), '{"error":"boom","token":"[hidden]","session":"[hidden]","auth":"[hidden]');
+
+  // A check that gets through on its second try says nothing of the first, and neither does the next check.
+  answers.push(new Response('try again', { status: 500 }), new Response('{}', { status: 200 }));
+  await step('asks twice', async () => { await ask(); const res = await ask(); if (res.status !== 200) throw new Error(`answered ${res.status}`); });
+  assert.equal(lines.at(-1), '✅ asks twice');
+  answers.push(new Response('{"error":"not found"}', { status: 404 }));
+  await assert.rejects(step('finds the page', async () => { const res = await ask(); if (res.status !== 200) throw new Error(`answered ${res.status}`); }), Stop);
+  assert.equal(lines.at(-1), '❌ finds the page — answered 404');
+
+  // Nothing that was sent is ever printed: no header, no token, no query string.
+  const all = lines.join('\n') + JSON.stringify(checks);
+  for (const secret of [SESSION_ID, SENT_TOKEN, 'X-Kiln-Session', 'Authorization', 'session=']) assert.equal(all.includes(secret), false, secret);
 });
