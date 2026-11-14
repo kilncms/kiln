@@ -29,7 +29,7 @@
  *   pvcount:<site id>:<hour>     how many copies of previews the site got in that hour (TTL 2 hours)
  */
 
-import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError, isPreviewBranch, previewAlias, previewName } from './hosting.js';
+import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError, isPreviewBranch, previewAlias, previewName, BUILT_BRANCH, buildShown, buildFailed } from './hosting.js';
 import { gh, refPath, VIA_KILN } from './prepare.js';
 import { keepEditorsCurrent, finishCare, setPreviews } from './lookafter.js';
 import { domainRow, saveDomain, forgetDomain, detachDomain, removeWaitingDomain } from './domain.js';
@@ -37,6 +37,7 @@ import { domainRow, saveDomain, forgetDomain, detachDomain, removeWaitingDomain 
 const LOCK_S = 300;
 const RETRY_AFTER_MS = 2 * 60 * 1000;        // a failed copy is tried again this long after it failed
 const SWEEP_PUBLISH = 5;                     // copies one sweep makes at most
+const SWEEP_BUILDS = 10;                     // built sites that wait for a build, looked at in one sweep at most
 const SWEEP_LOOK = 20;                       // repositories one sweep looks at for a change nobody announced
 const PREVIEWS_PER_SITE = 5;                  // previews one site has at most
 const PREVIEW_KEPT_MS = 30 * 24 * 60 * 60 * 1000;   // a preview nobody changed for this long comes down
@@ -79,6 +80,13 @@ export function publicHosting(row, { repo, endsAt = null, planEnded = null, kept
   // A site that was live and whose last copy failed still serves what it served.
   if (row.state !== 'live' && row.deployed_at) out.serving = true;
   if (endsAt && row.state !== 'ended') out.ends_at = endsAt;
+  // A site Astro builds: where its build stands (hosting.js). A site that waits
+  // for its first build reads the same sentence in `error`, for a dashboard
+  // that does not know `build` yet.
+  if (row.built && row.state !== 'ended') {
+    out.build = buildShown(row, { repo });
+    if (out.error && out.build.sentence && (row.reason === 'needs_build_file' || row.reason === 'building')) out.error = out.build.sentence;
+  }
   return out;
 }
 
@@ -88,13 +96,54 @@ async function save(env, siteId, fields) {
     .bind(...cols.map(c => fields[c]), Date.now(), siteId).run();
 }
 
+/** The columns of migration 0014, for a query that names its columns. */
+const BUILT_COLUMNS = ', h.built, h.built_sha, h.build_state, h.build_wanted_sha, h.build_wanted_at';
+/** What is on record about a build, for a site that is not a built one (any more). */
+const NOT_BUILT = { built: 0, built_sha: null, build_tool: null, build_state: null, build_wanted_sha: null, build_wanted_at: null };
+
+/**
+ * `save`, with what is on record about a site's build beside it. On a database
+ * migration 0014 has not reached, the rest is saved without it.
+ */
+async function saveBuilt(env, siteId, fields, build) {
+  if (!build) return save(env, siteId, fields);
+  try { await save(env, siteId, { ...fields, ...build }); }
+  catch { await save(env, siteId, fields); }
+}
+
+/**
+ * What to record about a built site's build after one look (`out` is
+ * deploySite's answer, `row` the record before it). The owner's newest commit
+ * is waited for until the pages that are up were built from it: the commit and
+ * the moment Kiln first saw it are kept, and a later look at the same commit
+ * keeps that moment (and a failure that was learned of).
+ */
+function buildFields(row, out, now) {
+  const b = out.built;
+  const base = { built: 1, build_tool: b.tool };
+  if (out.state === 'needs_build_file') return { ...base, build_state: 'needs_file', build_wanted_sha: null, build_wanted_at: null };
+  if (out.state !== 'live' && out.state !== 'same' && out.state !== 'building') return row.build_state === 'needs_file' ? { ...base, build_state: null } : base;
+  if (out.state === 'live') base.built_sha = b.head;
+  // The source commit of the pages that are up. Pages whose commit does not say are taken as built from the newest.
+  const from = out.state === 'live' ? (b.from || b.source) : out.state === 'same' ? row.commit_sha : null;
+  if (from && from === b.source) return { ...base, build_state: null, build_wanted_sha: null, build_wanted_at: null };
+  const known = row.build_wanted_sha === b.source && !!row.build_wanted_at;
+  return { ...base, build_state: known && row.build_state === 'failed' ? 'failed' : null, build_wanted_sha: b.source, build_wanted_at: known ? row.build_wanted_at : now };
+}
+
 /**
  * Copy a site's repository to its Worker now, and record how it went. One at
  * a time for a site: while another copy runs, the answer is { state: 'busy' }
  * (and a commit that was asked for is remembered, so it is not lost). Never
  * throws. `wanted` is the commit a push notice named, when there was one.
+ *
+ * A site Astro builds is copied from its built branch (hosting.js).
+ * `onlyNew` is for a look nobody pressed a button for (a notice, the sweep,
+ * "Build again"): the pages of such a site are then sent only when its built
+ * branch has moved, and otherwise only the record of its build is brought up
+ * to date. For a plain site `onlyNew` changes nothing.
  */
-export async function publishSite(env, { site, token, wanted = null }) {
+export async function publishSite(env, { site, token, wanted = null, onlyNew = false }) {
   if (!hostingOn(env)) return { state: 'failed', reason: 'not_set_up', error: hostingSentence('not_set_up') };
   let row = await hostingRow(env, site.id);
   if (await env.KILN.get(lockKey(site.id))) {
@@ -115,22 +164,31 @@ export async function publishSite(env, { site, token, wanted = null }) {
     for (let round = 0; round < 2; round++) {
       let out;
       try {
-        out = await deploySite(env, { token, repo: site.repo, name: row.name, first: !row.deployed_at, siteId: site.id });
+        out = await deploySite(env, { token, repo: site.repo, name: row.name, first: !row.deployed_at, siteId: site.id, have: onlyNew && row.built && row.deployed_at ? row.built_sha || null : null });
       } catch (e) {
         const reason = e instanceof HostingError ? e.code : 'cloudflare';
         console.warn(JSON.stringify({ evt: 'hosting_failed', repo: site.repo, name: row.name, reason, detail: e instanceof HostingError ? e.detail : String(e?.message || e).slice(0, 300) }));
         await save(env, site.id, { state: 'failed', reason, ...(wanted ? { wanted_sha: wanted } : {}) });
         break;
       }
+      // What is on record about the build of a site Astro builds. A site that is
+      // no longer one (or that Kiln's hosting refuses) has that record cleared.
+      const build = out.built ? buildFields(row, out, Date.now()) : row.built ? NOT_BUILT : null;
+      if (out.state === 'same') {   // the pages that are up are the newest there are
+        await saveBuilt(env, site.id, { state: 'live', reason: null, branch: out.branch, wanted_sha: null, checked_at: Date.now() }, build);
+        break;
+      }
       if (out.state !== 'live') {
-        await save(env, site.id, { state: 'waiting', reason: out.state, branch: out.branch || row.branch || null, wanted_sha: null, checked_at: Date.now() });
+        await saveBuilt(env, site.id, { state: 'waiting', reason: out.state, branch: out.branch || row.branch || null, wanted_sha: null, checked_at: Date.now() }, build);
         break;
       }
       // The site has pages under members/ and this service cannot guard them
       // (hosting.js: membersGateOn). The owner reads it in "Check this site".
       if (out.members === 'left_out') console.warn(JSON.stringify({ evt: 'hosting_members_left_out', repo: site.repo, name: row.name }));
-      await save(env, site.id, { state: 'live', reason: null, branch: out.branch, commit_sha: out.commit, files: out.files, deployed_at: Date.now(), checked_at: Date.now() });
+      await saveBuilt(env, site.id, { state: 'live', reason: null, branch: out.branch, commit_sha: out.commit, files: out.files, deployed_at: Math.max(Date.now(), Number(row.deployed_at || 0) + 1), checked_at: Date.now() }, build);   // never the moment of the copy before: a caller tells a new copy by it
       row = await hostingRow(env, site.id);
+      // A built site's own branch is not what was copied, so a commit of it that a notice named is not owed a copy.
+      if (out.built) { if (row.wanted_sha) await save(env, site.id, { wanted_sha: null }); break; }
       // Did something newer get asked for meanwhile?
       if (!row.wanted_sha || row.wanted_sha === row.commit_sha) { if (row.wanted_sha) await save(env, site.id, { wanted_sha: null }); break; }
       if (round === 0) await save(env, site.id, { wanted_sha: null });
@@ -146,9 +204,11 @@ export async function publishSite(env, { site, token, wanted = null }) {
 
 /** The hosted sites of a repository that may be edited now (so: that are paid for or on trial). */
 async function hostedSitesOf(env, repo, hasAccess) {
-  const rows = await env.kiln_cloud.prepare(
-    `SELECT s.id, s.repo, s.status, s.access_until, s.plan, h.commit_sha, h.state FROM sites s JOIN hosting h ON h.site_id = s.id
+  // `h.built` is of migration 0014: on a database it has not reached, the question is asked again without it.
+  const ask = async (more) => env.kiln_cloud.prepare(
+    `SELECT s.id, s.repo, s.status, s.access_until, s.plan, h.commit_sha, h.state, h.deployed_at${more} FROM sites s JOIN hosting h ON h.site_id = s.id
      WHERE lower(s.repo) = lower(?) AND h.state != 'removing'`).bind(String(repo)).all();
+  const rows = await ask(', h.built').catch(() => ask(''));
   return (rows?.results || []).filter(s => hasAccess(s));
 }
 
@@ -156,17 +216,23 @@ async function hostedSitesOf(env, repo, hasAccess) {
  * GitHub says a repository's branch moved to `sha`. Publishes every hosted
  * site of that repository that does not serve that commit yet. Returns how
  * many it published. Never throws.
+ *
+ * A site Astro builds is not published by a push to its default branch: that
+ * push is what its build starts from, so the commit is put on record as waited
+ * for (publishSite, `onlyNew`). `built` says the branch that moved is the one a
+ * build pushes the pages to: then only the built sites of the repository are
+ * looked at, and the new pages go up.
  */
-export async function pushNotice(env, { repo, sha }, { installationToken, hasAccess }) {
+export async function pushNotice(env, { repo, sha, built = false }, { installationToken, hasAccess }) {
   let published = 0;
   try {
     const sites = await hostedSitesOf(env, repo, hasAccess);
     for (const site of sites) {
-      if (sha && site.commit_sha === sha) continue;
+      if (built ? !site.built : (sha && site.commit_sha === sha)) continue;
       const token = await installationToken(env, site.repo);
-      if (!token) { await save(env, site.id, { wanted_sha: sha || null }); continue; }   // the sweep tries again once the App can read it
-      const out = await publishSite(env, { site, token, wanted: sha || null });
-      if (out.state === 'live') published++;
+      if (!token) { if (!built) await save(env, site.id, { wanted_sha: sha || null }); continue; }   // the sweep tries again once the App can read it
+      const out = await publishSite(env, { site, token, wanted: built ? null : sha || null, onlyNew: true });
+      if (out.state === 'live' && out.deployed_at !== site.deployed_at) published++;
     }
   } catch (e) {
     console.warn(JSON.stringify({ evt: 'push_notice_failed', repo, detail: String(e?.message || e).slice(0, 300) }));
@@ -404,7 +470,7 @@ export async function previewNotice(env, { repo, branch, sha = null, deleted = f
       for (const row of rows) if (await removePreview(env, row, 'branch_deleted')) changed++;
       return changed;
     }
-    const sites = (await hostedSitesOf(env, repo, hasAccess)).filter(s => s.state !== 'ended');   // a site that was taken down has no previews
+    const sites = (await hostedSitesOf(env, repo, hasAccess)).filter(s => s.state !== 'ended' && !s.built);   // a site that was taken down has no previews, and neither has a site Astro builds: its branches hold source, not pages
     for (const site of sites) {
       const token = await installationToken(env, site.repo);
       if (!token) continue;   // the next push to the branch tries again
@@ -467,6 +533,14 @@ export async function handleGithubWebhook(request, env, ctx, tools) {
     if (ctx && typeof ctx.waitUntil === 'function') { ctx.waitUntil(preview); return json({ ok: true, accepted: true }, 202); }
     return json({ ok: true, previews: await preview });
   }
+  // The branch a build pushes a site's finished pages to (hosting.js). Only the
+  // sites of this repository that are built ones are published from it.
+  if (pushed === BUILT_BRANCH && pushed !== branch && !p.deleted) {
+    if (!hostingOn(env) || !env.kiln_cloud) return json({ ok: true, ignored: 'hosting is off' });
+    const pages = pushNotice(env, { repo, sha: typeof p.after === 'string' ? p.after : null, built: true }, tools);
+    if (ctx && typeof ctx.waitUntil === 'function') { ctx.waitUntil(pages); return json({ ok: true, accepted: true }, 202); }
+    return json({ ok: true, published: await pages });
+  }
   if (p.deleted || !branch || p.ref !== `refs/heads/${branch}`) return json({ ok: true, ignored: 'not the default branch' });
   if (!hostingOn(env) || !env.kiln_cloud) return json({ ok: true, ignored: 'hosting is off' });
   const work = pushNotice(env, { repo, sha: typeof p.after === 'string' ? p.after : null }, tools);
@@ -491,9 +565,11 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
   let published = 0, looked = 0, editors = 0, cared = 0;
   let rows = [];
   try {
-    rows = (await env.kiln_cloud.prepare(
-      `SELECT s.id, s.repo, s.status, s.access_until, s.plan, s.created_at, s.ls_subscription_id, s.firstpass_at, h.name, h.state, h.branch, h.commit_sha, h.wanted_sha, h.checked_at, h.updated_at, h.deployed_at
-       FROM hosting h LEFT JOIN sites s ON s.id = h.site_id ORDER BY COALESCE(h.checked_at, 0)`).all())?.results || [];
+    // The columns of migration 0014 are asked for, and left out on a database it has not reached.
+    const ask = async (more) => env.kiln_cloud.prepare(
+      `SELECT s.id, s.repo, s.status, s.access_until, s.plan, s.created_at, s.ls_subscription_id, s.firstpass_at, h.name, h.state, h.branch, h.commit_sha, h.wanted_sha, h.checked_at, h.updated_at, h.deployed_at${more}
+       FROM hosting h LEFT JOIN sites s ON s.id = h.site_id ORDER BY COALESCE(h.checked_at, 0)`).all();
+    rows = (await ask(BUILT_COLUMNS).catch(() => ask('')))?.results || [];
     // (`h.deployed_at` is read with the rest: a site that was never up needs no notice before it is cleared away.)
   } catch { return { published, looked, editors, cared }; }   // migration 0005 has not reached this database
 
@@ -534,9 +610,9 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
   for (const r of owed.slice(0, SWEEP_PUBLISH)) {
     const token = await installationToken(env, r.repo);
     if (!token) continue;
-    const out = await publishSite(env, { site: r, token });
+    const out = await publishSite(env, { site: r, token, onlyNew: true });
     done.add(r.id);
-    if (out.state === 'live') published++;
+    if (out.state === 'live' && out.deployed_at !== r.deployed_at) published++;
   }
   // A step that could not be done when a site was put up (GitHub did not
   // answer, say) is tried again for one site. Like the editor below, this only
@@ -545,7 +621,18 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
   // A hosted site's editor is kept current for its owner.
   editors = (await keepEditorsCurrent(env, live.filter(x => x.state === 'live'), { installationToken, now })).updated;
   // A site that was hosted before Kiln wrote the preview line of the settings file is given it, once.
-  await setPreviews(env, live.filter(x => x.state === 'live'), { installationToken, now });
+  // (Not a site Astro builds: it has no previews, and its settings file is not where this step looks.)
+  await setPreviews(env, live.filter(x => x.state === 'live' && !x.built), { installationToken, now });
+  // Built sites that wait for a build: the pages go up when the build has
+  // pushed them and no notice came, and a build that stopped is put on record.
+  for (const r of live.filter(x => x.built && x.build_wanted_sha && x.state !== 'ended' && !done.has(x.id)).slice(0, SWEEP_BUILDS)) {
+    const token = await installationToken(env, r.repo);
+    if (!token) continue;
+    looked++;
+    done.add(r.id);
+    const out = await lookAgain(env, { site: r, token });
+    if (out.state === 'live' && out.deployed_at !== r.deployed_at) published++;
+  }
   for (const r of live.filter(x => !done.has(x.id) && (x.state === 'live' || x.state === 'waiting')).slice(0, SWEEP_LOOK)) {   // not 'ended': its owner puts it back
     if (published >= SWEEP_PUBLISH) break;
     const token = await installationToken(env, r.repo);
@@ -558,10 +645,30 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
       const ref = branch ? await gh(token, 'GET', `/repos/${r.repo}/git/ref/heads/${refPath(branch)}`) : null;
       head = ref && ref.ok ? (await ref.json())?.object?.sha : null;
     } catch { head = null; }
-    if (head && head !== r.commit_sha) { if ((await publishSite(env, { site: r, token })).state === 'live') published++; }
+    if (head && head !== r.commit_sha) { const out = await publishSite(env, { site: r, token, onlyNew: true }); if (out.state === 'live' && out.deployed_at !== r.deployed_at) published++; }
     else await save(env, r.id, { checked_at: Date.now() });
   }
   return { published, looked, editors, cared };
+}
+
+/**
+ * Look at a built site's build now: the same look the five-minute job takes,
+ * and what "Build again" in the dashboard asks for (Kiln cannot start a build
+ * itself: its App has no right to). The pages go up when the built branch has
+ * moved, and when the commit that is waited for carries the build's own mark
+ * of failure, that is put on record. Answers what the dashboard is shown, or
+ * { state: 'busy' } while a copy of the site runs. Never throws.
+ */
+export async function lookAgain(env, { site, token }) {
+  const out = await publishSite(env, { site, token, onlyNew: true });
+  try {
+    const row = await hostingRow(env, site.id);
+    if (row?.built && row.build_wanted_sha && row.build_state !== 'failed' && await buildFailed({ token, repo: site.repo, sha: row.build_wanted_sha })) {
+      await save(env, site.id, { build_state: 'failed' });
+      return publicHosting(await hostingRow(env, site.id), { repo: site.repo });
+    }
+  } catch { /* the next look asks again */ }
+  return out;
 }
 
 /**

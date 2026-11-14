@@ -33,6 +33,29 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   showing the site, that email at the domain keeps working, and that the
   three steps for moving are under Moving away on the site's row.
 - **The operator's playbook covers the service as it runs today.** The page at `/admin/cloud/runbook` now has the hosting account, the switches and secrets by name, the timers, every note Kiln sends the operator, each case where a customer is told to write in, free days, hosting, previews, own domains and email forwarding, leaving, accounts, releasing, rolling back, the logs, and a daily and a weekly look.
+- **Kiln's hosting now takes a site that Astro builds.** Until now such a
+  site was answered with "Kiln found no home page", because its repository
+  holds source and the pages exist only after a build. Now its owner is shown
+  one button, Add the build file. It opens GitHub's own new-file page with a
+  short build file filled in (`.github/workflows/kiln-build.yml`, kept here as
+  `templates/kiln-build.yml`, with a pnpm form for a site that installs with
+  pnpm), and the owner presses Commit changes there. From then on GitHub
+  builds the site on every change and puts the finished pages on a branch
+  named `kiln-built`, and Kiln shows that branch at the site's address. No
+  secret is involved: the build uses only the pass GitHub gives each run, and
+  Kiln reads the branch with the access its App already has. The dashboard is
+  told where the build stands (`build.state`: `needs_file`, `building`,
+  `failed`, `late` or `built`, with a sentence for each), and "Build
+  again" (`POST /cloud/sites/hosting/build`) looks at once whether a build has
+  finished. A site that runs a program for each visit, or that installs with
+  a tool other than npm or pnpm, is told so in a plain sentence and nothing is
+  uploaded. Pages under `members/` of a built site are guarded exactly as on a
+  plain site. A built site gets no previews of suggestions, because a
+  suggestion's branch holds source there and not pages. A plain site is
+  published as before. Needs migration `0014_built_sites.sql`; a database it
+  has not reached keeps working. The dashboard's part (the button and the
+  line that says where the build stands) is separate work.
+
 - **"Add Kiln to this site" now works for a site that Astro builds.** Until
   now the button sent the owner of an Astro site to a terminal. It now reads
   the repository and, with one press, adds Kiln's files to the site's public

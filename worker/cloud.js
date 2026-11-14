@@ -21,6 +21,7 @@
  *   GET  /cloud/sites/check      → a checklist of how the site is set up (sitecheck.js); changes nothing
  *   GET  /cloud/sites/hosting    → where a hosted site stands (hosted.js)
  *   POST /cloud/sites/hosting    → put the site on Kiln's hosting, or publish it again (hosting.js)
+ *   POST /cloud/sites/hosting/build → "Build again" for a site Astro builds: look now whether its build is done (hosted.js lookAgain)
  *   GET  /cloud/sites/domain     → where a hosted site's own domain stands, or a look at a domain that changes nothing (domain.js)
  *   POST /cloud/sites/domain     → set the domain up, ask whether its name servers have changed, or stop a set-up that is not live
  *   GET  /cloud/sites/domain/records → the domain's records as a file, for an owner who moves the domain away
@@ -47,7 +48,7 @@ import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { hostingOn, hostingSentence, membersGateOn, previewPattern } from './hosting.js';
 import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence, keptFilesLink, keptFilesName } from './keeps.js';
 import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies, MOST_ANSWER } from './bring.js';
-import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress } from './hosted.js';
+import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress, lookAgain } from './hosted.js';
 import { lookAfter, lookedAfter, careOwed, planCharset, applyCharset, charsetSentence, publicCharset } from './lookafter.js';
 import {
   domainsOn, domainsReady, cleanDomain, lookUp, whatStops, sellerHelp, prepareDomain, domainStatus, removeWaitingDomain, exportRecords,
@@ -2503,6 +2504,20 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   // edited, so the first copy already holds them. `looked_after` says how each
   // went; none of it can stop the site from being put up. A step that was not
   // done is still owed, and while it is, publishing again tries it again.
+  // "Build again", for a site Astro builds whose build is late or stopped. Kiln
+  // cannot start a build (its App has no right to), so this looks at once at
+  // what the five-minute job would look at later, and answers where it stands.
+  if (path === '/cloud/sites/hosting/build' && request.method === 'POST') {
+    const asked = await ownedSite(request, env, url, sess, tools, {});
+    if (asked.response) return asked.response;
+    const { site, token } = asked;
+    const row = hostingOn(env) ? await hostingRow(env, site.id) : null;
+    if (!row || !row.built || row.state === 'ended' || row.state === 'removing') {
+      return json({ ok: false, code: 'not_built', error: 'This site is not waiting for a build, so there is nothing to look at again. Load the page again to see where the site stands.' }, 409);
+    }
+    await lookAgain(env, { site, token });
+    return json({ ok: true, hosting: await shownHosting(env, await hostingRow(env, site.id), site) });
+  }
   if (path === '/cloud/sites/hosting' && (request.method === 'GET' || request.method === 'POST')) {
     const write = request.method === 'POST';
     const asked = await ownedSite(request, env, url, sess, tools, write ? {} : { needToken: false, needAccess: false });

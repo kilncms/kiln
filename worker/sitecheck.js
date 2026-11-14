@@ -477,7 +477,8 @@ export async function checkSite({ token, repo, origin, worker, installUrl = INST
       checks.push(...await liveLines(home, base, plan, timeoutMs, hosted));
       const members = hosted ? await membersLine(plan, { token, repo, on: membersOn }) : null;
       if (members) checks.push(members);
-      const previews = hosted ? await previewsLine(plan, { token, repo, pattern: preview }) : null;
+      // A site Astro builds gets no previews of suggestions (a suggestion's branch holds source, not pages), so no line says it does or will.
+      const previews = hosted && plan.kind !== 'astro' ? await previewsLine(plan, { token, repo, pattern: preview }) : null;
       if (previews) checks.push(previews);
     }
   } catch (e) {

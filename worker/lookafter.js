@@ -249,7 +249,8 @@ export async function lookAfter(env, { site, token, author, worker, firstpassAt 
     }
 
     // 2. The line of the settings file that gives a suggestion a preview of its own.
-    const previews = await previewsStep(env, { site, token, author, shut });
+    // Not for a site Astro builds: a suggestion's branch holds source there, not pages, so it gets no preview.
+    const previews = plan?.astro || /^astro_/.test(plan?.state || '') ? null : await previewsStep(env, { site, token, author, shut });
     if (previews) {
       steps.push(previews);
       await markPreviews(env, site.id, previews);

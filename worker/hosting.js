@@ -39,7 +39,8 @@
  * page, is plain files as before. See "The members area" below.
  */
 
-import { gh, inTurn, refPath, base64 } from './prepare.js';
+import { gh, inTurn, refPath, base64, prepareSentence, readAstroSettings } from './prepare.js';
+import { detectGenerators } from '../src/adapters/detect.js';
 import { dayWords } from './mail.js';
 import { MEMBERS_GATE_MODULE } from './members-gate.js';
 
@@ -269,11 +270,42 @@ async function settingsText(token, repo, entry) {
  * after whatever the site's own file says. `commit` names the one commit to
  * copy: a preview is a copy of the commit that was looked at, even when its
  * branch has moved since.
+ *
+ * A site Astro builds ("A site that Astro builds" below) is copied from the branch its build pushes
+ * the finished pages to, never from its default branch, which holds source.
+ * Every answer about such a site carries `built`: { tool, source, head, from }
+ * (the installer, the head of the default branch, the head of the built branch
+ * and the source commit that one says it was built from). Its answers also
+ * include: a refusal ('build_server', 'build_tool', 'astro_unusual'),
+ * 'needs_build_file' (no build file in the repository), 'building' (the build
+ * file is there and the built branch is not yet), and 'same' when `have` names
+ * the commit of the built branch that is up already, so nothing is sent. What
+ * is published is the built branch as it is: its files under members/ are
+ * guarded or left out exactly as a plain site's are, and its `_headers` and
+ * `_redirects` are the ones in the built branch.
  */
-export async function deploySite(env, { token, repo, name, first = false, siteId = null, branch = null, commit = null, preview = false }) {
+export async function deploySite(env, { token, repo, name, first = false, siteId = null, branch = null, commit = null, preview = false, have = null }) {
   if (!hostingOn(env)) throw new HostingError('not_set_up');
-  const tree = await readTree({ token, repo, branch, commit });
+  let tree = await readTree({ token, repo, branch, commit });
   if (tree.state !== 'ok') return tree;
+  let built = null;
+  if (!branch && !commit && !preview) {
+    const kind = await builtKind({ token, repo, entries: tree.entries });
+    if (kind) {
+      const source = { branch: tree.branch, head: tree.head };
+      if (kind.refuse) return { state: kind.refuse, ...source };
+      built = { tool: kind.tool, source: tree.head, head: null, from: null };
+      if (!kind.hasFile) return { state: 'needs_build_file', ...source, built };
+      const pages = await readTree({ token, repo, branch: BUILT_BRANCH });
+      if (pages.state === 'empty') return { state: 'building', ...source, built };
+      if (pages.state !== 'ok') return { ...pages, ...source, built };
+      built.head = pages.head;
+      if (have && have === pages.head) return { state: 'same', ...source, built };
+      built.from = await builtFrom({ token, repo, head: pages.head });
+      tree = { ...pages, branch: source.branch };
+    }
+  }
+  const say = (answer) => (built ? { ...answer, built } : answer);
   const all = publishedFiles(tree.entries);
   const { headers, redirects, skipped } = all;
   // Members-only pages are never put up without their gate. Where this service cannot switch the gate on,
@@ -281,15 +313,15 @@ export async function deploySite(env, { token, repo, name, first = false, siteId
   // the test service: a page under members/ that is uploaded as a plain file is served to everybody).
   const gate = !preview && membersGateOn(env), hadMembers = hasMembersArea(all.files);
   const files = hadMembers && !gate ? all.files.filter(f => !String(f.path).startsWith('/members/')) : all.files;
-  if (!files.some(f => f.path === '/index.html')) return { state: 'no_home', branch: tree.branch, head: tree.head };
-  if (files.length > LIMITS.files) return { state: 'too_big', branch: tree.branch, head: tree.head, fileCount: files.length };
+  if (!files.some(f => f.path === '/index.html')) return say({ state: 'no_home', branch: tree.branch, head: tree.head });
+  if (files.length > LIMITS.files) return say({ state: 'too_big', branch: tree.branch, head: tree.head, fileCount: files.length });
 
   const { manifest, byHash } = await buildManifest(files);
   const script = `/workers/scripts/${encodeURIComponent(name)}`;
   const session = (await cloudflare(env, 'POST', `${script}/assets-upload-session`, { json: { manifest } })).result || {};
   const buckets = session.buckets || [];
   const wanted = buckets.reduce((n, b) => n + b.length, 0);
-  if (wanted > LIMITS.newFiles) return { state: 'too_big', branch: tree.branch, head: tree.head, fileCount: files.length, newFiles: wanted };
+  if (wanted > LIMITS.newFiles) return say({ state: 'too_big', branch: tree.branch, head: tree.head, fileCount: files.length, newFiles: wanted });
 
   // With nothing to send, the first answer already carries the token that
   // says "every file is here". Otherwise it comes with the last upload.
@@ -336,7 +368,8 @@ export async function deploySite(env, { token, repo, name, first = false, siteId
   // again later would only repeat it.
   if (first) await cloudflare(env, 'POST', `${script}/subdomain`, { json: { enabled: true, previews_enabled: false } });
 
-  return { state: 'live', url: siteAddress(env, name), commit: tree.head, branch: tree.branch, files: files.length, sent: wanted, skipped, ...(members ? { members } : {}) };
+  // A built site's commit is the source commit its pages were built from: that is the one its owner knows.
+  return say({ state: 'live', url: siteAddress(env, name), commit: built ? built.from || built.source : tree.head, branch: tree.branch, files: files.length, sent: wanted, skipped, ...(members ? { members } : {}) });
 }
 
 // ── The members area ───────────────────────────────────────────────────────
@@ -408,7 +441,190 @@ export function hostingSentence(code, { repo = 'the repository', planEnded = nul
     case 'not_set_up': return 'Hosting is not switched on for this service yet.';
     case 'trial_ended': return `Kiln took this site down from its hosting because the free days ran out. ${kept ? "Kiln keeps your site's files." : 'Your repository is untouched.'} Now that the site is subscribed, put it up again.`;
     case 'plan_ended': return `Kiln took this site down from its hosting because its plan ended${Number(planEnded) ? ` on ${dayWords(Number(planEnded))}` : ''}. ${kept ? "Kiln keeps your site's files." : 'Your repository still has everything.'} To put the site back, subscribe again and then press the button to put it up.`;
+    case 'needs_build_file': return BUILD_SENTENCES.needs_file;
+    case 'building': return BUILD_SENTENCES.building;
+    case 'build_server': return BUILD_REFUSALS.build_server;
+    case 'build_tool': return BUILD_REFUSALS.build_tool;
+    case 'astro_unusual': return prepareSentence('astro_unusual');
     case 'github': return 'GitHub did not answer just now. The site is as it was. Kiln tries again by itself in a few minutes.';
     default: return 'Kiln could not put the new files up just now. The site is as it was. Kiln tries again by itself in a few minutes.';
   }
+}
+
+// ── A site that Astro builds ───────────────────────────────────────────────
+//
+// Such a repository holds source: the pages exist only after a build. Kiln
+// builds nothing. A GitHub Actions workflow in the customer's own repository
+// (BUILD_FILE, the text below) builds the site on every push to the default
+// branch and pushes the finished pages to the branch BUILT_BRANCH as one fresh
+// commit whose message is "Built from <the source commit>". deploySite copies
+// that branch where it copies the default branch of a plain site, so no secret
+// is involved and Kiln takes no files from outside: it reads a branch with the
+// access its GitHub App already has.
+//
+// Kiln's App may not write workflow files, so the customer adds the file by
+// one press: the dashboard opens GitHub's own "new file" page with the name
+// and the text filled in (addUrl), and the customer presses Commit changes.
+//
+// What follows says which repositories are built sites and which of those
+// Kiln's hosting takes (builtKind), holds the build file, and words where a
+// build stands for the dashboard (buildShown). hosted.js keeps the record
+// (migration 0014) and decides when to look.
+
+export const BUILT_BRANCH = 'kiln-built';
+export const BUILD_FILE = '.github/workflows/kiln-build.yml';
+/** The name of the mark the build puts on the commit it builds (a commit status). */
+export const BUILD_CONTEXT = 'kiln-build';
+/** A build that has shown no result for this long is called late. */
+export const BUILD_LATE_MS = 15 * 60 * 1000;
+
+/** What the owner reads for each place a build can stand. A site whose build is up has no sentence. */
+export const BUILD_SENTENCES = {
+  needs_file: 'Astro has to build this site before Kiln can show it. Press Add the build file. GitHub opens with the file filled in. Press Commit changes there, then come back to this page.',
+  building: 'GitHub is building your site. This usually takes one to three minutes. This page updates by itself.',
+  failed: 'The last build did not finish, so your site still shows the version from before. Open the build on GitHub to see what went wrong, or undo the last change in the editor.',
+  late: 'The build has not finished yet. Open the Actions tab of your repository on GitHub to see where it stands. If Actions is switched off there, switch it on, then press Build again.',
+};
+
+/** What the owner reads when Kiln's hosting cannot take a site Astro builds. */
+export const BUILD_REFUSALS = {
+  build_server: 'This site runs a program for each visit. Kiln\'s hosting serves ready-made pages only, so it cannot host this site. You can still use Kiln with the host you have now.',
+  build_tool: 'This site installs its parts with a tool Kiln\'s build file does not know yet. Write to info@kilncms.com and we will add it.',
+};
+
+// The build file for a site that installs with npm and whose default branch
+// is main. It is the text of templates/kiln-build.yml, line for line: a test
+// holds the two together (test/cloud-built.test.js).
+export const BUILD_FILE_TEXT = [
+  '# Kiln\'s build file. Each time this site changes, GitHub runs the steps below:',
+  '# it builds the site with Astro and puts the finished pages on a branch named',
+  '# kiln-built, and Kiln\'s hosting shows those pages at your site\'s address.',
+  '# It uses no password or key of yours, only the pass GitHub gives each run,',
+  '# which works for this repository alone and ends when the run ends.',
+  'name: Kiln build',
+  'on:',
+  '  push:',
+  '    branches: [main]',
+  '  workflow_dispatch:',
+  'permissions:',
+  '  contents: write    # to put the finished pages on the kiln-built branch',
+  '  statuses: write    # to mark each change as building, built or failed',
+  'concurrency:         # one build at a time, and a newer change stops an older build',
+  '  group: kiln-build',
+  '  cancel-in-progress: true',
+  'jobs:',
+  '  build:',
+  '    runs-on: ubuntu-latest',
+  '    env:',
+  '      GH_TOKEN: ${{ github.token }}',
+  '      MARK: gh api --silent repos/${{ github.repository }}/statuses/${{ github.sha }} -f context=kiln-build -f target_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
+  '    steps:',
+  '      - uses: actions/checkout@v4',
+  '      - uses: actions/setup-node@v4',
+  '        with:',
+  '          node-version: 22',
+  '      # Mark this change as building. Kiln and its editor read that mark.',
+  '      - run: $MARK -f state=pending',
+  '      - run: npm ci',
+  '      - run: npm run build',
+  '      # The finished pages are in the folder dist. They go to the kiln-built',
+  '      # branch as one fresh commit, so that branch holds only the newest pages.',
+  '      - name: Hand the pages to Kiln',
+  '        working-directory: dist',
+  '        run: |',
+  '          git init -q -b kiln-built',
+  '          git add -A',
+  '          git -c user.name="Kiln build" -c user.email="build@kilncms.com" commit -q -m "Built from $GITHUB_SHA"',
+  '          git push -q -f "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" kiln-built',
+  '      - if: success()',
+  '        run: $MARK -f state=success',
+  '      - if: failure()',
+  '        run: $MARK -f state=failure',
+  '',
+].join('\n');
+
+/**
+ * The build file for one site: the template, with the site's own default
+ * branch where the template says main, and for a site that installs with pnpm
+ * the two lines that install and build changed to pnpm's.
+ */
+export function buildFile({ tool = 'npm', branch = 'main' } = {}) {
+  let text = BUILD_FILE_TEXT;
+  if (branch && branch !== 'main') text = text.replace('    branches: [main]', `    branches: [${JSON.stringify(String(branch))}]`);
+  if (tool === 'pnpm') {
+    text = text.replace('      - run: npm ci', '      - run: corepack enable && pnpm install --frozen-lockfile')
+      .replace('      - run: npm run build', '      - run: pnpm build');
+  }
+  return text;
+}
+
+/** GitHub's own "new file" page for a repository, with the build file's name and text filled in. */
+export function addUrl({ repo, branch = 'main', tool = 'npm' }) {
+  return `https://github.com/${repo}/new/${refPath(branch)}?filename=${BUILD_FILE}&value=${encodeURIComponent(buildFile({ tool, branch }))}`;
+}
+
+/** True when an Astro settings file (its text without comments) says the site runs on a server. */
+export const runsOnServer = (src) => /\boutput\s*:\s*['"`]server['"`]/.test(src) || /\badapter\s*:/.test(src);
+
+/**
+ * Whether a repository is a site Astro builds, from the listing of its default
+ * branch (`entries`). Null for every other repository: a plain site, and a
+ * site another generator builds, are hosted as they always were. For an Astro
+ * site: { refuse } with why Kiln's hosting does not take it ('build_server',
+ * 'astro_unusual', 'build_tool', or 'github' when GitHub would not hand over
+ * the settings file), or { tool, hasFile }: which of npm and pnpm installs its
+ * parts, and whether the build file is in the repository.
+ */
+export async function builtKind({ token, repo, entries }) {
+  const files = (entries || []).filter(e => e.type === 'blob');
+  const paths = files.map(e => e.path);
+  const generator = detectGenerators(paths).find(g => g.confidence >= 0.5);
+  if (!generator || generator.id !== 'astro') return null;
+  const settings = await readAstroSettings({ token, repo, entries: files });
+  if (settings.state === 'github') return { refuse: 'github' };
+  if (settings.src && runsOnServer(settings.src)) return { refuse: 'build_server' };
+  if (settings.state !== 'ok') return { refuse: settings.state };
+  const tool = paths.includes('pnpm-lock.yaml') ? 'pnpm' : paths.includes('package-lock.json') ? 'npm' : null;
+  if (!tool) return { refuse: 'build_tool' };
+  return { tool, hasFile: paths.includes(BUILD_FILE) };
+}
+
+/** The source commit a commit of the built branch says it was built from, or null when its message does not say. */
+export async function builtFrom({ token, repo, head }) {
+  try {
+    const res = await gh(token, 'GET', `/repos/${repo}/git/commits/${head}`);
+    if (!res.ok) return null;
+    return /^Built from ([0-9a-f]{40})\b/.exec(String((await res.json())?.message || ''))?.[1] || null;
+  } catch { return null; }
+}
+
+/**
+ * True when the build marked a commit as failed. Only the build's own mark
+ * counts (BUILD_CONTEXT), the newest one: another tool's mark on the same
+ * commit says nothing about the pages. False when GitHub does not answer.
+ */
+export async function buildFailed({ token, repo, sha }) {
+  try {
+    const res = await gh(token, 'GET', `/repos/${repo}/commits/${sha}/statuses?per_page=100`);
+    if (!res.ok) return false;
+    const marks = await res.json();
+    const mine = (Array.isArray(marks) ? marks : []).find(s => s?.context === BUILD_CONTEXT);
+    return !!mine && (mine.state === 'failure' || mine.state === 'error');
+  } catch { return false; }
+}
+
+/**
+ * What the dashboard is told of a built site's build, from its row of the
+ * hosting table: { state, sentence, add_url | runs_url }. `state` is
+ * 'needs_file', 'building', 'failed', 'late' or 'built' (no sentence).
+ */
+export function buildShown(row, { repo, now = Date.now() } = {}) {
+  let state = 'built';
+  if (row.build_state === 'needs_file') state = 'needs_file';
+  else if (row.build_wanted_sha) state = row.build_state === 'failed' ? 'failed' : now - Number(row.build_wanted_at || 0) > BUILD_LATE_MS ? 'late' : 'building';
+  const out = { state };
+  if (BUILD_SENTENCES[state]) out.sentence = BUILD_SENTENCES[state];
+  if (state === 'needs_file') out.add_url = addUrl({ repo, branch: row.branch || 'main', tool: row.build_tool || 'npm' });
+  else out.runs_url = `https://github.com/${repo}/actions`;
+  return out;
 }

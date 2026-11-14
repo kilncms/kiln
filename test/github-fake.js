@@ -51,6 +51,14 @@ export function fakeGitHub({ repo = 'acme/site', files = {}, defaultBranch = 'ma
     },
     failOn: (fn) => { fail = fn; },
     onWrite: (fn) => { afterWrite = fn; },
+    /** A branch pushed anew: exactly these files, as one commit with no parent (what a build's force-push leaves). */
+    push: (branch, pushed, { by = author, message = 'pushed' } = {}) => {
+      const c = putCommit({ tree: putTree(new Map(Object.entries(pushed).map(([p, text]) => [p, { mode: '100644', sha: putBlob(text) }]))), parents: [], author: by, message });
+      refs.set(`heads/${branch}`, c);
+      return c;
+    },
+    /** The marks on a commit (commit statuses), newest first: sha → [{ context, state }]. */
+    statuses: new Map(),
 
     /** The fetch handler: answers https://api.github.com/repos/<repo>/…; anything else is undefined (→ 404 in withFetch). */
     handler: async (url, init = {}) => {
@@ -173,6 +181,7 @@ export function fakeGitHub({ repo = 'acme/site', files = {}, defaultBranch = 'ma
           return wrote(jsonRes({ ref: `refs/${m[1]}`, object: { sha: body.sha } }));
         }
       }
+      if ((m = /^\/commits\/(\w+)\/statuses$/.exec(path)) && method === 'GET') return jsonRes(api.statuses.get(m[1]) || []);
       if ((m = /^\/compare\/(.+?)\.\.\.(.+)$/.exec(path)) && method === 'GET') {
         const a = resolve(m[1]); const b = resolve(m[2]);
         if (!a || !b) return notFound();
