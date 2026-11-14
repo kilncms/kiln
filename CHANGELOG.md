@@ -8,6 +8,34 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A new domain through Kiln: the chosen name is registered, once, and the
+  site is put on it (the service's part, and still switched off).** The whole
+  piece is OFF on the test service and on production (`REGISTER_DOMAINS` is
+  not set), and while it is off the press described here is no route at all:
+  it answers 404, as an address nobody knows does. With it on, the owner of a
+  paid yearly site can press Register for a name they searched for. The
+  service asks for the name's price once more, writes a row, and only the one
+  request whose row was written asks Cloudflare to register the name. That
+  call is sent from one place (`registerOnce` in `worker/register.js`) and is
+  never sent a second time: a second press, a second tab, a press after a
+  timeout and the five-minute job all find the row and send nothing. Only
+  Cloudflare's own word "failed" lets the customer choose again. After
+  fifteen minutes without word from Cloudflare the row is marked `stuck`, the
+  operator is emailed, and nothing more happens until a person has looked.
+  When Cloudflare says the name is registered, the customer gets one email
+  ("NAME is yours"), the operator gets a note with both prices, and the name
+  becomes a waiting domain of the site, marked `registered`: its owner is
+  shown no name servers and is not reminded, and the set-up is never put away
+  for waiting (the operator is told once after an hour instead). The whole
+  service writes at most `REGISTER_DAILY_MAX` registrations in 24 hours, and
+  the operator is told once when that is reached. With `REGISTER_STANDIN` on
+  (the test service only) nothing reaches Cloudflare's registrar, names
+  beginning `taken`, `pricey`, `slow`, `fail` and `stuck` behave as named,
+  and the stand-in stops once a name counts as registered. `/cloud/me` now
+  says `new_domain: { offered: false, registration }` for a site with a name
+  being registered or registered. Not built yet: switching renewal off when a
+  plan ends, the reminders before a name runs out, handing a name over, the
+  operator's buttons for a row that is stuck, and the dashboard.
 - **A new domain through Kiln, included with the yearly form of the hosting
   plan: the paid year, the switch, and the search (the service's part, and
   switched off).** This piece is OFF on the test service and on production,
