@@ -207,6 +207,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Where the same person has another suggestion waiting on the same branch, the
   preview stays for that one.
 
+### Removed
+
+- **The hand script that set a hosted customer up is gone.**
+  `scripts/managed-onboard.mjs` attached a domain to a Cloudflare Pages
+  project and made a forwarding rule by hand, from the days when a person at
+  Kiln set each hosted site up. The dashboard now does every one of its steps
+  by itself (hosting, the customer's own domain, email forwarding), on
+  Workers and not Pages, so the script described a way of working that no
+  longer exists.
+
 ### Fixed
 
 - **Putting up a hosted site with many pictures takes less of the service's
