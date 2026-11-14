@@ -13,7 +13,7 @@
  *                                  (for a site Kiln hosts, both also cover the character-set
  *                                  line on pages and page templates that have none: `charset`
  *                                  in the answer, and a second commit of its own)
- *   GET  /cloud/sites/firstpass  → what a first pass at what can be edited would mark (for a site Astro builds: a report of what it could mark)
+ *   GET  /cloud/sites/firstpass  → what a first pass at what can be edited would mark (for a site Astro builds: what it would move out of the templates, with a report of the rest)
  *   POST /cloud/sites/firstpass  → mark it (firstpass.js), in one commit
  *   POST /cloud/sites/remove     → cancel its subscription, then delete a site
  *   GET  /cloud/sites/update     → which Kiln editor the site's repository holds, and what an update would replace
@@ -42,7 +42,7 @@ import { troubleBody, forDashboard, githubSilent, UNCONFIRMED_GOOGLE, DASHBOARD_
 import { startSignIn, startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { customerMailOn, mailAddress, addressSql, accountAddress, sendOnce, siteAddedMail, siteStartedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages, VIA_KILN, astroAfter, ASTRO_GUIDE } from './prepare.js';
-import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence } from './firstpass.js';
+import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence, astroAfterSentences } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { hostingOn, hostingSentence, membersGateOn, previewPattern } from './hosting.js';
@@ -2515,12 +2515,14 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       await env.KILN.put(lock, '1', { expirationTtl: 120 });
     }
     try {
-      const plan = await planFirstPass({ token, repo: site.repo });
+      const plan = await planFirstPass({ token, repo: site.repo, astroChange: true });
       const shown = publicFirstPass(plan, { repo: site.repo });
       if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: await installUrlFor(env) });
       if (plan.state === 'github') return refused('github', 502);
-      // A site Astro builds: looking gives the report of what a first pass
-      // could mark by itself. Pressing is refused, and nothing is written.
+      // A site Astro builds with nothing safe to move out of its templates (or
+      // with all of it moved already): looking gives the report. Pressing is
+      // refused, and nothing is written. With something to move it is `ready`,
+      // and goes the way of a plain site below.
       if (plan.state === 'report') {
         if (write) return json({ ok: false, ...shown, error: sentence('report'), code: 'report' }, 409);
         return json({ ok: true, ...shown });
@@ -2544,7 +2546,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         return refused(code, code === 'moved' || code === 'protected' ? 409 : 502, code === 'protected' ? { branch: plan.branch } : {});
       }
       await markFirstPass(env, site.id, done.sha);
-      return json({ ok: true, ...shown, state: 'done', commit: { sha: done.sha, url: done.url } });
+      return json({ ok: true, ...shown, state: 'done', commit: { sha: done.sha, url: done.url }, ...(plan.astro ? { sentences: astroAfterSentences(plan) } : {}) });
     } finally {
       if (write) { try { await env.KILN.delete(lock); } catch { /* it runs out by itself in two minutes */ } }
     }

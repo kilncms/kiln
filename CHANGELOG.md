@@ -89,6 +89,38 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   webhook writes on the site whether it is paid by the `month` or the `year`
   and up to when it is paid. The yearly price lives in the billing company's
   settings, not in the code.
+- **One press moves the words written in an Astro site's templates into files
+  Kiln can edit (the service's part).** For a site Astro builds,
+  `POST /cloud/sites/firstpass` used to answer 409 with the report. Where the
+  report finds headings, paragraphs, quotes or captions that hold words only,
+  the press now moves those words out of each `.astro` template into a words
+  file, `src/kiln/<the template's path>.md` (front matter with one line for
+  each piece, such as `p_1: "…"`, and nothing below it), and leaves each one
+  showing in the same place: the template imports the file (one line added to
+  its code fence, or a fence added at the top when it has none), shows
+  `{kilnWords.p_1}` where the words stood, and names the words file on the
+  element (`data-kiln-source`), so the editor saves to the words file and the
+  service still never writes template code. Nothing else in a template
+  changes, not a space, and the words are kept exactly, line breaks and spaces
+  too. Every changed template is checked before anything is written: with the
+  words put back (as the service's own YAML reader reads them from the words
+  file) and the added line and attributes taken out it must be the file as it
+  was, byte for byte, and read again its moved pieces must count as marked and
+  no other count may have changed. A template that fails, one that already
+  uses the name `kilnWords`, one whose words file is there already (it is
+  never written over), one whose path could not stand in an import, and one
+  the reader cannot follow are left alone and named (`left_alone`), and the
+  rest of the site is still done. All of it is one commit in the owner's name,
+  `Mark what can be edited`. Looking (`GET`) answers state `ready` with what
+  the press will move (`move`) and the report's numbers; the press answers
+  with how many pieces can now be edited and the commit's address. A site with
+  nothing safe to move, and a second press, get the report and 409 as before.
+  Hosting's own first pass, made when a site is first put up, still only
+  reports for such a site. On a real build of the fixture the built page was
+  the same apart from the one new attribute; words that hold quotes, `>` or
+  line breaks show the same in a browser but are written differently in the
+  built file (`&#39;`, `&quot;`, `&gt;`, and the line breaks kept). The
+  dashboard does not show any of this yet.
 - **The owner of a site Astro builds can be told how much of it Kiln could
   make editable by itself (the service's part).** For such a site,
   `GET /cloud/sites/firstpass` used to answer only that the site is built

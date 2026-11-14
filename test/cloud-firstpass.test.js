@@ -14,7 +14,7 @@ import { fakeKV, withFetch, githubWrites } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { autotag } from '../src/autotag.js';
-import { onlyAddsMarks, astroReportSentences, firstPassSentence } from '../worker/firstpass.js';
+import { onlyAddsMarks, astroReportSentences, firstPassSentence, planFirstPass } from '../worker/firstpass.js';
 
 const home = `<!doctype html>
 <html>
@@ -296,7 +296,7 @@ test('first pass: on a database a migration has not reached, the pages are still
   }
 });
 
-// ── A site Astro builds: a report of what a first pass could mark, and nothing written ──
+// ── A site Astro builds: what one press moves out of its templates, and the report of the rest ──
 
 /** The fixture site as a repository's files: { path: text }. */
 function fixtureFiles(dir = new URL('./fixtures/astro-site/', import.meta.url), base = '', out = {}) {
@@ -315,12 +315,15 @@ const FIXTURE_REPORT = {
   top: [{ path: 'src/pages/index.astro', total: 5, safe: 1, left: FIXTURE_LEFT }],
   unread: [], unread_count: 0,
 };
-const FIXTURE_SENTENCES = [
-  'Kiln can make 1 of 5 headings and paragraphs on this site\'s templates editable by itself. The other 4 come from your content files or from code, or mix words with a value, and a developer marks those with one line each.',
+const FIXTURE_WORDS = 'This sentence is written in src/pages/index.astro itself. It is part of the template, so it cannot be edited on the page.';
+const FIXTURE_BEFORE = [
+  'Kiln will move 1 piece of text out of 1 template file into a file it can edit, and leave it showing in the same place. Your pages will look the same. Press Mark them to make this change.',
+  'The other 4 come from your content files or from code, or mix words with a value, and a developer marks those with one line each.',
   COUNTS_SENTENCE,
 ];
+const NOTHING_SAFE = 'Kiln found no text in this site\'s templates that it can mark by itself. The words on your pages come from content files or from code, and a developer marks those with one line each.';
 
-test('first pass: for a site Astro builds, looking gives a report of what Kiln could mark by itself, and writes nothing', { skip: d1Skip }, async () => {
+test('first pass: for a site Astro builds, looking says what one press will move out of the templates, with the report, and writes nothing', { skip: d1Skip }, async () => {
   const files = fixtureFiles();
   assert.ok(files['src/pages/index.astro'] && files['astro.config.mjs'], 'the fixture is a whole Astro site');
   const { gh, env, handler } = world(files);
@@ -329,7 +332,7 @@ test('first pass: for a site Astro builds, looking gives a report of what Kiln c
     const res = await look(env);
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.deepEqual(body, { ok: true, state: 'report', repo: 'ada/club', branch: body.branch, generator: 'Astro', report: FIXTURE_REPORT, sentences: FIXTURE_SENTENCES });
+    assert.deepEqual(body, { ok: true, state: 'ready', repo: 'ada/club', branch: body.branch, generator: 'Astro', report: FIXTURE_REPORT, sentences: FIXTURE_BEFORE, move: { pieces: 1, files: 1 } });
     assert.equal(JSON.stringify(body).includes('This sentence is written'), false, 'no template text leaves the service');
     assert.deepEqual(githubWrites(calls), []);
   });
@@ -337,58 +340,212 @@ test('first pass: for a site Astro builds, looking gives a report of what Kiln c
   assert.equal(recorded(env).firstpass_at, null);
 });
 
-test('first pass: for a site Astro builds, pressing the button is refused with the report, and writes nothing', { skip: d1Skip }, async () => {
-  const { gh, env, handler } = world(fixtureFiles());
+test('first pass: for a site Astro builds, one press moves the words into a file Kiln can edit, in one commit in the owner\'s name, and a second press changes nothing', { skip: d1Skip }, async () => {
+  const files = fixtureFiles();
+  const template = files['src/pages/index.astro'];
+  const { gh, env, handler } = world(files);
+  env.KILN.map.set('csess:tok', JSON.stringify({ account_id: 'acct-1', login: 'ada', uid: 42, gh: 'gho_x' }));
   const before = gh.head();
+  await withFetch(handler, async () => {
+    const res = await press(env);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body, {
+      ok: true, state: 'done', repo: 'ada/club', branch: body.branch, generator: 'Astro', report: FIXTURE_REPORT, move: { pieces: 1, files: 1 },
+      sentences: ['1 piece of text can now be edited. Your site is building again. When it is done, open a page, sign in and click it.'],
+      commit: { sha: gh.head(), url: `https://github.com/ada/club/commit/${gh.head()}` },
+    });
+  });
+  const made = gh.commits.get(gh.head());
+  assert.deepEqual(made.parents, [before], 'exactly one commit');
+  assert.equal(made.author.email, '42+ada@users.noreply.github.com');
+  assert.equal(made.message, 'Mark what can be edited\n\n1 piece of text in 1 template file moved into files Kiln can edit, under src/kiln/. Each one shows in the same place as before. Made from the Kiln dashboard by ada.');
+
+  // The repository: one new file, one changed file, and everything else as it was.
+  assert.deepEqual(gh.paths(), [...Object.keys(files), 'src/kiln/pages/index.md'].sort());
+  assert.equal(gh.read('src/kiln/pages/index.md'), `---\np_1: "${FIXTURE_WORDS}"\n---\n`);
+  for (const p of Object.keys(files)) if (p !== 'src/pages/index.astro') assert.equal(gh.read(p), files[p], p);
+  const now = gh.read('src/pages/index.astro');
+  const added = ["import { frontmatter as kilnWords } from '../kiln/pages/index.md';\n", ' data-kiln-source="src/kiln/pages/index.md#/frontmatter/p_1"'];
+  for (const part of [...added, '{kilnWords.p_1}']) assert.equal(now.split(part).length, 2, part);
+  assert.equal(now.replace(added[0], '').replace(added[1], '').replace('{kilnWords.p_1}', FIXTURE_WORDS), template, 'three places changed, and nothing else');
+  assert.ok(now.includes(`${added[0]}---\n<html lang="en">`), 'the import is the last line of the code fence');
+  assert.ok(now.includes(`    <p class="fixed"${added[1]}>{kilnWords.p_1}</p>\n`));
+  assert.ok(recorded(env).firstpass_at);
+  assert.equal(recorded(env).firstpass_commit, gh.head());
+
+  // A second look and a second press: nothing is left to move, and nothing is written.
+  const after = gh.head();
   await withFetch(handler, async (calls) => {
-    for (const round of [1, 2]) {   // the second press is told the same: nothing is left locked
-      const res = await press(env);
-      assert.equal(res.status, 409, `press ${round}`);
-      const body = await res.json();
-      assert.equal(body.ok, false);
-      assert.equal(body.code, 'report');
-      assert.equal(body.error, NOT_YET);
-      assert.equal(body.state, 'report');
-      assert.deepEqual(body.report, FIXTURE_REPORT);
-      assert.deepEqual(body.sentences, FIXTURE_SENTENCES);
-    }
+    const seen = await (await look(env)).json();
+    assert.equal(seen.ok, true);
+    assert.equal(seen.state, 'report');
+    assert.equal(seen.move, undefined);
+    assert.deepEqual({ safe: seen.report.safe, total: seen.report.total, marked: seen.report.left.marked }, { safe: 0, total: 5, marked: 5 });
+    assert.deepEqual(seen.sentences, [NOTHING_SAFE, COUNTS_SENTENCE]);
+    const res = await press(env);
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.equal(body.code, 'report');
+    assert.equal(body.error, NOT_YET);
+    assert.equal(body.state, 'report');
+    assert.deepEqual(body.sentences, [NOTHING_SAFE, COUNTS_SENTENCE]);
     assert.deepEqual(githubWrites(calls), []);
   });
-  assert.equal(gh.head(), before);
-  assert.equal(recorded(env).firstpass_at, null);
+  assert.equal(gh.head(), after);
   assert.equal(await env.KILN.get('fplock:site-1'), null);
 });
 
-test('first pass: the report counts every template under src, names the ten files with the most, and says which files it could not read', { skip: d1Skip }, async () => {
+test('first pass: asked without the change, as hosting asks when it first puts a site up, a site Astro builds gets the report only', { skip: d1Skip }, async () => {
+  const { gh, handler } = world(fixtureFiles());
+  const before = gh.head();
+  await withFetch(handler, async (calls) => {
+    const plain = await planFirstPass({ token: 'inst-token', repo: 'ada/club' });
+    assert.equal(plain.state, 'report');
+    assert.equal(plain.changes, undefined);
+    assert.equal(plain.astro, undefined);
+    const asked = await planFirstPass({ token: 'inst-token', repo: 'ada/club', astroChange: true });
+    assert.equal(asked.state, 'ready');
+    assert.deepEqual(asked.changes.map(c => c.path), ['src/pages/index.astro', 'src/kiln/pages/index.md']);
+    assert.deepEqual(asked.astro, { pieces: 1, files: 1, left: [] });
+    assert.deepEqual(githubWrites(calls), []);
+  });
+  assert.equal(gh.head(), before);
+});
+
+test('first pass: for a site Astro builds, a repository that changed meanwhile, a protected branch, a silent GitHub and two presses at once are answered as for a plain site, and nothing is written', { skip: d1Skip }, async () => {
+  const kinds = {
+    plain: () => ({ 'index.html': home }),
+    astro: () => ({ 'astro.config.mjs': 'export default {}', 'src/pages/index.astro': '<h1>Hello</h1>\n<p>Welcome to the club.</p>\n' }),
+  };
+  const answers = {};
+  for (const [kind, files] of Object.entries(kinds)) {
+    const got = answers[kind] = {};
+    const paths = Object.keys(files()).sort();
+
+    const m = world(files());
+    let theirs = null;
+    m.gh.onWrite((api) => { if (!theirs) theirs = api.commit({ 'notes.txt': 'changed meanwhile' }); });
+    await withFetch(m.handler, async () => { const res = await press(m.env); got.moved = [res.status, await res.json()]; });
+    assert.equal(m.gh.head(), theirs, kind);
+    assert.deepEqual(m.gh.paths(), [...paths, 'notes.txt'].sort(), kind);
+    assert.equal(recorded(m.env).firstpass_at, null, kind);
+    assert.equal(await m.env.KILN.get('fplock:site-1'), null, `${kind}: the button works again at once`);
+
+    const p = world(files());
+    const before = p.gh.head();
+    await withFetch(async (url, init) => (init.method === 'PATCH' && /\/git\/refs\/heads\/main$/.test(url)
+      ? new Response(JSON.stringify({ message: 'Repository rule violations found' }), { status: 422 })
+      : p.handler(url, init)), async () => { const res = await press(p.env); got.protected = [res.status, await res.json()]; });
+    assert.equal(p.gh.head(), before, kind);
+
+    for (const failing of ['/git/trees', '/git/commits']) {
+      const g = world(files());
+      const was = g.gh.head();
+      g.gh.failOn((method, pth) => method === 'POST' && pth === failing);
+      await withFetch(g.handler, async () => { const res = await press(g.env); got[failing] = [res.status, await res.json()]; });
+      assert.equal(g.gh.head(), was, `${kind} ${failing}`);
+      assert.deepEqual(g.gh.paths(), paths, `${kind} ${failing}`);
+      assert.equal(recorded(g.env).firstpass_at, null, `${kind} ${failing}`);
+    }
+
+    const b = world(files(), { kv: { 'fplock:site-1': '1' } });
+    const held = b.gh.head();
+    await withFetch(b.handler, async (calls) => {
+      const res = await press(b.env);
+      got.busy = [res.status, await res.json()];
+      assert.deepEqual(githubWrites(calls), [], kind);
+    });
+    assert.equal(b.gh.head(), held, kind);
+  }
+  assert.deepEqual(answers.astro, answers.plain, 'the same answers, word for word');
+  assert.deepEqual(Object.fromEntries(Object.entries(answers.astro).map(([k, v]) => [k, [v[0], v[1].code]])), {
+    moved: [409, 'moved'], protected: [409, 'protected'], '/git/trees': [502, 'github'], '/git/commits': [502, 'github'], busy: [409, 'busy'],
+  });
+  assert.match(answers.astro.moved[1].error, /Nothing was changed\. Please press the button again\./);
+  assert.match(answers.astro.busy[1].error, /already marking this site/);
+});
+
+test('first pass: the report counts every template under src and names the ten with the most, and one press does every file but those it cannot be sure of, which it names', { skip: d1Skip }, async () => {
   const files = {
     'astro.config.mjs': 'export default {}',
     'index.astro': '<p>Not under src</p>',
     'src/.cache/x.astro': '<p>In a hidden folder</p>',
     'src/pages/about.md': '<p>Not a template</p>',
+    'src/lib/words.ts': 'export const words = "<p>Words</p>";\n',
     'src/pages/broken.astro': '<p>{{{',
     'src/pages/old.astro': Buffer.from('<p>caf\xe9</p>', 'latin1'),
     'src/pages/huge.astro': `<p>Words</p>${' '.repeat(2 * 1024 * 1024)}`,
+    'src/pages/named.astro': '---\nconst kilnWords = 1;\n---\n<p>Words</p>\n',
+    'src/pages/taken.astro': '<p>Words</p>\n',
+    'src/kiln/pages/taken.md': '---\np_1: "Mine"\n---\n',
   };
   for (let i = 1; i <= 12; i++) files[`src/pages/p${String(i).padStart(2, '0')}.astro`] = `---\nconst x = ${i};\n---\n${'<p>Words</p>\n'.repeat(i)}<p>{x}</p>\n`;
+  const LEFT = [
+    { path: 'src/pages/broken.astro', why: 'unread' },
+    { path: 'src/pages/huge.astro', why: 'unread' },
+    { path: 'src/pages/named.astro', why: 'name' },
+    { path: 'src/pages/old.astro', why: 'unread' },
+    { path: 'src/pages/taken.astro', why: 'words_file' },
+  ];
   const { gh, env, handler } = world(files);
+  env.KILN.map.set('csess:tok', JSON.stringify({ account_id: 'acct-1', login: 'ada', uid: 42, gh: 'gho_x' }));
   const before = gh.head();
+  const held = Object.fromEntries(gh.paths().map(p => [p, gh.read(p)]));
   await withFetch(handler, async (calls) => {
     const body = await (await look(env)).json();
-    assert.equal(body.state, 'report');
+    assert.equal(body.ok, true);
+    assert.equal(body.state, 'ready');
     const r = body.report;
-    assert.deepEqual({ files: r.files, total: r.total, safe: r.safe, left: r.left }, { files: 15, total: 90, safe: 78, left: { mixed: 0, from_code: 12, with_tags: 0, in_loop: 0, marked: 0 } });
+    assert.deepEqual({ files: r.files, total: r.total, safe: r.safe, left: r.left }, { files: 17, total: 92, safe: 80, left: { mixed: 0, from_code: 12, with_tags: 0, in_loop: 0, marked: 0 } });
     assert.deepEqual(r.unread, ['src/pages/broken.astro', 'src/pages/huge.astro', 'src/pages/old.astro']);
     assert.equal(r.unread_count, 3);
     assert.deepEqual(r.top.map(f => f.path), [12, 11, 10, 9, 8, 7, 6, 5, 4, 3].map(i => `src/pages/p${String(i).padStart(2, '0')}.astro`));
     assert.deepEqual(r.top[0], { path: 'src/pages/p12.astro', total: 13, safe: 12, left: { mixed: 0, from_code: 1, with_tags: 0, in_loop: 0, marked: 0 } });
+    assert.deepEqual(body.move, { pieces: 78, files: 12 });
+    assert.deepEqual(body.left_alone, LEFT);
+    assert.equal(body.left_alone_count, 5);
     assert.deepEqual(body.sentences, [
-      'Kiln can make 78 of 90 headings and paragraphs on this site\'s templates editable by itself. The other 12 come from your content files or from code, or mix words with a value, and a developer marks those with one line each.',
+      'Kiln will move 78 pieces of text out of 12 template files into files it can edit, and leave each one showing in the same place. Your pages will look the same. Press Mark them to make this change.',
+      'The other 12 come from your content files or from code, or mix words with a value, and a developer marks those with one line each.',
       COUNTS_SENTENCE,
       'Kiln could not read 3 of the template files, so they are not counted.',
     ]);
     assert.deepEqual(githubWrites(calls), []);
   });
   assert.equal(gh.head(), before);
+
+  await withFetch(handler, async () => {
+    const res = await press(env);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.state, 'done');
+    assert.deepEqual(body.sentences, [
+      '78 pieces of text can now be edited. Your site is building again. When it is done, open a page, sign in and click any of them.',
+      'Kiln left 5 template files as they were, because it could not be sure the change was safe there.',
+    ]);
+    assert.deepEqual(body.left_alone, LEFT);
+    assert.deepEqual(body.move, { pieces: 78, files: 12 });
+    assert.equal(body.commit.url, `https://github.com/ada/club/commit/${gh.head()}`);
+  });
+  const made = gh.commits.get(gh.head());
+  assert.deepEqual(made.parents, [before], 'every file in one commit');
+  assert.match(made.message, /^Mark what can be edited\n\n78 pieces of text in 12 template files moved into files Kiln can edit, under src\/kiln\/\. .+ Made from the Kiln dashboard by ada\.$/);
+
+  // Twelve templates changed, twelve words files are new, and nothing else is touched.
+  const words = [];
+  for (let i = 1; i <= 12; i++) {
+    const n = String(i).padStart(2, '0');
+    words.push(`src/kiln/pages/p${n}.md`);
+    let keys = '', lines = '';
+    for (let k = 1; k <= i; k++) { keys += `p_${k}: "Words"\n`; lines += `<p data-kiln-source="src/kiln/pages/p${n}.md#/frontmatter/p_${k}">{kilnWords.p_${k}}</p>\n`; }
+    assert.equal(gh.read(`src/kiln/pages/p${n}.md`), `---\n${keys}---\n`);
+    assert.equal(gh.read(`src/pages/p${n}.astro`), `---\nconst x = ${i};\nimport { frontmatter as kilnWords } from '../kiln/pages/p${n}.md';\n---\n${lines}<p>{x}</p>\n`);
+  }
+  assert.deepEqual(gh.paths(), [...Object.keys(files), ...words].sort());
+  for (const p of Object.keys(files)) if (!/^src\/pages\/p\d\d\.astro$/.test(p)) assert.equal(gh.read(p), held[p], `${p} is as it was`);
+  assert.equal(gh.read('src/kiln/pages/taken.md'), '---\np_1: "Mine"\n---\n', 'a words file that was there is not written over');
 });
 
 test('first pass: a site Astro builds with no text Kiln can mark by itself is told so', { skip: d1Skip }, async () => {
