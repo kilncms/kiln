@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-11-13
+
 ### Added
 
 - **A new domain through Kiln: renewal, ending and leaving (the service's
@@ -266,6 +268,28 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Where the same person has another suggestion waiting on the same branch, the
   preview stays for that one.
 
+### Changed
+
+- **The editor's last terse or technical messages are plain sentences.**
+  Only words changed, and nothing works differently. No message a person
+  reads has a dash in the middle of it now: each is two sentences, or one
+  joined with a comma. "Repo", "commit" and "branch" are gone from what an
+  editor reads, except in the first-run guide's lesson on what a commit is
+  and in the panels written for whoever builds the site. A message that
+  only named a fault gives the reason and the next step. "Cancelled" is
+  spelled "canceled". Four examples, before and after:
+  - "Photo upload failed" is now "The photo upload did not go through."
+    followed by the reason, such as "The site could not be reached, so
+    please check your connection and try again."
+  - "Committing to GitHub…" is now "Saving to GitHub…", and "Approved ✓
+    View the commit" is now "Approved ✓ See the change".
+  - "That block is empty after sanitizing" is now "That block was not
+    added. Nothing is left of it once Kiln takes out the code it does not
+    allow. Pick another block, or ask whoever builds the site to look at
+    its file."
+  - "Could not load." in the list of scheduled changes is now "The
+    scheduled changes could not be read just now. Try again in a moment."
+
 ### Removed
 
 - **The hand script that set a hosted customer up is gone.**
@@ -433,30 +457,6 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   suggestion of yours has no preview, approve or decline what waits on its
   branch, or bring the branch up to date with the site's branch, and save
   again.
-
-## [0.6.9] - 2026-11-13
-
-### Changed
-
-- **The editor's last terse or technical messages are plain sentences.**
-  Only words changed, and nothing works differently. No message a person
-  reads has a dash in the middle of it now: each is two sentences, or one
-  joined with a comma. "Repo", "commit" and "branch" are gone from what an
-  editor reads, except in the first-run guide's lesson on what a commit is
-  and in the panels written for whoever builds the site. A message that
-  only named a fault gives the reason and the next step. "Cancelled" is
-  spelled "canceled". Four examples, before and after:
-  - "Photo upload failed" is now "The photo upload did not go through."
-    followed by the reason, such as "The site could not be reached, so
-    please check your connection and try again."
-  - "Committing to GitHub…" is now "Saving to GitHub…", and "Approved ✓
-    View the commit" is now "Approved ✓ See the change".
-  - "That block is empty after sanitizing" is now "That block was not
-    added. Nothing is left of it once Kiln takes out the code it does not
-    allow. Pick another block, or ask whoever builds the site to look at
-    its file."
-  - "Could not load." in the list of scheduled changes is now "The
-    scheduled changes could not be read just now. Try again in a moment."
 
 ## [0.6.8] - 2026-11-13
 
