@@ -278,6 +278,10 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A site paid by the year no longer reads "It renews each month".** The
+  dashboard is told which sites are paid by the year, and their rows say
+  they renew each year.
+
 - **Putting up a hosted site with many pictures takes less of the service's
   memory.** While it copied a group of files to Cloudflare, the service held
   every file's bytes beside their base64 text until the whole group was sent.

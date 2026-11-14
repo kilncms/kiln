@@ -2145,6 +2145,13 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       subscribed: !!sub,
       trial_ends: r.status === 'trialing' && !sub && Number(r.created_at) ? Number(r.created_at) + TRIAL_GRACE_DAYS * 86400 * 1000 : null,
     }));
+    // `yearly: true` on a site paid by the year, so its row does not say it renews each month. A database
+    // that migration 0016 has not reached has no yearly sites.
+    try {
+      const years = await env.kiln_cloud.prepare("SELECT id FROM sites WHERE account_id = ? AND billing_period = 'year'").bind(sess.account_id).all();
+      const yearly = new Set((years.results || []).map(y => y.id));
+      for (const r of rows) if (yearly.has(r.id)) r.yearly = true;
+    } catch { /* no billing_period column yet */ }
     // Which Kiln editor each site has (`editor_build`) and which one is released
     // (`editor_latest`), so the dashboard can offer an update without reading a
     // repository (update.js). Either is null when it is not known.

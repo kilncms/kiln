@@ -114,6 +114,8 @@ test('with the switch off the dashboard is told nothing new and the search is no
   assert.equal(seen.registers, false);
   assert.equal('new_domain' in seen.sites[0], false);
   assert.equal(JSON.stringify(seen).includes('billing_period'), false);
+  // A site paid by the year says so, so its row can say it renews each year: that is billing, not the switched-off piece.
+  assert.equal(seen.sites[0].yearly, true);
   await withFetch(w.handler, async () => {
     const unknown = await ask(w.env, '/cloud/sites/nosuchthing?site=site1');
     for (const path of ['/cloud/sites/newdomain?site=site1', `/cloud/sites/newdomain?site=site1&q=${J}`]) {
@@ -162,6 +164,7 @@ const NOT_PAID = 'A domain is included once a year of Kiln Cloud + hosting is pa
 test('a site paid by the month is not offered a name', { skip: d1Skip }, async () => {
   const w = world({ site: { billing_period: 'month' } });
   assert.equal(await offered(w), null);
+  assert.equal('yearly' in (await me(w)).sites[0], false, 'a site paid by the month is not called yearly');
   const r = await search(w, J);
   assert.equal(r.status, 403);
   assert.deepEqual(r.json, { error: NOT_PAID, code: 'not_paid' });
