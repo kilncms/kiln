@@ -8,12 +8,13 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
 import worker from '../worker/index.js';
 import { fakeKV, withFetch, githubWrites } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { autotag } from '../src/autotag.js';
-import { onlyAddsMarks } from '../worker/firstpass.js';
+import { onlyAddsMarks, astroReportSentences, firstPassSentence } from '../worker/firstpass.js';
 
 const home = `<!doctype html>
 <html>
@@ -181,7 +182,7 @@ test('first pass: a page is written only when the pass did nothing but add marks
 
 test('first pass: a site that a generator builds, or that has no pages, is refused with the reason, and nothing is written', { skip: d1Skip }, async () => {
   const cases = {
-    built: [{ 'astro.config.mjs': 'export default {}', 'src/pages/index.astro': '---\n---\n<h1>Hi</h1>' }, /built by Astro.+set in the files it is built from/],
+    built: [{ '.eleventy.js': 'module.exports = {}', 'index.njk': '<h1>Hi</h1>' }, /built by Eleventy.+set in the files it is built from/],
     no_pages: [{ 'README.md': '# club' }, /found no web pages/],
   };
   for (const [state, [files, sentence]] of Object.entries(cases)) {
@@ -292,5 +293,164 @@ test('first pass: on a database a migration has not reached, the pages are still
       assert.equal((await me.json()).sites[0].firstpass_at, null);
     });
     assert.equal(gh.read('index.html'), autotag(home).html);
+  }
+});
+
+// ── A site Astro builds: a report of what a first pass could mark, and nothing written ──
+
+/** The fixture site as a repository's files: { path: text }. */
+function fixtureFiles(dir = new URL('./fixtures/astro-site/', import.meta.url), base = '', out = {}) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === 'node_modules' || e.name === 'dist' || e.name === '.astro') continue;
+    if (e.isDirectory()) fixtureFiles(new URL(`${e.name}/`, dir), `${base}${e.name}/`, out);
+    else out[base + e.name] = readFileSync(new URL(e.name, dir), 'utf8');
+  }
+  return out;
+}
+const COUNTS_SENTENCE = 'This counts the text written in your page templates. A line inside a list that repeats counts once here, however many times it shows on the site.';
+const NOT_YET = 'Kiln cannot mark these by itself yet. This report shows what it will be able to do.';
+const FIXTURE_LEFT = { mixed: 0, from_code: 0, with_tags: 0, in_loop: 0, marked: 4 };
+const FIXTURE_REPORT = {
+  files: 1, total: 5, safe: 1, left: FIXTURE_LEFT,
+  top: [{ path: 'src/pages/index.astro', total: 5, safe: 1, left: FIXTURE_LEFT }],
+  unread: [], unread_count: 0,
+};
+const FIXTURE_SENTENCES = [
+  'Kiln can make 1 of 5 headings and paragraphs on this site\'s templates editable by itself. The other 4 come from your content files or from code, or mix words with a value, and a developer marks those with one line each.',
+  COUNTS_SENTENCE,
+];
+
+test('first pass: for a site Astro builds, looking gives a report of what Kiln could mark by itself, and writes nothing', { skip: d1Skip }, async () => {
+  const files = fixtureFiles();
+  assert.ok(files['src/pages/index.astro'] && files['astro.config.mjs'], 'the fixture is a whole Astro site');
+  const { gh, env, handler } = world(files);
+  const before = gh.head();
+  await withFetch(handler, async (calls) => {
+    const res = await look(env);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body, { ok: true, state: 'report', repo: 'ada/club', branch: body.branch, generator: 'Astro', report: FIXTURE_REPORT, sentences: FIXTURE_SENTENCES });
+    assert.equal(JSON.stringify(body).includes('This sentence is written'), false, 'no template text leaves the service');
+    assert.deepEqual(githubWrites(calls), []);
+  });
+  assert.equal(gh.head(), before);
+  assert.equal(recorded(env).firstpass_at, null);
+});
+
+test('first pass: for a site Astro builds, pressing the button is refused with the report, and writes nothing', { skip: d1Skip }, async () => {
+  const { gh, env, handler } = world(fixtureFiles());
+  const before = gh.head();
+  await withFetch(handler, async (calls) => {
+    for (const round of [1, 2]) {   // the second press is told the same: nothing is left locked
+      const res = await press(env);
+      assert.equal(res.status, 409, `press ${round}`);
+      const body = await res.json();
+      assert.equal(body.ok, false);
+      assert.equal(body.code, 'report');
+      assert.equal(body.error, NOT_YET);
+      assert.equal(body.state, 'report');
+      assert.deepEqual(body.report, FIXTURE_REPORT);
+      assert.deepEqual(body.sentences, FIXTURE_SENTENCES);
+    }
+    assert.deepEqual(githubWrites(calls), []);
+  });
+  assert.equal(gh.head(), before);
+  assert.equal(recorded(env).firstpass_at, null);
+  assert.equal(await env.KILN.get('fplock:site-1'), null);
+});
+
+test('first pass: the report counts every template under src, names the ten files with the most, and says which files it could not read', { skip: d1Skip }, async () => {
+  const files = {
+    'astro.config.mjs': 'export default {}',
+    'index.astro': '<p>Not under src</p>',
+    'src/.cache/x.astro': '<p>In a hidden folder</p>',
+    'src/pages/about.md': '<p>Not a template</p>',
+    'src/pages/broken.astro': '<p>{{{',
+    'src/pages/old.astro': Buffer.from('<p>caf\xe9</p>', 'latin1'),
+    'src/pages/huge.astro': `<p>Words</p>${' '.repeat(2 * 1024 * 1024)}`,
+  };
+  for (let i = 1; i <= 12; i++) files[`src/pages/p${String(i).padStart(2, '0')}.astro`] = `---\nconst x = ${i};\n---\n${'<p>Words</p>\n'.repeat(i)}<p>{x}</p>\n`;
+  const { gh, env, handler } = world(files);
+  const before = gh.head();
+  await withFetch(handler, async (calls) => {
+    const body = await (await look(env)).json();
+    assert.equal(body.state, 'report');
+    const r = body.report;
+    assert.deepEqual({ files: r.files, total: r.total, safe: r.safe, left: r.left }, { files: 15, total: 90, safe: 78, left: { mixed: 0, from_code: 12, with_tags: 0, in_loop: 0, marked: 0 } });
+    assert.deepEqual(r.unread, ['src/pages/broken.astro', 'src/pages/huge.astro', 'src/pages/old.astro']);
+    assert.equal(r.unread_count, 3);
+    assert.deepEqual(r.top.map(f => f.path), [12, 11, 10, 9, 8, 7, 6, 5, 4, 3].map(i => `src/pages/p${String(i).padStart(2, '0')}.astro`));
+    assert.deepEqual(r.top[0], { path: 'src/pages/p12.astro', total: 13, safe: 12, left: { mixed: 0, from_code: 1, with_tags: 0, in_loop: 0, marked: 0 } });
+    assert.deepEqual(body.sentences, [
+      'Kiln can make 78 of 90 headings and paragraphs on this site\'s templates editable by itself. The other 12 come from your content files or from code, or mix words with a value, and a developer marks those with one line each.',
+      COUNTS_SENTENCE,
+      'Kiln could not read 3 of the template files, so they are not counted.',
+    ]);
+    assert.deepEqual(githubWrites(calls), []);
+  });
+  assert.equal(gh.head(), before);
+});
+
+test('first pass: a site Astro builds with no text Kiln can mark by itself is told so', { skip: d1Skip }, async () => {
+  const { env, handler } = world({ 'astro.config.mjs': 'export default {}', 'src/pages/index.astro': '---\nconst t = "Hi";\n---\n<h1>{t}</h1>\n<p>Hello {t}</p>\n' });
+  await withFetch(handler, async (calls) => {
+    const body = await (await look(env)).json();
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.report, { files: 1, total: 2, safe: 0, left: { mixed: 1, from_code: 1, with_tags: 0, in_loop: 0, marked: 0 }, top: [{ path: 'src/pages/index.astro', total: 2, safe: 0, left: { mixed: 1, from_code: 1, with_tags: 0, in_loop: 0, marked: 0 } }], unread: [], unread_count: 0 });
+    assert.deepEqual(body.sentences, [
+      'Kiln found no text in this site\'s templates that it can mark by itself. The words on your pages come from content files or from code, and a developer marks those with one line each.',
+      COUNTS_SENTENCE,
+    ]);
+    assert.deepEqual(githubWrites(calls), []);
+  });
+});
+
+test('first pass: the report is not given for a part of a site, or when GitHub will not hand over a template', { skip: d1Skip }, async () => {
+  // More template files than are read: told what it was told before, and nothing is read or written.
+  const many = { 'astro.config.mjs': 'export default {}' };
+  for (let i = 0; i <= 400; i++) many[`src/pages/p${i}.astro`] = '<p>Words</p>';
+  const big = world(many);
+  await withFetch(big.handler, async (calls) => {
+    const res = await look(big.env);
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(body.ok, false);
+    assert.equal(body.state, 'built');
+    assert.match(body.error, /built by Astro.+set in the files it is built from/);
+    assert.equal(body.report, undefined);
+    assert.equal(calls.some(c => String(c.url).includes('/git/blobs/')), false, 'no template was fetched');
+    const pressed = await press(big.env);
+    assert.equal(pressed.status, 409);
+    assert.equal((await pressed.json()).code, 'built');
+    assert.deepEqual(githubWrites(calls), []);
+  });
+  // GitHub fails on one template: no count is given, since it would be wrong.
+  const one = world({ 'astro.config.mjs': 'export default {}', 'src/pages/index.astro': '<p>Words</p>' });
+  await withFetch((url, init) => (String(url).includes('/git/blobs/') ? new Response('no', { status: 500 }) : one.handler(url, init)), async (calls) => {
+    const res = await look(one.env);
+    assert.equal(res.status, 502);
+    assert.equal((await res.json()).code, 'github');
+    assert.deepEqual(githubWrites(calls), []);
+  });
+});
+
+test('first pass: the report\'s sentences, word for word', () => {
+  const report = (safe, total, unread = []) => ({ safe, total, unread });
+  assert.deepEqual(astroReportSentences(report(189, 345)), [
+    'Kiln can make 189 of 345 headings and paragraphs on this site\'s templates editable by itself. The other 156 come from your content files or from code, or mix words with a value, and a developer marks those with one line each.',
+    COUNTS_SENTENCE,
+  ]);
+  for (const total of [0, 7]) assert.deepEqual(astroReportSentences(report(0, total)), [
+    'Kiln found no text in this site\'s templates that it can mark by itself. The words on your pages come from content files or from code, and a developer marks those with one line each.',
+    COUNTS_SENTENCE,
+  ]);
+  assert.deepEqual(astroReportSentences(report(3, 3, ['a.astro'])), [
+    'Kiln can make every heading and paragraph on this site\'s templates editable by itself, 3 in all.',
+    COUNTS_SENTENCE,
+    'Kiln could not read 1 of the template files, so they are not counted.',
+  ]);
+  assert.equal(firstPassSentence('report'), NOT_YET);
+  for (const s of [...astroReportSentences(report(1, 5, ['a'])), ...astroReportSentences(report(0, 0)), ...astroReportSentences(report(2, 2)), NOT_YET]) {
+    assert.doesNotMatch(s, /—|\brepo\b|\bconfig\b|\bdeploy/i);
   }
 });

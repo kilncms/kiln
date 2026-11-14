@@ -40,7 +40,7 @@ const UA = 'kiln-cloud';
 export const RELEASE_BASE = 'https://raw.githubusercontent.com/kilncms/kiln/release';
 export const SETUP_COMMAND = 'npx github:kilncms/kiln#release';
 export const MAX_PAGES = 400;                 // more pages than this is the setup tool's job
-const MAX_PAGE_BYTES = 2 * 1024 * 1024;       // a page larger than this is left alone and named
+export const MAX_PAGE_BYTES = 2 * 1024 * 1024;       // a page larger than this is left alone and named
 const TREE_BATCH_BYTES = 1024 * 1024;         // text sent to GitHub in one request, at most
 const AT_ONCE = 6;                            // a Worker waits on six connections at a time
 

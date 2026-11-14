@@ -13,7 +13,7 @@
  *                                  (for a site Kiln hosts, both also cover the character-set
  *                                  line on pages and page templates that have none: `charset`
  *                                  in the answer, and a second commit of its own)
- *   GET  /cloud/sites/firstpass  → what a first pass at what can be edited would mark
+ *   GET  /cloud/sites/firstpass  → what a first pass at what can be edited would mark (for a site Astro builds: a report of what it could mark)
  *   POST /cloud/sites/firstpass  → mark it (firstpass.js), in one commit
  *   POST /cloud/sites/remove     → cancel its subscription, then delete a site
  *   GET  /cloud/sites/update     → which Kiln editor the site's repository holds, and what an update would replace
@@ -2519,6 +2519,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const shown = publicFirstPass(plan, { repo: site.repo });
       if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: await installUrlFor(env) });
       if (plan.state === 'github') return refused('github', 502);
+      // A site Astro builds: looking gives the report of what a first pass
+      // could mark by itself. Pressing is refused, and nothing is written.
+      if (plan.state === 'report') {
+        if (write) return json({ ok: false, ...shown, error: sentence('report'), code: 'report' }, 409);
+        return json({ ok: true, ...shown });
+      }
       if (plan.state === 'nothing') {
         await markFirstPass(env, site.id, null);
         return json({ ok: true, ...shown });

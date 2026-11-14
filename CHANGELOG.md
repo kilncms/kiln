@@ -89,6 +89,33 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   webhook writes on the site whether it is paid by the `month` or the `year`
   and up to when it is paid. The yearly price lives in the billing company's
   settings, not in the code.
+- **The owner of a site Astro builds can be told how much of it Kiln could
+  make editable by itself (the service's part).** For such a site,
+  `GET /cloud/sites/firstpass` used to answer only that the site is built
+  before it is published. It now reads every `.astro` file under `src/` (at
+  most 400, each at most 2 MB, as adding Kiln does) and answers with state
+  `report`: how many headings, paragraphs, quotes and captions the templates
+  hold, how many of them are words only, written right there, so that a
+  first pass could take them, and how many are left because they come from
+  content files or from code, mix words with a value, have tags inside, sit
+  in a loop or a condition, or are already marked. It also gives the numbers
+  for the ten files that hold the most, the names of files it could not
+  read, and the sentences to show, starting "Kiln can make N of M headings
+  and paragraphs on this site's templates editable by itself." Pressing the
+  button (`POST`) answers 409: "Kiln cannot mark these by itself yet. This
+  report shows what it will be able to do." Nothing is written to the
+  repository either way. A site with more than 400 template files is told
+  what it was told before. The dashboard does not show the report yet.
+- **A reader for `.astro` templates** (`src/astro-firstpass.js`, used by the
+  service only, so the editor's built files are the same). `readAstro(text)`
+  walks one template without a parser package: past the code fence, through
+  tags and their attributes, and through `{ … }` code with its strings,
+  template strings and comments. For each text element that is safe to take
+  it gives the tag, the line, and the exact places of the element and of its
+  words; every other one is counted under the reason it is left. A file it
+  cannot follow answers `unread` and is named in the report. The step that
+  makes the change will build on these places.
+
 - **The owner of a site whose files Kiln keeps can take the files along
   without writing to anyone (the service's part).** The service has a new
   answer for the dashboard, `GET /cloud/sites/files?site=`: GitHub's own

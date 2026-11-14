@@ -17,6 +17,7 @@ const items = [
   ['dist', 'dist'],
   ['templates', 'templates'],
   ['src/engine.js', 'src/engine.js'],
+  ['src/astro-firstpass.js', 'src/astro-firstpass.js'],   // worker/firstpass.js imports it
   ['src/autotag.js', 'src/autotag.js'],   // rescue.mjs auto-tags via PKG_ROOT/src/autotag.js
   ['src/builder-words.js', 'src/builder-words.js'],   // autotag.js imports it
   ['src/adapters', 'src/adapters'],       // source mode: wizard detection + doctor + worker copy step
