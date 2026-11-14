@@ -8,6 +8,36 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A new domain through Kiln, included with the yearly form of the hosting
+  plan: the paid year, the switch, and the search (the service's part, and
+  switched off).** This piece is OFF on the test service and on production,
+  and stays off until matters outside the code are settled. It is on only
+  where `REGISTER_DOMAINS` is exactly `on`; with it off nothing is offered and
+  its routes do not exist. Nothing in the service can register a name yet:
+  this part only looks. With the switch on, `/cloud/me` says `registers` and,
+  for each site, `new_domain` (`{ offered: true }` for a site on Kiln Cloud +
+  hosting that is up, paid by the year, with no domain, whose subscription and
+  account have not had a name). `GET /cloud/sites/newdomain?site=&q=` searches:
+  it asks Cloudflare once for names and once what each costs, and answers with
+  each name and one line ("Included with your yearly plan", "Taken. Someone
+  else already has this name.", "Costs more than your plan covers.", and so
+  on). A name may be had only when both of Cloudflare's yearly prices, the
+  first year and the renewal, are at most `REGISTER_MAX_USD` (15), its ending
+  is one of .com .org .net .dev .app .xyz, and it is a standard name priced in
+  US dollars. No price is sent to the dashboard. Typing with accents or in
+  another script is refused before anything is asked; an account searches 20
+  times an hour and 60 times a day. `REGISTER_STANDIN` puts a stand-in in
+  Cloudflare's place on the test service and is refused anywhere else.
+  Migration `0016_registrations.sql` adds the `registrations` table,
+  `sites.billing_period`, `sites.paid_until` and `domains.registered`.
+- **The hosting plan can be paid by the year where the service is told of a
+  yearly variant.** `LS_VARIANT_MANAGED_YEARLY` is a third billing variant.
+  Where it is not set, nothing changes anywhere. Where it is set,
+  `/cloud/checkout?site=&period=year` opens the yearly form for a site on the
+  hosting plan, `/cloud/me` says `yearly: true`, and the billing company's
+  webhook writes on the site whether it is paid by the `month` or the `year`
+  and up to when it is paid. The yearly price lives in the billing company's
+  settings, not in the code.
 - **The owner of a site whose files Kiln keeps can take the files along
   without writing to anyone (the service's part).** The service has a new
   answer for the dashboard, `GET /cloud/sites/files?site=`: GitHub's own

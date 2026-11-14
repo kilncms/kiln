@@ -113,6 +113,13 @@ CLOUD_ADMIN = "erikkwilder"
 HOSTING_ACCOUNT_ID = "8713e668d8f277a1d9097a186d92e575"
 HOSTING_SUBDOMAIN = "kiln-sites"
 HOSTING_PREFIX = "stg-"
+# A new domain through Kiln for a site on the yearly hosting plan (register.js)
+# is switched OFF: REGISTER_DOMAINS is not set here, and not on production.
+# It is on only when it is exactly "on", and it stays off until the matters
+# outside the code are settled (ENVIRONMENTS.md). With it off nothing is
+# offered and the routes do not exist. REGISTER_STANDIN = "on" puts a stand-in
+# in Cloudflare's place; it is refused unless HOSTING_PREFIX is "stg-".
+# REGISTER_DOMAINS = "on"
 # This service's own address. A hosted site's members gate asks it whether a
 # signed-in member is still on the list. With the secret HOSTING_MEMBER_KEY it
 # switches the members area on for hosted sites; without both, pages under
