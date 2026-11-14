@@ -64,7 +64,7 @@ export function openPalette() {
   if (!deps) return;
   if (isOpen()) { closePalette(); return; }
   wrap = deps.modal(`<div class="kiln-palette">
-    <input id="kiln-pal-q" class="kiln-pal-input" type="text" placeholder="Jump to a page, section, or action — or search the site…"
+    <input id="kiln-pal-q" class="kiln-pal-input" type="text" placeholder="Jump to a page, section, or action, or search the site…"
       autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Search and jump">
     <div id="kiln-pal-list" class="kiln-pal-list" role="listbox"></div>
     <div class="kiln-pal-foot kiln-keys-only">↑↓ choose · ↵ open · esc close</div></div>`);
@@ -411,7 +411,7 @@ function renderHits(q, hits, done, total) {
     ? `<div class="kiln-pal-note" id="kiln-pal-prog">Searching… ${done}/${total}</div>`
     : (hits.length ? '' : `<div class="kiln-pal-note">No matches for “${deps.escapeHtml(q)}”.</div>`);
   for (const h of hits) {
-    html += `<div class="kiln-pal-sec">${deps.escapeHtml(pageUrl(h.path))}${h.title ? ` — ${deps.escapeHtml(h.title)}` : ''}</div>`;
+    html += `<div class="kiln-pal-sec">${deps.escapeHtml(pageUrl(h.path))}${h.title ? ` (${deps.escapeHtml(h.title)})` : ''}</div>`;
     for (const s of h.snips) {
       items.push({ run: () => gotoMatch(h.path, q) });
       html += `<button type="button" class="kiln-pal-item kiln-pal-snip" role="option" data-i="${items.length - 1}">`

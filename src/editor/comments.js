@@ -224,7 +224,7 @@ function renderPanel(m) {
   const list = m.querySelector('#kiln-cmt-list');
   list.textContent = '';
   if (!threads.length) {
-    list.appendChild(h('p', 'kiln-dim', 'No comments here yet — “＋ New comment” drops a pin anywhere on the page.'));
+    list.appendChild(h('p', 'kiln-dim', 'No comments here yet. “＋ New comment” drops a pin anywhere on the page.'));
     return;
   }
   const rerender = () => { if (m.isConnected) renderPanel(m); };

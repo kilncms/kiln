@@ -176,13 +176,13 @@ async function runTextAssist(el, key, kind, instruction) {
     return;
   }
   if (!text.trim()) {
-    setStatus('Nothing to work with yet — write a little first', 'idle');
+    setStatus('Nothing to work with yet. Write a little first.', 'idle');
     return;
   }
   setStatus('Asking the AI…', 'saving');
   try {
     const data = await aiRequest({ kind, text, ...(instruction && { instruction }) });
-    setStatus('AI suggestion ready — review it', 'idle');
+    setStatus('The AI suggestion is ready. Look it over.', 'idle');
     previewModal(el, key, kind, instruction, text, data.text);
   } catch (err) {
     if (err.notConfigured) explainNotConfigured();
@@ -207,7 +207,7 @@ function previewModal(el, key, kind, instruction, beforeHtml, afterRaw) {
   let cleanAfter = DOMPurify.sanitize(afterRaw, SANITIZE);
   const m = modal(`
     <h3>✨ ${escapeHtml(humanizeKey(key))}</h3>
-    <p class="kiln-dim">Review the suggestion — Apply stages it like any edit (nothing goes live until you Publish).</p>
+    <p class="kiln-dim">Look over the suggestion. Apply adds it to your edits like any other, and nothing goes live until you Publish.</p>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:6px 0 2px">
       <div><p class="kiln-dim" style="margin:0 0 4px;font-size:12px">Now</p><div style="${PANE_CSS}" id="kiln-ai-before"></div></div>
       <div><p class="kiln-dim" style="margin:0 0 4px;font-size:12px">AI suggests</p><div style="${PANE_CSS}" id="kiln-ai-after"></div></div>
@@ -237,7 +237,7 @@ function previewModal(el, key, kind, instruction, beforeHtml, afterRaw) {
     el.innerHTML = cleanAfter;
     commitEdit(el, key);   // same path as clicking Done: sanitize → stage → publish pipeline
     m.remove();
-    setStatus('AI edit staged — Publish to make it live', 'saved');
+    setStatus('AI edit added. Publish to make it live.', 'saved');
   };
 }
 
