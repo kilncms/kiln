@@ -322,7 +322,7 @@ const FIXTURE_BEFORE = [
   COUNTS_SENTENCE,
 ];
 // After the pass has been made, a later look says so: what Kiln could take is marked, and it does not speak of "yet".
-const DONE_ALREADY = "Kiln has nothing more to mark by itself on this site's templates. 5 headings and paragraphs are marked already. The rest come from your content files or from code, or mix words with a value, and a developer marks those with one line each.";
+const DONE_ALREADY = "Kiln has nothing more to mark by itself on this site's templates. 5 headings and paragraphs are marked already.";
 const NOTHING_SAFE = 'Kiln found no text in this site\'s templates that it can mark by itself. The words on your pages come from content files or from code, and a developer marks those with one line each.';
 
 test('first pass: for a site Astro builds, looking says what one press will move out of the templates, with the report, and writes nothing', { skip: d1Skip }, async () => {
@@ -608,6 +608,9 @@ test('first pass: the report\'s sentences, word for word', () => {
     COUNTS_SENTENCE,
     'Kiln could not read 1 of the template files, so they are not counted.',
   ]);
+  // After a pass: what is marked is counted, and "the rest" is spoken of only when there is a rest.
+  assert.deepEqual(astroReportSentences({ safe: 0, total: 9, unread: [], left: { marked: 6 } })[0], "Kiln has nothing more to mark by itself on this site's templates. 6 headings and paragraphs are marked already. The rest come from your content files or from code, or mix words with a value, and a developer marks those with one line each.");
+  assert.deepEqual(astroReportSentences({ safe: 0, total: 1, unread: [], left: { marked: 1 } })[0], "Kiln has nothing more to mark by itself on this site's templates. 1 heading or paragraph is marked already.");
   assert.equal(firstPassSentence('report'), NOT_YET);
   for (const s of [...astroReportSentences(report(1, 5, ['a'])), ...astroReportSentences(report(0, 0)), ...astroReportSentences(report(2, 2)), NOT_YET]) {
     assert.doesNotMatch(s, /—|\brepo\b|\bconfig\b|\bdeploy/i);

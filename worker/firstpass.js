@@ -192,7 +192,7 @@ export function astroReportSentences(report) {
   const out = [];
   // Nothing to take: either there never was, or the first pass has been made and what it could take is marked.
   const marked = Number(report.left && report.left.marked) || 0;
-  if (!n && marked) out.push(`Kiln has nothing more to mark by itself on this site's templates. ${count(marked, 'heading or paragraph is', 'headings and paragraphs are')} marked already. The rest come from your content files or from code, or mix words with a value, and a developer marks those with one line each.`);
+  if (!n && marked) out.push(`Kiln has nothing more to mark by itself on this site's templates. ${count(marked, 'heading or paragraph is', 'headings and paragraphs are')} marked already.${m - marked > 0 ? ' The rest come from your content files or from code, or mix words with a value, and a developer marks those with one line each.' : ''}`);
   else if (!n) out.push('Kiln found no text in this site\'s templates that it can mark by itself. The words on your pages come from content files or from code, and a developer marks those with one line each.');
   else if (!k) out.push(`Kiln can make every heading and paragraph on this site's templates editable by itself, ${n} in all.`);
   else out.push(`Kiln can make ${n} of ${m} headings and paragraphs on this site's templates editable by itself. ${theRest(k)}`);
