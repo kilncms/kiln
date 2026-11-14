@@ -59,7 +59,7 @@ import {
   mailStop, saysNoMail, switchMailOn, inboxState, addInbox, askAgain, canAskAgain, forward, stopForwarding, cleanLocal, cleanInbox, mailSentence,
   forwardRow, forwardsForAccount, forwardsConfirming, forwardsReady, saveForward, forgetForward, publicForward, ownsInbox, dropOtherAskings, inboxInUse, forgetInboxesOf, takeInboxLock, dropInboxLock, whatWaits, NO_CHANGE, MailError, MAIL_LIMITS,
 } from './domain-mail.js';
-import { registerReady, holderOf, registerSentence, offersForAccount, searchNames } from './register.js';
+import { registerReady, holderOf, registerSentence, offersForAccount, searchNames, registerName, siteRegistration, standingForAccount, publicRegistration, sweepRegistrations as sweepRegistered } from './register.js';
 
 const GH = 'https://api.github.com';
 const LS = 'https://api.lemonsqueezy.com/v1';
@@ -1267,6 +1267,7 @@ export async function domainTookHold(env, { site, row, now = Date.now() } = {}) 
 const DOMAINS_PER_RUN = 10;                         // the five-minute job looks at this many domains at most; the rest wait their turn
 const DOMAIN_REMIND_AFTER_DAYS = 14;                // a set-up that has waited this long gets one reminder
 const DOMAIN_LIVE_LOOK_EVERY_MS = 60 * 60 * 1000;   // a live domain is looked at this often at most
+const REGISTERED_LATE_MS = 60 * 60 * 1000;         // a name Kiln registered that still waits this long after its set-up began: the operator is told, once
 const DOMAIN_STUCK_AFTER_MS = 24 * 60 * 60 * 1000;  // name servers that changed this long ago, with the domain still not live: somebody must look
 
 /**
@@ -1361,6 +1362,20 @@ export async function sweepDomains(env, { now = Date.now() } = {}) {
       const name = r.name;
       const looked = () => saveDomain(env, s.id, { checked_at: now });
       const { status, activatedOn } = await domainStatus(env, { zoneId: r.zone_id });
+      // A name Kiln registered for the site (register.js): nobody has name servers to change, so its owner is not reminded
+      // and the set-up is never put away for waiting. When it still waits an hour after it began, the operator is told, once.
+      const registeredLate = async () => {
+        if (!r.registered || r.state !== 'waiting' || r.reminded_at || now - Number(r.created_at || now) < REGISTERED_LATE_MS) return false;
+        await saveDomain(env, s.id, { reminded_at: now, checked_at: now });
+        console.warn(JSON.stringify({ evt: 'registered_domain_late', repo: s.repo, name, status }));
+        await notifyOwner(env, `${name} is registered and still not live after an hour`, [
+          `Repository: ${s.repo}`,
+          `Domain: ${name}`,
+          `Cloudflare says its zone is: ${status}`,
+          'Kiln registered this name for the site, so nobody has name servers to change. The name is safe and Kiln keeps looking every five minutes. This note is sent once.',
+        ]);
+        return true;
+      };
 
       if (r.state === 'live') {
         if (status !== 'moved' && status !== 'gone') { await looked(); continue; }
@@ -1376,6 +1391,7 @@ export async function sweepDomains(env, { now = Date.now() } = {}) {
       if (status === 'active') {
         const took = await domainTookHold(env, { site: s, row: r, now });
         if (took.live) { out.live++; continue; }
+        if (await registeredLate()) continue;
         await looked();
         // Counted from the later of the two: a set-up that took up a zone which was active already has had only its own time.
         const since = Math.max(activatedOn || 0, Number(r.created_at) || 0);
@@ -1399,7 +1415,9 @@ export async function sweepDomains(env, { now = Date.now() } = {}) {
       if (r.reason === TAKING_HOLD) await saveDomain(env, s.id, { reason: null });
 
       const waited = now - Number(r.created_at || now);
-      if (waited >= DOMAIN_LIMITS.waitDays * day) {
+      if (r.registered) {
+        if (await registeredLate()) continue;
+      } else if (waited >= DOMAIN_LIMITS.waitDays * day) {
         // Only a zone that still waits is removed. One that changed in this very moment is left for the next run.
         if ((await removeWaitingDomain(env, { zoneId: r.zone_id })).removed) { await putAway('not_changed'); continue; }
       } else if (waited >= DOMAIN_REMIND_AFTER_DAYS * day && !r.reminded_at) {
@@ -2160,11 +2178,13 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const brought = keptHere.size ? await copiesForAccount(env, sess.account_id) : {};
     for (const r of rows) if (brought[r.id]) r.bring = brought[r.id];
     // `registers`: this service gets a new domain for a site on the yearly hosting plan (register.js). False unless it is
-    // switched on. Each site's `new_domain` is then { offered: true } when its owner may choose a name, and null otherwise.
+    // switched on. Each site's `new_domain` is then { offered: true } when its owner may choose a name,
+    // { offered: false, registration } when a name is being registered or is registered for it, and null otherwise.
     const registers = can && await registerReady(env);
     if (registers) {
       const offers = await offersForAccount(env, sess.account_id, { up: (id) => isUp(hosted[id]), domains: owned, now });
-      for (const r of rows) r.new_domain = offers[r.id]?.offered ? { offered: true } : null;
+      const standing = await standingForAccount(env, sess.account_id);
+      for (const r of rows) r.new_domain = offers[r.id]?.offered ? { offered: true } : standing[r.id] ? { offered: false, registration: standing[r.id] } : null;
     }
     // `yearly`: the hosting plan can be paid by the year here (`/cloud/checkout?site=…&period=year`). Absent where it cannot.
     return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env), brings: can && bringOn(env), registers, ...(lsConfigured(env) && yearlyOn(env) ? { yearly: true } : {}) });
@@ -2570,23 +2590,39 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   // live ("stop"). A site whose editing is switched off cannot start anything
   // new, and can still check, stop and take its records away, so nobody is
   // trapped. None of it reads the repository, so the App's token is not asked for.
-  // A new domain through Kiln for a site on the yearly hosting plan (register.js). So far: where a site
-  // stands, and the search. Nothing here registers a name. With the switch off this is no route at all.
-  //   GET /cloud/sites/newdomain?site=ID        → { ok, offered, holder, registration }
-  //   GET /cloud/sites/newdomain?site=ID&q=…    → { ok, asked, searches_left, names: [{ name, can, why?, sentence? }] }
+  // A new domain through Kiln for a site on the yearly hosting plan (register.js): where a site stands, the
+  // search, and the press that registers the chosen name. With the switch off none of this is a route at all.
+  //   GET  /cloud/sites/newdomain?site=ID        → { ok, offered, holder, registration, domain? }
+  //   GET  /cloud/sites/newdomain?site=ID&q=…    → { ok, asked, searches_left, names: [{ name, can, why?, sentence? }] }
+  //   POST /cloud/sites/newdomain { id, action: "register", name, checked: true } → { ok, registration } or { error, code }
   if (path === '/cloud/sites/newdomain' && request.method === 'GET' && await registerReady(env)) {
     const asked = await ownedSite(request, env, url, sess, tools, { needToken: false, needAccess: false });
     if (asked.response) return asked.response;
     const { site } = asked;
+    const typed = url.searchParams.get('q');
+    // The state looks at Cloudflare first, at most every ten seconds, for a name that is still being asked for: so the offer below is today's.
+    const reg = typed === null ? await siteRegistration(env, site.id, registerTools()) : null;
     const own = await domainRow(env, site.id);
     const up = isUp(await hostingRow(env, site.id));
     const offer = (await offersForAccount(env, sess.account_id, { up: () => up, domains: { [site.id]: own } }))[site.id] || { offered: false, why: 'search_failed', name: null };
-    const typed = url.searchParams.get('q');
-    if (typed === null) return json({ ok: true, offered: offer.offered, holder: holderOf(env), registration: null });
+    if (typed === null) {
+      return json({ ok: true, offered: offer.offered, holder: holderOf(env), registration: publicRegistration(reg),
+        ...(own && own.registered ? { domain: { name: own.name, state: own.state, registered: true } } : {}) });
+    }
     if (!offer.offered) return json({ error: registerSentence(offer.why, { name: offer.name || undefined }), code: offer.why }, offer.why === 'not_paid' ? 403 : offer.why === 'search_failed' ? 503 : 409);
     const found = await searchNames(env, sess.account_id, typed, { timeZone: request.cf?.timezone || null });
     if (found.stop) return json({ error: registerSentence(found.stop, { time: found.time }), code: found.stop, ...(found.more || {}) }, found.status);
     return json(found);
+  }
+  // The press that registers. register.js writes the row first and sends the one call that can spend money
+  // only for the request whose insert wrote it. An action this service does not know is no route.
+  if (path === '/cloud/sites/newdomain' && request.method === 'POST' && await registerReady(env)) {
+    const asked = await ownedSite(request, env, url, sess, tools, { needToken: false, needAccess: false });
+    if (asked.response) return asked.response;
+    if (String(asked.body.action || '') === 'register') {
+      const out = await registerName(env, { site: asked.site, name: asked.body.name, checked: asked.body.checked }, registerTools());
+      return json(out.body, out.status);
+    }
   }
 
   if (path === '/cloud/sites/domain' && (request.method === 'GET' || request.method === 'POST')) {
@@ -3341,4 +3377,17 @@ function buildInsights(rows, accountCount, price) {
     trialsExpiring: trialsExpiring.sort((a, b) => a.daysLeft - b.daysLeft),
     conversion,
   };
+}
+
+// What register.js is handed from here: how the operator is written to, and what "up on Kiln's hosting" means.
+function registerTools() { return { notify: notifyOwner, up: isUp }; }
+
+/**
+ * A name Kiln registered for a site on the yearly hosting plan, in the
+ * five-minute job after the domains (register.js): one that is still being
+ * asked for is looked at, and one that is registered is put on its site. It
+ * registers nothing. Never throws.
+ */
+export function sweepRegistrations(env, { now = Date.now() } = {}) {
+  return sweepRegistered(env, { ...registerTools(), now });
 }

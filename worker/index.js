@@ -89,7 +89,7 @@ import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
 import { VIA_KILN } from './prepare.js';
 import { keepsReady, keptStands } from './keeps.js';
 import { bringOn } from './bring.js';
-import { sweepBrings } from './cloud.js';
+import { sweepBrings, sweepRegistrations } from './cloud.js';
 import { githubTrouble, googleTrouble, troubleBody, troubleLog, githubSilent, GITHUB_DID_NOT_ANSWER, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkNewPageWrite, templatePathsFor, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
@@ -143,6 +143,8 @@ export default {
       await noticeEndingHosting(env);
       // A hosted site's own domain: made live once its name servers have changed, reminded, put away (cloud.js). It never throws either.
       await sweepDomains(env);
+      // A name Kiln registered for a site on the yearly hosting plan: looked at until Cloudflare has said how it went, then put on the site (register.js). It registers nothing and never throws.
+      await sweepRegistrations(env);
       // A forwarded email address at such a domain: switched on once its inbox has confirmed, reminded, given up on (cloud.js). It never throws either.
       await sweepForwards(env);
       // A site being brought in whose copying job has said nothing for half an hour: given up on, its owner and the operator told (bring.js). It never throws either.

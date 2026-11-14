@@ -1,8 +1,8 @@
 /**
  * A new domain through Kiln, included with the yearly form of the hosting
  * plan: the paid year, the switch, and the search with its price check
- * (worker/register.js and its routes in worker/cloud.js). Nothing here, and
- * nothing in the service, registers a name.
+ * (worker/register.js and its routes in worker/cloud.js). Nothing here
+ * registers a name: the press that does is test/register-once.test.js's.
  *
  *   · With the switch off nothing shows and the routes are no routes.
  *   · With it on, a site is offered a name only when every condition holds.
@@ -127,13 +127,15 @@ test('with the switch off the dashboard is told nothing new and the search is no
   assert.equal(w.reg.seen.length, 0);
 });
 
-test('nothing in the service can register a name yet: the one door knows only how to look', { skip: d1Skip }, async () => {
+test('the door for looking knows no call that registers a name, and an action nobody knows is no route', { skip: d1Skip }, async () => {
   const w = world();
   await withFetch(w.handler, async (calls) => {
     for (const call of ['register', 'registrations', 'renew', 'update', '__proto__']) await assert.rejects(registrar(w.env, call, { name: `${J}.com` }), { code: 'not_a_call' });
-    // With the switch on, the press that would register is still no route.
-    const post = await ask(w.env, '/cloud/sites/newdomain', 'POST', { id: 'site1', action: 'register', name: `${J}.com`, checked: true });
-    assert.equal(post.status, 404);
+    // The press that registers is test/register-once.test.js's. Any other action is still no route.
+    for (const action of ['', 'renew', 'free', 'mark_registered']) {
+      const post = await ask(w.env, '/cloud/sites/newdomain', 'POST', { id: 'site1', action, name: `${J}.com`, checked: true });
+      assert.equal(post.status, 404, action);
+    }
     assert.equal(calls.filter(c => c.url.includes('/registrar/')).length, 0);
   });
   const source = readFileSync(new URL('../worker/register.js', import.meta.url), 'utf8');
@@ -202,7 +204,10 @@ test('a subscription that already had its name is not offered another', { skip: 
   for (const state of ['asking', 'stuck', 'registered', 'handed_over', 'ran_out']) {
     const w = world();
     had(w.env, { state, registered_at: Date.now() - 500 * DAY, created_at: Date.now() - 500 * DAY });
-    assert.equal(await offered(w), null, state);
+    // A name that stands for the site is shown with it; one that was handed over or ran out is not. Neither is an offer.
+    const shown = await offered(w);
+    if (['asking', 'stuck', 'registered'].includes(state)) assert.deepEqual([shown.offered, shown.registration.name, shown.registration.state], [false, 'oakbakery.com', state]);
+    else assert.equal(shown, null, state);
     const r = await search(w, J);
     assert.deepEqual(r.json, { error: 'Your plan already has its domain, oakbakery.com. A yearly plan includes one.', code: 'has_name' });
   }
