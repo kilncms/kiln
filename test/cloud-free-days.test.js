@@ -100,10 +100,10 @@ test('free days: another account adding the same repository, under a new name an
   const w = world({ 'ada/club': 4242, 'bo/club-moved': 4242 });
   const first = await added(w, 'ada', 'ada/club', 'https://club.example');
   remove(w.env, first.site.id);
-  // two days in: Bo has what is left of them, and nothing is said, since his own account is new here
+  // two days in: Bo has what is left of them, and is told that the days are the repository's
   const began = ago(w.env, 2, 'firstseen:repo:4242');
   const bo = await added(w, 'bo', 'bo/club-moved', 'https://club-moved.example');
-  assert.deepEqual([bo.site.status, bo.site.created_at, 'free_days' in bo], ['trialing', began, false]);
+  assert.deepEqual([bo.site.status, bo.site.created_at, bo.free_days], ['trialing', began, "This repository's free days began when it was first added to Kiln, so this site has 5 free days left. Subscribe on the site's row before they end to keep editing it."]);
   assert.ok(w.env.KILN.map.has('firstseen:gh:202'), "Bo's account is marked too");
   // eight days in: none
   remove(w.env, bo.site.id);
@@ -159,7 +159,7 @@ test('free days: when GitHub does not give the repository\'s number the site is 
   const began = ago(w.env, 8, 'firstseen:https://club.example');
   remove(w.env, a.site.id);
   const again = await added(w, 'tok', 'ada/club', 'https://club.example');
-  assert.deepEqual([again.site.status, again.site.created_at, 'free_days' in again], ['canceled', began, false]);
+  assert.deepEqual([again.site.status, again.site.created_at, again.free_days], ['canceled', began, "This site's address has had its free days on Kiln, and they are over, so this site has none. Subscribe on the site's row to edit it."]);
 });
 
 test('free days: the clock starts at the earliest mark, whichever it is', { skip: d1Skip }, async () => {
@@ -169,9 +169,9 @@ test('free days: the clock starts at the earliest mark, whichever it is', { skip
   env.KILN.map.set('firstseen:repo:5', String(now - 5 * DAY));
   env.KILN.map.set('firstseen:gh:9', String(now - 3 * DAY));
   const ask = (over = {}) => freeDayClock(env, { accountId: 'acct-1', origin: 'https://a.example', repoId: 5, ghId: 9, now, ...over });
-  assert.deepEqual(await ask(), { began: now - 5 * DAY, over: false, sentence: null });
+  assert.deepEqual(await ask(), { began: now - 5 * DAY, over: false, sentence: "This repository's free days began when it was first added to Kiln, so this site has 2 free days left. Subscribe on the site's row before they end to keep editing it." });
   assert.deepEqual(await ask({ repoId: null }), { began: now - 3 * DAY, over: false, sentence: left('4 free days') });
-  assert.deepEqual(await ask({ repoId: null, ghId: null }), { began: now - 1 * DAY, over: false, sentence: null });
+  assert.deepEqual(await ask({ repoId: null, ghId: null }), { began: now - 1 * DAY, over: false, sentence: "This address's free days began when a site was first added to Kiln at it, so this site has 6 free days left. Subscribe on the site's row before they end to keep editing it." });
   // both the repository's days and the account's are over: the repository is named
   env.KILN.map.set('firstseen:repo:5', String(now - 20 * DAY));
   env.KILN.map.set('firstseen:gh:9', String(now - 20 * DAY));

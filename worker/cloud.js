@@ -490,7 +490,10 @@ async function editorPerson(env, sess) {
 // What a person reads when a site they add gets no free days of its own.
 const REPO_HAD_ITS_DAYS = "This repository has had its free days on Kiln, and they are over, so this site has none. Subscribe on the site's row to edit it.";
 const ACCOUNT_HAD_ITS_DAYS = "Your free days began with the first site you added here, and they are over, so this site has none. Subscribe on the site's row to edit it.";
+const ADDRESS_HAD_ITS_DAYS = "This site's address has had its free days on Kiln, and they are over, so this site has none. Subscribe on the site's row to edit it.";
 const accountDaysLeft = (much) => `Your free days began with the first site you added here, so this site has ${much} left. Subscribe on the site's row before they end to keep editing it.`;
+const repoDaysLeft = (much) => `This repository's free days began when it was first added to Kiln, so this site has ${much} left. Subscribe on the site's row before they end to keep editing it.`;
+const addressDaysLeft = (much) => `This address's free days began when a site was first added to Kiln at it, so this site has ${much} left. Subscribe on the site's row before they end to keep editing it.`;
 export const domainHadItsDays = (domain) => `${domain} has had its free days on Kiln, and they are over. Subscribe on the site's row to keep this site up at ${domain}.`;
 
 /** GitHub's permanent number for the person who is signed in, or null (a session from before the number was kept, or a person signed in with Google). */
@@ -552,11 +555,13 @@ export async function freeDayClock(env, { accountId, origin, repoId = null, ghId
   const ends = (t) => t + TRIAL_GRACE_DAYS * day;
   const over = ends(began) <= now;
   let sentence = null;
-  if (over) sentence = repository && ends(repository) <= now ? REPO_HAD_ITS_DAYS : account && ends(account) <= now ? ACCOUNT_HAD_ITS_DAYS : null;
-  else if (account && account === began) {
+  if (over) sentence = repository && ends(repository) <= now ? REPO_HAD_ITS_DAYS : account && ends(account) <= now ? ACCOUNT_HAD_ITS_DAYS : ADDRESS_HAD_ITS_DAYS;
+  else if (began < now) {
+    // The days began before this site was added, so its owner is told why it has fewer than seven, by the mark they are counted from.
     // Counted as keeps.js freeDaysSentence counts them: part of a day is a day, and the last day is "less than one".
     const whole = Math.ceil((ends(began) - now) / day);
-    sentence = accountDaysLeft(whole >= 2 ? `${whole} free days` : 'less than one free day');
+    const much = whole >= 2 ? `${whole} free days` : 'less than one free day';
+    sentence = account && account === began ? accountDaysLeft(much) : repository && repository === began ? repoDaysLeft(much) : addressDaysLeft(much);
   }
   return { began, over, sentence };
 }
