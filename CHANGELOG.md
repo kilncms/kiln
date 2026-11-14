@@ -6,6 +6,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Both plans can be paid by the year, once the yearly prices exist in the
+  billing store.** The service knows a yearly variant of the plan without
+  hosting (`LS_VARIANT_CLOUD_YEARLY`) beside the one of the hosting plan.
+  Subscribe then asks "Pay monthly" or "Pay yearly", and a domain is named
+  only for the hosting plan, and only where names can be registered.
+
 ### Fixed
 
 - **A change the service saves for a site's owner carries the owner's name.**

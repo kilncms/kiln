@@ -72,7 +72,7 @@ function world({ on = true, site = {}, hosted = true, env: extra = {}, registrar
   const reg = fakeRegistrar({ down: registrarDown });
   const env = cloudEnv(fakeKV({ 'itok:ada/club': 'inst-token' }), {
     HOSTING_ACCOUNT_ID: cf.account, HOSTING_API_TOKEN: cf.token, HOSTING_SUBDOMAIN: 'kiln-sites', CLOUD_DASHBOARD: 'https://app.example',
-    LS_VARIANT_MANAGED: '22', LS_VARIANT_MANAGED_YEARLY: '33',
+    LS_VARIANT_MANAGED: '22', LS_VARIANT_MANAGED_YEARLY: '33', LS_VARIANT_CLOUD_YEARLY: '44',
     ...(on ? { REGISTER_DOMAINS: 'on' } : {}),
     ...extra,
   });
@@ -465,9 +465,26 @@ test('the checkout offers the yearly form only where the service sells one, and 
   // No yearly variant: asking for a year changes nothing.
   const none = world({ on: false, ...unpaid, env: { LS_VARIANT_MANAGED_YEARLY: undefined } });
   assert.deepEqual(await variantOf(none, '&period=year'), ['22', [22]]);
-  // The plan without hosting has no yearly form.
+  // The plan without hosting is sold by the year too, where its yearly variant is set, and includes no domain.
   const cloud = world({ on: false, site: { ...unpaid.site, plan: 'cloud' } });
-  assert.deepEqual(await variantOf(cloud, '&period=year'), ['11', [11]]);
+  assert.deepEqual(await variantOf(cloud, '&period=year'), ['44', [44]]);
+  assert.deepEqual(await variantOf(cloud, ''), ['11', [11]]);
+  assert.equal((await me(cloud)).yearly_cloud, true);
+  const noCloudYear = world({ on: false, site: { ...unpaid.site, plan: 'cloud' }, env: { LS_VARIANT_CLOUD_YEARLY: undefined } });
+  assert.deepEqual(await variantOf(noCloudYear, '&period=year'), ['11', [11]]);
+  assert.equal('yearly_cloud' in (await me(noCloudYear)), false);
+});
+
+test('a yearly subscription to the plan without hosting is the plan without hosting, paid by the year, and is offered no domain', { skip: d1Skip }, async () => {
+  const w = world({ on: true, site: { ...unpaid.site, plan: 'cloud' } });
+  assert.equal(planForVariant(w.env, 44), 'cloud');
+  assert.equal(periodForVariant(w.env, 44), 'year');
+  assert.equal(await hook(w.env, { status: 'active', variant_id: 44, renews_at: RENEWS }, { event: 'subscription_created' }), 200);
+  assert.deepEqual((({ plan, status, billing_period, paid_until }) => ({ plan, status, billing_period, paid_until }))(row(w.env)),
+    { plan: 'cloud', status: 'active', billing_period: 'year', paid_until: Date.parse(RENEWS) });
+  const seen = await me(w);
+  assert.equal(seen.sites[0].yearly, true, 'its row says it renews each year');
+  assert.equal(seen.sites[0].new_domain ?? null, null, 'a domain comes only with the yearly hosting plan');
 });
 
 // ─── A database the migration has not reached ─────────────────────────────────

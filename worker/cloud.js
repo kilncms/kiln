@@ -680,11 +680,14 @@ function lsConfigured(env) { return !!(env.LS_API_KEY && env.LS_STORE_ID); }
  * Squeezy. Where it is not set, nothing here knows of a yearly plan.
  */
 export function yearlyOn(env) { return !!(env && env.LS_VARIANT_MANAGED_YEARLY && env.LS_VARIANT_MANAGED); }
+/** True when the plan without hosting is sold by the year as well (LS_VARIANT_CLOUD_YEARLY). It includes no domain. */
+export function cloudYearlyOn(env) { return !!(env && env.LS_VARIANT_CLOUD_YEARLY && env.LS_VARIANT_CLOUD); }
+const yearlyVariants = (env) => [yearlyOn(env) ? String(env.LS_VARIANT_MANAGED_YEARLY) : null, cloudYearlyOn(env) ? String(env.LS_VARIANT_CLOUD_YEARLY) : null].filter(Boolean);
 
-// The yearly form is for the hosting plan only; any other asking gets the plan's monthly variant, as before.
+// The yearly form of a plan where this service sells one; any other asking gets the plan's monthly variant, as before.
 function lsVariant(env, plan, period = 'month') {
   if (plan === 'managed') return period === 'year' && yearlyOn(env) ? env.LS_VARIANT_MANAGED_YEARLY : env.LS_VARIANT_MANAGED;
-  return env.LS_VARIANT_CLOUD;
+  return period === 'year' && cloudYearlyOn(env) ? env.LS_VARIANT_CLOUD_YEARLY : env.LS_VARIANT_CLOUD;
 }
 
 // Live/test mode of the LS store, inferred from whether the Cloud variant is published
@@ -742,13 +745,14 @@ export function planForVariant(env, variantId) {
   if (env.LS_VARIANT_MANAGED && v === String(env.LS_VARIANT_MANAGED)) return 'managed';
   if (yearlyOn(env) && v === String(env.LS_VARIANT_MANAGED_YEARLY)) return 'managed';
   if (env.LS_VARIANT_CLOUD && v === String(env.LS_VARIANT_CLOUD)) return 'cloud';
+  if (cloudYearlyOn(env) && v === String(env.LS_VARIANT_CLOUD_YEARLY)) return 'cloud';
   return null;
 }
 
 /** Whether a Lemon Squeezy variant is paid by the 'month' or by the 'year', or null for one this worker does not sell. */
 export function periodForVariant(env, variantId) {
   if (!planForVariant(env, variantId)) return null;
-  return yearlyOn(env) && String(variantId) === String(env.LS_VARIANT_MANAGED_YEARLY) ? 'year' : 'month';
+  return yearlyVariants(env).includes(String(variantId)) ? 'year' : 'month';
 }
 
 /**
@@ -2194,8 +2198,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const standing = await standingForAccount(env, sess.account_id);
       for (const r of rows) r.new_domain = offers[r.id]?.offered ? { offered: true } : standing[r.id] ? { offered: false, registration: standing[r.id] } : null;
     }
-    // `yearly`: the hosting plan can be paid by the year here (`/cloud/checkout?site=…&period=year`). Absent where it cannot.
-    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env), brings: can && bringOn(env), registers, ...(lsConfigured(env) && yearlyOn(env) ? { yearly: true } : {}) });
+    // `yearly`: the hosting plan can be paid by the year here (`/cloud/checkout?site=…&period=year`), and `yearly_cloud` the plan
+    // without hosting. Each is absent where it cannot.
+    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env), brings: can && bringOn(env), registers, ...(lsConfigured(env) && yearlyOn(env) ? { yearly: true } : {}), ...(cloudYearlyOn(env) ? { yearly_cloud: true } : {}) });
   }
 
   // Which repositories Kiln's GitHub App can reach for the person signed in:

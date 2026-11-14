@@ -256,6 +256,7 @@ npx wrangler secret list --env production</pre>
           <tr><td><code>CONVERT_SECRET</code></td><td>"Bring my site in" is off.</td></tr>
           <tr><td><code>NOTIFY_TO</code></td><td>Kiln sends you no notes. It must be an address that Cloudflare's Email Routing has confirmed in the main account.</td></tr>
           <tr><td><code>LS_API_KEY</code>, <code>LS_STORE_ID</code>, <code>LS_VARIANT_CLOUD</code>, <code>LS_VARIANT_MANAGED</code>, <code>LS_WEBHOOK_SECRET</code></td><td>Nobody can pay (section 15).</td></tr>
+          <tr><td><code>LS_VARIANT_CLOUD_YEARLY</code>, <code>LS_VARIANT_MANAGED_YEARLY</code></td><td>The two plans cannot be paid by the year. Each is the number of the yearly price of that plan in Lemon Squeezy. Without it, Subscribe offers that plan by the month only.</td></tr>
           <tr><td><code>AI_API_KEY</code> (optional)</td><td>The editor's writing help answers that it is not set up. Nothing else changes.</td></tr>
         </tbody>
       </table></div>
