@@ -192,6 +192,10 @@ export function fakeCloudflare({ account = 'acct-hosting', token = 'cf-token', b
         return rec;
       };
       if (!inAccount || path.startsWith('/workers/domains')) { if (auth !== token) return no(403, 10000, 'Authentication error'); }
+      if (!inAccount && path === '/zones' && method === 'GET') {
+        const want = new URLSearchParams(query).get('name');
+        return ok([...zones.values()].filter(z => !want || z.name === want).map(zoneView));
+      }
       if (!inAccount && path === '/zones' && method === 'POST') {
         const b = JSON.parse(init.body);
         if (b.account?.id !== account || b.type !== 'full') return no(400, 1003, 'a zone needs this account and type "full"');

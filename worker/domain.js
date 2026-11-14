@@ -776,7 +776,8 @@ export async function domainsReady(env) {
   catch { return false; }
 }
 
-const COLUMNS = ['name', 'zone_id', 'state', 'reason', 'ns1', 'ns2', 'old_name_servers', 'seller', 'seller_id', 'records', 'checked_at', 'reminded_at', 'live_at', 'created_at'];
+// `registered` (migration 0016) is 1 for a name Kiln registered for the site (register.js). Only that piece hands it over, so a database without the column is never asked for it.
+const COLUMNS = ['name', 'zone_id', 'state', 'reason', 'ns1', 'ns2', 'old_name_servers', 'seller', 'seller_id', 'records', 'checked_at', 'reminded_at', 'live_at', 'created_at', 'registered'];
 const LISTS = ['records', 'old_name_servers'];   // kept as JSON text
 
 /**
@@ -797,7 +798,7 @@ export async function saveDomain(env, siteId, fields) {
   if (f.name) f.name = bare(f.name);
   try {
     const db = env.kiln_cloud;
-    const was = await db.prepare('SELECT state FROM domains WHERE site_id = ?').bind(siteId).first();
+    const was = await db.prepare('SELECT * FROM domains WHERE site_id = ?').bind(siteId).first();
     // A row that was put away or failed holds nothing, so it must not keep the name from the site that asks now.
     if (f.name) await db.prepare("DELETE FROM domains WHERE name = ? AND site_id != ? AND state NOT IN ('waiting', 'live')").bind(f.name, siteId).run();
     if (!was) {
@@ -805,7 +806,8 @@ export async function saveDomain(env, siteId, fields) {
       const cols = Object.keys(f);
       await db.prepare(`INSERT INTO domains (site_id, ${cols.join(', ')}) VALUES (?${', ?'.repeat(cols.length)})`).bind(siteId, ...cols.map(c => f[c])).run();
     } else {
-      if (f.state === 'waiting' && was.state !== 'waiting') f = { reason: null, checked_at: null, reminded_at: null, live_at: null, created_at: now, ...f };
+      // A set-up that starts again on a row which once held a name Kiln registered is the owner's own domain now, unless the caller says otherwise.
+      if (f.state === 'waiting' && was.state !== 'waiting') f = { reason: null, checked_at: null, reminded_at: null, live_at: null, created_at: now, ...(was.registered && f.registered === undefined ? { registered: 0 } : {}), ...f };
       const cols = Object.keys(f);
       await db.prepare(`UPDATE domains SET ${cols.map(c => `${c} = ?`).join(', ')}${cols.length ? ', ' : ''}updated_at = ? WHERE site_id = ?`).bind(...cols.map(c => f[c]), now, siteId).run();
     }
@@ -871,8 +873,11 @@ export function publicDomain(row, { records = true } = {}) {
     since: row.created_at || null,
     checked_at: row.checked_at || null,
     live_at: row.live_at || null,
-    gives_up_at: row.state === 'waiting' && !takingHold && row.created_at ? Number(row.created_at) + LIMITS.waitDays * DAY_MS : null,
+    // A name Kiln registered for the site is never put away for waiting: nobody has name servers to change.
+    gives_up_at: row.state === 'waiting' && !takingHold && !row.registered && row.created_at ? Number(row.created_at) + LIMITS.waitDays * DAY_MS : null,
     ...(takingHold ? { taking_hold: true } : {}),
+    // `registered: true`: Kiln registered this name (register.js), so the dashboard shows no name servers to enter.
+    ...(row.registered ? { registered: true } : {}),
     // Kiln still holds a zone for the row, so the file of the domain's records can be asked for (GET /cloud/sites/domain/records):
     // also for a domain that was put away when hosting ended, whose zone stays for the owner's email.
     ...(holdsZone(row) ? { has_records: true } : {}),

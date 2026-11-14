@@ -81,6 +81,11 @@ export function dayWords(ms) {
   return new Date(ms).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
 }
 
+/** "November 13, 2027": a day with its year. */
+export function dateWords(ms) {
+  return new Date(ms).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
 const hostOf = (origin) => { try { return new URL(origin).host; } catch { return String(origin || 'your site'); } };
 const priceOf = (plan) => (plan === 'managed' ? '$14.99' : '$4.99');
 const planOf = (plan) => (plan === 'managed' ? 'Kiln Cloud + hosting' : 'Kiln Cloud');
@@ -336,6 +341,25 @@ export function domainLiveMail({ name, address, tempUrl = null, oneAddress = fal
     'The site\'s row in your dashboard shows the domain and the records Kiln keeps for it.',
     dashboard,
   ], whyLine(name));
+}
+
+/**
+ * Sent once when a name Kiln registered for a site on the yearly hosting plan
+ * is its owner's (register.js). `runsUntil` is the day its first year ends,
+ * and `origin` the site's address today, for the line that says why this
+ * person is written to. Kiln's company holds the name for the customer to
+ * use, and the email says so in the words the confirming press used.
+ */
+export function nameYoursMail({ name, origin = null, runsUntil = null, dashboard }) {
+  return message(`${name} is yours`, [
+    'Hello,',
+    `${name} is yours. Kiln is putting your site on it now. That usually takes a few minutes and sometimes up to an hour. You will get an email when it is live.`,
+    ...(runsUntil ? [`Registered through Kiln until ${dateWords(runsUntil)}. It renews by itself while your yearly plan is paid.`] : []),
+    'The name is registered to Wilder Idea LLC, the company behind Kiln, for you to use. It is yours to take with you: when you ask, we hand it over at no charge. The rules for domain names allow that from 60 days after it is registered.',
+    'If your plan ends, the name stops renewing and stays registered until the end of its year. Ask us before then and we hand it over to you at no charge.',
+    'The site\'s row in your dashboard shows the name.',
+    dashboard,
+  ], whyLine(origin ? hostOf(origin) : name));
 }
 
 /**
