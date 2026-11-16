@@ -17,13 +17,15 @@
 
 <p align="center">
   <a href="https://kilncms.com">Website</a> ·
+  <a href="https://kilncms.com/#see">Kiln in 90 seconds (video)</a> ·
   <a href="https://demo.kilncms.com">Demo</a> ·
   <a href="https://kilncms.com/docs">Docs</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
-  <a href="https://kilncms.com"><img src="https://kilncms.com/assets/img/share-kiln.png" alt="Kiln: click it, type it, publish it" width="800"></a>
+  <a href="https://kilncms.com/#see"><img src="https://kilncms.com/assets/video/kiln-launch-poster.webp" alt="Watch Kiln in 90 seconds" width="800"></a><br>
+  <a href="https://kilncms.com/#see">Watch Kiln in 90 seconds</a>
 </p>
 
 Kiln makes a static website editable in place. The site's owner marks which parts of

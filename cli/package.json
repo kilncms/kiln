@@ -1,6 +1,6 @@
 {
   "name": "@kilncms/create",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Setup wizard for Kiln \u2014 click-to-edit CMS for static sites. GitHub as the backend, free hosting as the host.",
   "license": "AGPL-3.0-only",
   "type": "module",
