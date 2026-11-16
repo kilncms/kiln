@@ -26,18 +26,21 @@
  *   POST /cloud/sites/domain     → set the domain up, ask whether its name servers have changed, or stop a set-up that is not live
  *   GET  /cloud/sites/domain/records → the domain's records as a file, for an owner who moves the domain away
  *   GET  /cloud/sites/files?site= → GitHub's short-lived link to a zip of a kept site's files, once the site has been paid for
- *   GET  /cloud/portal?site=     → Lemon Squeezy customer-portal link
+ *   GET  /cloud/portal?site=     → "Manage billing": Stripe's Billing Portal, or Lemon Squeezy's customer portal, for the company the site's subscription is with
+ *   POST /cloud/webhook/stripe   → Stripe webhook (signed) → set site status (billing.js has the Stripe calls)
  *   POST /cloud/webhook/ls       → Lemon Squeezy webhook (signed) → set site status
  *   GET  /admin/cloud/overview   → (owner only) accounts, sites (with the editor build each runs), MRR
  *   POST /admin/cloud/grant      → (owner only) manually set a site's status
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
- * Billing degrades gracefully: with no LS_* secrets, sites register as `trialing` and
- * checkout answers that the payment page could not be opened (code `billing_not_configured`)
- * until you add your Lemon Squeezy keys.
+ * Billing (billing.js billingProvider): Stripe Managed Payments once STRIPE_SECRET_KEY is set,
+ * otherwise Lemon Squeezy where its LS_* secrets are set. With neither, sites register as
+ * `trialing` and checkout answers that the payment page could not be opened (code
+ * `billing_not_configured`) until a billing company's keys are added.
  */
 
 import { RUNBOOK_HTML } from './runbook.js';
+import { billingProvider, billingOn, providerName, subscriptionOf, subscriptionProvider, subscriptionSql, stripeYearlyOn, stripeCloudYearlyOn, stripeCheckout, stripePortal, stripeCancel, stripeCall, verifyStripeSignature, stripeStoreMode, monthlyFromPrices, planForPrice, periodForPrice } from './billing.js';
 import { troubleBody, forDashboard, githubSilent, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN } from './signin-trouble.js';
 import { startSignIn, startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { customerMailOn, mailAddress, addressSql, accountAddress, sendOnce, siteAddedMail, siteStartedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
@@ -583,8 +586,9 @@ export async function domainFreeDays(env, siteId, name, { now = Date.now(), goes
   const domain = String(name || '').trim().toLowerCase();
   if (!domain) return null;
   try {
-    const s = await env.kiln_cloud.prepare('SELECT id, status, created_at, ls_subscription_id FROM sites WHERE id = ?').bind(siteId).first();
-    if (!s || s.ls_subscription_id || s.status === 'active') return null;
+    const paidBy = await subscriptionSql(env);
+    const s = await env.kiln_cloud.prepare(`SELECT id, status, created_at, ${paidBy} AS subscription_id FROM sites WHERE id = ?`).bind(siteId).first();
+    if (!s || subscriptionOf(s) || s.status === 'active') return null;
     const key = `firstseen:domain:${domain}`;
     const mark = Number(await env.KILN.get(key)) || null;
     if (!mark) {
@@ -593,7 +597,7 @@ export async function domainFreeDays(env, siteId, name, { now = Date.now(), goes
     }
     const over = mark + TRIAL_GRACE_DAYS * 86400 * 1000 <= now;
     if (s.status === 'trialing' && mark < Number(s.created_at)) {
-      await env.kiln_cloud.prepare("UPDATE sites SET created_at = ?, status = ? WHERE id = ? AND status = 'trialing' AND ls_subscription_id IS NULL")
+      await env.kiln_cloud.prepare(`UPDATE sites SET created_at = ?, status = ? WHERE id = ? AND status = 'trialing' AND ${paidBy} IS NULL`)
         .bind(mark, over ? 'canceled' : 'trialing', siteId).run();
     }
     return over ? domainHadItsDays(domain) : null;
@@ -676,12 +680,14 @@ function lsConfigured(env) { return !!(env.LS_API_KEY && env.LS_STORE_ID); }
 
 /**
  * True when this service sells the hosting plan by the year as well: the
- * yearly variant, LS_VARIANT_MANAGED_YEARLY, is set. Its price lives in Lemon
- * Squeezy. Where it is not set, nothing here knows of a yearly plan.
+ * yearly price of the billing company that sells here is set
+ * (STRIPE_PRICE_MANAGED_YEARLY once Stripe sells, LS_VARIANT_MANAGED_YEARLY
+ * before). Its amount lives with that company. Where it is not set, nothing
+ * here knows of a yearly plan.
  */
-export function yearlyOn(env) { return !!(env && env.LS_VARIANT_MANAGED_YEARLY && env.LS_VARIANT_MANAGED); }
-/** True when the plan without hosting is sold by the year as well (LS_VARIANT_CLOUD_YEARLY). It includes no domain. */
-export function cloudYearlyOn(env) { return !!(env && env.LS_VARIANT_CLOUD_YEARLY && env.LS_VARIANT_CLOUD); }
+export function yearlyOn(env) { return billingProvider(env) === 'stripe' ? stripeYearlyOn(env) : !!(env && env.LS_VARIANT_MANAGED_YEARLY && env.LS_VARIANT_MANAGED); }
+/** True when the plan without hosting is sold by the year as well (LS_VARIANT_CLOUD_YEARLY, or STRIPE_PRICE_CLOUD_YEARLY once Stripe sells). It includes no domain. */
+export function cloudYearlyOn(env) { return billingProvider(env) === 'stripe' ? stripeCloudYearlyOn(env) : !!(env && env.LS_VARIANT_CLOUD_YEARLY && env.LS_VARIANT_CLOUD); }
 const yearlyVariants = (env) => [yearlyOn(env) ? String(env.LS_VARIANT_MANAGED_YEARLY) : null, cloudYearlyOn(env) ? String(env.LS_VARIANT_CLOUD_YEARLY) : null].filter(Boolean);
 
 // The yearly form of a plan where this service sells one; any other asking gets the plan's monthly variant, as before.
@@ -849,6 +855,37 @@ export async function lsCancel(env, subscriptionId) {
   }
 }
 
+/**
+ * The billing company's payment page for one site: Stripe once it sells here
+ * (billing.js), Lemon Squeezy before. An account that has paid through Stripe
+ * before keeps its Stripe customer, so its sites share one billing page.
+ * Answers the page's address, or null.
+ */
+async function startCheckout(env, site, { email = null, period = 'month', accountId = null } = {}) {
+  const p = billingProvider(env);
+  if (p === 'stripe') return stripeCheckout(env, site, { email, period, customer: await stripeCustomerOf(env, site, accountId) });
+  if (p === 'lemonsqueezy') return lsCheckout(env, site, { email, period });
+  return null;
+}
+async function stripeCustomerOf(env, site, accountId = null) {
+  if (site && site.stripe_customer_id) return site.stripe_customer_id;
+  try { return (await env.kiln_cloud.prepare('SELECT stripe_customer_id FROM accounts WHERE id = ?').bind(accountId || (site && site.account_id) || '').first())?.stripe_customer_id || null; }
+  catch { return null; }   // a database migration 0017 has not reached
+}
+/** "Manage billing" for a site (a whole row of `sites`): the page of the company its subscription is with, or null. */
+async function billingPage(env, site, accountId) {
+  if (!site) return null;
+  if (subscriptionProvider(site) === 'stripe') return stripePortal(env, await stripeCustomerOf(env, site, accountId));
+  return site.ls_subscription_id ? lsPortal(env, site.ls_subscription_id) : null;
+}
+/** Cancel a site's subscription (a whole row of `sites`) with the company it is with; the answer is lsCancel's. */
+export function cancelSubscription(env, site) {
+  if (subscriptionProvider(site) === 'stripe') return stripeCancel(env, site.stripe_subscription_id);
+  return lsCancel(env, site && site.ls_subscription_id);
+}
+/** The store line on the admin page, from the company that sells here. */
+const storeMode = (env) => (billingProvider(env) === 'stripe' ? stripeStoreMode(env) : lsStoreMode(env));
+
 const NOT_CANCELLED = 'This site has a subscription that could not be cancelled just now, so the site was not removed and nothing changed. '
   + 'Open Manage billing, cancel the subscription there, then remove the site.';
 
@@ -946,9 +983,9 @@ export async function repoPlanEnded(env, repo, now = Date.now()) {
 export async function cloudOriginStanding(env, origin) {
   if (!env.kiln_cloud || !origin) return null;
   try {
-    const row = await env.kiln_cloud.prepare('SELECT status, ls_subscription_id FROM sites WHERE origin = ? LIMIT 1').bind(origin).first();
+    const row = await env.kiln_cloud.prepare(`SELECT status, ${await subscriptionSql(env)} AS subscription_id FROM sites WHERE origin = ? LIMIT 1`).bind(origin).first();
     if (!row) return { known: false };
-    return { known: true, status: row.status, trialEnded: row.status === 'canceled' && !row.ls_subscription_id };
+    return { known: true, status: row.status, trialEnded: row.status === 'canceled' && !subscriptionOf(row) };
   } catch {
     return null;
   }
@@ -991,8 +1028,8 @@ async function siteNamedByOrigin(env, origin, now) {
 
 // Cron housekeeping: a site registers as `trialing` immediately so the owner can set up
 // and preview before paying — but that grace can't be open-ended, or a site could edit
-// forever without ever subscribing. Expire `trialing` sites that never started a Lemon
-// Squeezy subscription once they pass the grace window; that drops them from the editable
+// forever without ever subscribing. Expire `trialing` sites that never started a
+// subscription once they pass the grace window; that drops them from the editable
 // allowlist (a canceled site with no access_until has no access). Real LS trials carry an
 // ls_subscription_id and are untouched — their lifecycle is driven entirely by webhooks.
 const TRIAL_GRACE_DAYS = 7;
@@ -1017,7 +1054,7 @@ export const HOSTING_NOTICE_DAYS = 7;        // its owner is told once more this
 export function hostingEndsAt(site, now = Date.now()) {
   if (!site || siteHasAccess(site, now)) return null;
   const day = 86400 * 1000;
-  if (!site.ls_subscription_id) {
+  if (!subscriptionOf(site)) {
     if (site.status !== 'canceled' || !Number(site.created_at)) return null;
     return Number(site.created_at) + (TRIAL_GRACE_DAYS + HOSTING_AFTER_TRIAL_DAYS) * day;
   }
@@ -1025,7 +1062,7 @@ export function hostingEndsAt(site, now = Date.now()) {
   return Number(site.access_until) + HOSTING_AFTER_PAID_DAYS * day;
 }
 /** Why a hosted site comes down when hostingEndsAt says it does: the word kept on its record (hosting.js has the sentence). */
-export const hostingEndReason = (site) => (site && site.ls_subscription_id ? 'plan_ended' : 'trial_ended');
+export const hostingEndReason = (site) => (subscriptionOf(site) ? 'plan_ended' : 'trial_ended');
 /** The key of the last notice for one ending of a paid hosted site (mail.js sendOnce keeps `mail:<key>` with the time it went). */
 const lastNoticeKey = (site) => `hosting-ending:${site.id}:${site.access_until}`;
 
@@ -1050,7 +1087,7 @@ export async function hostingDownAt(env, site, { now = Date.now(), deployed = tr
   const end = hostingEndsAt(site, now);
   if (!end) return null;
   const plain = { at: end, ready: true };
-  if (!site.ls_subscription_id || !deployed || !customerMailOn(env)) return plain;
+  if (!subscriptionOf(site) || !deployed || !customerMailOn(env)) return plain;
   let email = site.email;
   if (email === undefined) {
     try { email = (await env.kiln_cloud.prepare(`SELECT ${await addressSql(env)} FROM sites s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?`).bind(site.id).first())?.email; }
@@ -1621,10 +1658,11 @@ export async function noticeEndingHosting(env, now = Date.now()) {
   let rows = [];
   try {
     const address = await addressSql(env);
+    const paidBy = await subscriptionSql(env, 's.');
     const ask = async (more, join) => env.kiln_cloud.prepare(
-      `SELECT s.id, s.repo, s.origin, s.plan, s.status, s.access_until, s.created_at, s.ls_subscription_id, h.deployed_at, ${address}${more}
+      `SELECT s.id, s.repo, s.origin, s.plan, s.status, s.access_until, s.created_at, ${paidBy} AS subscription_id, h.deployed_at, ${address}${more}
        FROM hosting h JOIN sites s ON s.id = h.site_id LEFT JOIN accounts a ON a.id = s.account_id${join}
-       WHERE s.ls_subscription_id IS NOT NULL AND s.status IN ('canceled','past_due') AND h.state NOT IN ('removing','ended')
+       WHERE ${paidBy} IS NOT NULL AND s.status IN ('canceled','past_due') AND h.state NOT IN ('removing','ended')
        ORDER BY s.access_until`).all();
     rows = (await ask(LEAVING_COLUMNS, LEAVING_JOIN).catch(() => ask('', '')))?.results || [];
   } catch { return out; }   // a database migration 0005 (or 0002) has not reached: nothing to say
@@ -1655,7 +1693,7 @@ export async function noticeEndingHosting(env, now = Date.now()) {
     if (undated.length && env.NOTIFY && env.NOTIFY_TO) {
       const fresh = [];
       for (const r of undated) {
-        const marker = `hostnodate:${r.id}:${r.ls_subscription_id}`;
+        const marker = `hostnodate:${r.id}:${subscriptionOf(r)}`;
         try {
           if (await env.KILN.get(marker)) continue;
           await env.KILN.put(marker, String(now));
@@ -1690,7 +1728,7 @@ export async function remindEndingTrials(env, now = Date.now()) {
     const address = await addressSql(env);
     const ask = async (more, join) => env.kiln_cloud.prepare(
       `SELECT s.id, s.origin, s.plan, s.created_at, ${address}${more} FROM sites s JOIN accounts a ON a.id = s.account_id${join}
-       WHERE s.status = 'trialing' AND s.ls_subscription_id IS NULL AND s.created_at <= ? AND s.created_at > ?
+       WHERE s.status = 'trialing' AND ${await subscriptionSql(env, 's.')} IS NULL AND s.created_at <= ? AND s.created_at > ?
        ORDER BY s.created_at LIMIT ${MAILS_PER_RUN}`
     ).bind(now - (TRIAL_GRACE_DAYS - TRIAL_NOTICE_DAYS) * day, now - TRIAL_GRACE_DAYS * day).all();
     const rows = await ask(LEAVING_COLUMNS, LEAVING_JOIN).catch(() => ask('', ''));
@@ -1717,12 +1755,12 @@ export async function expireStaleTrials(env) {
     const address = await addressSql(env);
     const ask = async (more, join) => env.kiln_cloud.prepare(
       `SELECT s.id, s.repo, s.origin, s.plan, ${address}${more} FROM sites s LEFT JOIN accounts a ON a.id = s.account_id${join}
-       WHERE s.status = 'trialing' AND s.ls_subscription_id IS NULL AND s.created_at < ?`
+       WHERE s.status = 'trialing' AND ${await subscriptionSql(env, 's.')} IS NULL AND s.created_at < ?`
     ).bind(cutoff).all();
     expiring = await ask(LEAVING_COLUMNS, LEAVING_JOIN).catch(() => ask('', ''));
   } catch { /* a reduced D1 stand-in has no .all(): expiry still proceeds, just unannounced */ }
   await env.kiln_cloud.prepare(
-    "UPDATE sites SET status = 'canceled' WHERE status = 'trialing' AND ls_subscription_id IS NULL AND created_at < ?"
+    `UPDATE sites SET status = 'canceled' WHERE status = 'trialing' AND ${await subscriptionSql(env)} IS NULL AND created_at < ?`
   ).bind(cutoff).run();
   const rows = expiring?.results || [];
   if (rows.length) {
@@ -1861,8 +1899,8 @@ export async function putOnHosting(env, { site, token, accountId, author, by, wo
   // Until an account has paid for a site, it may have this many hosted ones.
   if (!row) {
     const unpaid = await env.kiln_cloud.prepare(
-      "SELECT COUNT(*) n FROM hosting h JOIN sites s ON s.id = h.site_id WHERE s.account_id = ? AND s.ls_subscription_id IS NULL AND h.state != 'removing'").bind(accountId).first().catch(() => ({ n: 0 }));
-    const paid = await env.kiln_cloud.prepare('SELECT COUNT(*) n FROM sites WHERE account_id = ? AND ls_subscription_id IS NOT NULL').bind(accountId).first().catch(() => ({ n: 0 }));
+      `SELECT COUNT(*) n FROM hosting h JOIN sites s ON s.id = h.site_id WHERE s.account_id = ? AND ${await subscriptionSql(env, 's.')} IS NULL AND h.state != 'removing'`).bind(accountId).first().catch(() => ({ n: 0 }));
+    const paid = await env.kiln_cloud.prepare(`SELECT COUNT(*) n FROM sites WHERE account_id = ? AND ${await subscriptionSql(env)} IS NOT NULL`).bind(accountId).first().catch(() => ({ n: 0 }));
     if (!Number(paid?.n) && Number(unpaid?.n) >= FREE_HOSTED_SITES) {
       return { status: 403, body: { error: `During the free days Kiln hosts ${FREE_HOSTED_SITES === 1 ? 'one site' : `${FREE_HOSTED_SITES} sites`} for an account. Subscribe for one of your sites, then put this one up.`, code: 'free_limit' } };
     }
@@ -2129,19 +2167,20 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const account = row ? { id: row.id, github_login: row.github_login || null, email: row.email ?? null, ls_customer_id: row.ls_customer_id ?? null, name: row.name || null, google: !!row.google_sub } : null;
     // A person who signs in with Google is shown the address Kiln writes to: the one Google confirmed.
     if (account && account.google) account.email = await accountEmail(env, sess.account_id);
+    const paidBy = await subscriptionSql(env);
     const sites = await withAccessUntil(
-      () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until, created_at, ls_subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
-      () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, created_at, ls_subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
+      () => env.kiln_cloud.prepare(`SELECT id, repo, origin, plan, status, access_until, created_at, ${paidBy} AS subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC`).bind(sess.account_id).all(),
+      () => env.kiln_cloud.prepare(`SELECT id, repo, origin, plan, status, created_at, ${paidBy} AS subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC`).bind(sess.account_id).all(),
     );
     // `editable` is the worker's own answer, so the dashboard never has to
     // work out for itself what a status plus a date means. `trial_ends` is the
     // moment the free days run out for a site nobody has subscribed for yet
-    // (the same rule expireStaleTrials applies); `subscribed` says a Lemon
-    // Squeezy subscription exists, without handing its id to the browser.
+    // (the same rule expireStaleTrials applies); `subscribed` says a
+    // subscription exists, without handing its id to the browser.
     const now = Date.now();
     const prepared = await preparedTimes(env, sess.account_id);
     const whole = Object.fromEntries((sites.results || []).map(s => [s.id, s]));   // each row as read, for what hosting has to say
-    const rows = (sites.results || []).map(({ ls_subscription_id: sub, ...r }) => ({
+    const rows = (sites.results || []).map(({ subscription_id: sub, ...r }) => ({
       ...r,
       prepared_at: prepared[r.id]?.prepared_at ?? null,
       firstpass_at: prepared[r.id]?.firstpass_at ?? null,
@@ -2200,7 +2239,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     }
     // `yearly`: the hosting plan can be paid by the year here (`/cloud/checkout?site=…&period=year`), and `yearly_cloud` the plan
     // without hosting. Each is absent where it cannot.
-    return json({ account, sites: rows, billing: lsConfigured(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env), brings: can && bringOn(env), registers, ...(lsConfigured(env) && yearlyOn(env) ? { yearly: true } : {}), ...(cloudYearlyOn(env) ? { yearly_cloud: true } : {}) });
+    return json({ account, sites: rows, billing: billingOn(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env), brings: can && bringOn(env), registers, ...(billingOn(env) && yearlyOn(env) ? { yearly: true } : {}), ...(cloudYearlyOn(env) ? { yearly_cloud: true } : {}) });
   }
 
   // Which repositories Kiln's GitHub App can reach for the person signed in:
@@ -2309,7 +2348,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // An address given with the form becomes the account's address for notices.
     if (mailAddress(email)) { try { await env.kiln_cloud.prepare('UPDATE accounts SET email = ? WHERE id = ?').bind(mailAddress(email), sess.account_id).run(); } catch { /* the site is added either way */ } }
     const to = await accountEmail(env, sess.account_id);
-    const checkout = await lsCheckout(env, site, { email: to });
+    const checkout = await startCheckout(env, site, { email: to, accountId: sess.account_id });
     // The mail about the free trial is for a site that has one.
     if (site.status === 'trialing') await sendOnce(env, `added:${site.id}`, to, siteAddedMail({ origin: site.origin, plan: site.plan, endsAt: trialEndsAt(site.created_at, TRIAL_GRACE_DAYS), dashboard: dash }));
     await notifyOwner(env, `New Kiln site: ${site.repo}`, [
@@ -2597,7 +2636,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const care = row ? await lookedAfter(env, site.id) : null;
       // A hosted site that may not be edited any more: the rest of its row says when it comes down.
       const rest = row && !asked.access
-        ? await env.kiln_cloud.prepare('SELECT created_at, ls_subscription_id FROM sites WHERE id = ?').bind(site.id).first().catch(() => null) : null;
+        ? await env.kiln_cloud.prepare(`SELECT created_at, ${await subscriptionSql(env)} AS subscription_id FROM sites WHERE id = ?`).bind(site.id).first().catch(() => null) : null;
       return json({ ok: true, available, on_plan: site.plan === 'managed', hosting: await shownHosting(env, row, { ...site, ...(rest || {}) }), ...(care ? { looked_after: care } : {}) });
     }
     const put = await putOnHosting(env, { site, token, accountId: sess.account_id, author: () => commitAuthor(env, sess), by: signedInAs(sess), worker: url.origin });
@@ -2982,8 +3021,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const { site } = asked;
     const kept = await keptSite(env, site.id);
     if (!kept || kept.account_id !== sess.account_id) return json({ error: FILES_NOT_KEPT, code: 'not_kept' }, 403);
-    const more = await env.kiln_cloud.prepare('SELECT name, ls_subscription_id FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).first().catch(() => null);
-    if (lsConfigured(env) && !more?.ls_subscription_id) return json({ error: FILES_PAID_FIRST, code: 'paid_first' }, 403);
+    const more = await env.kiln_cloud.prepare(`SELECT name, ${await subscriptionSql(env)} AS subscription_id FROM sites WHERE id = ? AND account_id = ?`).bind(site.id, sess.account_id).first().catch(() => null);
+    if (billingOn(env) && !subscriptionOf(more)) return json({ error: FILES_PAID_FIRST, code: 'paid_first' }, 403);
     const link = await keptFilesLink(env, { repo: site.repo, sign: appJwt, pkcs1: tools.pkcs1 || null });
     if (!link.url) {
       console.warn(JSON.stringify({ evt: 'kept_files_failed', repo: site.repo, detail: String(link.error || '').slice(0, 300) }));
@@ -3020,11 +3059,11 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   if (path === '/cloud/sites/remove' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const { id } = await request.json().catch(() => ({}));
-    const site = await env.kiln_cloud.prepare('SELECT id, repo, ls_subscription_id FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first();
+    const site = await env.kiln_cloud.prepare('SELECT * FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first();
     if (!site) return json({ ok: true });   // not theirs, or already gone
     // Removing the site removes Manage billing with it, so the subscription
     // is cancelled first, and the site stays if that cannot be confirmed.
-    const cancel = await lsCancel(env, site.ls_subscription_id);
+    const cancel = await cancelSubscription(env, site);
     if (!cancel.ok) return json({ error: NOT_CANCELLED, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
     const kept = await keptSite(env, site.id);   // asked before the row goes
     const gone = await forgetHosting(env, site.id);   // a hosted site comes down with it, and so does its own domain
@@ -3096,8 +3135,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
 
   if (path === '/cloud/portal') {
     if (!sess) return json({ error: 'not signed in' }, 401);
-    const site = await env.kiln_cloud.prepare('SELECT ls_subscription_id FROM sites WHERE id = ? AND account_id = ?').bind(url.searchParams.get('site'), sess.account_id).first();
-    const portal = site ? await lsPortal(env, site.ls_subscription_id) : null;
+    const site = await env.kiln_cloud.prepare('SELECT * FROM sites WHERE id = ? AND account_id = ?').bind(url.searchParams.get('site'), sess.account_id).first();
+    const portal = await billingPage(env, site, sess.account_id);
     return portal ? json({ url: portal }) : json({ error: 'There is no subscription for this site yet, so there is no billing page to open.' }, 404);
   }
 
@@ -3133,8 +3172,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     if (dom && dom.state === 'waiting' && dom.name) checks.push(domainWaitingLine({ name: dom.name, seller: publicDomain(dom, { records: false })?.seller?.name }));
     if (!access) {
       let sub = null;
-      try { sub = await env.kiln_cloud.prepare('SELECT ls_subscription_id FROM sites WHERE id = ?').bind(site.id).first(); } catch { /* worded as a trial that ended */ }
-      checks.unshift(editingOffLine({ status: site.status, subscribed: !!(sub && sub.ls_subscription_id) }));
+      try { sub = await env.kiln_cloud.prepare(`SELECT ${await subscriptionSql(env)} AS subscription_id FROM sites WHERE id = ?`).bind(site.id).first(); } catch { /* worded as a trial that ended */ }
+      checks.unshift(editingOffLine({ status: site.status, subscribed: !!subscriptionOf(sub) }));
     }
     return json({ ok: true, repo: site.repo, origin: site.origin, looked_at: down ? null : lookAt, checks, all_ok: checks.every(c => c.ok === true) });
   }
@@ -3149,16 +3188,19 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // A subscription that has run out (cancelled, nothing paid left) does not
     // stop a new one; one still paid up is resumed under Manage billing, so
     // nobody pays twice for the same days.
-    if (site.ls_subscription_id && !(site.status === 'canceled' && !siteHasAccess(site))) {
+    if (subscriptionOf(site) && !(site.status === 'canceled' && !siteHasAccess(site))) {
       return json({ error: site.status === 'canceled'
         ? 'This subscription is cancelled but paid up for now: resume it under Manage billing instead of paying again.'
         : 'This site already has a subscription. Use Manage billing to change it.' }, 409);
     }
-    // `period=year` asks for the yearly form of the hosting plan, where this service sells one.
+    // `period=year` asks for the yearly form of the site's plan, where this service sells one.
     const period = url.searchParams.get('period') === 'year' ? 'year' : 'month';
-    const checkout = await lsCheckout(env, site, { email: await accountEmail(env, sess.account_id), period });
+    const checkout = await startCheckout(env, site, { email: await accountEmail(env, sess.account_id), period, accountId: sess.account_id });
     return checkout ? json({ url: checkout }) : json({ error: 'The payment page could not be opened just now. Nothing was charged. Try again in a minute, and write to info@kilncms.com if it keeps happening.', code: 'billing_not_configured' }, 503);
   }
+
+  // Stripe's webhook: with Lemon Squeezy's below, the ONLY thing that flips a site to active.
+  if (path === '/cloud/webhook/stripe' && request.method === 'POST') return stripeWebhook(request, env);
 
   // Lemon Squeezy webhook — the ONLY thing that flips a site to active.
   if (path === '/cloud/webhook/ls' && request.method === 'POST') {
@@ -3292,9 +3334,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         r.who = r.github_login || r.email || null;   // an account that signed in with Google has no login: its address stands for it
       }
       const active = rows.filter(s => s.status === 'active');
-      const price = (p) => p === 'managed' ? 14.99 : 4.99;
-      const mrr = active.reduce((m, s) => m + price(s.plan), 0);
-      const store = await lsStoreMode(env);
+      const store = await storeMode(env);
+      // What a site brings in a month: the price Stripe holds where it was read
+      // (a yearly price counts as a twelfth of it each month), otherwise the
+      // fixed monthly figures.
+      const price = (p, period) => monthlyFromPrices(store, p, period) ?? (p === 'managed' ? 14.99 : 4.99);
+      const mrr = active.reduce((m, s) => m + price(s.plan, s.billing_period), 0);
       const insights = buildInsights(rows, accounts.n, price);
       return json({ accounts: accounts.n, sites: rows, active: active.length, mrr: Number(mrr.toFixed(2)), store, insights });
     }
@@ -3310,13 +3355,13 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     }
     if (path === '/admin/cloud/remove' && request.method === 'POST') {
       const { site_id, force } = await request.json().catch(() => ({}));
-      const site = await env.kiln_cloud.prepare('SELECT id, repo, account_id, ls_subscription_id FROM sites WHERE id = ?').bind(site_id || '').first();
+      const site = await env.kiln_cloud.prepare('SELECT * FROM sites WHERE id = ?').bind(site_id || '').first();
       if (!site) return json({ ok: true });
       // Same rule as the customer's own Remove. `force` is for the operator who
-      // has already ended the subscription in Lemon Squeezy by hand.
-      const cancel = force ? { ok: true, state: 'forced' } : await lsCancel(env, site.ls_subscription_id);
+      // has already ended the subscription with the billing company by hand.
+      const cancel = force ? { ok: true, state: 'forced' } : await cancelSubscription(env, site);
       if (!cancel.ok) {
-        return json({ error: `subscription ${site.ls_subscription_id} could not be cancelled (${cancel.state}); cancel it in Lemon Squeezy, then remove with force`, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
+        return json({ error: `subscription ${subscriptionOf(site)} could not be cancelled (${cancel.state}); cancel it in ${providerName(subscriptionProvider(site))}, then remove with force`, code: 'subscription_not_cancelled', reason: cancel.state }, 502);
       }
       const kept = await keptSite(env, site.id);   // asked before the row goes
       const gone = await forgetHosting(env, site.id);
@@ -3345,7 +3390,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     }
     // Per-site troubleshooting: app-install check, live-site reachability, /kiln
     // entry check, editability (is the origin actually in the active/trialing
-    // allowlist), and live Lemon Squeezy subscription status.
+    // allowlist), and the subscription's live status at its billing company.
     if (path === '/admin/cloud/diagnose') {
       const id = url.searchParams.get('site');
       const site = await env.kiln_cloud.prepare('SELECT s.*, a.github_login, a.email FROM sites s JOIN accounts a ON a.id = s.account_id WHERE s.id = ?').bind(id).first();
@@ -3377,7 +3422,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       } catch (e) { entryDetail = String(e.message || e); }
       add('/kiln sign-in page present', kilnEntry, `${site.origin}/kiln → ${entryDetail}`);
 
-      if (site.ls_subscription_id) {
+      if (subscriptionProvider(site) === 'stripe') {
+        const r = await stripeCall(env, 'GET', `/subscriptions/${encodeURIComponent(site.stripe_subscription_id)}`);
+        const st = r.ok ? r.body?.status : null;
+        add('Stripe subscription', st === 'active' || st === 'trialing',
+          r.status === 0 ? 'Stripe could not be reached' : `Stripe status: ${st || 'unknown'}${r.body?.cancel_at_period_end ? ', set to end with its period' : ''}`);
+      } else if (site.ls_subscription_id) {
         try {
           const r = await fetch(`${LS}/subscriptions/${site.ls_subscription_id}`,
             { headers: { Authorization: `Bearer ${env.LS_API_KEY}`, Accept: 'application/vnd.api+json' } });
@@ -3386,13 +3436,190 @@ export async function handleCloud(request, env, url, path, tools = {}) {
           add('Lemon Squeezy subscription', st === 'active' || st === 'on_trial', `LS status: ${st || 'unknown'}`);
         } catch (e) { add('Lemon Squeezy subscription', false, String(e.message || e)); }
       } else {
-        add('Lemon Squeezy subscription', false, 'No subscription yet (trial or comped)');
+        add(`${providerName(billingProvider(env))} subscription`, false, 'No subscription yet (trial or comped)');
       }
       return json({ site, checks });
     }
   }
 
   return null;  // not a cloud route
+}
+
+// ─── Stripe's webhook ────────────────────────────────────────────────────────
+//
+// What each Stripe subscription status means for a site: the same four
+// outcomes as LS_STATE above.
+//   active               active, editing on. Once it is set to end with its
+//                        period (`cancel_at_period_end`, or a `cancel_at` day):
+//                        canceled, editing on until that day
+//   trialing             trialing (Kiln asks Stripe for no trial; kept for a
+//                        subscription the operator makes by hand)
+//   past_due, unpaid,    past_due: editing stays on for PAST_DUE_GRACE_DAYS from
+//   paused               the first such event, while Stripe retries the card
+//   canceled             canceled, editing off: the subscription is over
+// `incomplete` and `incomplete_expired` (the first payment has not gone
+// through) change nothing: the site keeps its free days.
+const STRIPE_STATE = {
+  active:   { status: 'active',   access: 'yes' },
+  trialing: { status: 'trialing', access: 'yes' },
+  past_due: { status: 'past_due', access: 'grace' },
+  unpaid:   { status: 'past_due', access: 'grace' },
+  paused:   { status: 'past_due', access: 'grace' },
+  canceled: { status: 'canceled', access: 'no' },
+};
+/** What a Stripe subscription means for its site ({ status, access }), or null for a status that changes nothing. */
+export function stripeStateFor(sub) {
+  const base = sub && Object.prototype.hasOwnProperty.call(STRIPE_STATE, sub.status) ? STRIPE_STATE[sub.status] : null;
+  if (!base) return null;
+  if (base.status === 'active' && (sub.cancel_at_period_end || Number(sub.cancel_at))) return { status: 'canceled', access: 'until' };
+  return base;
+}
+const secondsToMs = (v) => (Number(v) > 0 ? Number(v) * 1000 : null);
+// Since API version 2025-03-31.basil the period's end is on the subscription's item, not on the subscription.
+const periodEndOf = (sub) => secondsToMs(sub?.items?.data?.[0]?.current_period_end ?? sub?.current_period_end);
+const priceOf = (sub) => sub?.items?.data?.[0]?.price?.id || null;
+const idOf = (v) => (typeof v === 'string' ? v : v && typeof v === 'object' ? v.id || null : null);
+
+/**
+ * POST /cloud/webhook/stripe. The signature is checked before anything is
+ * read, and a body that fails it is never looked at (400). Stripe sends again
+ * whatever was not answered with 2xx, and may send an event twice or out of
+ * order: an event id that was handled answers `replayed` and changes nothing,
+ * and a change older than the last one applied to a subscription is left out.
+ * The id is written down only after the change is made, so a database that
+ * fails leaves Stripe's next try to do it.
+ */
+async function stripeWebhook(request, env) {
+  const bodyText = await request.text();
+  if (!(await verifyStripeSignature(request.headers.get('Stripe-Signature'), bodyText, env.STRIPE_WEBHOOK_SECRET))) {
+    console.warn(JSON.stringify({ evt: 'webhook_rejected', provider: 'stripe', reason: env.STRIPE_WEBHOOK_SECRET ? 'bad or old signature' : 'no webhook secret configured', bytes: bodyText.length }));
+    return json({ error: 'bad signature' }, 400);
+  }
+  let evt;
+  try { evt = JSON.parse(bodyText); } catch { return json({ error: 'not json' }, 400); }
+  if (!evt || !evt.id) return json({ ok: true, ignored: 'no event id' });
+  const evtKey = `stripeevt:${evt.id}`;
+  if (await env.KILN.get(evtKey)) return json({ ok: true, replayed: true });
+  const type = String(evt.type || '');
+  const obj = (evt.data && evt.data.object) || {};
+  const at = secondsToMs(evt.created) ?? Date.now();
+  let out;
+  if (type === 'checkout.session.completed') out = await stripeCheckoutDone(env, obj, at);
+  else if (type === 'customer.subscription.created' || type === 'customer.subscription.updated' || type === 'customer.subscription.deleted') out = await stripeSubscriptionChanged(env, type, obj, at);
+  else if (type === 'invoice.payment_failed') out = await stripePaymentFailed(env, obj, at);
+  else out = { ignored: type || 'no type' };
+  await env.KILN.put(evtKey, '1', { expirationTtl: 7 * 24 * 3600 });
+  return json({ ok: true, ...out });
+}
+
+const SITE_COLUMNS = 'id, account_id, repo, origin, plan, stripe_subscription_id';
+async function stripeSite(env, siteId, subId) {
+  const db = env.kiln_cloud;
+  const byId = siteId ? await db.prepare(`SELECT ${SITE_COLUMNS} FROM sites WHERE id = ?`).bind(String(siteId)).first() : null;
+  return byId || (subId ? await db.prepare(`SELECT ${SITE_COLUMNS} FROM sites WHERE stripe_subscription_id = ?`).bind(String(subId)).first() : null);
+}
+async function keepStripeCustomer(env, site, customer) {
+  if (!customer) return;
+  await env.kiln_cloud.prepare('UPDATE sites SET stripe_customer_id = ? WHERE id = ?').bind(customer, site.id).run();
+  try { await env.kiln_cloud.prepare('UPDATE accounts SET stripe_customer_id = ? WHERE id = ? AND stripe_customer_id IS NULL').bind(customer, site.account_id).run(); } catch { /* not worth failing a billing event for */ }
+}
+
+/**
+ * Put a subscription's state on its site, as the Lemon Squeezy webhook does:
+ * the same `access_until` rules (a grace is never started again, a day that
+ * already passed is kept). Answers false when a later change was applied
+ * already, and then changes nothing.
+ */
+async function applyStripeState(env, { site, subId, state, at, end = null }) {
+  const lastKey = `stripeat:${subId}`;
+  const last = Number(await env.KILN.get(lastKey)) || 0;
+  if (at < last) return false;
+  const until = state.access === 'until' ? end : state.access === 'grace' ? at + PAST_DUE_GRACE_DAYS * 86400 * 1000 : null;
+  const endedAt = state.access === 'no' ? Math.min(end ?? Infinity, at, Date.now()) : null;
+  const setUntil = state.access === 'grace'
+    ? "access_until = CASE WHEN status = 'past_due' AND access_until IS NOT NULL THEN access_until ELSE ? END"
+    : state.access === 'no' ? 'access_until = MIN(COALESCE(access_until, ?), ?)'
+    : 'access_until = ?';
+  const untilArgs = state.access === 'no' ? [endedAt, endedAt] : [until];
+  await env.kiln_cloud.prepare(`UPDATE sites SET ${setUntil}, status = ?, stripe_subscription_id = ? WHERE id = ?`).bind(...untilArgs, state.status, String(subId), site.id).run();
+  await env.KILN.put(lastKey, String(at), { expirationTtl: 400 * 86400 });
+  return { status: state.status, until };
+}
+
+// A Checkout Session was paid: the site, its customer and its subscription are tied together, and the site is active.
+async function stripeCheckoutDone(env, s, at) {
+  if (s.mode !== 'subscription') return { ignored: 'not a subscription checkout' };
+  const subId = idOf(s.subscription), customer = idOf(s.customer);
+  const site = await stripeSite(env, (s.metadata && s.metadata.site_id) || s.client_reference_id, subId);
+  if (!site || !subId) return { ignored: 'no site or no subscription' };
+  await keepStripeCustomer(env, site, customer);
+  // The address the customer gave when paying, kept for notices when the account has none.
+  const email = mailAddress((s.customer_details && s.customer_details.email) || s.customer_email);
+  if (email) { try { await env.kiln_cloud.prepare("UPDATE accounts SET email = ? WHERE id = ? AND (email IS NULL OR email = '')").bind(email, site.account_id).run(); } catch { /* not worth failing a billing event for */ } }
+  if (s.payment_status !== 'paid' && s.payment_status !== 'no_payment_required') {
+    await env.kiln_cloud.prepare('UPDATE sites SET stripe_subscription_id = ? WHERE id = ?').bind(subId, site.id).run();
+    return { waiting: 'payment not complete yet' };
+  }
+  const applied = await applyStripeState(env, { site, subId, state: STRIPE_STATE.active, at });
+  return applied ? {} : { ignored: 'older than the last change' };
+}
+
+// A subscription was made, changed or ended.
+async function stripeSubscriptionChanged(env, type, sub, at) {
+  const subId = idOf(sub);
+  const site = await stripeSite(env, sub.metadata && sub.metadata.site_id, subId);
+  if (!site || !subId) return { ignored: 'unknown site' };
+  const state = type === 'customer.subscription.deleted' ? STRIPE_STATE.canceled : stripeStateFor(sub);
+  if (!state) return { ignored: `status ${sub.status || 'unknown'}` };
+  // A subscription the site has left behind (it was paid again later by another one) cannot end or hold up the one that pays now.
+  if (site.stripe_subscription_id && site.stripe_subscription_id !== subId && state.access !== 'yes') return { ignored: 'not the subscription this site is paid by now' };
+  await keepStripeCustomer(env, site, idOf(sub.customer));
+  const end = state.access === 'until' ? (secondsToMs(sub.cancel_at) ?? periodEndOf(sub))
+    : state.access === 'no' ? secondsToMs(sub.ended_at) : null;
+  const applied = await applyStripeState(env, { site, subId, state, at, end });
+  if (!applied) return { ignored: 'older than the last change' };
+  // Paid by the month or by the year, and up to when (migration 0016), from the price that is paid for.
+  const price = priceOf(sub);
+  const period = periodForPrice(env, price);
+  if (period) {
+    const paidUntil = state.access === 'yes' && state.status === 'active' ? periodEndOf(sub) : state.access === 'until' ? end : null;
+    const set = paidUntil === null ? 'billing_period = ?' : 'billing_period = ?, paid_until = ?';
+    await env.kiln_cloud.prepare(`UPDATE sites SET ${set} WHERE id = ?`).bind(...(paidUntil === null ? [period] : [period, paidUntil]), site.id).run();
+  }
+  // The plan on record is the plan that is paid for (the customer or the operator can change the price in Stripe).
+  const paidPlan = planForPrice(env, price);
+  let planNote = null;
+  if (paidPlan && site.plan !== paidPlan) {
+    try {
+      await env.kiln_cloud.prepare('UPDATE sites SET plan = ? WHERE id = ?').bind(paidPlan, site.id).run();
+      planNote = `Plan: now ${paidPlan} (was ${site.plan || 'not set'}), because that is the plan the subscription pays for.`;
+    } catch (e) {
+      planNote = `Plan: the subscription pays for ${paidPlan} but the site says ${site.plan || 'nothing'}, and the record could not be changed (${String(e?.message || e).slice(0, 120)}).`;
+    }
+  }
+  await notifyOwner(env, `Kiln billing: ${type} → ${state.status}`, [
+    `Site: ${site.repo || site.id} (${site.origin || 'origin unknown'})`,
+    `Status: ${state.status}${applied.until ? `, access until ${new Date(applied.until).toISOString()}` : ''}`,
+    `Billing: Stripe, subscription ${subId}`,
+    ...(planNote ? [planNote] : []),
+  ]);
+  return {};
+}
+
+// A renewal could not be charged: the site's grace starts (or keeps the day it already has).
+async function stripePaymentFailed(env, inv, at) {
+  const details = (inv.parent && inv.parent.subscription_details) || {};
+  const subId = idOf(details.subscription) || idOf(inv.subscription);
+  const site = subId ? await stripeSite(env, details.metadata && details.metadata.site_id, subId) : null;
+  if (!site) return { ignored: 'no subscription this service knows' };
+  const applied = await applyStripeState(env, { site, subId, state: STRIPE_STATE.past_due, at });
+  if (!applied) return { ignored: 'older than the last change' };
+  await notifyOwner(env, 'Kiln billing: invoice.payment_failed → past_due', [
+    `Site: ${site.repo || site.id} (${site.origin || 'origin unknown'})`,
+    `Status: past_due, access until ${new Date(applied.until).toISOString()} unless a later charge goes through`,
+    `Billing: Stripe, subscription ${subId}`,
+  ]);
+  return {};
 }
 
 /** Revenue + lifecycle breakdowns computed from the sites table (no history table needed). */
@@ -3407,11 +3634,11 @@ function buildInsights(rows, accountCount, price) {
   for (const s of rows) {
     if (byStatus[s.status] !== undefined) byStatus[s.status]++;
     if (byPlan[s.plan] !== undefined) byPlan[s.plan]++;
-    if (s.status === 'active') { if (s.plan === 'managed') mrrManaged += price('managed'); else mrrCloud += price('cloud'); }
+    if (s.status === 'active') { if (s.plan === 'managed') mrrManaged += price('managed', s.billing_period); else mrrCloud += price('cloud', s.billing_period); }
     if (now - s.created_at < 30 * day) signups30++;
     if (now - s.created_at < 7 * day) signups7++;
-    // Self-serve trials (no LS subscription) auto-expire 7 days after creation.
-    if (s.status === 'trialing' && !s.ls_subscription_id) {
+    // Self-serve trials (no subscription) auto-expire 7 days after creation.
+    if (s.status === 'trialing' && !subscriptionOf(s)) {
       const daysLeft = Math.ceil((s.created_at + 7 * day - now) / day);
       trialsExpiring.push({ id: s.id, repo: s.repo, github_login: s.github_login || null, email: s.email || null, who: s.github_login || s.email || null, daysLeft });
     }
