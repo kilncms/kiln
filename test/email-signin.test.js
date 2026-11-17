@@ -228,7 +228,8 @@ test('an editor and a member get exactly the session "Continue with Google" give
       assert.deepEqual(strip(es), strip(gs));
       assert.deepEqual({ paths: es.paths, keys: es.keys, features: es.features, mode: es.mode, role: es.role }, { paths: ['blog/'], keys: ['news'], features: ['comments'], mode: 'suggest', role: 'editor' });
       assert.ok(Math.abs(es.exp - gs.exp) < 60000);
-      assert.equal(e.kv.expires.get(`esess:${ef.get('kiln-esession')}`), g.kv.expires.get(`esess:${gf.get('kiln-esession')}`));
+      // the two sign-ins run a moment apart, so their stored lifetimes may differ by the second that turned between them
+      assert.ok(Math.abs(e.kv.expires.get(`esess:${ef.get('kiln-esession')}`) - g.kv.expires.get(`esess:${gf.get('kiln-esession')}`)) <= 2);
     } else {
       // A member is handed a one-time code the site exchanges (googleClaim), the same one.
       const gc = new URL(google.to).hash.match(/kiln-gcode=([a-f0-9]{32})/)[1];
