@@ -482,6 +482,24 @@ export function domainMovedMail({ name, tempUrl, dashboard }) {
   ], whyLine(name));
 }
 
+/**
+ * Sent when a person on a site's list asks to sign in by email (index.js,
+ * POST /email/login), and only then. `site`: the site's address as it is
+ * read, such as example.com. `link`: the page that signs them in. `code`: the
+ * six digits they can type instead, in the window that asked.
+ */
+export function signInLinkMail({ site, link, code }) {
+  const name = String(site || '').replace(/[\s\u0000-\u001f]+/g, ' ').trim() || 'your site';
+  return message(`Your sign-in link for ${name}`, [
+    'Hello,',
+    `To sign in to ${name}, open this link and press Sign in:`,
+    link,
+    `Or type this code in the window where you asked for the link: ${code}`,
+    'The link and the code work once, for 15 minutes.',
+    'If you did not ask to sign in, you can ignore this email. Nobody can sign in without the link or the code.',
+  ], `You are getting this because someone asked for a sign-in link for ${name} with this email address, and the site's owner added it to the site.`);
+}
+
 /** True when this worker is set up to write to customers at all. */
 export function customerMailOn(env) {
   return !!(env && env.NOTIFY && typeof env.NOTIFY.send === 'function' && mailAddress(env.CUSTOMER_MAIL_FROM));

@@ -459,7 +459,10 @@ or write to info@kilncms.com. [SECURITY.md](SECURITY.md) lists what matters most
 - **An app that stays an app is not supported.** A React, Next.js, Vue or Svelte app has to
   be frozen into plain HTML first, and a site visitors must sign in to see does not work.
 - **One configuration edits one repository.** A monorepo works through the `root` setting.
-- **Editors and members need a Google account**, since that is how they sign in.
+- **Editors and members sign in with Google, or with a link sent to their email address.**
+  The email link needs a service that can send email: Kiln Cloud can. A worker you run
+  yourself sends none until Cloudflare's email sending is set up for it (`NOTIFY` and
+  `CUSTOMER_MAIL_FROM`), and until then its sign-in page says email sign-in is not set up.
 - **Uploads are not tidied.** Pictures already in the repository can be picked again, but
   nothing lists unused uploads or removes them.
 - **Renaming a page means making a new one.** There is no change of address with a

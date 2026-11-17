@@ -131,7 +131,8 @@ test('clock: the sentence is the editor\'s, not the shim\'s, and the shim stays 
   const main = readFileSync(path.join(ROOT, 'src', 'editor', 'main.js'), 'utf8');
   const init = main.slice(main.indexOf('async function init()'), main.indexOf('injectStyles();', main.indexOf('async function init()')));
   assert.match(init, /if \(window\.__KILN_OVER\) \{\s*showNotice\(endedNotice\(\{ way: signInWay\(\), draft: draftWaits\(\) \}\), signInAgain\);\s*return;/, 'before the editor draws anything');
-  // What every visitor downloads: the built shim was 6,987 bytes (3,127 gzipped) before this, and may grow by at most 300 gzipped.
+  // What every visitor downloads: the built shim was 6,987 bytes (3,127 gzipped) before this, and may grow by at most 300 gzipped,
+  // and by 60 more for the sign-in card's "Get a sign-in link by email" button (Node 20's gzip, which CI uses, makes it about 50 bytes larger than Node 22's).
   const built = readFileSync(path.join(ROOT, 'dist', 'kiln.js'));
-  assert.ok(gzipSync(built).length <= 3127 + 300, `dist/kiln.js is ${built.length} bytes, ${gzipSync(built).length} gzipped`);
+  assert.ok(gzipSync(built).length <= 3127 + 300 + 60, `dist/kiln.js is ${built.length} bytes, ${gzipSync(built).length} gzipped`);
 });

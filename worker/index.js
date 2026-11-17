@@ -26,6 +26,10 @@
  *   GET/POST /admin/api-tokens  scoped API tokens (push-verified); POST /admin/api-tokens/revoke
  *   GET  /google/login     ?origin=&return_to=&repo= → Google authorize (invited people)
  *   POST /google/claim     {code} → member session exchange
+ *   GET  /email/login      ?origin=&return_to=&repo= → the page that asks an invited person for their address
+ *   POST /email/login      → a sign-in link and code sent to an address on the site's list
+ *   GET  /email/open       ?t= → the page the emailed link opens, with a Sign in button
+ *   POST /email/open, /email/code → the sign-in, by the link or by the code
  *   POST /members/check    {sid, origin} → is this member sign-in still on the list
  *   ANY  /gh/*             session + path-scoped GitHub API proxy (editors)
  *   GET  /api/v1/pages     list editable pages            (Bearer API token)
@@ -90,6 +94,7 @@ import { VIA_KILN } from './prepare.js';
 import { keepsReady, keptStands } from './keeps.js';
 import { bringOn } from './bring.js';
 import { sweepBrings, sweepRegistrations, sweepRenewals } from './cloud.js';
+import { customerMailOn, sendMail, mailAddress, signInLinkMail } from './mail.js';
 import { githubTrouble, googleTrouble, troubleBody, troubleLog, githubSilent, GITHUB_DID_NOT_ANSWER, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
 import { checkDocumentWrite, checkNewPageWrite, templatePathsFor, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
@@ -302,6 +307,12 @@ async function routeRequest(request, env, ctx) {
     if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
     if (path === '/google/callback') return googleCallback(url, env, request);
     if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
+    // Sign-in by a link and a code sent to an address on a site's list (see "Email sign-in").
+    if (path === '/email/login' && request.method === 'GET') return (await rateLimited(request, env)) || emailLoginPage(url, env);
+    if (path === '/email/login' && request.method === 'POST') return (await rateLimited(request, env)) || emailLoginSend(request, url, env);
+    if (path === '/email/open' && request.method === 'GET') return (await rateLimited(request, env)) || emailOpenPage(url, env);
+    if (path === '/email/open' && request.method === 'POST') return (await rateLimited(request, env)) || emailOpenFinish(request, env);
+    if (path === '/email/code' && request.method === 'POST') return (await rateLimited(request, env)) || emailCodeFinish(request, env);
     // The commit proxy runs on the shared App installation token: it is counted
     // for each session (workLimited), so one editor can't exhaust the owner's
     // GitHub quota and stop everyone else's editing, and a request with no
@@ -3058,18 +3069,34 @@ async function googleCallback(url, env, request) {
   const who = await googleIdentity(url, env, code);
   if (who.trouble) return html(troubleBody(who.trouble, { origin: state.origin }), who.trouble.status);
   const info = who.info;
+  return signInAtSite(env, state, { email: String(info.email).toLowerCase(), name: info.name, sub: info.sub });
+}
 
-  // Checked again here: the site's address may have changed hands in the ten
-  // minutes since googleLogin.
+/**
+ * The end of every sign-in at a site by a person without GitHub, once Kiln
+ * knows an address that is theirs: Google confirmed it (googleCallback), or
+ * the person opened the link or typed the code Kiln sent to it (the email
+ * sign-in below). `state` is where the sign-in was started: { origin,
+ * returnTo, repo }. `who` is { email, name, sub }: the address, lower-cased;
+ * the name Google gave, if any; Google's id for the person, which an email
+ * sign-in does not have. One copy, so the two ways in give the same person
+ * the same session.
+ */
+async function signInAtSite(env, state, who) {
+  const info = { name: who.name || null, sub: who.sub || null };
+  // Checked again here: the site's address may have changed hands in the
+  // minutes since the sign-in was started.
   if (!(await originServesRepo(env, state.origin, state.repo))) return html('<h1>This sign-in link is for a different site</h1><p>The address in the link does not belong to the site it asks to sign you in to, so nothing happened. Sign in from the site itself.</p>', 403);
 
-  const email = String(info.email).toLowerCase();
+  const email = who.email;
 
   // The owner of a site whose files Kiln keeps has no GitHub account, so this
   // button is their way back in at the site. They get the owner session that
   // "Open the editor" in the dashboard makes (cloud.js, keptOwnerAtSite), and
   // they get it whether or not they are also on the list of people. Nobody
-  // else is answered there: they go on to the list, as before.
+  // else is answered there: they go on to the list, as before. Such an owner
+  // is known by Google's id for them, so an email sign-in, which has none,
+  // goes on to the list.
   const own = await keptOwnerAtSite(env, { sub: info.sub, email, name: info.name, repo: state.repo, origin: state.origin, returnTo: state.returnTo }, { editorSession: keptEditorSession });
   if (own && own.url) return Response.redirect(own.url, 302);
   if (own) {
@@ -3135,6 +3162,222 @@ async function googleCallback(url, env, request) {
   const dest = state.returnTo.startsWith('/members') ? state.returnTo : '/members/';
   return Response.redirect(
     `${state.origin}/members-login.html?to=${encodeURIComponent(dest)}#kiln-gcode=${gcode}`, 302);
+}
+
+// ─── Email sign-in ───────────────────────────────────────────────────────────
+// For a person on a site's list who would rather not use Google, or whose
+// address has no Google account. Kiln sends the address a link and a 6-digit
+// code. Opening the link and pressing Sign in, or typing the code in the
+// window that asked for it, shows that the address is theirs, as Google's
+// confirmation does; signInAtSite then does the rest, the same for both.
+// Nothing is a password, and no secret is kept: KV holds SHA-256 hashes of
+// the link's token and of the asking window's id, for 15 minutes.
+//
+//   elink:<sha256(token)>      { origin, returnTo, repo, email, req: <sha256(window id)>, exp }
+//   ecode:<sha256(window id)>  { origin, returnTo, repo, email, code: <sha256(window id:code)>, link: <sha256(token)>, tries, exp }
+//   ecount:<sha256(address)>   { n, until }: links asked for one address in the last 15 minutes
+//
+// An address that is not on the list gets the very same page, and its window
+// an ecode record with no code and no address, so a typed code is answered
+// as a wrong one is for a real request. Nothing is sent to it.
+
+const EMAIL_SIGN_IN_SECONDS = 15 * 60;
+const EMAIL_CODE_TRIES = 5;
+const EMAIL_LINKS_PER_ADDRESS = 3;   // in any 15 minutes, counted for every address asked for
+
+const randomHex = (bytes) => [...crypto.getRandomValues(new Uint8Array(bytes))].map(b => b.toString(16).padStart(2, '0')).join('');
+/** Six digits, each of the million equally likely. */
+function sixDigits() {
+  const top = Math.floor(0x100000000 / 1e6) * 1e6;
+  let n;
+  do { n = crypto.getRandomValues(new Uint32Array(1))[0]; } while (n >= top);
+  return String(n % 1e6).padStart(6, '0');
+}
+const siteWords = (origin) => { try { return new URL(origin).host; } catch { return 'this site'; } };
+const secondsLeft = (exp) => Math.max(60, Math.ceil((exp - Date.now()) / 1000));
+const placeFields = (place) => [['origin', 'origin'], ['return_to', 'returnTo'], ['repo', 'repo']].map(([name, k]) => `<input type="hidden" name="${name}" value="${esc(place[k])}">`).join('');
+const askAgainLink = (place) => `/email/login?${new URLSearchParams({ origin: place.origin, return_to: place.returnTo, repo: place.repo })}`;
+const backToSite = (place) => `<p><a href="${esc(place.origin + place.returnTo)}">Back to the site</a></p>`;
+const FIELD = 'font:inherit;width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #ccc;border-radius:8px;margin-top:4px';
+
+const EMAIL_OFF = `<h1>Email sign-in is not set up on this service</h1>
+  <p>This Kiln service cannot send email, so it cannot send sign-in links. Go back and use Continue with Google, or ask the site's owner how to sign in.</p>`;
+const LINK_GONE = `<h1>This sign-in link no longer works</h1>
+  <p>A sign-in link works once, for 15 minutes. This one has been used or has run out.</p>
+  <p>To get a new one, go back to the site's sign-in page and press Get a sign-in link by email.</p>`;
+const codeGone = (place) => `<h1>This code no longer works</h1>
+  <p>A code works once, for 15 minutes, in the window that asked for it. This one has been used or has run out.</p>
+  <p><a class="btn" href="${esc(askAgainLink(place))}">Ask for a new link</a></p>`;
+
+/** No copy kept by the browser or anything between, and the page's address told to no other. */
+function privatePage(res) {
+  res.headers.set('Cache-Control', 'no-store');
+  res.headers.set('Referrer-Policy', 'no-referrer');
+  return res;
+}
+
+/**
+ * Where a sign-in by email is for, read from the asking page's address or
+ * form: the site's address, the page to go back to, and the repository.
+ * Checked as googleLogin checks them. Answers { place } or { res }, the
+ * page that says why not.
+ */
+async function emailPlace(env, get) {
+  const origin = String(get('origin') || '');
+  const returnTo = String(get('return_to') || '/');
+  const repo = String(get('repo') || '');
+  if (!(await originAllowed(env, origin))) return { res: await originRefused(env, origin) };
+  if (!returnTo.startsWith('/') || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return { res: html('<h1>Bad request</h1>', 400) };
+  if (!(await originServesRepo(env, origin, repo))) return { res: html('<h1>This sign-in link is for a different site</h1><p>The address in the link does not belong to the site it asks to sign you in to, so nothing happened. Sign in from the site itself.</p>', 403) };
+  return { place: { origin, returnTo, repo } };
+}
+
+function emailAskPage(place, { note = '', email = '' } = {}, status = 200) {
+  return privatePage(html(`<h1>Get a sign-in link by email</h1>
+    <p>Type the email address the owner of ${esc(siteWords(place.origin))} added for you. We will send it a link to sign in, and a code you can type here instead.</p>
+    ${note ? `<p><strong>${esc(note)}</strong></p>` : ''}
+    <form method="post" action="/email/login">${placeFields(place)}
+      <p><label for="email">Email address</label><br>
+      <input id="email" name="email" type="email" autocomplete="email" required value="${esc(email)}" style="${FIELD}"></p>
+      <p><button class="btn" type="submit">Send the link</button></p>
+    </form>
+    ${backToSite(place)}`, status));
+}
+
+function emailCheckPage(place, { req, email = '', note = '' }, status = 200) {
+  const site = esc(siteWords(place.origin));
+  return privatePage(html(`<h1>Check your email</h1>
+    ${email
+      ? `<p>If ${esc(email)} can sign in to ${site}, a link is on its way to it. The link works once, for 15 minutes.</p>`
+      : `<p>If the address you typed can sign in to ${site}, a link is on its way to it. The link works once, for 15 minutes.</p>`}
+    <p>You can also type the code from the email here.</p>
+    ${note ? `<p><strong>${esc(note)}</strong></p>` : ''}
+    <form method="post" action="/email/code">${placeFields(place)}<input type="hidden" name="req" value="${esc(req)}">
+      <p><label for="code">Code from the email</label><br>
+      <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required style="${FIELD}"></p>
+      <p><button class="btn" type="submit">Sign in</button></p>
+    </form>
+    <p class="dim">No email after a few minutes? Look in your spam folder, and check that this is the address the site's owner added for you. If it is not on the site's list, no email is sent. <a href="${esc(askAgainLink(place))}">Ask for a new link</a></p>`, status));
+}
+
+/** GET /email/login: the page that asks for an address, or says this service sends no email. */
+async function emailLoginPage(url, env) {
+  const { place, res } = await emailPlace(env, (k) => url.searchParams.get(k));
+  if (res) return res;
+  if (!customerMailOn(env)) return html(EMAIL_OFF, 503);
+  return emailAskPage(place);
+}
+
+/**
+ * POST /email/login {origin, return_to, repo, email}: a link and a code are
+ * sent when the address is on the site's list. The page that answers is the
+ * same either way, so it tells nobody who is invited.
+ */
+async function emailLoginSend(request, url, env) {
+  const form = await request.formData().catch(() => null);
+  const get = (k) => (form ? form.get(k) : null);
+  const { place, res } = await emailPlace(env, get);
+  if (res) return res;
+  if (!customerMailOn(env)) return html(EMAIL_OFF, 503);
+  const typed = String(get('email') || '').trim();
+  const email = typed.toLowerCase();
+  if (!mailAddress(email)) return emailAskPage(place, { note: 'That does not look like an email address. Check it and try again.', email: typed }, 400);
+
+  // Counted for every address, on the list or not, so this limit tells nobody who is invited either.
+  const now = Date.now();
+  const countKey = `ecount:${await sha256Hex(email)}`;
+  const was = await env.KILN.get(countKey, 'json');
+  const count = was && was.until > now ? was : { n: 0, until: now + EMAIL_SIGN_IN_SECONDS * 1000 };
+  if (count.n >= EMAIL_LINKS_PER_ADDRESS) {
+    return privatePage(html(`<h1>Too many sign-in links for this address</h1>
+      <p>Sign-in links for this address were asked for ${EMAIL_LINKS_PER_ADDRESS} times in the last 15 minutes, so no more are sent for now. Use a link or code you already have, or try again in 15 minutes.</p>
+      ${backToSite(place)}`, 429));
+  }
+  await env.KILN.put(countKey, JSON.stringify({ n: count.n + 1, until: count.until }), { expirationTtl: secondsLeft(count.until) });
+
+  const req = randomHex(32);
+  const reqHash = await sha256Hex(req);
+  const exp = now + EMAIL_SIGN_IN_SECONDS * 1000;
+  const person = (await getPeople(env, place.repo)).find(p => p.email === email);
+  if (person) {
+    const token = randomHex(32);
+    const code = sixDigits();
+    const linkHash = await sha256Hex(token);
+    await env.KILN.put(`elink:${linkHash}`, JSON.stringify({ ...place, email, req: reqHash, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
+    await env.KILN.put(`ecode:${reqHash}`, JSON.stringify({ ...place, email, code: await sha256Hex(`${req}:${code}`), link: linkHash, tries: 0, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
+    await sendMail(env, email, signInLinkMail({ site: siteWords(place.origin), link: `${url.origin}/email/open?t=${token}`, code }));
+  } else {
+    await env.KILN.put(`ecode:${reqHash}`, JSON.stringify({ ...place, code: null, link: null, tries: 0, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
+  }
+  return emailCheckPage(place, { req, email: typed });
+}
+
+/**
+ * GET /email/open?t=: the page the emailed link opens. It only shows a Sign
+ * in button: programs that check the links in mail open them too, and must
+ * not use the link up.
+ */
+async function emailOpenPage(url, env) {
+  const token = url.searchParams.get('t') || '';
+  const rec = /^[a-f0-9]{64}$/.test(token) ? await env.KILN.get(`elink:${await sha256Hex(token)}`, 'json') : null;
+  if (!rec || !(rec.exp > Date.now())) return privatePage(html(LINK_GONE, 410));
+  return privatePage(html(`<h1>Sign in to ${esc(siteWords(rec.origin))}</h1>
+    <p>This link signs in ${esc(rec.email)}. Press Sign in to go on.</p>
+    <form method="post" action="/email/open"><input type="hidden" name="t" value="${esc(token)}">
+      <p><button class="btn" type="submit">Sign in</button></p>
+    </form>`));
+}
+
+/** POST /email/open {t}: the link's sign-in. The link is used up first, whatever follows. */
+async function emailOpenFinish(request, env) {
+  const form = await request.formData().catch(() => null);
+  const token = String((form && form.get('t')) || '');
+  if (!/^[a-f0-9]{64}$/.test(token)) return privatePage(html(LINK_GONE, 410));
+  const key = `elink:${await sha256Hex(token)}`;
+  const rec = await env.KILN.get(key, 'json');
+  if (!rec) return privatePage(html(LINK_GONE, 410));
+  await env.KILN.delete(key);
+  if (rec.req) await env.KILN.delete(`ecode:${rec.req}`);   // the code in the same email goes with it
+  if (!(rec.exp > Date.now())) return privatePage(html(LINK_GONE, 410));
+  return signInAtSite(env, { origin: rec.origin, returnTo: rec.returnTo, repo: rec.repo }, { email: rec.email });
+}
+
+/**
+ * POST /email/code {req, code, origin, return_to, repo}: the code's sign-in,
+ * from the window that asked (`req` is its id, which no email carries). Five
+ * wrong tries and the code is void, and the link in the same email with it.
+ */
+async function emailCodeFinish(request, env) {
+  const form = await request.formData().catch(() => null);
+  const get = (k) => (form ? form.get(k) : null);
+  const { place, res } = await emailPlace(env, get);
+  if (res) return res;
+  const req = String(get('req') || '');
+  const code = String(get('code') || '').replace(/\s+/g, '');
+  if (!/^[a-f0-9]{64}$/.test(req)) return privatePage(html(codeGone(place), 410));
+  const key = `ecode:${await sha256Hex(req)}`;
+  const rec = await env.KILN.get(key, 'json');
+  // A window's code is for the site and the page it was asked for at, and no other.
+  if (!rec || !(rec.exp > Date.now()) || rec.origin !== place.origin || rec.repo !== place.repo || rec.returnTo !== place.returnTo) {
+    return privatePage(html(codeGone(place), 410));
+  }
+  const right = !!rec.code && /^\d{6}$/.test(code) && (await sha256Hex(`${req}:${code}`)) === rec.code;
+  if (!right) {
+    const tries = (Number(rec.tries) || 0) + 1;
+    if (tries >= EMAIL_CODE_TRIES) {
+      await env.KILN.delete(key);
+      if (rec.link) await env.KILN.delete(`elink:${rec.link}`);
+      return privatePage(html(`<h1>This code no longer works</h1>
+        <p>The code was typed wrong ${EMAIL_CODE_TRIES} times, so it no longer works, and neither does the link in the same email.</p>
+        <p><a class="btn" href="${esc(askAgainLink(place))}">Ask for a new link</a></p>`, 403));
+    }
+    await env.KILN.put(key, JSON.stringify({ ...rec, tries }), { expirationTtl: secondsLeft(rec.exp) });
+    const left = EMAIL_CODE_TRIES - tries;
+    return emailCheckPage(place, { req, note: `That code is not right. You can try ${left} more ${left === 1 ? 'time' : 'times'}.` }, 400);
+  }
+  await env.KILN.delete(key);
+  if (rec.link) await env.KILN.delete(`elink:${rec.link}`);
+  return signInAtSite(env, { origin: rec.origin, returnTo: rec.returnTo, repo: rec.repo }, { email: rec.email });
 }
 
 /**
