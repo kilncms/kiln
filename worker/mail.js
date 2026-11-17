@@ -505,7 +505,7 @@ export function signInLinkMail({ site, link, code, dashboard = false }) {
   ];
   // `dashboard`: asked for from the Kiln dashboard's sign-in (index.js, for=dashboard), where any address may sign in.
   if (dashboard) return message('Your sign-in link for Kiln', lines('your Kiln dashboard'), 'You are getting this because someone asked for a sign-in link for the Kiln dashboard with this email address.');
-  return message(`Your sign-in link for ${name}`, lines(name), `You are getting this because someone asked for a sign-in link for ${name} with this email address, and the site's owner added it to the site.`);
+  return message(`Your sign-in link for ${name}`, lines(name), `You are getting this because someone asked for a sign-in link for ${name} with this email address, which can sign in there.`);
 }
 
 /** True when this worker is set up to write to customers at all. */
