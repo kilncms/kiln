@@ -5,6 +5,8 @@
  *   GET  /cloud/login            → GitHub OAuth (identity only)
  *   GET  /cloud/login/google     → Google sign-in for a person with no GitHub account; Google returns to
  *                                  /google/callback (index.js), which hands a dashboard sign-in to googleDashboardSignIn
+ *   (index.js /email/*, for=dashboard) → sign-in with a link or a code sent to any address, for a person with
+ *                                  no GitHub account; index.js hands the confirmed address to emailDashboardSignIn
  *   GET  /cloud/callback         → upsert account, set session cookie, → dashboard
  *   GET  /cloud/me               → { account, sites }
  *   POST /cloud/sites            → register a site (verify repo install) → checkout URL
@@ -38,7 +40,7 @@
  */
 
 import { RUNBOOK_HTML } from './runbook.js';
-import { troubleBody, forDashboard, githubSilent, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN } from './signin-trouble.js';
+import { troubleBody, forDashboard, githubSilent, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN, EMAIL_ACCOUNT_NOT_READY, TWO_ACCOUNTS } from './signin-trouble.js';
 import { startSignIn, startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { customerMailOn, mailAddress, addressSql, accountAddress, sendOnce, siteAddedMail, siteStartedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
 import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, SETUP_COMMAND, readPages, VIA_KILN, astroAfter, ASTRO_GUIDE } from './prepare.js';
@@ -435,9 +437,12 @@ async function upsertAccount(env, login, email, number) {
 /**
  * The account of a person who signed in to the dashboard with Google: found by
  * Google's own id for them, or made the first time, with the address and name
- * Google gave and no GitHub login. Nothing else is looked at. An account that
- * signed in with GitHub is never found or changed here, whatever its address,
- * and two accounts with the same address stay two accounts.
+ * Google gave and no GitHub login. The one other account it can be is the one
+ * an email sign-in made for the very address Google confirmed (emailAccount):
+ * the person started with a link sent to that address, and Google confirming
+ * it is the same proof, so that account gets Google's id and stays theirs.
+ * An account that signed in with GitHub is never found or changed here,
+ * whatever its address, and neither is one that already has a Google id.
  */
 async function googleAccount(env, { sub, email, name }) {
   const find = () => env.kiln_cloud.prepare('SELECT * FROM accounts WHERE google_sub = ?').bind(sub).first();
@@ -449,6 +454,12 @@ async function googleAccount(env, { sub, email, name }) {
   };
   const existing = await find();
   if (existing) { await confirmed(existing.id); return existing; }
+  const started = await emailMadeAccount(env, email);
+  if (started) {
+    await env.kiln_cloud.prepare('UPDATE accounts SET google_sub = ?, name = COALESCE(name, ?) WHERE id = ? AND google_sub IS NULL').bind(sub, name || null, started.id).run();
+    const now = await find();   // null only when another Google person took it a moment ago: this one gets a new account
+    if (now) { await confirmed(now.id); return now; }
+  }
   const id = uuid();
   try {
     await env.kiln_cloud.prepare('INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES (?,?,?,?,?,?)')
@@ -462,11 +473,66 @@ async function googleAccount(env, { sub, email, name }) {
   return { id, github_login: null, email: email || null, name: name || null, google_sub: sub, ls_customer_id: null };
 }
 
-/** A dashboard session with no GitHub person behind it: the person signed in with Google. */
-function withoutGitHub(sess) { return !!sess && !sess.login && !!sess.google; }
+/** The account an email sign-in made for `email`, while it has no GitHub and no Google id. Null on a database migration 0018 has not reached. */
+async function emailMadeAccount(env, email) {
+  const want = String(email || '').trim().toLowerCase();
+  if (!want) return null;
+  try { return await env.kiln_cloud.prepare('SELECT * FROM accounts WHERE signin_email = ? AND google_sub IS NULL AND github_login IS NULL AND github_id IS NULL').bind(want).first(); }
+  catch { return null; }
+}
+
+/**
+ * Every account an address Kiln itself confirmed belongs to: the one an email
+ * sign-in made for it (`signin_email`), and a Google account whose last
+ * Google sign-in confirmed it (`google_email`). Never by `email`: GitHub
+ * reports that one, or a person typed it, and nobody checked it. An account
+ * with a GitHub login or number is never one of them, whatever its addresses.
+ */
+async function confirmedAccounts(env, email) {
+  const want = String(email || '').trim().toLowerCase();
+  if (!mailAddress(want)) return [];
+  const found = await env.kiln_cloud.prepare(`SELECT * FROM accounts WHERE github_login IS NULL AND github_id IS NULL
+      AND (signin_email = ? OR (google_sub IS NOT NULL AND lower(google_email) = ?))`).bind(want, want).all();
+  return (found && found.results) || [];
+}
+
+/**
+ * The account of a person who signed in to the dashboard with a link or a
+ * code sent to `email` (index.js, the email sign-in): the one account that
+ * address was confirmed for (confirmedAccounts), or, when there is none, a new
+ * one with the address and no GitHub login, so a person can start with an
+ * address alone. Answers { account }, or { twice: true } when the address
+ * belongs to more than one account: Kiln cannot tell which is this person's,
+ * so nobody is signed in. The database lets only one account have an address
+ * in `signin_email`, so two sign-ins at the same moment make one account.
+ */
+async function emailAccount(env, email) {
+  const want = String(email || '').trim().toLowerCase();
+  if (!mailAddress(want)) throw new Error('no address');
+  let found = await confirmedAccounts(env, want);
+  if (found.length > 1) return { twice: true };
+  if (found.length === 1) return { account: found[0] };
+  const id = uuid();
+  try {
+    await env.kiln_cloud.prepare('INSERT INTO accounts (id, github_login, email, created_at, signin_email) VALUES (?,?,?,?,?)').bind(id, null, want, Date.now(), want).run();
+  } catch (e) {
+    found = await confirmedAccounts(env, want);   // two sign-ins at the same moment: the other one made the account
+    if (found.length === 1) return { account: found[0] };
+    throw e;
+  }
+  return { account: { id, github_login: null, email: want, name: null, google_sub: null, signin_email: want, ls_customer_id: null } };
+}
+
+/** A dashboard session with no GitHub person behind it: the person signed in with Google, or with a link or a code sent to their address (`byEmail`). */
+function withoutGitHub(sess) { return !!sess && !sess.login && !!(sess.google || sess.byEmail); }
+/** The address Google or an email sign-in confirmed for such a session, and the name it goes by. */
+const sessEmail = (sess) => (sess && (sess.google?.email || sess.byEmail?.email)) || null;
+const sessName = (sess) => String((sess && (sess.google?.name || sess.byEmail?.name)) || '');
 
 // POST /cloud/account, from a person who signed in with Google.
 const GOOGLE_ADDRESS = 'Kiln writes to the address you signed in with. To use another address, sign in with that Google account.';
+// The same, from a person who signed in with a link or a code sent to their address.
+const EMAIL_ADDRESS = 'Kiln writes to the address you signed in with. To use another address, sign in with a link sent to that address.';
 // POST /cloud/sites/editor: what a person reads when the editor of a site Kiln keeps the files of cannot be opened.
 const EDITOR_NOT_UP = "Your site is not up yet. Press Put it on Kiln's hosting on the site's row first, then open the editor.";
 const EDITOR_PLAN_ENDED = "Editing is switched off for this site, so its editor cannot be opened. Subscribe on the site's row, then open the editor again.";
@@ -479,12 +545,12 @@ const EDITOR_NOT_OPENED = 'Kiln could not open the editor just now. Please try a
 // GET /cloud/sites/check: a site Kiln keeps the files of has no other host, so until it is on Kiln's hosting there is no address to look at.
 const CHECK_KEPT_NOT_UP = "Your site is not up yet. Press Put it on Kiln's hosting on the site's row, then check again.";
 
-/** The name and the email an owner with no GitHub account goes by in their site's editor and on what they publish: the account's name, and the address Google confirmed for them. */
+/** The name and the email an owner with no GitHub account goes by in their site's editor and on what they publish: the account's name, and the address Google or an email sign-in confirmed for them. */
 async function editorPerson(env, sess) {
   let acct = null;
   try { acct = await env.kiln_cloud.prepare('SELECT name FROM accounts WHERE id = ?').bind(sess.account_id).first(); } catch { acct = null; }
-  const email = String((await accountEmail(env, sess.account_id)) || sess.google?.email || '').trim();
-  const name = String((acct && acct.name) || sess.google?.name || '').replace(/[\s\u0000-\u001f<>]+/g, ' ').trim()
+  const email = String((await accountEmail(env, sess.account_id)) || sessEmail(sess) || '').trim();
+  const name = String((acct && acct.name) || sessName(sess) || '').replace(/[\s\u0000-\u001f<>]+/g, ' ').trim()
     || email.split('@')[0] || String(sess.login || '') || 'Owner';
   return { name: name.slice(0, 60), email: email || null };
 }
@@ -635,23 +701,25 @@ async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, k
   return site;
 }
 
-/** Who is signed in, for a note to the operator: the GitHub login, or the Google address. */
-export function signedInAs(sess) { return sess.login || sess.google?.email || 'somebody signed in with Google'; }
+/** Who is signed in, for a note to the operator: the GitHub login, or the address Google or an email sign-in confirmed. */
+export function signedInAs(sess) { return sess.login || sessEmail(sess) || (sess.byEmail ? 'somebody signed in by email' : 'somebody signed in with Google'); }
 
 /**
  * Whose name a change made from the dashboard carries in the repository's
  * history. A person signed in with GitHub is the author as GitHub knows them.
- * A person signed in with Google has no GitHub name: the author is their own
- * name with "(via Kiln)" after it, and the address Google confirmed for them
- * (never one that was typed into the dashboard, which nobody confirmed).
+ * A person signed in with Google, or by email, has no GitHub name: the author
+ * is their own name with "(via Kiln)" after it (the part of the address before
+ * the @ when Kiln knows no name), and the address Google or the email sign-in
+ * confirmed for them (never one that was typed into the dashboard, which
+ * nobody confirmed).
  */
 export async function commitAuthor(env, sess) {
   if (sess.login) {
     const uid = sess.uid != null && /^\d+$/.test(String(sess.uid)) ? `${sess.uid}+` : '';
     return { name: sess.login, email: `${uid}${sess.login}@users.noreply.github.com` };
   }
-  const email = (await accountEmail(env, sess.account_id)) || sess.google?.email || null;
-  const name = String(sess.google?.name || '').trim() || String(email || 'Somebody').split('@')[0];
+  const email = (await accountEmail(env, sess.account_id)) || sessEmail(sess) || null;
+  const name = sessName(sess).trim() || String(email || 'Somebody').split('@')[0];
   return { name: `${name}${VIA_KILN}`, email };
 }
 
@@ -1744,7 +1812,7 @@ export async function expireStaleTrials(env) {
  */
 export function isCloudAdmin(sess, env) {
   if (!sess) return false;
-  if (withoutGitHub(sess)) return false;   // the operator is a GitHub person: a Google sign-in is never the operator
+  if (withoutGitHub(sess)) return false;   // the operator is a GitHub person: a Google or email sign-in is never the operator
   const id = String(env.CLOUD_ADMIN_ID || '').trim();
   if (id) return /^\d+$/.test(id) && sess.uid != null && String(sess.uid) === id;
   return !!env.CLOUD_ADMIN && sess.login === env.CLOUD_ADMIN;
@@ -1960,32 +2028,54 @@ const AT_SITE_REFUSED = {
 };
 
 /**
- * "Continue with Google" at a site (index.js, googleCallback), for the owner
- * of a site whose files Kiln keeps. Such an owner has no GitHub account, so
- * that button is their way back in once their session has ended. `sub` is who
- * Google says the person is, `repo` and `origin` the site the sign-in was
- * started from. Only an account whose `google_sub` is that person, and which
- * owns a kept site (`kept = 1`) with that very repository, is answered:
+ * "Continue with Google", or a link or code sent by email, at a site
+ * (index.js, signInAtSite), for the owner of a site whose files Kiln keeps.
+ * Such an owner has no GitHub account, so these are their way back in once
+ * their session has ended. `sub` is who Google says the person is. With no
+ * `sub`, `email` is the address the person opened the link or typed the code
+ * for, and their account is the one account that address was confirmed for
+ * (confirmedAccounts, the same rule as the dashboard's email sign-in).
+ * `repo` and `origin` are the site the sign-in was started from. Only that
+ * account, and only when it owns a kept site (`kept = 1`) with that very
+ * repository, is answered:
  * { url }, the address with the owner session POST /cloud/sites/editor makes,
  * or, when that route would refuse, { refused, status, title, words,
  * dashboard } for a plain page. Everybody else, and any trouble finding out,
  * is answered null: they go on to the site's list of people as before.
  */
-export async function keptOwnerAtSite(env, { sub, email = null, name = null, repo, origin, returnTo = '/kiln' } = {}, tools = {}) {
-  if (!env.kiln_cloud || typeof sub !== 'string' || !sub || !repo || !origin) return null;
+export async function keptOwnerAtSite(env, { sub = null, email = null, name = null, repo, origin, returnTo = '/kiln' } = {}, tools = {}) {
+  const bySub = typeof sub === 'string' && !!sub;
+  if (!env.kiln_cloud || !repo || !origin || (!bySub && !mailAddress(String(email || '')))) return null;
   let account = null, site = null;
   try {
-    account = await env.kiln_cloud.prepare('SELECT id FROM accounts WHERE google_sub = ?').bind(sub).first();
+    if (bySub) account = await env.kiln_cloud.prepare('SELECT id FROM accounts WHERE google_sub = ?').bind(sub).first();
+    else { const found = await confirmedAccounts(env, email); account = found.length === 1 ? found[0] : null; }
     if (!account || !account.id) return null;
     const find = (columns) => env.kiln_cloud.prepare(`SELECT ${columns} FROM sites WHERE account_id = ? AND lower(repo) = lower(?) AND kept = 1`).bind(account.id, String(repo)).first();
     site = await withAccessUntil(() => find('id, repo, origin, plan, status, access_until'), () => find('id, repo, origin, plan, status'));
   } catch { return null; }   // a database that cannot say whose site this is gives nobody an owner session
   if (!site) return null;
-  const sess = { account_id: account.id, google: { email, name } };
+  const sess = bySub ? { account_id: account.id, google: { email, name } } : { account_id: account.id, byEmail: { email, name } };
   const opened = await openKeptEditor(env, tools, { site, accountId: account.id, who: () => editorPerson(env, sess), at: origin, returnTo });
   if (opened.url) return { url: opened.url };
   const said = AT_SITE_REFUSED[opened.code] || AT_SITE_REFUSED.not_opened;
   return { refused: opened.code, status: opened.status, title: said.title, words: said.words, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' };
+}
+
+/**
+ * Whether `email` is the confirmed address (confirmedAccounts) of the one
+ * account that owns the kept site with repository `repo`. Then a sign-in link
+ * asked for at that site is sent to the address, as to a person on the site's
+ * list, and keptOwnerAtSite lets its owner in. Never throws: what cannot be
+ * read is a no.
+ */
+export async function keptOwnerAddress(env, { email, repo } = {}) {
+  if (!env.kiln_cloud || !repo) return false;
+  try {
+    const found = await confirmedAccounts(env, email);
+    if (found.length !== 1) return false;
+    return !!(await env.kiln_cloud.prepare('SELECT id FROM sites WHERE account_id = ? AND lower(repo) = lower(?) AND kept = 1').bind(found[0].id, String(repo)).first());
+  } catch { return false; }
 }
 
 /**
@@ -2019,6 +2109,33 @@ export async function googleDashboardSignIn(env, state, { identity = null, page 
   const sid = uuid();
   await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: account.id, login: null, uid: null, gh: null, google: { sub, email, name } }), { expirationTtl: 30 * 24 * 3600 });
   return Response.redirect(`${dash}#kc_token=${sid}`, 302);   // the dashboard reads and keeps this, as after a GitHub sign-in
+}
+
+/**
+ * The last step of an email sign-in to the dashboard. index.js hands it over
+ * when the person opened the link or typed the code Kiln sent to `email` for
+ * a request made from the dashboard (for=dashboard), so the address is theirs.
+ * Their account is the one that address was confirmed for, or a new one
+ * (emailAccount). They go back to the dashboard with `#kc_token=<sid>`, as
+ * after a Google sign-in, and the session has `byEmail` with the address
+ * where a Google one has `google`. Anything that goes wrong is a plain page
+ * with the way back to the dashboard.
+ */
+export async function emailDashboardSignIn(env, { email } = {}, { page = plainPage } = {}) {
+  const dash = env.CLOUD_DASHBOARD || 'https://app.kilncms.com';
+  const refuse = (trouble, detail = '') => {
+    console.warn(JSON.stringify({ evt: 'cloud_signin_not_finished', stage: `email_${trouble.code}`, detail: String(detail || '').slice(0, 160) }));
+    return page(troubleBody(forDashboard(trouble), { dashboard: dash }), trouble.status);
+  };
+  const address = mailAddress(String(email || '').trim().toLowerCase());
+  if (!address || !env.kiln_cloud) return refuse(EMAIL_ACCOUNT_NOT_READY, address ? 'no database' : 'no address');
+  let found;
+  try { found = await emailAccount(env, address); }
+  catch (e) { return refuse(EMAIL_ACCOUNT_NOT_READY, e && e.message); }
+  if (found.twice) return refuse(TWO_ACCOUNTS);
+  const sid = uuid();
+  await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: found.account.id, login: null, uid: null, gh: null, byEmail: { email: address, name: found.account.name || null } }), { expirationTtl: 30 * 24 * 3600 });
+  return Response.redirect(`${dash}#kc_token=${sid}`, 302);
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────
@@ -2122,13 +2239,17 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     if (!sess) return json({ error: 'not signed in' }, 401);
     // `name` and `google_sub` arrive with migration 0008. A database it has not
     // reached has neither, and every account there signed in with GitHub.
+    // `signin_email` arrives with migration 0018.
     let row;
-    try { row = await env.kiln_cloud.prepare('SELECT id, github_login, email, ls_customer_id, name, google_sub FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
-    catch { row = await env.kiln_cloud.prepare('SELECT id, github_login, email, ls_customer_id FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
-    // `google` says the person signs in with Google. Google's id for them stays here.
-    const account = row ? { id: row.id, github_login: row.github_login || null, email: row.email ?? null, ls_customer_id: row.ls_customer_id ?? null, name: row.name || null, google: !!row.google_sub } : null;
-    // A person who signs in with Google is shown the address Kiln writes to: the one Google confirmed.
-    if (account && account.google) account.email = await accountEmail(env, sess.account_id);
+    try { row = await env.kiln_cloud.prepare('SELECT id, github_login, email, ls_customer_id, name, google_sub, signin_email FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
+    catch {
+      try { row = await env.kiln_cloud.prepare('SELECT id, github_login, email, ls_customer_id, name, google_sub FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
+      catch { row = await env.kiln_cloud.prepare('SELECT id, github_login, email, ls_customer_id FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
+    }
+    // `google` says the account has a Google id, `by_email` that an email sign-in made it. Neither id nor address of those stays here.
+    const account = row ? { id: row.id, github_login: row.github_login || null, email: row.email ?? null, ls_customer_id: row.ls_customer_id ?? null, name: row.name || null, google: !!row.google_sub, by_email: !!row.signin_email } : null;
+    // Such a person is shown the address Kiln writes to: the one Google or the email sign-in confirmed.
+    if (account && (account.google || account.by_email)) account.email = await accountEmail(env, sess.account_id);
     const sites = await withAccessUntil(
       () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until, created_at, ls_subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
       () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, created_at, ls_subscription_id FROM sites WHERE account_id = ? ORDER BY created_at DESC').bind(sess.account_id).all(),
@@ -2268,7 +2389,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   if (path === '/cloud/account' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     // Nobody confirms an address typed here, so an account that signed in with Google keeps the one Google confirmed.
-    if (withoutGitHub(sess)) return json({ error: GOOGLE_ADDRESS, code: 'google_address' }, 403);
+    if (withoutGitHub(sess)) return json({ error: sess.google ? GOOGLE_ADDRESS : EMAIL_ADDRESS, code: 'google_address' }, 403);
     const { email } = await request.json().catch(() => ({}));
     const clean = email === '' || email === null ? null : mailAddress(email);
     if (email !== '' && email !== null && !clean) return json({ error: 'That does not look like an email address. Please check it and try again.' }, 400);

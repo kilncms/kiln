@@ -481,6 +481,8 @@ export async function forwardsReady(env) {
  *   - the account signs in with Google and the inbox is the address Google
  *     confirmed for it (`google_sub` and `google_email`, migrations 0008 and
  *     0009), or
+ *   - an email sign-in made the account and the inbox is the address that
+ *     sign-in confirmed (`signin_email`, migration 0018), or
  *   - a site of the account forwards to it with a row that is `on`, or
  *   - a site of the account waits for it (as a first set-up, or as a change
  *     beside an address that works) and Cloudflare wrote to the inbox at
@@ -503,6 +505,10 @@ export async function ownsInbox(env, { accountId, inbox }) {
     const account = await env.kiln_cloud.prepare('SELECT google_sub, google_email FROM accounts WHERE id = ?').bind(accountId).first();
     if (account?.google_sub && String(account.google_email || '').trim().toLowerCase() === want) return true;
   } catch { /* a database the two columns have not reached: no account signs in with Google there */ }
+  try {
+    const account = await env.kiln_cloud.prepare('SELECT signin_email FROM accounts WHERE id = ?').bind(accountId).first();
+    if (account?.signin_email && String(account.signin_email).trim().toLowerCase() === want) return true;
+  } catch { /* a database migration 0018 has not reached: no account was made by an email sign-in there */ }
   // What a row has to say about the inbox: it is `on` to it, or it waits for it at its own asking.
   const shown = `((f.inbox = ? AND (f.state = 'on' OR (f.state = 'confirming' AND f.asked_at IS NOT NULL)))
            OR (f.state = 'on' AND f.want_inbox = ? AND f.want_asked_at IS NOT NULL))`;

@@ -88,7 +88,7 @@ const UA = 'kiln-auth-worker';
 const WORKER_VERSION = '0.6.9';
 
 import { startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
-import { handleCloud, googleDashboardSignIn, keptOwnerAtSite, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, userPushAnswer, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
+import { handleCloud, googleDashboardSignIn, emailDashboardSignIn, keptOwnerAtSite, keptOwnerAddress, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, userPushAnswer, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
 import { VIA_KILN } from './prepare.js';
 import { keepsReady, keptStands } from './keeps.js';
@@ -219,7 +219,9 @@ async function routeRequest(request, env, ctx) {
       // `ownerSessions`: an owner's GitHub sign-in can stay on this worker
       // (/auth/login keep=server, /auth/session, /auth/adopt), and the owner's
       // calls then go through /gh/* with a session, as an invited editor's do.
-      const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, aiConfigured: !!env.AI_API_KEY, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ownerSessions: true, keeps: keepsReady(env), brings: bringOn(env), ...deployedBuild(env) };
+      // `emailSignIn`: this worker can send sign-in links (/email/*), so the
+      // dashboard may offer them beside Continue with Google.
+      const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, aiConfigured: !!env.AI_API_KEY, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ownerSessions: true, emailSignIn: customerMailOn(env), keeps: keepsReady(env), brings: bringOn(env), ...deployedBuild(env) };
       // ?deep=1 asks the things publishing depends on. A plain GET stays a
       // constant 200 that touches nothing, as every editor and monitor expects.
       if (url.searchParams.get('deep') === '1') {
@@ -3095,8 +3097,8 @@ async function signInAtSite(env, state, who) {
   // "Open the editor" in the dashboard makes (cloud.js, keptOwnerAtSite), and
   // they get it whether or not they are also on the list of people. Nobody
   // else is answered there: they go on to the list, as before. Such an owner
-  // is known by Google's id for them, so an email sign-in, which has none,
-  // goes on to the list.
+  // is known by Google's id for them, or, after an email sign-in, by the
+  // address it confirmed (the same rule as the dashboard's email sign-in).
   const own = await keptOwnerAtSite(env, { sub: info.sub, email, name: info.name, repo: state.repo, origin: state.origin, returnTo: state.returnTo }, { editorSession: keptEditorSession });
   if (own && own.url) return Response.redirect(own.url, 302);
   if (own) {
@@ -3180,6 +3182,12 @@ async function signInAtSite(env, state, who) {
 // An address that is not on the list gets the very same page, and its window
 // an ecode record with no code and no address, so a typed code is answered
 // as a wrong one is for a real request. Nothing is sent to it.
+//
+// The same pages sign a person in to the Kiln dashboard when they were opened
+// with for=dashboard (the dashboard's "Get a sign-in link by email"). Then
+// every address is sent a link, because signing in with a new one makes an
+// account (cloud.js, emailDashboardSignIn), and the records carry
+// { for: 'dashboard', dash } where a site's carry its origin, page and repo.
 
 const EMAIL_SIGN_IN_SECONDS = 15 * 60;
 const EMAIL_CODE_TRIES = 5;
@@ -3195,16 +3203,20 @@ function sixDigits() {
 }
 const siteWords = (origin) => { try { return new URL(origin).host; } catch { return 'this site'; } };
 const secondsLeft = (exp) => Math.max(60, Math.ceil((exp - Date.now()) / 1000));
-const placeFields = (place) => [['origin', 'origin'], ['return_to', 'returnTo'], ['repo', 'repo']].map(([name, k]) => `<input type="hidden" name="${name}" value="${esc(place[k])}">`).join('');
-const askAgainLink = (place) => `/email/login?${new URLSearchParams({ origin: place.origin, return_to: place.returnTo, repo: place.repo })}`;
-const backToSite = (place) => `<p><a href="${esc(place.origin + place.returnTo)}">Back to the site</a></p>`;
+const placeFields = (place) => (place.for ? '<input type="hidden" name="for" value="dashboard">'
+  : [['origin', 'origin'], ['return_to', 'returnTo'], ['repo', 'repo']].map(([name, k]) => `<input type="hidden" name="${name}" value="${esc(place[k])}">`).join(''));
+const askAgainLink = (place) => (place.for ? '/email/login?for=dashboard' : `/email/login?${new URLSearchParams({ origin: place.origin, return_to: place.returnTo, repo: place.repo })}`);
+const backToSite = (place) => (place.for ? `<p><a href="${esc(place.dash)}">Back to the Kiln dashboard</a></p>` : `<p><a href="${esc(place.origin + place.returnTo)}">Back to the site</a></p>`);
+const dashboardPlace = (env) => ({ for: 'dashboard', dash: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' });
 const FIELD = 'font:inherit;width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #ccc;border-radius:8px;margin-top:4px';
 
-const EMAIL_OFF = `<h1>Email sign-in is not set up on this service</h1>
-  <p>This Kiln service cannot send email, so it cannot send sign-in links. Go back and use Continue with Google, or ask the site's owner how to sign in.</p>`;
-const LINK_GONE = `<h1>This sign-in link no longer works</h1>
+const emailOff = (place) => `<h1>Email sign-in is not set up on this service</h1>
+  <p>This Kiln service cannot send email, so it cannot send sign-in links. ${place.for
+    ? 'Go back to the Kiln dashboard and use Continue with Google or Continue with GitHub.'
+    : "Go back and use Continue with Google, or ask the site's owner how to sign in."}</p>${place.for ? backToSite(place) : ''}`;
+const linkGone = (place) => `<h1>This sign-in link no longer works</h1>
   <p>A sign-in link works once, for 15 minutes. This one has been used or has run out.</p>
-  <p>To get a new one, go back to the site's sign-in page and press Get a sign-in link by email.</p>`;
+  <p>To get a new one, go back to ${place && place.for ? 'the Kiln dashboard' : "the site's sign-in page"} and press Get a sign-in link by email.</p>${place && place.for ? backToSite(place) : ''}`;
 const codeGone = (place) => `<h1>This code no longer works</h1>
   <p>A code works once, for 15 minutes, in the window that asked for it. This one has been used or has run out.</p>
   <p><a class="btn" href="${esc(askAgainLink(place))}">Ask for a new link</a></p>`;
@@ -3223,6 +3235,8 @@ function privatePage(res) {
  * page that says why not.
  */
 async function emailPlace(env, get) {
+  // A sign-in to the dashboard goes back to this service's own setting: nothing in the request can name another place.
+  if (get('for') === 'dashboard') return env.kiln_cloud ? { place: dashboardPlace(env) } : { res: html('<h1>Not found</h1>', 404) };
   const origin = String(get('origin') || '');
   const returnTo = String(get('return_to') || '/');
   const repo = String(get('repo') || '');
@@ -3234,7 +3248,9 @@ async function emailPlace(env, get) {
 
 function emailAskPage(place, { note = '', email = '' } = {}, status = 200) {
   return privatePage(html(`<h1>Get a sign-in link by email</h1>
-    <p>Type the email address the owner of ${esc(siteWords(place.origin))} added for you. We will send it a link to sign in, and a code you can type here instead.</p>
+    ${place.for
+      ? '<p>Type your email address. We will send it a link to sign in to your Kiln dashboard, and a code you can type here instead. There is no password. If you are new to Kiln, signing in this way makes your account.</p>'
+      : `<p>Type the email address the owner of ${esc(siteWords(place.origin))} added for you. We will send it a link to sign in, and a code you can type here instead.</p>`}
     ${note ? `<p><strong>${esc(note)}</strong></p>` : ''}
     <form method="post" action="/email/login">${placeFields(place)}
       <p><label for="email">Email address</label><br>
@@ -3247,7 +3263,9 @@ function emailAskPage(place, { note = '', email = '' } = {}, status = 200) {
 function emailCheckPage(place, { req, email = '', note = '' }, status = 200) {
   const site = esc(siteWords(place.origin));
   return privatePage(html(`<h1>Check your email</h1>
-    ${email
+    ${place.for
+      ? `<p>A link to sign in to your Kiln dashboard is on its way to ${email ? esc(email) : 'the address you typed'}. The link works once, for 15 minutes.</p>`
+      : email
       ? `<p>If ${esc(email)} can sign in to ${site}, a link is on its way to it. The link works once, for 15 minutes.</p>`
       : `<p>If the address you typed can sign in to ${site}, a link is on its way to it. The link works once, for 15 minutes.</p>`}
     <p>You can also type the code from the email here.</p>
@@ -3257,14 +3275,16 @@ function emailCheckPage(place, { req, email = '', note = '' }, status = 200) {
       <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required style="${FIELD}"></p>
       <p><button class="btn" type="submit">Sign in</button></p>
     </form>
-    <p class="dim">No email after a few minutes? Look in your spam folder, and check that this is the address the site's owner added for you. If it is not on the site's list, no email is sent. <a href="${esc(askAgainLink(place))}">Ask for a new link</a></p>`, status));
+    <p class="dim">No email after a few minutes? Look in your spam folder, and ${place.for
+      ? 'check that you typed the address the way you meant to.'
+      : "check that this is the address the site's owner added for you. If it is not on the site's list, no email is sent."} <a href="${esc(askAgainLink(place))}">Ask for a new link</a></p>`, status));
 }
 
 /** GET /email/login: the page that asks for an address, or says this service sends no email. */
 async function emailLoginPage(url, env) {
   const { place, res } = await emailPlace(env, (k) => url.searchParams.get(k));
   if (res) return res;
-  if (!customerMailOn(env)) return html(EMAIL_OFF, 503);
+  if (!customerMailOn(env)) return html(emailOff(place), 503);
   return emailAskPage(place);
 }
 
@@ -3278,7 +3298,7 @@ async function emailLoginSend(request, url, env) {
   const get = (k) => (form ? form.get(k) : null);
   const { place, res } = await emailPlace(env, get);
   if (res) return res;
-  if (!customerMailOn(env)) return html(EMAIL_OFF, 503);
+  if (!customerMailOn(env)) return html(emailOff(place), 503);
   const typed = String(get('email') || '').trim();
   const email = typed.toLowerCase();
   if (!mailAddress(email)) return emailAskPage(place, { note: 'That does not look like an email address. Check it and try again.', email: typed }, 400);
@@ -3298,14 +3318,19 @@ async function emailLoginSend(request, url, env) {
   const req = randomHex(32);
   const reqHash = await sha256Hex(req);
   const exp = now + EMAIL_SIGN_IN_SECONDS * 1000;
-  const person = (await getPeople(env, place.repo)).find(p => p.email === email);
+  // For the dashboard every address may sign in: a new one makes an account. At a site,
+  // the owner of a site whose files Kiln keeps may too (cloud.js, keptOwnerAtSite).
+  const person = place.for ? true
+    : (await getPeople(env, place.repo)).find(p => p.email === email) || await keptOwnerAddress(env, { email, repo: place.repo });
   if (person) {
     const token = randomHex(32);
     const code = sixDigits();
     const linkHash = await sha256Hex(token);
     await env.KILN.put(`elink:${linkHash}`, JSON.stringify({ ...place, email, req: reqHash, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
     await env.KILN.put(`ecode:${reqHash}`, JSON.stringify({ ...place, email, code: await sha256Hex(`${req}:${code}`), link: linkHash, tries: 0, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
-    await sendMail(env, email, signInLinkMail({ site: siteWords(place.origin), link: `${url.origin}/email/open?t=${token}`, code }));
+    await sendMail(env, email, place.for
+      ? signInLinkMail({ dashboard: true, link: `${url.origin}/email/open?t=${token}&for=dashboard`, code })
+      : signInLinkMail({ site: siteWords(place.origin), link: `${url.origin}/email/open?t=${token}`, code }));
   } else {
     await env.KILN.put(`ecode:${reqHash}`, JSON.stringify({ ...place, code: null, link: null, tries: 0, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
   }
@@ -3320,10 +3345,11 @@ async function emailLoginSend(request, url, env) {
 async function emailOpenPage(url, env) {
   const token = url.searchParams.get('t') || '';
   const rec = /^[a-f0-9]{64}$/.test(token) ? await env.KILN.get(`elink:${await sha256Hex(token)}`, 'json') : null;
-  if (!rec || !(rec.exp > Date.now())) return privatePage(html(LINK_GONE, 410));
-  return privatePage(html(`<h1>Sign in to ${esc(siteWords(rec.origin))}</h1>
+  // `for` in the address only picks the words of the page for a link that no longer works.
+  if (!rec || !(rec.exp > Date.now())) return privatePage(html(linkGone(url.searchParams.get('for') === 'dashboard' ? dashboardPlace(env) : null), 410));
+  return privatePage(html(`<h1>${rec.for ? 'Sign in to your Kiln dashboard' : `Sign in to ${esc(siteWords(rec.origin))}`}</h1>
     <p>This link signs in ${esc(rec.email)}. Press Sign in to go on.</p>
-    <form method="post" action="/email/open"><input type="hidden" name="t" value="${esc(token)}">
+    <form method="post" action="/email/open"><input type="hidden" name="t" value="${esc(token)}">${rec.for ? placeFields(rec) : ''}
       <p><button class="btn" type="submit">Sign in</button></p>
     </form>`));
 }
@@ -3332,13 +3358,20 @@ async function emailOpenPage(url, env) {
 async function emailOpenFinish(request, env) {
   const form = await request.formData().catch(() => null);
   const token = String((form && form.get('t')) || '');
-  if (!/^[a-f0-9]{64}$/.test(token)) return privatePage(html(LINK_GONE, 410));
+  const gone = () => privatePage(html(linkGone(form && form.get('for') === 'dashboard' ? dashboardPlace(env) : null), 410));
+  if (!/^[a-f0-9]{64}$/.test(token)) return gone();
   const key = `elink:${await sha256Hex(token)}`;
   const rec = await env.KILN.get(key, 'json');
-  if (!rec) return privatePage(html(LINK_GONE, 410));
+  if (!rec) return gone();
   await env.KILN.delete(key);
   if (rec.req) await env.KILN.delete(`ecode:${rec.req}`);   // the code in the same email goes with it
-  if (!(rec.exp > Date.now())) return privatePage(html(LINK_GONE, 410));
+  if (!(rec.exp > Date.now())) return gone();
+  return emailSignedIn(env, rec);
+}
+
+/** Where a sign-in by email ends once the address is known to be the person's: the dashboard's, or the site's. */
+function emailSignedIn(env, rec) {
+  if (rec.for === 'dashboard') return emailDashboardSignIn(env, { email: rec.email }, { page: html });
   return signInAtSite(env, { origin: rec.origin, returnTo: rec.returnTo, repo: rec.repo }, { email: rec.email });
 }
 
@@ -3358,7 +3391,7 @@ async function emailCodeFinish(request, env) {
   const key = `ecode:${await sha256Hex(req)}`;
   const rec = await env.KILN.get(key, 'json');
   // A window's code is for the site and the page it was asked for at, and no other.
-  if (!rec || !(rec.exp > Date.now()) || rec.origin !== place.origin || rec.repo !== place.repo || rec.returnTo !== place.returnTo) {
+  if (!rec || !(rec.exp > Date.now()) || rec.for !== place.for || rec.origin !== place.origin || rec.repo !== place.repo || rec.returnTo !== place.returnTo) {
     return privatePage(html(codeGone(place), 410));
   }
   const right = !!rec.code && /^\d{6}$/.test(code) && (await sha256Hex(`${req}:${code}`)) === rec.code;
@@ -3377,7 +3410,7 @@ async function emailCodeFinish(request, env) {
   }
   await env.KILN.delete(key);
   if (rec.link) await env.KILN.delete(`elink:${rec.link}`);
-  return signInAtSite(env, { origin: rec.origin, returnTo: rec.returnTo, repo: rec.repo }, { email: rec.email });
+  return emailSignedIn(env, rec);
 }
 
 /**
