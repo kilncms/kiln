@@ -20,11 +20,15 @@
 
   <div class="login-card">
     <h1>Members area</h1>
-    <p id="msg">Sign in with the Google account the site owner added.</p>
+    <p id="msg">Sign in with the email address the site owner added: with Google, or with a link we send to it.</p>
 
     <button class="g-btn" id="google">
       <svg width="17" height="17" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z"/><path fill="#FBBC05" d="M5.84 14.1A6.6 6.6 0 0 1 5.5 12c0-.73.13-1.43.34-2.1V7.06H2.18A11 11 0 0 0 1 12c0 1.77.43 3.45 1.18 4.94l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.16-3.16A10.97 10.97 0 0 0 12 1 11 11 0 0 0 2.18 7.06l3.66 2.84C6.71 7.3 9.14 5.38 12 5.38z"/></svg>
       Continue with Google
+    </button>
+    <button class="g-btn" id="email" style="margin-top:10px">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#1c1c28" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M3 6.5l9 6.5 9-6.5"/></svg>
+      Get a sign-in link by email
     </button>
   </div>
 
@@ -43,26 +47,28 @@
         location.href = to;
       }
 
-      // One-time code handed back by the kiln-auth worker after a verified Google sign-in.
+      // One-time code handed back by the kiln-auth worker after a sign-in with Google or by email.
       var g = location.hash.match(/kiln-gcode=([a-f0-9]{32})/);
       if (g) {
         history.replaceState(null, '', location.pathname + location.search);
-        msg.textContent = 'Finishing Google sign-in…';
+        msg.textContent = 'Finishing sign-in…';
         fetch('/api/member-redeem-google', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ code: g[1] }),
         }).then(function (r) { return r.json(); }).then(function (d) {
           if (d.ok) done(d.name);
-          else msg.textContent = 'Sign-in expired — press the Google button to try again.';
+          else msg.textContent = 'That sign-in ran out. Press a button to sign in again.';
         }).catch(function () { msg.textContent = 'Network error — try again.'; });
       }
 
-      document.getElementById('google').onclick = function () {
+      function go(way) {
         var cfg = window.KILN || {};
-        location.href = cfg.worker + '/google/login?origin=' + encodeURIComponent(location.origin) +
+        location.href = cfg.worker + '/' + way + '/login?origin=' + encodeURIComponent(location.origin) +
           '&return_to=' + encodeURIComponent(to) + '&repo=' + encodeURIComponent(cfg.repo || '');
-      };
+      }
+      document.getElementById('google').onclick = function () { go('google'); };
+      document.getElementById('email').onclick = function () { go('email'); };
     })();
   </script>
 

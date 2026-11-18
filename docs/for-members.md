@@ -9,11 +9,15 @@ it. Here's how to get in.
    to the site's members login page (`yoursite.com/members-login.html`). If you try a
    members page while signed out, you'll be sent to the login page automatically, and
    after signing in you'll land right back where you were headed.
-2. Click **Continue with Google**.
+2. Click **Continue with Google**, or **Get a sign-in link by email**.
 3. Use the **exact email address the owner added for you**. If they added your
    personal address and you sign in with your work one, it won't match.
 
-You need a Google account on that email. Gmail addresses have one automatically, and
+With the email link, Kiln sends that address an email with a link and a 6-digit code.
+Open the link and press **Sign in**, or type the code in the window where you asked for
+it. The link and the code work once, for 15 minutes.
+
+To use Google instead, you need a Google account on that email. Gmail addresses have one automatically, and
 many work addresses do too. If your email has no Google account, you can create one
 for it for free at [accounts.google.com](https://accounts.google.com/signup) (choose
 "Use your existing email"), or ask the owner to add an address of yours that does.
@@ -28,7 +32,7 @@ a few seconds.
 
 ## "You're not on the list (yet)"
 
-This message means the Google account you signed in with isn't on the site's member
+This message means the address you signed in with isn't on the site's member
 list. It usually comes down to one of two things:
 
 - You used a different email than the one the owner added. Try the other one.

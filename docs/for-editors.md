@@ -9,9 +9,16 @@ You do not need a GitHub account. You don't need to install anything.
 
 1. Go to **yoursite.com/kiln** (swap in the site's real address — the owner will have
    told you, or it's just the site you already know with `/kiln` on the end).
-2. Click **Continue with Google**.
-3. Sign in with the **exact Google email the owner added for you**. If they added
+2. Click **Continue with Google**, or **Get a sign-in link by email** if you would rather
+   not use Google.
+3. Use the **exact email address the owner added for you**. If they added
    `pat@gmail.com` and you sign in as `pat.smith@work.com`, it won't match.
+
+With the email link, type your address and press **Send the link**. Kiln sends an email
+with a link and a 6-digit code. Open the link and press **Sign in**, or type the code in
+the window where you asked for it. The link and the code work once, for 15 minutes. If
+no email comes, look in your spam folder and check that you typed the address the owner
+added: an address that is not on the site's list gets no email.
 
 That's the whole login. You stay signed in for as many days as the owner chose when
 they added you (anywhere from 1 to 360 days, or indefinitely). When it runs out, you
@@ -260,8 +267,8 @@ heading, publish it, see what happened. They are shown once.
 
 ## Common questions
 
-**Do I need a Gmail address?** You need a Google account, but it can be attached to
-any email address (many work emails are Google accounts already).
+**Do I need a Gmail address?** No. You can sign in with a Google account, which can be
+attached to any email address, or with a link Kiln sends to the address the owner added.
 
 **Where do my changes actually go?** Into the site's source on GitHub, as a change
 recorded under your name. You never touch GitHub yourself; Kiln handles it.
