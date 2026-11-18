@@ -611,10 +611,11 @@ npx wrangler secret list --env production</pre>
         <li><strong>A person who signs in with GitHub is found by GitHub's permanent number,</strong> not by their login name. A person who renames their GitHub login keeps their dashboard, and the new login is written down at their next sign-in.</li>
         <li><strong>An account made before Kiln kept that number</strong> gets it the next time its person signs in. To fill the numbers in at once, run <code>node scripts/fill-github-ids.mjs LOGIN</code>. It only prints the database statements, and <code>ENVIRONMENTS.md</code> says how to check and run them.</li>
         <li><strong>A person who signed in with Google only</strong> has an account by email address, and no login. The admin page shows the address in place of a login.</li>
+        <li><strong>A person who signed in with a link sent by email</strong> has an account by the address that link went to (<code>signin_email</code>), and no login. An email sign-in finds an account only by that address or by the one Google confirmed (<code>google_email</code>), never by <code>email</code>, which GitHub reports. If such a person later signs in with Google at the same address, it stays one account. If two accounts have the same confirmed address, an email sign-in signs nobody in and tells the person to use Google.</li>
         <li><strong>You are the operator</strong> because your GitHub number is in <code>CLOUD_ADMIN_ID</code>. A stranger who registers your old login gets nothing.</li>
       </ul>
       <p>To find a person's account by their address:</p>
-      <pre>npx wrangler d1 execute kiln-cloud --env production --remote --command "SELECT id, github_login, email FROM accounts WHERE email = 'ADDRESS';"</pre>
+      <pre>npx wrangler d1 execute kiln-cloud --env production --remote --command "SELECT id, github_login, email, google_email, signin_email FROM accounts WHERE email = 'ADDRESS' OR google_email = 'ADDRESS' OR signin_email = 'ADDRESS';"</pre>
       <h3 class="sub">Removing a person's data on request</h3>
       <p>Follow <code>docs/deleting-data.md</code> in the repository. It lists everything Kiln keeps about a person or a site, where each part is, and the steps for three cases: an invited person, a customer's whole account, and an owner who leaves and keeps their site. Add <code>--env production</code> to each command you take from it.</p>
     </section>

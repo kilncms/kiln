@@ -70,7 +70,7 @@ The home page of **[kilncms.com](https://kilncms.com)** is itself a Kiln site: t
    `kiln tag`, by clicking in the browser, or by giving [KILN_PROMPT.md](KILN_PROMPT.md)
    to the AI that built the site), plus two script tags.
 2. **Sign in at `yoursite.com/kiln`.** The owner signs in with GitHub. Invited editors
-   sign in with Google and need no GitHub account.
+   sign in with Google, or with a link sent to their email address, and need no GitHub account.
 3. **Click and type.** A round Kiln button appears in the corner. Every outlined part of
    the page can be clicked and changed where it stands.
 4. **Publish.** A sheet shows each change before and after. Publishing saves the edited

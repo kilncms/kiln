@@ -44,29 +44,34 @@ export function mailAddress(v) {
  * the account's name. An account that signed in with Google is written to at
  * the address Google confirmed at its last sign-in (`google_email`, migration
  * 0009) and at no other, whatever `email` holds: nobody confirmed that one. An
- * account that signed in with GitHub is written to at `email`, as before.
+ * account an email sign-in made is written to at the address that sign-in
+ * confirmed (`signin_email`, migration 0018), until it signs in with Google
+ * too. An account that signed in with GitHub is written to at `email`, as
+ * before.
  *
  * `addressSql` is that rule as SQL, for a query that reads `accounts a`: it
  * gives one column named `email`. A database the column has not reached is
- * asked the nearest thing it can answer: with migration 0008 alone a Google
+ * asked the nearest thing it can answer: before 0018 no account was made by
+ * an email sign-in, with migration 0008 alone a Google
  * account has no address Kiln may use, and before 0008 every account signed in
  * with GitHub.
  */
 const ADDRESS_SQL = [
+  'CASE WHEN a.google_sub IS NOT NULL THEN a.google_email WHEN a.signin_email IS NOT NULL THEN a.signin_email ELSE a.email END AS email',
   'CASE WHEN a.google_sub IS NOT NULL THEN a.google_email ELSE a.email END AS email',
   'CASE WHEN a.google_sub IS NOT NULL THEN NULL ELSE a.email END AS email',
   'a.email AS email',
 ];
-const hasGoogleEmail = new WeakSet();   // databases known to have the column, so most queries ask nothing first
+const hasSigninEmail = new WeakSet();   // databases known to have the newest column, so most queries ask nothing first
 export async function addressSql(env) {
   const db = env.kiln_cloud;
-  if (hasGoogleEmail.has(db)) return ADDRESS_SQL[0];
-  try { await db.prepare('SELECT google_email FROM accounts LIMIT 1').first(); }
-  catch {
-    try { await db.prepare('SELECT google_sub FROM accounts LIMIT 1').first(); return ADDRESS_SQL[1]; }
-    catch { return ADDRESS_SQL[2]; }
+  if (hasSigninEmail.has(db)) return ADDRESS_SQL[0];
+  const has = async (column) => { try { await db.prepare(`SELECT ${column} FROM accounts LIMIT 1`).first(); return true; } catch { return false; } };
+  if (!(await has('signin_email'))) {
+    if (await has('google_email')) return ADDRESS_SQL[1];
+    return (await has('google_sub')) ? ADDRESS_SQL[2] : ADDRESS_SQL[3];
   }
-  try { hasGoogleEmail.add(db); } catch { /* asked again next time */ }
+  try { hasSigninEmail.add(db); } catch { /* asked again next time */ }
   return ADDRESS_SQL[0];
 }
 
@@ -488,16 +493,19 @@ export function domainMovedMail({ name, tempUrl, dashboard }) {
  * read, such as example.com. `link`: the page that signs them in. `code`: the
  * six digits they can type instead, in the window that asked.
  */
-export function signInLinkMail({ site, link, code }) {
+export function signInLinkMail({ site, link, code, dashboard = false }) {
   const name = String(site || '').replace(/[\s\u0000-\u001f]+/g, ' ').trim() || 'your site';
-  return message(`Your sign-in link for ${name}`, [
+  const lines = (to) => [
     'Hello,',
-    `To sign in to ${name}, open this link and press Sign in:`,
+    `To sign in to ${to}, open this link and press Sign in:`,
     link,
     `Or type this code in the window where you asked for the link: ${code}`,
     'The link and the code work once, for 15 minutes.',
     'If you did not ask to sign in, you can ignore this email. Nobody can sign in without the link or the code.',
-  ], `You are getting this because someone asked for a sign-in link for ${name} with this email address, and the site's owner added it to the site.`);
+  ];
+  // `dashboard`: asked for from the Kiln dashboard's sign-in (index.js, for=dashboard), where any address may sign in.
+  if (dashboard) return message('Your sign-in link for Kiln', lines('your Kiln dashboard'), 'You are getting this because someone asked for a sign-in link for the Kiln dashboard with this email address.');
+  return message(`Your sign-in link for ${name}`, lines(name), `You are getting this because someone asked for a sign-in link for ${name} with this email address, and the site's owner added it to the site.`);
 }
 
 /** True when this worker is set up to write to customers at all. */

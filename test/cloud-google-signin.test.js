@@ -95,7 +95,7 @@ test('Google sign-in to the dashboard: the first one makes an account and a sess
     const sid = tokenOf(res);
     const account = { ...env.kiln_cloud.row("SELECT * FROM accounts WHERE google_sub = 'g-1001'") };
     assert.match(account.id, /^[0-9a-f-]{36}$/);
-    assert.deepEqual({ ...account, id: 'x', created_at: 0 }, { id: 'x', github_login: null, email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: 'g-1001', name: 'Rosa Diaz', google_email: 'rosa@example.com', github_id: null, stripe_customer_id: null });
+    assert.deepEqual({ ...account, id: 'x', created_at: 0 }, { id: 'x', github_login: null, email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: 'g-1001', name: 'Rosa Diaz', google_email: 'rosa@example.com', github_id: null, stripe_customer_id: null, signin_email: null });
     assert.deepEqual(JSON.parse(env.KILN.map.get(`csess:${sid}`)), { account_id: account.id, login: null, uid: null, gh: null, google: { sub: 'g-1001', email: 'rosa@example.com', name: 'Rosa Diaz' } });
     const life = env.KILN.expires.get(`csess:${sid}`) - Date.now() / 1000;
     assert.ok(life > 30 * 86400 - 60 && life <= 30 * 86400, 'the session lasts 30 days');
@@ -222,19 +222,19 @@ test('/cloud/me: a Google account says who it is and that it has no GitHub login
   const sid = tokenOf((await signIn(env)).res);
   const mine = await (await get(env, '/cloud/me', sid)).json();
   const id = JSON.parse(env.KILN.map.get(`csess:${sid}`)).account_id;
-  assert.deepEqual(mine.account, { id, github_login: null, email: 'rosa@example.com', ls_customer_id: null, name: 'Rosa Diaz', google: true });
+  assert.deepEqual(mine.account, { id, github_login: null, email: 'rosa@example.com', ls_customer_id: null, name: 'Rosa Diaz', google: true, by_email: false });
   assert.deepEqual(mine.sites, []);
   assert.equal(JSON.stringify(mine).includes('g-1001'), false, 'Google\'s id for the person stays in the service');
 
   addSite(env);
   const ada = await (await get(env, '/cloud/me', 'tok')).json();
-  assert.deepEqual(ada.account, { id: 'acct-1', github_login: 'ada', email: 'ada@example.com', ls_customer_id: null, name: null, google: false });
+  assert.deepEqual(ada.account, { id: 'acct-1', github_login: 'ada', email: 'ada@example.com', ls_customer_id: null, name: null, google: false, by_email: false });
   assert.equal(ada.sites.length, 1);
 
   // a database migration 0008 has not reached: a GitHub account still reads
   const old = cloud({ d1: { upTo: 7 } });
   const before = await (await get(old, '/cloud/me', 'tok')).json();
-  assert.deepEqual(before.account, { id: 'acct-1', github_login: 'ada', email: 'ada@example.com', ls_customer_id: null, name: null, google: false });
+  assert.deepEqual(before.account, { id: 'acct-1', github_login: 'ada', email: 'ada@example.com', ls_customer_id: null, name: null, google: false, by_email: false });
 });
 
 test('a Google account cannot add a repository, reach one, or be the operator', { skip: d1Skip }, async () => {
@@ -297,7 +297,7 @@ test('a GitHub sign-in to the dashboard is exactly as before: the same session, 
     const sid = tokenOf(res);
     const row = { ...env.kiln_cloud.row("SELECT * FROM accounts WHERE github_login = 'rosa'") };
     assert.deepEqual(JSON.parse(env.KILN.map.get(`csess:${sid}`)), { account_id: row.id, login: 'rosa', uid: 7, gh: 'ghu_new' });
-    assert.deepEqual({ ...row, id: 'x', created_at: 0 }, { id: 'x', github_login: 'rosa', email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: null, name: null, google_email: null, github_id: 7, stripe_customer_id: null });
+    assert.deepEqual({ ...row, id: 'x', created_at: 0 }, { id: 'x', github_login: 'rosa', email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: null, name: null, google_email: null, github_id: 7, stripe_customer_id: null, signin_email: null });
     // the same person then signs in with Google at the same address: a second account, and the first is as it was
     const g = tokenOf((await signIn(env)).res);
     assert.notEqual(JSON.parse(env.KILN.map.get(`csess:${g}`)).account_id, row.id);
