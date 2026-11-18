@@ -32,6 +32,24 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hosting (`LS_VARIANT_CLOUD_YEARLY`) beside the one of the hosting plan.
   Subscribe then asks "Pay monthly" or "Pay yearly", and a domain is named
   only for the hosting plan, and only where names can be registered.
+- **Anyone without GitHub can sign in with a link sent to their email.** Next to
+  Continue with Google there is now Get a sign-in link by email: on a site's
+  sign-in card and on the members sign-in page for the editors and members the
+  owner invited, and on the dashboard for owners with no GitHub account, who
+  can also start on Kiln with nothing but an email address. Kiln sends the
+  address a link and a 6-digit code. Opening the link and pressing Sign in, or
+  typing the code in the window that asked, signs the person in, exactly as
+  Google would. There are no passwords: the service keeps only scrambled
+  copies of the link and the code, for 15 minutes, and each works once. An
+  address that is not invited gets the same answer and no email, so nobody can
+  learn who is invited, and an address can ask for at most three links in 15
+  minutes. A dashboard account is found only by an address Kiln itself has
+  confirmed (by an email sign-in or by Google), never by the address GitHub
+  reports, and an account linked to GitHub is never reached this way; Google
+  and email at the same address are one account. A service that cannot send
+  email says so on the page instead. Database migration 0018 adds the
+  confirmed sign-in address and must be applied before the service; the
+  dashboard shows its button only once the service says it can send links.
 
 ### Fixed
 
