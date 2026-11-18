@@ -27,6 +27,7 @@ import { gh, kilnConfigFile } from './prepare.js';
 import { previewPattern } from './hosting.js';
 import { keepsReady, keepOrg, keepToken, forgetKeepToken, cleanName, startKept } from './keeps.js';
 import { sendOnce, trialEndsAt, siteCopiedMail, copyFailedMail, accountAddress } from './mail.js';
+import { subscriptionSql } from './billing.js';
 
 const CONFIG_FILE = 'assets/kiln-config.js';
 export const SETTINGS_MESSAGE = "This site's Kiln settings";
@@ -218,7 +219,7 @@ async function ownSite(env, accountId, id) {
 const ownerEmail = (env, accountId) => accountAddress(env, accountId);
 
 async function hasPaidSite(env, accountId) {
-  try { return Number((await env.kiln_cloud.prepare('SELECT COUNT(*) n FROM sites WHERE account_id = ? AND ls_subscription_id IS NOT NULL').bind(accountId).first())?.n) > 0; }
+  try { return Number((await env.kiln_cloud.prepare(`SELECT COUNT(*) n FROM sites WHERE account_id = ? AND ${await subscriptionSql(env)} IS NOT NULL`).bind(accountId).first())?.n) > 0; }
   catch { return false; }
 }
 

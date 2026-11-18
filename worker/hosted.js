@@ -33,6 +33,7 @@ import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSenten
 import { gh, refPath, VIA_KILN } from './prepare.js';
 import { keepEditorsCurrent, finishCare, setPreviews } from './lookafter.js';
 import { domainRow, saveDomain, forgetDomain, detachDomain, removeWaitingDomain } from './domain.js';
+import { subscriptionSql } from './billing.js';
 
 const LOCK_S = 300;
 const RETRY_AFTER_MS = 2 * 60 * 1000;        // a failed copy is tried again this long after it failed
@@ -566,8 +567,9 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
   let rows = [];
   try {
     // The columns of migration 0014 are asked for, and left out on a database it has not reached.
+    const paidBy = await subscriptionSql(env, 's.');
     const ask = async (more) => env.kiln_cloud.prepare(
-      `SELECT s.id, s.repo, s.status, s.access_until, s.plan, s.created_at, s.ls_subscription_id, s.firstpass_at, h.name, h.state, h.branch, h.commit_sha, h.wanted_sha, h.checked_at, h.updated_at, h.deployed_at${more}
+      `SELECT s.id, s.repo, s.status, s.access_until, s.plan, s.created_at, s.ls_subscription_id, ${paidBy} AS subscription_id, s.firstpass_at, h.name, h.state, h.branch, h.commit_sha, h.wanted_sha, h.checked_at, h.updated_at, h.deployed_at${more}
        FROM hosting h LEFT JOIN sites s ON s.id = h.site_id ORDER BY COALESCE(h.checked_at, 0)`).all();
     rows = (await ask(BUILT_COLUMNS).catch(() => ask('')))?.results || [];
     // (`h.deployed_at` is read with the rest: a site that was never up needs no notice before it is cleared away.)

@@ -507,6 +507,12 @@ and are never in a file. A self-hosted worker needs only the rows marked
 | `GOOGLE_CLIENT_ID` | secret | Google sign-in for invited editors and members | Google Cloud console → Credentials → OAuth client (web). Redirect URI: `<worker>/google/callback` | production; optional for self-host and staging |
 | `GOOGLE_CLIENT_SECRET` | secret | the same client's secret | same place | with the id |
 | `AI_API_KEY` | secret | AI assist (the owner's own Anthropic key) | console.anthropic.com | optional; without it `/ai/assist` answers 501 |
+| `STRIPE_SECRET_KEY` | secret | makes Stripe the billing company (Stripe Managed Payments, `worker/billing.js`): creates Checkout Sessions, opens the Billing Portal, cancels subscriptions on Remove, reads the account and the prices for the admin page. Once it is set, the `LS_*` settings below are no longer used for new payments | Stripe Dashboard → Developers → API keys, the secret key (or a restricted key with Checkout Sessions, Billing Portal, Subscriptions, Prices and Account) | staging with a sandbox key, production with the live key, once the owner switches to Stripe |
+| `STRIPE_WEBHOOK_SECRET` | secret | verifies that a notice at `/cloud/webhook/stripe` came from Stripe. Without it every notice there is refused | Stripe Dashboard → Developers → Webhooks → the endpoint → Signing secret | with the secret key |
+| `STRIPE_PRICE_CLOUD` | secret | the price id of Kiln Cloud paid by the month (product tax code `txcd_10103001`, software as a service for business use) | Stripe Dashboard → Product catalog → the product → the price's id | with the secret key |
+| `STRIPE_PRICE_MANAGED` | secret | the price id of Kiln Cloud + hosting paid by the month (product tax code `txcd_10701100`, website hosting) | same | with the secret key |
+| `STRIPE_PRICE_CLOUD_YEARLY` | secret | the price id of Kiln Cloud paid by the year. Without it Subscribe offers that plan by the month only, and the webhook treats that price as one it does not sell | same | once the yearly price exists in Stripe |
+| `STRIPE_PRICE_MANAGED_YEARLY` | secret | the price id of Kiln Cloud + hosting paid by the year (it includes a domain). Without it nothing knows of a yearly hosting plan | same | once the yearly price exists in Stripe |
 | `LS_API_KEY` | secret | creates checkouts, reads and cancels subscriptions | Lemon Squeezy → Settings → API | production (test-mode key on staging) |
 | `LS_STORE_ID` | secret | the store checkouts belong to | Lemon Squeezy → Settings → Stores | with the API key |
 | `LS_VARIANT_CLOUD` | secret | the variant id of the Kiln Cloud plan | Lemon Squeezy → the product → variant | with the API key |
@@ -524,9 +530,22 @@ and are never in a file. A self-hosted worker needs only the rows marked
 | `GH_WEBHOOK_SECRET` | secret | verifies that a notice at `/gh/webhook` came from GitHub. Without it that route answers 404 | you choose it, and enter the same value in the GitHub App's settings (Webhook secret) | with the hosting token |
 | `NOTIFY_TO` | secret | where operator notes go (new signup, billing change, trials expiring unpaid) | a VERIFIED Email Routing destination address on the account | production only, beside the `NOTIFY` send_email binding in wrangler.toml |
 
-Without the `LS_*` secrets the worker still runs: sites register as trialing
-and checkout answers that the payment page could not be opened
-(code `billing_not_configured`).
+Which billing company sells is decided in one place (`billingProvider` in
+`worker/billing.js`): Stripe when `STRIPE_SECRET_KEY` is set, otherwise Lemon
+Squeezy when `LS_API_KEY` and `LS_STORE_ID` are set. A site that is already
+paid for is looked after by the company its subscription is with. Without
+either the worker still runs: sites register as trialing and checkout answers
+that the payment page could not be opened (code `billing_not_configured`).
+
+**The Stripe webhook.** URL: `<worker>/cloud/webhook/stripe`, signing secret:
+the value of `STRIPE_WEBHOOK_SECRET`. Events: `checkout.session.completed`,
+`customer.subscription.created`, `customer.subscription.updated`,
+`customer.subscription.deleted`, `invoice.payment_failed`. The worker checks
+the signature and its time (five minutes at most), handles each event once,
+and ignores everything else. Managed Payments must be switched on in the
+Stripe Dashboard (Settings → Managed Payments), and both products need a tax
+code that is eligible for it. Migration `0017_stripe.sql` adds the columns
+the webhook writes: apply it before the Stripe keys are set.
 
 **The Lemon Squeezy webhook.** URL: `<worker>/cloud/webhook/ls`, signing secret:
 the value of `LS_WEBHOOK_SECRET`. Events: `subscription_created`,

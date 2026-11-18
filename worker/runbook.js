@@ -255,6 +255,8 @@ npx wrangler secret list --env production</pre>
           <tr><td><code>KEEP_APP_ID</code>, <code>KEEP_APP_KEY</code> (and <code>KEEP_ORG</code>, which is not in wrangler.toml)</td><td>Nobody can start a kept site, and "Bring my site in" is off with it.</td></tr>
           <tr><td><code>CONVERT_SECRET</code></td><td>"Bring my site in" is off.</td></tr>
           <tr><td><code>NOTIFY_TO</code></td><td>Kiln sends you no notes. It must be an address that Cloudflare's Email Routing has confirmed in the main account.</td></tr>
+          <tr><td><code>STRIPE_SECRET_KEY</code>, <code>STRIPE_WEBHOOK_SECRET</code>, <code>STRIPE_PRICE_CLOUD</code>, <code>STRIPE_PRICE_MANAGED</code></td><td>Stripe does not sell, and Lemon Squeezy's settings below are used instead. With neither, nobody can pay (section 15).</td></tr>
+          <tr><td><code>STRIPE_PRICE_CLOUD_YEARLY</code>, <code>STRIPE_PRICE_MANAGED_YEARLY</code></td><td>Once Stripe sells, the two plans cannot be paid by the year. Each is the id of the yearly price of that plan in Stripe. Without it, Subscribe offers that plan by the month only.</td></tr>
           <tr><td><code>LS_API_KEY</code>, <code>LS_STORE_ID</code>, <code>LS_VARIANT_CLOUD</code>, <code>LS_VARIANT_MANAGED</code>, <code>LS_WEBHOOK_SECRET</code></td><td>Nobody can pay (section 15).</td></tr>
           <tr><td><code>LS_VARIANT_CLOUD_YEARLY</code>, <code>LS_VARIANT_MANAGED_YEARLY</code></td><td>The two plans cannot be paid by the year. Each is the number of the yearly price of that plan in Lemon Squeezy. Without it, Subscribe offers that plan by the month only.</td></tr>
           <tr><td><code>AI_API_KEY</code> (optional)</td><td>The editor's writing help answers that it is not set up. Nothing else changes.</td></tr>
@@ -297,7 +299,7 @@ npx wrangler secret list --env production</pre>
           <tr><td>Kiln editor updated in REPOSITORY</td><td>The customer pressed the button that updates the editor in their repository.</td><td>Nothing.</td></tr>
           <tr><td>Kiln hosts REPOSITORY</td><td>A site went up on the hosting for the first time. The note has its address.</td><td>Nothing. Open the address if you are curious.</td></tr>
           <tr><td>Kiln is setting up DOMAIN for REPOSITORY</td><td>A customer began to use their own domain. The note has the two name servers they must enter.</td><td>Nothing. You need the name servers if they write to you.</td></tr>
-          <tr><td>Kiln billing: EVENT → STATUS</td><td>Lemon Squeezy told Kiln about a subscription.</td><td>Nothing, unless a line says the plan on record could not be changed. Then set it on the admin page.</td></tr>
+          <tr><td>Kiln billing: EVENT → STATUS</td><td>The billing company (Stripe, or Lemon Squeezy for an older subscription) told Kiln about a subscription. The note names which.</td><td>Nothing, unless a line says the plan on record could not be changed. Then set it on the admin page.</td></tr>
           <tr><td>Kiln: N trials expired unpaid</td><td>Free days ran out with no subscription. Editing stopped for those sites.</td><td>Nothing.</td></tr>
           <tr><td>Kiln took REPOSITORY down from its hosting</td><td>The free days ran out and three more days passed, or the plan ended and 30 days passed.</td><td>Nothing, if you expected it. If the customer is paying, see section 07, "Putting a site back".</td></tr>
           <tr><td>Kiln: the files of REPOSITORY were downloaded</td><td>A customer downloaded the files of their kept site from the dashboard. You get this at most once an hour for one site, however often they press.</td><td>Nothing. It may mean they are about to move away: section 10 has what they may ask you for.</td></tr>
@@ -305,7 +307,7 @@ npx wrangler secret list --env production</pre>
           <tr><td><span class="chip c-warn">Hand</span>Kiln may have made REPOSITORY and no site uses it</td><td>Starting a kept site failed at a point where Kiln cannot tell whether the repository was made.</td><td>Look for it in <code>kiln-sites</code> on GitHub. If it is there, delete it.</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln made REPOSITORY and could not finish starting the site</td><td>The repository was made and the site was not. The customer was asked to try again.</td><td>Delete the leftover repository in <code>kiln-sites</code>.</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln: DOMAIN is still not live N hours after its name servers changed</td><td>Cloudflare has the domain, and either its certificate is not ready or the site does not answer there.</td><td>The note says which and where to look in the hosting account. Kiln keeps trying every five minutes and makes the domain live by itself once it is mended. You are told once.</td></tr>
-          <tr><td><span class="chip c-warn">Hand</span>Kiln: N hosted sites with a plan that ended and no end date</td><td>A paid hosted site stopped being paid for, and the record has no day on which editing stopped. Kiln leaves such a site up and writes nothing to its owner.</td><td>Look at each subscription in Lemon Squeezy. If it is paid, set the site to <code>active</code> on the admin page. If it is over, write to the customer yourself and remove the site when the time you gave them has passed.</td></tr>
+          <tr><td><span class="chip c-warn">Hand</span>Kiln: N hosted sites with a plan that ended and no end date</td><td>A paid hosted site stopped being paid for, and the record has no day on which editing stopped. Kiln leaves such a site up and writes nothing to its owner.</td><td>Look at each subscription in Stripe (or in Lemon Squeezy, for an older one). If it is paid, set the site to <code>active</code> on the admin page. If it is over, write to the customer yourself and remove the site when the time you gave them has passed.</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln could not start copying ADDRESS into REPOSITORY</td><td>The copying job in <code>kiln-converter</code> could not be started.</td><td>The customer can press Try again. If it happens twice, open the Actions page of <code>kiln-converter</code> on GitHub and check the job is there and enabled.</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln's copy of ADDRESS stopped</td><td>The job ran and said it could not finish. The note has what it said and which try it was, of three.</td><td>Nothing at first: the customer was told and can try again. After the third try they are told to write to you (section 05).</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln's copy of ADDRESS gave no answer in 30 minutes</td><td>The job never reported back.</td><td>Find the job's run on the Actions page of <code>kiln-converter</code> and read where it stopped.</td></tr>
@@ -474,8 +476,8 @@ npx wrangler secret list --env production</pre>
       <p>The only way that takes a site down at once is to remove it.</p>
       <ol class="steps">
         <li>On the admin page, press Remove on the site's row and confirm.</li>
-        <li>Kiln cancels the subscription at Lemon Squeezy, takes the site's Worker away, and deletes the site's row. The repository is not touched. A domain's zone stays (section 09).</li>
-        <li>If Remove fails and the page shows an error with the number 502, the subscription could not be cancelled. Cancel it in Lemon Squeezy yourself, then press Remove again.</li>
+        <li>Kiln cancels the subscription with the billing company it is with (Stripe, or Lemon Squeezy for an older one), takes the site's Worker away, and deletes the site's row. The repository is not touched. A domain's zone stays (section 09).</li>
+        <li>If Remove fails and the page shows an error with the number 502, the subscription could not be cancelled. Cancel it yourself in Stripe (Customers, then the customer, then the subscription), or in Lemon Squeezy for an older one, then press Remove again.</li>
         <li>If it was a kept site, you get the same note as when its owner removes it, naming the day its repository may be deleted. The 30 days of section 16 apply.</li>
       </ol>
       <p>There is no button that takes a site down and keeps it on the customer's account. Setting a site to <code>canceled</code> on the admin page stops editing at once, and the site then comes down by the timer's rules below.</p>
@@ -489,7 +491,7 @@ npx wrangler secret list --env production</pre>
       <h3 class="sub">When the free days or the plan end</h3>
       <ul class="plain">
         <li><strong>Free days over, nobody subscribed.</strong> Editing stops. The site stays up for three more days, then comes down.</li>
-        <li><strong>A payment failed.</strong> Editing stays on for seven days while Lemon Squeezy tries the card again.</li>
+        <li><strong>A payment failed.</strong> Editing stays on for seven days while the billing company tries the card again.</li>
         <li><strong>A paid plan ended.</strong> Editing stops. The site stays up for 30 days after the day payment stopped. The customer gets two emails: one when editing stops, which names the day the site comes down, and one seven days before that day.</li>
         <li>In each case you get "Kiln took REPOSITORY down from its hosting" when it happens. Nothing is deleted from the repository.</li>
       </ul>
@@ -709,13 +711,26 @@ npx wrangler tail --env production</pre>
     <section id="s15">
       <h2><span class="sn">15</span> Billing</h2>
       <ul class="plain">
-        <li><strong>Payment is by Lemon Squeezy, and it is not open to the public yet.</strong> Lemon Squeezy charges the card, handles the taxes and appears on statements. You never touch a card number.</li>
-        <li><strong>Only a signed notice from Lemon Squeezy makes a site "active".</strong> A customer cannot fake having paid.</li>
-        <li><strong>Free days</strong> last seven days and end by themselves (section 06).</li>
-        <li><strong>The admin page</strong> at app.kilncms.com/admin shows accounts, sites, how many are active, the monthly income, and a line that says "Store live", "Store in test mode" or "Billing not configured".</li>
-        <li><strong>Prices are in three places that must agree:</strong> the Lemon Squeezy product, the service's income sum, and the website. Today: Kiln Cloud <strong>$4.99</strong> a month, Kiln Cloud + hosting <strong>$14.99</strong> a month.</li>
+        <li><strong>Payment is by Stripe Managed Payments once its keys are set, and it is not open to the public yet.</strong> Stripe is the seller of record: it charges the card, handles the taxes and the disputes, and customers see "Sold through Link". Link sends the receipts and answers questions about a charge. You never touch a card number.</li>
+        <li><strong>Which company sells</strong> is decided by one setting: with <code>STRIPE_SECRET_KEY</code> set it is Stripe, and without it Lemon Squeezy, as before. Lemon Squeezy stops taking payments on 31 March 2027, so the Stripe settings must be in place well before then. A site that was paid through Lemon Squeezy is still looked after there (Manage billing, Remove) until its subscription ends.</li>
+        <li><strong>Only a signed notice from the billing company makes a site "active".</strong> A customer cannot fake having paid. A notice that is not signed, or is more than five minutes old, is refused.</li>
+        <li><strong>Free days</strong> last seven days and end by themselves (section 06). Kiln asks Stripe for no trial of its own, so nobody needs a card to try Kiln.</li>
+        <li><strong>The admin page</strong> at app.kilncms.com/admin shows accounts, sites, how many are active, the monthly income, and a line that says "Store live", "Store in test mode" or "Billing not configured". With Stripe, the admin answer also says whether the account can take charges and whether each price exists and is active. A plan paid by the year counts as a twelfth of its yearly price each month.</li>
+        <li><strong>Prices are in three places that must agree:</strong> the prices in Stripe, the service's income sum when Stripe's prices cannot be read, and the website. Today: Kiln Cloud <strong>$4.99</strong> a month, Kiln Cloud + hosting <strong>$14.99</strong> a month.</li>
         <li><strong>Setting a site up for a customer is not sold.</strong> The payment company does not allow it. Point people to the plan with hosting and to the guides.</li>
       </ul>
+      <h3 class="sub">Setting Stripe up, once</h3>
+      <ol class="steps">
+        <li>Make the Stripe account for Wilder Idea LLC at dashboard.stripe.com, and finish the business details it asks for.</li>
+        <li>Switch on Managed Payments: Settings, then Managed Payments. Check that Kiln's products are allowed there.</li>
+        <li>Make two products in the Product catalog. "Kiln Cloud" with the tax code <code>txcd_10103001</code> (software as a service, business use). "Kiln Cloud + hosting" with the tax code <code>txcd_10701100</code> (website hosting). Both codes must be marked "Eligible for Managed Payments".</li>
+        <li>Give them four prices: Kiln Cloud at $4.99 a month and its yearly price, Kiln Cloud + hosting at $14.99 a month and its yearly price. Copy each price's id (it begins with <code>price_</code>).</li>
+        <li>Add the webhook: Developers, then Webhooks, then Add endpoint. The address is <code>https://auth.kilncms.com/cloud/webhook/stripe</code> (on staging, the staging service's address with the same path). Pick API version <code>2025-03-31.basil</code> or later and these five events: <code>checkout.session.completed</code>, <code>customer.subscription.created</code>, <code>customer.subscription.updated</code>, <code>customer.subscription.deleted</code>, <code>invoice.payment_failed</code>. Copy the endpoint's signing secret.</li>
+        <li>Switch on the customer portal (Settings, then Billing, then Customer portal), so Manage billing lets a customer change their card or cancel.</li>
+        <li>Apply the database change first: <code>npx wrangler d1 migrations apply kiln-cloud --env staging --remote</code>, then the same with <code>--env production</code>.</li>
+        <li>Set the six settings, on staging first with sandbox keys, then on production with the live ones. In the <code>worker</code> folder, one at a time, pasting the value when asked: <code>npx wrangler secret put STRIPE_SECRET_KEY --env staging</code>, then <code>STRIPE_WEBHOOK_SECRET</code>, <code>STRIPE_PRICE_CLOUD</code>, <code>STRIPE_PRICE_CLOUD_YEARLY</code>, <code>STRIPE_PRICE_MANAGED</code> and <code>STRIPE_PRICE_MANAGED_YEARLY</code> the same way. Then all six again with <code>--env production</code>. Never leave out <code>--env</code>: without it the setting goes to a stray service of its own.</li>
+        <li>On staging, add a site, press Subscribe, and pay with the card number 4242 4242 4242 4242. A good result: you get "Kiln billing" with the status active, the dashboard says the site is paid for, and the admin page's store line says "Store in test mode".</li>
+      </ol>
       <h3 class="sub">While billing is not set up</h3>
       <ul class="plain">
         <li>Sites are added as before and get their free days.</li>
@@ -725,11 +740,11 @@ npx wrangler tail --env production</pre>
       </ul>
       <h3 class="sub">A customer paid and the site still says Trial</h3>
       <ol class="steps">
-        <li>In Lemon Squeezy, open the subscription and look at its webhooks, the notices it sent to Kiln.</li>
+        <li>In Stripe, open Developers, then Webhooks, then the endpoint, and look at the events it sent to Kiln. (For an older Lemon Squeezy subscription, look at its webhooks in Lemon Squeezy.)</li>
         <li>If one failed, send it again from there. A good result: you get "Kiln billing" with the status active, and the dashboard says so.</li>
         <li>Meanwhile, set the site to <code>active</code> on the admin page so the customer is not held up.</li>
       </ol>
-      <p>To cancel, a customer presses "Manage billing" on the site's row, which opens Lemon Squeezy's own page. During the free days they press Remove, and nothing is charged.</p>
+      <p>To cancel, a customer presses "Manage billing" on the site's row, which opens Stripe's own billing page (Lemon Squeezy's, for an older subscription). During the free days they press Remove, and nothing is charged.</p>
     </section>
 
     <section id="s16">

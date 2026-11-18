@@ -45,6 +45,7 @@
 import { hostingOn } from './hosting.js';
 import { domainsOn, prepareDomain, saveDomain, domainRow } from './domain.js';
 import { hostingRow } from './hosted.js';
+import { subscriptionOf, subscriptionSql } from './billing.js';
 import { customerMailOn, mailAddress, addressSql, sendOnce, nameYoursMail, nameNewsMail, nameRunsOutMail, dateWords } from './mail.js';
 
 const CF = 'https://api.cloudflare.com/client/v4';
@@ -385,12 +386,12 @@ async function standInStatus(env, name) {
  * domain). `had` is the account's registrations that did not fail.
  */
 export function offerStop({ site, up, domain, had = [], now = Date.now() }) {
-  if (!site || site.plan !== 'managed' || !site.ls_subscription_id) return { why: 'not_paid' };
+  if (!site || site.plan !== 'managed' || !subscriptionOf(site)) return { why: 'not_paid' };
   if (site.billing_period !== 'year' || site.status !== 'active' || !(Number(site.paid_until) > now)) return { why: 'not_paid' };
   if (!up) return { why: 'not_hosted' };
   if (domain && (domain.state === 'waiting' || domain.state === 'live')) return { why: 'has_own', name: domain.name };
   const standing = ['asking', 'stuck', 'registered'];
-  const mine = had.find(r => r.subscription_id === String(site.ls_subscription_id)) || had.find(r => r.site_id === site.id && standing.includes(r.state));
+  const mine = had.find(r => r.subscription_id === String(subscriptionOf(site))) || had.find(r => r.site_id === site.id && standing.includes(r.state));
   if (mine) return { why: 'has_name', name: mine.name };
   if (had.some(r => Number(r.registered_at || r.asked_at || r.created_at) > now - LIMITS.accountEveryMs)) return { why: 'account_had' };
   return null;
@@ -405,7 +406,7 @@ export function offerStop({ site, up, domain, had = [], now = Date.now() }) {
  */
 export async function offersForAccount(env, accountId, { up = () => false, domains = {}, now = Date.now() } = {}) {
   try {
-    const sites = await env.kiln_cloud.prepare('SELECT id, plan, status, ls_subscription_id, billing_period, paid_until FROM sites WHERE account_id = ?').bind(accountId).all();
+    const sites = await env.kiln_cloud.prepare(`SELECT id, plan, status, ${await subscriptionSql(env)} AS subscription_id, billing_period, paid_until FROM sites WHERE account_id = ?`).bind(accountId).all();
     const had = await env.kiln_cloud.prepare("SELECT site_id, subscription_id, name, state, asked_at, registered_at, created_at FROM registrations WHERE account_id = ? AND state != 'failed'").bind(accountId).all();
     const out = {};
     for (const site of sites.results || []) {
@@ -619,9 +620,9 @@ export async function registerName(env, { site, name: typed, checked }, { notify
   if (!mayAsk(name)) return refuse('ending', 400);
   if (checked !== true) return refuse('tick_first', 400);
   const db = env.kiln_cloud;
-  const full = await db.prepare('SELECT id, account_id, repo, plan, status, ls_subscription_id, billing_period, paid_until FROM sites WHERE id = ?').bind(site && site.id).first();
+  const full = await db.prepare(`SELECT id, account_id, repo, plan, status, ${await subscriptionSql(env)} AS subscription_id, billing_period, paid_until FROM sites WHERE id = ?`).bind(site && site.id).first();
   if (!full) return refuse('not_paid', 403);
-  const sub = full.ls_subscription_id ? String(full.ls_subscription_id) : null;
+  const sub = subscriptionOf(full) ? String(subscriptionOf(full)) : null;
   // A row that stands for this site or this subscription answers every later press, tab and retry.
   const standing = async () => {
     const mine = (await db.prepare("SELECT * FROM registrations WHERE (site_id = ? OR subscription_id = ?) AND state != 'failed' ORDER BY created_at DESC").bind(full.id, sub).all()).results || [];
@@ -954,7 +955,7 @@ async function tellCustomer(env, row, kind) {
  * name work until the paid year ends.
  */
 export function shouldRenew(row, site, { access = () => false, now = Date.now() } = {}) {
-  if (!row || !site || !site.ls_subscription_id || String(site.ls_subscription_id) !== String(row.subscription_id)) return false;
+  if (!row || !site || !subscriptionOf(site) || String(subscriptionOf(site)) !== String(row.subscription_id)) return false;
   if (site.plan !== 'managed' || site.billing_period !== 'year') return false;
   if (site.status === 'active') return true;
   return site.status === 'past_due' && !!access(site, now);

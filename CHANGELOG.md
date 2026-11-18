@@ -8,6 +8,25 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Kiln Cloud can take payment through Stripe.** Lemon Squeezy stops taking
+  new stores and will stop all payments on 31 March 2027, so the service can
+  now sell through Stripe Managed Payments instead, with Stripe as the seller
+  of record. For a customer: Subscribe opens Stripe's own payment page for the
+  site's plan, paid by the month or by the year, with their address filled in.
+  The page says "Sold through Link", and Link sends the receipt. The seven
+  free days are still Kiln's own and still need no card. Manage billing opens
+  Stripe's billing page, and Remove cancels the subscription first, as before.
+  For the operator: Stripe sells once `STRIPE_SECRET_KEY` is set, and until
+  then Lemon Squeezy works exactly as it does today. The other settings are
+  `STRIPE_WEBHOOK_SECRET` and the four price ids (`STRIPE_PRICE_CLOUD`,
+  `STRIPE_PRICE_CLOUD_YEARLY`, `STRIPE_PRICE_MANAGED`,
+  `STRIPE_PRICE_MANAGED_YEARLY`). Stripe's notices arrive at
+  `/cloud/webhook/stripe`; a notice that is not signed, or is more than five
+  minutes old, is refused, and the same notice twice changes a site once. The
+  admin page's store line reads Stripe's account and prices, and a plan paid
+  by the year counts as a twelfth of its price each month. Database migration
+  0017 adds the Stripe columns and must be applied first. The playbook
+  (section 15) has the setup steps.
 - **Both plans can be paid by the year, once the yearly prices exist in the
   billing store.** The service knows a yearly variant of the plan without
   hosting (`LS_VARIANT_CLOUD_YEARLY`) beside the one of the hosting plan.
