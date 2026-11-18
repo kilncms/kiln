@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-17
+
 ### Added
 
 - **Kiln Cloud can take payment through Stripe.** Lemon Squeezy stops taking
