@@ -248,7 +248,7 @@ test('the dashboard\'s account carries no customer id, of Stripe or of the older
   env.kiln_cloud.exec("UPDATE accounts SET ls_customer_id = 'old-9', stripe_customer_id = 'cus_1' WHERE id = 'acct-1'");
   const text = await (await ask(env, '/cloud/me')).text();
   const me = JSON.parse(text);
-  assert.deepEqual(me.account, { id: 'acct-1', github_login: 'ada', email: 'ada@example.com', name: null, google: false, by_email: false });
+  assert.deepEqual(me.account, { id: 'acct-1', github_login: 'ada', email: 'ada@example.com', name: null, google: false, by_email: false, github_session: true, linked: false });
   assert.equal('ls_customer_id' in me.account, false);
   assert.equal(/old-9|cus_1/.test(text), false);
 });

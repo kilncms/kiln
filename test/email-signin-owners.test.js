@@ -92,7 +92,7 @@ test('the dashboard\'s email sign-in: the page asks for any address, sends the l
   // The same kind of session a Google owner gets: /cloud/me, the address Kiln writes to, the author of a change.
   const sid = /#kc_token=([\w-]+)$/.exec(done.to)[1];
   const me = await (await worker.fetch(new Request('https://worker.example/cloud/me', { headers: { Authorization: `Bearer ${sid}` } }), w.env)).json();
-  assert.deepEqual(me.account, { id: made.id, github_login: null, email: EVE, name: null, google: false, by_email: true });
+  assert.deepEqual(me.account, { id: made.id, github_login: null, email: EVE, name: null, google: false, by_email: true, github_session: false, linked: false });
   assert.deepEqual(await commitAuthor(w.env, sess), { name: 'eve (via Kiln)', email: EVE });
   const typed = await worker.fetch(new Request('https://worker.example/cloud/account', { method: 'POST', headers: { Authorization: `Bearer ${sid}` }, body: JSON.stringify({ email: 'other@example.com' }) }), w.env);
   assert.equal(typed.status, 403, 'an address nobody confirmed is never written on the account');

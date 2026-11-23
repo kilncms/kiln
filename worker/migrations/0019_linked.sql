@@ -1,0 +1,14 @@
+-- A person who signed in to the dashboard with Google, or with a link sent to
+-- their email address, can connect their GitHub account to that same Kiln
+-- account. One account then holds the sites Kiln keeps the files of and the
+-- sites in the person's own GitHub repositories.
+--   linked_at  when GitHub was connected to an account that began without it,
+--              in milliseconds. Empty for every other account: one that began
+--              with a GitHub sign-in, and one that has no GitHub.
+-- It is what lets a sign-in by email or with Google keep finding such an
+-- account after it has a GitHub login and number. An account that began with
+-- GitHub has no `linked_at`, and is never found by an address or by Google,
+-- as before.
+-- Apply this before the service that reads it. A service running on a database
+-- this has not reached works as before, and connecting is not offered there.
+ALTER TABLE accounts ADD COLUMN linked_at INTEGER;

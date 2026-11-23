@@ -76,6 +76,18 @@ const uuid = () => crypto.randomUUID();
 // What a person signed in with Google is told when they ask for something that takes a GitHub account.
 const NEEDS_GITHUB_TO_ADD = 'Adding a repository of your own needs a GitHub sign-in. Sign out, then sign in with GitHub.';
 const NEEDS_GITHUB_FOR_SITE = 'This site is in a GitHub repository, and you are signed in with Google. Sign out, then sign in with GitHub.';
+// Connecting GitHub to an account that began without it (the /cloud/link routes): what a person reads when it does not happen.
+const LINK_NOT_READY = 'This Kiln service cannot connect a GitHub account yet. That is for whoever runs the service to put right. Nothing was changed.';
+const LINK_ALREADY = 'You are signed in with GitHub already, so there is nothing to connect.';
+const LINK_TOO_MANY = 'You have started connecting GitHub many times in a short while. Wait an hour, then try again.';
+const LINK_EXPIRED = 'Connecting GitHub works once and for ten minutes, in the browser it was started in. This time it was used already, or the time ran out. Nothing was changed. Start again from the dashboard.';
+const LINK_TAKEN = 'That GitHub account already has a Kiln account of its own, so it cannot be connected to this one. Nothing was changed. To get to its sites, sign out, then sign in with GitHub.';
+const LINK_NOT_NOW = 'Kiln could not connect your GitHub account just now. Nothing was changed. Try again in a few minutes.';
+const linkOther = (theirs, as) => (theirs
+  ? `This Kiln account is connected to the GitHub account ${theirs}, and you came back from GitHub as ${as}. Nothing was changed. Sign in to GitHub as ${theirs}, then connect again.`
+  : `This Kiln account is connected to another GitHub account, and you came back from GitHub as ${as}. Nothing was changed. Sign in to GitHub with the account you connected, then connect again.`);
+// POST /cloud/account, from an account that began with Google or by email and has connected GitHub since.
+const LINKED_ADDRESS = 'Kiln writes to the address this account was started with, the one Google or a sign-in link confirmed. Nobody confirms an address typed here, so it cannot take that one\'s place.';
 // A bare page, for a caller that hands over none of its own (index.js hands its `html`).
 const plainPage = (body, status = 200) => new Response(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kiln</title></head><body>${body}</body></html>`,
   { status, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
@@ -441,8 +453,10 @@ async function upsertAccount(env, login, email, number) {
  * an email sign-in made for the very address Google confirmed (emailAccount):
  * the person started with a link sent to that address, and Google confirming
  * it is the same proof, so that account gets Google's id and stays theirs.
- * An account that signed in with GitHub is never found or changed here,
- * whatever its address, and neither is one that already has a Google id.
+ * An account that began with a GitHub sign-in is never found or changed here,
+ * whatever its address, and neither is one that already has a Google id. An
+ * account that began here and connected GitHub later (`linked_at`) is still
+ * found, by the same Google id as before.
  */
 async function googleAccount(env, { sub, email, name }) {
   const find = () => env.kiln_cloud.prepare('SELECT * FROM accounts WHERE google_sub = ?').bind(sub).first();
@@ -473,11 +487,30 @@ async function googleAccount(env, { sub, email, name }) {
   return { id, github_login: null, email: email || null, name: name || null, google_sub: sub };
 }
 
-/** The account an email sign-in made for `email`, while it has no GitHub and no Google id. Null on a database migration 0018 has not reached. */
+/**
+ * Which accounts a sign-in without GitHub may reach, as SQL: an account with
+ * no GitHub login and no GitHub number, or one that began that way and
+ * connected GitHub later (`linked_at`, migration 0019). An account that began
+ * with a GitHub sign-in has no `linked_at` and is never one of them. `ask` is
+ * given that condition and runs the query. A database migration 0019 has not
+ * reached has no account that connected GitHub, so there the question is
+ * asked again as it was before.
+ */
+const NO_GITHUB = '(github_login IS NULL AND github_id IS NULL)';
+const NO_GITHUB_AT_FIRST = `(${NO_GITHUB} OR linked_at IS NOT NULL)`;
+async function reachedWithoutGitHub(ask) {
+  try { return await ask(NO_GITHUB_AT_FIRST); }
+  catch (e) {
+    if (!/no such column/i.test(String(e?.message || e))) throw e;
+    return ask(NO_GITHUB);
+  }
+}
+
+/** The account an email sign-in made for `email`, while it has no Google id: one with no GitHub, or one that connected GitHub later. Null on a database migration 0018 has not reached. */
 async function emailMadeAccount(env, email) {
   const want = String(email || '').trim().toLowerCase();
   if (!want) return null;
-  try { return await env.kiln_cloud.prepare('SELECT * FROM accounts WHERE signin_email = ? AND google_sub IS NULL AND github_login IS NULL AND github_id IS NULL').bind(want).first(); }
+  try { return await reachedWithoutGitHub((noGitHub) => env.kiln_cloud.prepare(`SELECT * FROM accounts WHERE signin_email = ? AND google_sub IS NULL AND ${noGitHub}`).bind(want).first()); }
   catch { return null; }
 }
 
@@ -486,13 +519,16 @@ async function emailMadeAccount(env, email) {
  * sign-in made for it (`signin_email`), and a Google account whose last
  * Google sign-in confirmed it (`google_email`). Never by `email`: GitHub
  * reports that one, or a person typed it, and nobody checked it. An account
- * with a GitHub login or number is never one of them, whatever its addresses.
+ * that began with a GitHub sign-in is never one of them, whatever its
+ * addresses. An account that began with one of these two and connected GitHub
+ * later still is (reachedWithoutGitHub): its person keeps signing in the way
+ * they started.
  */
 async function confirmedAccounts(env, email) {
   const want = String(email || '').trim().toLowerCase();
   if (!mailAddress(want)) return [];
-  const found = await env.kiln_cloud.prepare(`SELECT * FROM accounts WHERE github_login IS NULL AND github_id IS NULL
-      AND (signin_email = ? OR (google_sub IS NOT NULL AND lower(google_email) = ?))`).bind(want, want).all();
+  const found = await reachedWithoutGitHub((noGitHub) => env.kiln_cloud.prepare(`SELECT * FROM accounts WHERE ${noGitHub}
+      AND (signin_email = ? OR (google_sub IS NOT NULL AND lower(google_email) = ?))`).bind(want, want).all());
   return (found && found.results) || [];
 }
 
@@ -523,7 +559,162 @@ async function emailAccount(env, email) {
   return { account: { id, github_login: null, email: want, name: null, google_sub: null, signin_email: want } };
 }
 
-/** A dashboard session with no GitHub person behind it: the person signed in with Google, or with a link or a code sent to their address (`byEmail`). */
+// ─── Connecting GitHub to an account that began without it ───────────────────
+//
+// A person who signed in with Google or by email connects their GitHub account
+// to the same Kiln account in four steps, and every one of them has to happen
+// in the same browser:
+//   1. POST /cloud/link/start, signed in. The dashboard is given a code that
+//      works once and for ten minutes (`link:<code>` in KV), and keeps it.
+//   2. GET /cloud/login?link=<code> sends the person to GitHub as any sign-in
+//      does. GitHub is handed the usual state and never the code: the code is
+//      kept beside that state in KV.
+//   3. GET /cloud/callback. The code is taken away, GitHub says who the person
+//      is, and that answer is put aside under a new key (`linkback:<key>`, ten
+//      minutes). Nothing about any account changes and nobody is signed in.
+//      The person goes back to the dashboard with the key.
+//   4. POST /cloud/link/finish, signed in, with the key and the code. Only now
+//      is the account changed, and only for a request that carries all three:
+//      the session that asked in step 1, the code only that dashboard was
+//      given, and the key only the browser that came back from GitHub was
+//      given.
+// Step 4 is why the address of step 2 is of no use to anybody else. A person
+// who starts on their own account and passes that address to somebody else
+// gets that somebody's GitHub answer put aside under a key they never see,
+// and the somebody's browser holds neither the session nor the code. So one
+// person's GitHub account is never fixed onto another person's Kiln account.
+
+const LINK_CODE = /^[0-9a-f]{64}$/;
+const hexOf = (bytes) => [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+/** A code nobody can guess: 64 hex characters. */
+const linkCode = () => hexOf(crypto.getRandomValues(new Uint8Array(32)));
+/** What KV keeps in place of a session id or a code, so that neither can be read back out of a record that is not its own. */
+async function fingerprint(secret) {
+  return hexOf(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(secret)))));
+}
+/** The code a sign-in's kept state carries when it is a person connecting GitHub (/cloud/login?link=), or null for a plain sign-in. */
+function linkOf(kept) {
+  if (!kept || kept === '1') return null;
+  try { const link = JSON.parse(kept).link; return LINK_CODE.test(String(link || '')) ? link : null; } catch { return null; }
+}
+/** The dashboard's address with `?link=<what>`: how the person is told how connecting went. */
+function linkBack(dash, what) {
+  try { const to = new URL(dash); to.searchParams.set('link', what); return to.toString(); }
+  catch { return `${dash}?link=${what}`; }
+}
+/** Whether the database has `linked_at` (migration 0019). Without it nothing can be connected. */
+async function canLink(env) {
+  try { await env.kiln_cloud.prepare('SELECT linked_at FROM accounts LIMIT 1').first(); return true; } catch { return false; }
+}
+// One account may start connecting ten times in an hour: every start is a code
+// in KV and can become a sign-in at GitHub. Counted under
+// `linkn:<account id>:<hour>`. As for the repository names above, two requests
+// at the same instant can both be let through, and the count per network
+// address in index.js is the hard stop.
+const LINKS_AN_HOUR = 10;
+async function mayStartLink(env, accountId) {
+  const key = `linkn:${accountId}:${Math.floor(Date.now() / 3600000)}`;
+  let n = 0;
+  try { n = Number(await env.KILN.get(key)) || 0; } catch { n = 0; }
+  if (n >= LINKS_AN_HOUR) return false;
+  try { await env.KILN.put(key, String(n + 1), { expirationTtl: 7200 }); } catch { /* the person is still let through */ }
+  return true;
+}
+
+/**
+ * Connects the GitHub person (`login`, and GitHub's number for them, `uid`) to
+ * the account `accountId`, or says why not. It is the one place an account
+ * that began without GitHub gets a GitHub login and number.
+ *   - The account has GitHub already (the person is connecting again, to give
+ *     a sign-in by email or with Google its GitHub part): the number must be
+ *     the account's own. Nothing is written. Any other GitHub person is
+ *     answered `other`, with the login the account is connected to.
+ *   - The GitHub person already has an account, found by the number, or by the
+ *     login on an account from before numbers were kept: `taken`. Two accounts
+ *     are never made into one.
+ *   - Else the login, the number and `linked_at` are written, on the condition
+ *     that the account still has no GitHub. The database allows one account
+ *     for a number, so of two accounts connecting the same GitHub person at
+ *     the same moment one is written and the other is answered `taken`.
+ * The account's addresses, its Google id and its name are never touched.
+ * Answers { ok: true, connected } (`connected` false when nothing had to be
+ * written) or { code, login? }.
+ */
+export async function connectGitHub(env, accountId, { login, uid } = {}, now = Date.now()) {
+  const db = env.kiln_cloud;
+  const n = Number.isSafeInteger(uid) && uid > 0 ? uid : null;
+  const name = String(login || '');
+  if (n === null || !name) return { code: 'expired' };
+  const load = () => db.prepare('SELECT id, github_login, github_id FROM accounts WHERE id = ?').bind(accountId).first();
+  const hasGitHub = (a) => a.github_login != null || a.github_id != null;
+  const again = (a) => (a.github_id != null && Number(a.github_id) === n ? { ok: true, connected: false } : { code: 'other', login: a.github_login || null });
+  let account = await load();
+  if (!account) return { code: 'expired' };
+  if (hasGitHub(account)) return again(account);
+  const theirs = await db.prepare('SELECT id FROM accounts WHERE id <> ? AND (github_id = ? OR (github_id IS NULL AND github_login = ? COLLATE NOCASE))').bind(accountId, n, name).first();
+  if (theirs) return { code: 'taken' };
+  let written = 0;
+  try {
+    const done = await db.batch([
+      // As at a GitHub sign-in (upsertAccount): a row with another number that still carries this login gave the name up on GitHub, and loses it here. Its person is found by their number.
+      db.prepare('UPDATE accounts SET github_login = NULL WHERE github_login = ? AND github_id IS NOT NULL AND id <> ?').bind(name, accountId),
+      db.prepare('UPDATE accounts SET github_login = ?, github_id = ?, linked_at = ? WHERE id = ? AND github_login IS NULL AND github_id IS NULL').bind(name, n, now, accountId),
+    ]);
+    written = Number(done && done[1] && done[1].meta && done[1].meta.changes) || 0;
+  } catch (e) {
+    // Only "somebody else has it" is an answer. Any other trouble is the caller's to report: nothing was written.
+    if (!/constraint/i.test(String(e?.message || e))) throw e;
+    return { code: 'taken' };
+  }
+  if (written) return { ok: true, connected: true };
+  // Nothing was written: the account got a GitHub person a moment ago. The same one is fine, another is not.
+  account = await load();
+  return account && hasGitHub(account) ? again(account) : { code: 'taken' };
+}
+
+/**
+ * GitHub sent back a person who is connecting it to the Kiln account they are
+ * signed in to (step 3 above). Nobody is signed in here and no account is
+ * found, made or changed: GitHub's answer is put aside for ten minutes under a
+ * key that goes to this browser alone, and the dashboard finishes with it.
+ * The person goes back to the dashboard with `?link=confirm#kc_link=<key>`,
+ * with `?link=expired` when the code was used already or its time ran out, or
+ * with `?link=failed` when GitHub did not say who they are.
+ */
+async function linkCameBack(request, env, url, { dash, code, state, linking, page }) {
+  await env.KILN.delete(`cstate:${state}`);
+  const back = (what, key = null) => signInOver(url, Response.redirect(`${linkBack(dash, what)}${key ? `#kc_link=${key}` : ''}`, 302));
+  const stopped = (stage, detail = '') => {
+    console.warn(JSON.stringify({ evt: 'cloud_link_not_finished', stage, detail: String(detail || '').slice(0, 160) }));
+    return back('failed');
+  };
+  // As for a sign-in: only the browser it was started in may go on.
+  if (!startedHere(request, url, state)) {
+    console.warn(JSON.stringify({ evt: 'cloud_link_not_finished', stage: 'cookie', detail: '' }));
+    return page(troubleBody(forDashboard(STARTED_ELSEWHERE), { dashboard: dash }), STARTED_ELSEWHERE.status);
+  }
+  // The code works once: it is read and taken away before GitHub is asked anything.
+  let asked = null;
+  try { asked = await env.KILN.get(`link:${linking}`, 'json'); } catch { asked = null; }
+  await env.KILN.delete(`link:${linking}`);
+  if (!asked || !asked.account_id || !asked.by) return back('expired');
+  if (!code) return stopped('github', url.searchParams.get('error') || '');
+  const c = await creds(env);
+  const tokRes = await fetch('https://github.com/login/oauth/access_token', {
+    method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: c.client_id, client_secret: c.client_secret, code }),
+  });
+  const tok = await tokRes.json().catch(() => ({}));
+  if (!tok.access_token) return stopped('token', tok.error || tokRes.status);
+  const user = await ghUser(tok.access_token, { fresh: true });
+  // Without GitHub's number for the person nothing is connected: a login alone can change hands.
+  if (!user || !user.login || !(Number.isSafeInteger(user.id) && user.id > 0)) return stopped('user');
+  const key = linkCode();
+  await env.KILN.put(`linkback:${key}`, JSON.stringify({ account_id: asked.account_id, by: asked.by, code: await fingerprint(linking), login: user.login, uid: user.id, gh: tok.access_token }), { expirationTtl: 600 });
+  return back('confirm', key);
+}
+
+/** A dashboard session with no GitHub person behind it: the person signed in with Google, or with a link or a code sent to their address (`byEmail`). It is said of the session, never of the account: an account that connected GitHub has such a session whenever its person signs in by email or with Google, and that session holds no GitHub token. */
 function withoutGitHub(sess) { return !!sess && !sess.login && !!(sess.google || sess.byEmail); }
 /** The address Google or an email sign-in confirmed for such a session, and the name it goes by. */
 const sessEmail = (sess) => (sess && (sess.google?.email || sess.byEmail?.email)) || null;
@@ -1685,7 +1876,7 @@ export async function expireStaleTrials(env) {
  */
 export function isCloudAdmin(sess, env) {
   if (!sess) return false;
-  if (withoutGitHub(sess)) return false;   // the operator is a GitHub person: a Google or email sign-in is never the operator
+  if (withoutGitHub(sess)) return false;   // the operator is a GitHub person: a Google or email sign-in is never the operator, whatever GitHub account its Kiln account is connected to
   const id = String(env.CLOUD_ADMIN_ID || '').trim();
   if (id) return /^\d+$/.test(id) && sess.uid != null && String(sess.uid) === id;
   return !!env.CLOUD_ADMIN && sess.login === env.CLOUD_ADMIN;
@@ -1745,9 +1936,11 @@ async function ownedSite(request, env, url, sess, tools = {}, { needToken = true
   // on its row, however that account signs in, and GitHub is not asked about it.
   const kept = await keptSite(env, id);
   const mine = !!kept && kept.account_id === sess.account_id;
-  // A person signed in with Google has no GitHub account, so there is no
-  // repository they could be checked against. A kept site of their own is the
-  // only site they reach, and every other one is refused.
+  // A person signed in with Google or by email holds no GitHub token, so there
+  // is no repository they could be checked against. A kept site of their own
+  // is the only site they reach, and every other one is refused. That is so
+  // for an account that connected GitHub too, on the days its person signs in
+  // without it: the session decides, not the account.
   if (withoutGitHub(sess) && !mine) return { response: json({ error: NEEDS_GITHUB_FOR_SITE, code: 'needs_github' }, 403) };
   const site = await withAccessUntil(
     () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
@@ -2032,9 +2225,15 @@ export async function handleCloud(request, env, url, path, tools = {}) {
 
   // GitHub OAuth — identity only.
   if (path === '/cloud/login') {
+    // `?link=<code>`: a signed-in person is connecting GitHub to their account
+    // (the /cloud/link routes). The code never goes to GitHub: it is kept
+    // beside the state, and the callback finds it there. A code that is no
+    // longer good sends the person straight back.
+    const link = url.searchParams.get('link');
+    if (link !== null && !(LINK_CODE.test(link) && await env.KILN.get(`link:${link}`))) return Response.redirect(linkBack(dash, 'expired'), 302);
     const c = await creds(env);
     const nonce = uuid();
-    await env.KILN.put(`cstate:${nonce}`, '1', { expirationTtl: 600 });
+    await env.KILN.put(`cstate:${nonce}`, link === null ? '1' : JSON.stringify({ link }), { expirationTtl: 600 });
     const params = new URLSearchParams({ client_id: c.client_id, redirect_uri: `${url.origin}/cloud/callback`, state: nonce });
     return startSignIn(url, `https://github.com/login/oauth/authorize?${params}`, nonce);   // with the cookie that ties it to this browser
   }
@@ -2067,7 +2266,11 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       catch { return json({ error: 'github sign-in failed' }, 401); }
     };
     const code = url.searchParams.get('code'), state = url.searchParams.get('state');
-    if (!code || !state || !(await env.KILN.get(`cstate:${state}`))) return notFinished('state');
+    const kept = state ? await env.KILN.get(`cstate:${state}`) : null;
+    // A person connecting GitHub to the account they are signed in to is not signing in: that has its own ending.
+    const linking = linkOf(kept);
+    if (linking) return linkCameBack(request, env, url, { dash, code, state, linking, page: typeof tools.page === 'function' ? tools.page : plainPage });
+    if (!code || !kept) return notFinished('state');
     await env.KILN.delete(`cstate:${state}`);
     // Only the browser the sign-in was started in may finish it
     // (signin-trouble.js). In any other, nobody is signed in, GitHub is not
@@ -2108,19 +2311,76 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     return json({ ok: true });
   }
 
+  // Step 1 of connecting GitHub (see connectGitHub above). Allowed for a
+  // session that holds no GitHub token: an account with no GitHub yet, or one
+  // that connected GitHub and signed in by email or with Google today. The
+  // code is given to this dashboard alone, which keeps it for step 4.
+  if (path === '/cloud/link/start' && request.method === 'POST') {
+    if (!sess) return json({ error: 'not signed in' }, 401);
+    if (!(await canLink(env))) return json({ error: LINK_NOT_READY, code: 'not_ready' }, 503);
+    if (!withoutGitHub(sess) || sess.gh) return json({ error: LINK_ALREADY, code: 'already_connected' }, 409);
+    const acct = await env.kiln_cloud.prepare('SELECT id, github_login, github_id FROM accounts WHERE id = ?').bind(sess.account_id).first();
+    if (!acct) return json({ error: 'not signed in' }, 401);
+    if (!(await mayStartLink(env, acct.id))) return json({ error: LINK_TOO_MANY, code: 'too_many' }, 429);
+    const code = linkCode();
+    await env.KILN.put(`link:${code}`, JSON.stringify({ account_id: acct.id, by: await fingerprint(bearer(request)) }), { expirationTtl: 600 });
+    // `reconnect`: the account has GitHub already, and this gives the session its GitHub part.
+    return json({ ok: true, url: `${url.origin}/cloud/login?link=${code}`, code, reconnect: acct.github_login != null || acct.github_id != null }, 200, { 'Cache-Control': 'no-store' });
+  }
+
+  // Step 4: the one place the account is changed. The request must carry the
+  // session that asked, the code that dashboard was given, and the key the
+  // browser that came back from GitHub was given. The key works once, right
+  // or wrong. On success the person gets a new session that holds the GitHub
+  // token and still says how they signed in, and the one that asked is gone:
+  // a copy of the old session id that somebody else may hold gains nothing.
+  if (path === '/cloud/link/finish' && request.method === 'POST') {
+    if (!sess) return json({ error: 'not signed in' }, 401);
+    const { key, code } = await request.json().catch(() => ({}));
+    const gone = () => json({ error: LINK_EXPIRED, code: 'expired' }, 410);
+    if (!LINK_CODE.test(String(key || '')) || !LINK_CODE.test(String(code || ''))) return gone();
+    let back = null;
+    try { back = await env.KILN.get(`linkback:${key}`, 'json'); } catch { back = null; }
+    if (!back) return gone();
+    await env.KILN.delete(`linkback:${key}`);
+    const asking = bearer(request);
+    if (back.account_id !== sess.account_id || back.by !== await fingerprint(asking) || back.code !== await fingerprint(code)) return gone();
+    if (!(await canLink(env))) return json({ error: LINK_NOT_READY, code: 'not_ready' }, 503);
+    let out;
+    try { out = await connectGitHub(env, sess.account_id, { login: back.login, uid: back.uid }); }
+    catch (e) {
+      console.warn(JSON.stringify({ evt: 'cloud_link_not_finished', stage: 'write', detail: String(e?.message || e).slice(0, 160) }));
+      return json({ error: LINK_NOT_NOW, code: 'not_now' }, 503);
+    }
+    if (!out.ok) {
+      if (out.code === 'other') return json({ error: linkOther(out.login, back.login), code: 'other', login: out.login }, 409);
+      return out.code === 'taken' ? json({ error: LINK_TAKEN, code: 'taken' }, 409) : gone();
+    }
+    const sid = uuid();
+    await env.KILN.put(`csess:${sid}`, JSON.stringify({
+      account_id: sess.account_id, login: back.login, uid: back.uid, gh: back.gh,
+      ...(sess.google ? { google: sess.google } : {}), ...(sess.byEmail ? { byEmail: sess.byEmail } : {}),
+    }), { expirationTtl: 30 * 24 * 3600 });
+    await env.KILN.delete(`csess:${asking}`);
+    // `token` is the new session: the dashboard keeps it in place of the one it sent.
+    return json({ ok: true, token: sid, login: back.login, connected: out.connected }, 200, { 'Cache-Control': 'no-store' });
+  }
+
   if (path === '/cloud/me') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     // `name` and `google_sub` arrive with migration 0008. A database it has not
     // reached has neither, and every account there signed in with GitHub.
-    // `signin_email` arrives with migration 0018.
+    // `signin_email` arrives with migration 0018, `linked_at` with 0019.
+    const asked = ['id, github_login, email, name, google_sub, signin_email, linked_at', 'id, github_login, email, name, google_sub, signin_email', 'id, github_login, email, name, google_sub', 'id, github_login, email'];
     let row;
-    try { row = await env.kiln_cloud.prepare('SELECT id, github_login, email, name, google_sub, signin_email FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
-    catch {
-      try { row = await env.kiln_cloud.prepare('SELECT id, github_login, email, name, google_sub FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
-      catch { row = await env.kiln_cloud.prepare('SELECT id, github_login, email FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
+    for (const columns of asked) {
+      try { row = await env.kiln_cloud.prepare(`SELECT ${columns} FROM accounts WHERE id = ?`).bind(sess.account_id).first(); break; }
+      catch (e) { if (columns === asked[asked.length - 1]) throw e; }
     }
     // `google` says the account has a Google id, `by_email` that an email sign-in made it. Neither id nor address of those stays here.
-    const account = row ? { id: row.id, github_login: row.github_login || null, email: row.email ?? null, name: row.name || null, google: !!row.google_sub, by_email: !!row.signin_email } : null;
+    // `linked` says the account began without GitHub and connected it later, and `github_session` that this
+    // very session holds a GitHub token: a connected account that signed in by email or with Google today has none.
+    const account = row ? { id: row.id, github_login: row.github_login || null, email: row.email ?? null, name: row.name || null, google: !!row.google_sub, by_email: !!row.signin_email, github_session: !!sess.gh, linked: !!row.linked_at } : null;
     // Such a person is shown the address Kiln writes to: the one Google or the email sign-in confirmed.
     if (account && (account.google || account.by_email)) account.email = await accountEmail(env, sess.account_id);
     const paidBy = await subscriptionSql(env);
@@ -2264,6 +2524,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     if (!sess) return json({ error: 'not signed in' }, 401);
     // Nobody confirms an address typed here, so an account that signed in with Google keeps the one Google confirmed.
     if (withoutGitHub(sess)) return json({ error: sess.google ? GOOGLE_ADDRESS : EMAIL_ADDRESS, code: 'google_address' }, 403);
+    // The same holds for such an account after it connected GitHub, however its person signed in today:
+    // it is the account that has a confirmed address, and Kiln keeps writing to that one (mail.js, addressSql).
+    let began = null;
+    try { began = await env.kiln_cloud.prepare('SELECT google_sub, signin_email FROM accounts WHERE id = ?').bind(sess.account_id).first(); }
+    catch { try { began = await env.kiln_cloud.prepare('SELECT google_sub FROM accounts WHERE id = ?').bind(sess.account_id).first(); } catch { began = null; } }
+    if (began && (began.google_sub || began.signin_email)) return json({ error: LINKED_ADDRESS, code: 'google_address' }, 403);
     const { email } = await request.json().catch(() => ({}));
     const clean = email === '' || email === null ? null : mailAddress(email);
     if (email !== '' && email !== null && !clean) return json({ error: 'That does not look like an email address. Please check it and try again.' }, 400);

@@ -188,7 +188,9 @@ async function routeRequest(request, env, ctx) {
       // The route the copying job answers on takes no sign-in (the answer is signed instead), so a stranger could
       // hammer it: it is counted for the address like the others.
       // So is the look at which repositories Kiln's app can reach: each look asks GitHub.
-      if (path.startsWith('/cloud/sites/') || path === '/cloud/convert/done' || path === '/cloud/github') {
+      // And so are the two steps of connecting GitHub to an account that a dashboard asks for (/cloud/link/start
+      // and /cloud/link/finish): the first makes a code, and the second is where a key could be guessed at.
+      if (path.startsWith('/cloud/sites/') || path === '/cloud/convert/done' || path === '/cloud/github' || path.startsWith('/cloud/link/')) {
         const limited = await rateLimited(request, env);
         if (limited) return limited;
       }
