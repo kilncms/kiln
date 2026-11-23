@@ -6,6 +6,37 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A person who signed in with Google or by email can connect their GitHub
+  account to the same Kiln Cloud account.** Until now an account either had
+  GitHub or it did not, so a customer who started with an address and later
+  wanted to add a site from a repository of their own needed a second
+  account. Now one account holds both: the sites Kiln keeps the files of and
+  the sites in the person's own repositories. For a customer: connecting
+  sends them to GitHub once and back to the dashboard. Afterwards they reach
+  the same account whichever way they sign in, with GitHub, with Google or
+  with a link sent to their address, and Kiln keeps writing to the address it
+  confirmed for them, not to the one GitHub shows. On a day they sign in
+  without GitHub, what needs GitHub (adding a repository, or a site in a
+  repository of their own) says so, and connecting again gives that sign-in
+  its GitHub part and changes nothing else. A GitHub account that already has
+  a Kiln account of its own cannot be connected to another one: two accounts
+  are never made into one. An account that began with a GitHub sign-in is
+  still never reached by an address or by Google. For someone who runs the
+  service: database migration 0019 adds `accounts.linked_at` and must be
+  applied before the service (`wrangler d1 migrations apply`). On a database
+  it has not reached everything works as before, and connecting answers that
+  the service is not ready for it. The dashboard's account answer
+  (`/cloud/me`) gains `github_session` and `linked`. Connecting is four
+  steps: `POST /cloud/link/start`, `/cloud/login?link=`, `/cloud/callback`
+  and `POST /cloud/link/finish`. The account is changed only in the last one,
+  for a request that carries the session that asked, the code its dashboard
+  was given, and the key the browser that came back from GitHub was given, so
+  an address with a code that is passed to somebody else connects nothing.
+  What is kept while connecting is under way (KV `link:`, `linkback:` and
+  `linkn:`) is gone within minutes and is not in the backup.
+
 ## [0.8.0] - 2026-11-23
 
 ### Removed

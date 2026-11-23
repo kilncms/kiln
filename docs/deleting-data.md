@@ -15,6 +15,7 @@ request is answered is the operator's promise to make, in the privacy policy.
 | An editor's or member's sign-in | KV `esess:…`, `msess:…` | After the days the owner chose; never when that is 0 |
 | The owner's GitHub sign-in (a refresh token) | KV `sid:…` | 180 days after its last use |
 | A Cloud dashboard sign-in (with a GitHub token) | KV `csess:…` | 30 days |
+| Connecting GitHub to an account, while it is under way: a code that works once, what GitHub answered (with a GitHub token), and how often it was started | KV `link:…`, `linkback:…`, `linkn:…` | 10 minutes; the count after 2 hours |
 | Comment threads: each message's name, email and words | KV `cmt:<owner/repo>:…` | Never |
 | Suggestions: who, their note, the edited page | KV `sug:<owner/repo>:…` | Never |
 | Scheduled publishes: who, the edits | KV `sched:…` | 14 days after they fire |
