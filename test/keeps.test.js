@@ -450,7 +450,11 @@ test('what the dashboard is told: keeps on /cloud/me and /healthz, and kept on e
   assert.equal('kept' in me.json.sites[0], false, 'an ordinary site says nothing about it');
 });
 
-test('the welcome mail for a site Kiln keeps: its name, that Kiln keeps its files, its address, how the editor opens, the free days and what follows them, and a domain of one\'s own, with no word of GitHub', () => {
+test('the welcome mail for a site Kiln keeps: its name, that Kiln keeps its files, its address, how the editor opens, the free days and what follows them, and a domain of one\'s own, with no word of GitHub', (t) => {
+  // The mail words the free days by today's date, and the day in this example is fixed. So today is fixed here too, a week before it.
+  const today = Date.now;
+  Date.now = () => Date.UTC(2026, 10, 13, 15);
+  t.after(() => { Date.now = today; });
   const ends = Date.UTC(2026, 10, 20, 15);
   const m = siteStartedMail({ name: 'Oak Bakery', address: 'https://oak-bakery-1a2b3c4d.kiln-sites.workers.dev/', endsAt: ends, dashboard: 'https://app.example' });
   assert.equal(m.subject, 'Oak Bakery is started on Kiln: what to do next');

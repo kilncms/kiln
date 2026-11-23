@@ -730,7 +730,11 @@ test('the five-minute job gives up on a copy that has said nothing for 30 minute
 
 // ─── The two mails ────────────────────────────────────────────────────────────
 
-test('the mail for a copy that worked: how many pages, that the site is up and where or which button puts it up, what did not come across, how the editor opens, and the free days as the welcome mail says them', () => {
+test('the mail for a copy that worked: how many pages, that the site is up and where or which button puts it up, what did not come across, how the editor opens, and the free days as the welcome mail says them', (t) => {
+  // The mail words the free days by today's date, and the day in this example is fixed. So today is fixed here too, a week before it.
+  const today = Date.now;
+  Date.now = () => Date.UTC(2026, 10, 13, 12);
+  t.after(() => { Date.now = today; });
   const endsAt = Date.UTC(2026, 10, 20, 12);
   const mail = siteCopiedMail({ name: 'Oak Bakery', address: 'https://oak-bakery-1a2b3c4d.kiln-sites.workers.dev/', up: true, from: 'https://www.oakbakery.com/', pages: 25, endsAt, dashboard: 'https://app.example' });
   const welcome = siteStartedMail({ name: 'Oak Bakery', address: 'https://x.example', endsAt, dashboard: 'https://app.example' }).text.split('\n\n');
