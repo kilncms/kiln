@@ -12,7 +12,7 @@ capability across the app, worker, CLI, demo, and marketing site._
 | **Invited editor** | Google (added by email) | inline editing scoped to granted paths + section keys + granted menu tools; no GitHub account |
 | **Member** | Google (added by email) | unlocks gated `/members/` pages, PDFs, and assets; no editing |
 | **Self-hoster** | runs their own worker | deploys `kiln-auth` to their Cloudflare account; owns all data |
-| **Managed / Cloud customer** | GitHub identity on app.kilncms.com | registers a site, pays via Lemon Squeezy, Kiln hosts the worker |
+| **Managed / Cloud customer** | GitHub identity on app.kilncms.com | registers a site, pays via Stripe, Kiln hosts the worker |
 
 ## 1. Visitor runtime (loaded on every page)
 
@@ -75,8 +75,8 @@ Toolbar / menu features (each grantable per-editor to invited editors):
 
 - GitHub-identity dashboard sessions (bearer token, server-side OAuth token)
 - Site registration with push-access verification + app-install check
-- Lemon Squeezy checkout / customer portal
-- Signed webhook (`/cloud/webhook/ls`) — the only thing that flips a site to `active`; replay-guarded
+- Stripe's Checkout page (Managed Payments) and Billing Portal
+- Signed webhook (`/cloud/webhook/stripe`) — the only thing that flips a site to `active`; replay-guarded
 - 7-day self-serve trial, clock anchored to first registration (no trial farming)
 - Owner-only admin: overview (MRR/ARR/insights), grant status, diagnose, runbook
 - **Pricing (backend):** Cloud **$4.99/mo**, Managed **$14.99/mo** (cloud.js:344)

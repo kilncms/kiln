@@ -6,6 +6,29 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Removed
+
+- **Lemon Squeezy is no longer a billing company the service can use.** Kiln
+  Cloud sells through Stripe alone. Lemon Squeezy stops all payments on 31
+  March 2027, and Kiln's own store there never sold a subscription. For a
+  customer nothing changes: Subscribe, Manage billing and Remove work through
+  Stripe, as they have since 0.7.0. For someone who runs the service: billing
+  is on only where `STRIPE_SECRET_KEY` is set. The seven `LS_*` settings
+  (`LS_API_KEY`, `LS_STORE_ID`, `LS_VARIANT_CLOUD`, `LS_VARIANT_MANAGED`,
+  `LS_VARIANT_CLOUD_YEARLY`, `LS_VARIANT_MANAGED_YEARLY` and
+  `LS_WEBHOOK_SECRET`) are no longer read and can be deleted. With those
+  alone nobody can pay, and Subscribe answers that the payment page could not
+  be opened. The address `/cloud/webhook/ls` is gone: a notice sent there is
+  answered "not found" and changes nothing, so delete the webhook in Lemon
+  Squeezy as well. The dashboard's account no longer carries
+  `ls_customer_id`. The two database columns Lemon Squeezy used,
+  `sites.ls_subscription_id` and `accounts.ls_customer_id`, stay in the
+  database and are neither read nor written, so this release has no
+  migration. A service that still has Lemon Squeezy subscriptions must stay on
+  0.7.x until every one of them has ended. From this version on a site paid
+  that way counts as having no subscription: Remove would take the site away
+  without cancelling it, and Manage billing would not open for it.
+
 ## [0.7.0] - 2026-11-17
 
 ### Added

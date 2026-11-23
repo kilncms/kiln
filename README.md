@@ -380,7 +380,7 @@ account you own, and you can move between them later.
 | **Trial** | | 7 days free, no card | 7 days free, no card |
 
 Plans are per site, not per person: add as many editors and members as the site needs.
-Billing is handled by Lemon Squeezy; prices and
+Billing is handled by Stripe; prices and
 billing questions are on [kilncms.com/pricing](https://kilncms.com/pricing).
 
 **When a plan ends**, the editor stops working on the site, and so do its API tokens,

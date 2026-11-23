@@ -25,7 +25,7 @@ request is answered is the operator's promise to make, in the privacy policy.
 | Which editor build a site last ran | KV `ebuild:<owner/repo>` | Never |
 | Who is editing which page now | KV `pres:…` | 6½ minutes |
 | Daily backups of D1 and of the KV entries above | the operator's machine | After 14 backups |
-| Billing | Lemon Squeezy | Cancelled, never deleted, by Kiln |
+| Billing | Stripe | Cancelled, never deleted, by Kiln |
 | Commits: "Name (via Kiln)", a no-reply address | the site's own repository | Never |
 | Drafts | the repository's `kiln-drafts` branch | Never |
 | Suggestion previews | branches `kiln/suggest-<name>` | Never |
@@ -71,7 +71,7 @@ There is no button for this yet: the operator does it.
 5. Ask them to uninstall the Kiln GitHub App from their repositories. Until
    they do, an API token or a schedule left in KV could still commit, so step 3
    comes before telling them it is done.
-6. In Lemon Squeezy, delete the customer if they ask for their billing record
+6. In Stripe, delete the customer if they ask for their billing record
    to go too.
 7. The daily backups still hold the data until they roll over (14 days). Say so
    in the answer.
