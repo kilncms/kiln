@@ -22,7 +22,7 @@ test('KLR-23 ENVIRONMENTS.md lists every binding, variable and secret the worker
   assert.deepEqual([...listed].filter(n => !read_.has(n)).sort(), [], 'the table has a name the worker never reads');
   assert.ok(listed.size >= 18);
   // The things that were written down nowhere before.
-  for (const needle of ['/cloud/webhook/ls', 'subscription_cancelled', 'subscription_expired', '/google/callback', '/auth/callback', '/cloud/callback', 'd1 migrations apply']) assert.ok(table.includes(needle), needle);
+  for (const needle of ['/cloud/webhook/stripe', 'customer.subscription.deleted', 'invoice.payment_failed', '/google/callback', '/auth/callback', '/cloud/callback', 'd1 migrations apply']) assert.ok(table.includes(needle), needle);
   // Secrets are named, never valued.
   assert.doesNotMatch(table, /sk_live|sk_test|whsec_|ghp_|gho_|AIza[\w-]{10}/);
 });

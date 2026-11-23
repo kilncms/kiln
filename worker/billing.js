@@ -1,16 +1,15 @@
 /**
- * Which billing company Kiln Cloud uses, and the calls this service makes to
- * Stripe.
+ * Kiln Cloud's billing: whether somebody can pay here, and the calls this
+ * service makes to Stripe.
  *
- * Stripe Managed Payments is the billing provider once `STRIPE_SECRET_KEY` is
- * set: Stripe is then the seller of record, its hosted Checkout page takes the
- * payment, and Link sends the receipts. Without that key the Lemon Squeezy
- * code in cloud.js is used as before (LS_API_KEY and LS_STORE_ID), and with
- * neither, nobody can pay and the free days work as they always have.
+ * Stripe Managed Payments is the one billing company this service sells
+ * through. Once `STRIPE_SECRET_KEY` is set, Stripe is the seller of record,
+ * its hosted Checkout page takes the payment, and Link sends the receipts.
+ * Without that key nobody can pay, and the free days work as they always have.
  *
- * Only billingProvider decides which company sells. A site that is already
- * paid for is looked after by the company its subscription belongs to,
- * whichever one sells today: subscriptionOf reads whichever id the row has.
+ * A site that is paid for carries its subscription's id in
+ * `sites.stripe_subscription_id`. subscriptionOf reads it from any row, and
+ * subscriptionSql is the same thing for a query.
  *
  * No Stripe library: fetch, form-encoded bodies, and the API version pinned in
  * the Stripe-Version header, so what Stripe answers does not change under us.
@@ -19,47 +18,44 @@
 export const STRIPE = 'https://api.stripe.com/v1';
 export const STRIPE_VERSION = '2025-03-31.basil';
 
-/** 'stripe', 'lemonsqueezy', or null when neither is set up here. */
+/** 'stripe' where Stripe's secret key is set, and null where it is not: nobody can pay there. */
 export function billingProvider(env) {
-  if (env && env.STRIPE_SECRET_KEY) return 'stripe';
-  if (env && env.LS_API_KEY && env.LS_STORE_ID) return 'lemonsqueezy';
-  return null;
+  return env && env.STRIPE_SECRET_KEY ? 'stripe' : null;
 }
 /** True when somebody can pay here at all. */
 export const billingOn = (env) => billingProvider(env) !== null;
 /** The company's name, for the operator's notes and the admin page. */
-export const providerName = (p) => (p === 'stripe' ? 'Stripe' : p === 'lemonsqueezy' ? 'Lemon Squeezy' : 'the billing company');
+export const providerName = (p) => (p === 'stripe' ? 'Stripe' : 'the billing company');
 
 /**
  * The subscription a site is paid for by, from any row of `sites`: a row read
- * with `subscriptionSql(...) AS subscription_id`, a whole row, or a row from
- * before Stripe. Null when the site has never been paid for.
+ * with `subscriptionSql(...) AS subscription_id`, or a whole row. Null when
+ * the site has never been paid for.
  */
 export function subscriptionOf(row) {
   if (!row) return null;
-  return row.subscription_id || row.stripe_subscription_id || row.ls_subscription_id || null;
+  return row.subscription_id || row.stripe_subscription_id || null;
 }
-/** Which company a site's subscription belongs to, or null when it has none. */
+/** Which company a site's subscription is with: 'stripe', or null when the site has none. */
 export function subscriptionProvider(row) {
-  if (!row) return null;
-  if (row.stripe_subscription_id) return 'stripe';
-  if (row.ls_subscription_id) return 'lemonsqueezy';
-  return null;
+  return row && row.stripe_subscription_id ? 'stripe' : null;
 }
 
 // The SQL for "the subscription this site is paid by", for a WHERE or a
-// SELECT. A database migration 0017 has not reached has no Stripe column:
-// then it is the Lemon Squeezy one alone, as before.
+// SELECT: the Stripe column. A database migration 0017 has not reached has no
+// such column, and no site in it was ever paid for through Stripe. There the
+// answer is the literal NULL, which is valid SQL wherever the column would
+// stand and means "no subscription", so every query that uses it still runs.
 const hasStripeColumns = new WeakSet();
 export async function subscriptionSql(env, t = '') {
-  const both = `COALESCE(${t}stripe_subscription_id, ${t}ls_subscription_id)`;
+  const column = `${t}stripe_subscription_id`;
   const db = env && env.kiln_cloud;
-  if (!db) return `${t}ls_subscription_id`;
-  try { if (hasStripeColumns.has(db)) return both; } catch { /* not an object: asked below */ }
+  if (!db) return 'NULL';
+  try { if (hasStripeColumns.has(db)) return column; } catch { /* not an object: asked below */ }
   try { await db.prepare('SELECT stripe_subscription_id FROM sites LIMIT 1').first(); }
-  catch { return `${t}ls_subscription_id`; }
+  catch { return 'NULL'; }
   try { hasStripeColumns.add(db); } catch { /* asked again next time */ }
-  return both;
+  return column;
 }
 
 // ─── Stripe ──────────────────────────────────────────────────────────────────
@@ -164,8 +160,16 @@ export async function stripePortal(env, customer) {
 }
 
 /**
- * End a Stripe subscription before its site is forgotten, with the same
- * answer as lsCancel in cloud.js: `ok` only when no further charge can follow.
+ * End a Stripe subscription before its site is forgotten. The answer is
+ * `{ ok, state, ends_at }`. `ok` is true only when no further charge can
+ * follow: the site never had a subscription (`none`), Stripe says it has
+ * already ended (`already_cancelled`), or Stripe confirmed the cancellation
+ * just now (`cancelled`). `ends_at` is then the time it ended, where Stripe
+ * gives one. Anything else is "not known to be cancelled": no Stripe key here
+ * (`billing_not_configured`), Stripe not answering (`billing_unreachable`),
+ * a subscription this key cannot see (`subscription_not_found`), or Stripe
+ * refusing (`cancel_refused`). The caller then keeps the site, so the
+ * customer can still reach Manage billing.
  */
 export async function stripeCancel(env, subscriptionId) {
   if (!subscriptionId) return { ok: true, state: 'none' };
@@ -212,8 +216,8 @@ export async function verifyStripeSignature(header, bodyText, secret, now = Date
 }
 
 /**
- * Where the Stripe account stands, for the admin page, in the answer it reads
- * for Lemon Squeezy: `mode` is 'live', 'test', 'unknown' or 'unconfigured'.
+ * Where the Stripe account stands, for the store line on the admin page:
+ * `mode` is 'live', 'test', 'unknown' or 'unconfigured'.
  * Besides: whether charges are enabled, and for each price that is set whether
  * Stripe has it and it is active, with its amount and how often it is paid.
  * `ready` is true when all of that is so.

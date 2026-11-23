@@ -331,7 +331,7 @@ test('fair use: the limits of starting a site, and one free copy of a site in 30
   assert.deepEqual([w.hub.made.length, w.hub.jobs.length, sites(w.env).length, again.calls.length], [2, 2, 1, 0], 'refused before anything was made or asked');
   assert.equal(w.env.kiln_cloud.row("SELECT COUNT(*) n FROM kept_starts WHERE account_id = 'acct-g'").n, 1);
   // Rosa pays for a site: the mark does not hold her, and her copy leaves the mark as it was
-  w.env.kiln_cloud.exec("INSERT INTO sites (id, account_id, repo, origin, plan, status, ls_subscription_id, created_at, kept, name) VALUES ('paid-1', 'acct-g', 'kiln-sites/paid-1', 'https://paid.example', 'managed', 'active', 'sub-1', 1, 1, 'Paid')");
+  w.env.kiln_cloud.exec("INSERT INTO sites (id, account_id, repo, origin, plan, status, stripe_subscription_id, created_at, kept, name) VALUES ('paid-1', 'acct-g', 'kiln-sites/paid-1', 'https://paid.example', 'managed', 'active', 'sub-1', 1, 1, 'Paid')");
   const mark = w.env.KILN.map.get('brought:acct-g:oakbakery.com');
   const paid = await bring(w, { address: 'https://www.oakbakery.com/', mine: true });
   assert.equal(paid.status, 200, JSON.stringify(paid.json));
@@ -867,7 +867,7 @@ test('bring my site in, fair use: the same old site is copied three times in 30 
   assert.deepEqual([fourth.status, fourth.json], [429, { error: 'This site has been copied to Kiln several times in the last 30 days. If it is yours, write to info@kilncms.com and we will set it up with you.', code: 'copied_often' }]);
   assert.deepEqual([w.hub.made.length, w.hub.jobs.length, sites(w.env).length, fourth.calls.length], [3, 3, 3, 0]);
   // an account that pays for a site is not held back, and its copy is not counted
-  w.env.kiln_cloud.exec("INSERT INTO sites (id, account_id, repo, origin, plan, status, ls_subscription_id, created_at, kept, name) VALUES ('paid-5', 'acct-p5', 'kiln-sites/paid-5', 'https://paid5.example', 'managed', 'active', 'sub-5', 1, 1, 'Paid')");
+  w.env.kiln_cloud.exec("INSERT INTO sites (id, account_id, repo, origin, plan, status, stripe_subscription_id, created_at, kept, name) VALUES ('paid-5', 'acct-p5', 'kiln-sites/paid-5', 'https://paid5.example', 'managed', 'active', 'sub-5', 1, 1, 'Paid')");
   const paid = await bring(w, { address: 'oakbakery.com', mine: true }, 'p5');
   assert.equal(paid.status, 200, JSON.stringify(paid.json));
   assert.equal(JSON.parse(w.env.KILN.map.get('copied:oakbakery.com')).length, 3);

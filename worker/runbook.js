@@ -238,7 +238,7 @@ npx wrangler secret list --env production</pre>
           <tr><td><strong>"Bring my site in"</strong></td><td>Kept sites, and secret <code>CONVERT_SECRET</code></td><td><code>brings</code> is true.</td></tr>
           <tr><td><strong>Emails to customers</strong></td><td>The mail sender named <code>NOTIFY</code> in wrangler.toml, variable <code>CUSTOMER_MAIL_FROM</code></td><td><code>mail</code> is true.</td></tr>
           <tr><td><strong>Notes to you</strong></td><td>The same mail sender, secret <code>NOTIFY_TO</code></td><td>You get the notes of section 04.</td></tr>
-          <tr><td><strong>Billing</strong></td><td>Secrets <code>LS_API_KEY</code> and <code>LS_STORE_ID</code>, with the three below</td><td><code>billing</code> is true. The admin page says "Store live" or "Store in test mode", not "Billing not configured".</td></tr>
+          <tr><td><strong>Billing</strong></td><td>Secret <code>STRIPE_SECRET_KEY</code>, with <code>STRIPE_WEBHOOK_SECRET</code>, <code>STRIPE_PRICE_CLOUD</code> and <code>STRIPE_PRICE_MANAGED</code></td><td><code>billing</code> is true. The admin page says "Store live" or "Store in test mode", not "Billing not configured".</td></tr>
           <tr><td><strong>Your admin page</strong></td><td>Variable <code>CLOUD_ADMIN_ID</code>, GitHub's permanent number of your account. When it is set, it alone decides who the operator is.</td><td>app.kilncms.com/admin opens for you and for nobody else.</td></tr>
                   <tr><td><strong>A new domain through Kiln</strong> (switched off)</td><td>Own domains, the variable <code>REGISTER_DOMAINS</code> set to exactly <code>on</code>, and the database has its <code>registrations</code> table. The variable is not set on the test service or on production, so this piece is off.</td><td><code>registers</code> is true, and the dashboard offers a site on the yearly plan a new name. While it is off, none of its pages answer, the three buttons of section 10 do nothing, and its part of the five-minute timer does nothing.</td></tr>
         </tbody>
@@ -255,10 +255,8 @@ npx wrangler secret list --env production</pre>
           <tr><td><code>KEEP_APP_ID</code>, <code>KEEP_APP_KEY</code> (and <code>KEEP_ORG</code>, which is not in wrangler.toml)</td><td>Nobody can start a kept site, and "Bring my site in" is off with it.</td></tr>
           <tr><td><code>CONVERT_SECRET</code></td><td>"Bring my site in" is off.</td></tr>
           <tr><td><code>NOTIFY_TO</code></td><td>Kiln sends you no notes. It must be an address that Cloudflare's Email Routing has confirmed in the main account.</td></tr>
-          <tr><td><code>STRIPE_SECRET_KEY</code>, <code>STRIPE_WEBHOOK_SECRET</code>, <code>STRIPE_PRICE_CLOUD</code>, <code>STRIPE_PRICE_MANAGED</code></td><td>Stripe does not sell, and Lemon Squeezy's settings below are used instead. With neither, nobody can pay (section 15).</td></tr>
-          <tr><td><code>STRIPE_PRICE_CLOUD_YEARLY</code>, <code>STRIPE_PRICE_MANAGED_YEARLY</code></td><td>Once Stripe sells, the two plans cannot be paid by the year. Each is the id of the yearly price of that plan in Stripe. Without it, Subscribe offers that plan by the month only.</td></tr>
-          <tr><td><code>LS_API_KEY</code>, <code>LS_STORE_ID</code>, <code>LS_VARIANT_CLOUD</code>, <code>LS_VARIANT_MANAGED</code>, <code>LS_WEBHOOK_SECRET</code></td><td>Nobody can pay (section 15).</td></tr>
-          <tr><td><code>LS_VARIANT_CLOUD_YEARLY</code>, <code>LS_VARIANT_MANAGED_YEARLY</code></td><td>The two plans cannot be paid by the year. Each is the number of the yearly price of that plan in Lemon Squeezy. Without it, Subscribe offers that plan by the month only.</td></tr>
+          <tr><td><code>STRIPE_SECRET_KEY</code>, <code>STRIPE_WEBHOOK_SECRET</code>, <code>STRIPE_PRICE_CLOUD</code>, <code>STRIPE_PRICE_MANAGED</code></td><td>Billing does not work. Without the key or a price nobody can pay, and without the webhook secret a payment never reaches its site (section 15).</td></tr>
+          <tr><td><code>STRIPE_PRICE_CLOUD_YEARLY</code>, <code>STRIPE_PRICE_MANAGED_YEARLY</code></td><td>The two plans cannot be paid by the year. Each is the id of the yearly price of that plan in Stripe. Without it, Subscribe offers that plan by the month only.</td></tr>
           <tr><td><code>AI_API_KEY</code> (optional)</td><td>The editor's writing help answers that it is not set up. Nothing else changes.</td></tr>
         </tbody>
       </table></div>
@@ -299,7 +297,7 @@ npx wrangler secret list --env production</pre>
           <tr><td>Kiln editor updated in REPOSITORY</td><td>The customer pressed the button that updates the editor in their repository.</td><td>Nothing.</td></tr>
           <tr><td>Kiln hosts REPOSITORY</td><td>A site went up on the hosting for the first time. The note has its address.</td><td>Nothing. Open the address if you are curious.</td></tr>
           <tr><td>Kiln is setting up DOMAIN for REPOSITORY</td><td>A customer began to use their own domain. The note has the two name servers they must enter.</td><td>Nothing. You need the name servers if they write to you.</td></tr>
-          <tr><td>Kiln billing: EVENT → STATUS</td><td>The billing company (Stripe, or Lemon Squeezy for an older subscription) told Kiln about a subscription. The note names which.</td><td>Nothing, unless a line says the plan on record could not be changed. Then set it on the admin page.</td></tr>
+          <tr><td>Kiln billing: EVENT → STATUS</td><td>Stripe told Kiln about a subscription. The note names the site and the subscription.</td><td>Nothing, unless a line says the plan on record could not be changed. Then set it on the admin page.</td></tr>
           <tr><td>Kiln: N trials expired unpaid</td><td>Free days ran out with no subscription. Editing stopped for those sites.</td><td>Nothing.</td></tr>
           <tr><td>Kiln took REPOSITORY down from its hosting</td><td>The free days ran out and three more days passed, or the plan ended and 30 days passed.</td><td>Nothing, if you expected it. If the customer is paying, see section 07, "Putting a site back".</td></tr>
           <tr><td>Kiln: the files of REPOSITORY were downloaded</td><td>A customer downloaded the files of their kept site from the dashboard. You get this at most once an hour for one site, however often they press.</td><td>Nothing. It may mean they are about to move away: section 10 has what they may ask you for.</td></tr>
@@ -307,7 +305,7 @@ npx wrangler secret list --env production</pre>
           <tr><td><span class="chip c-warn">Hand</span>Kiln may have made REPOSITORY and no site uses it</td><td>Starting a kept site failed at a point where Kiln cannot tell whether the repository was made.</td><td>Look for it in <code>kiln-sites</code> on GitHub. If it is there, delete it.</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln made REPOSITORY and could not finish starting the site</td><td>The repository was made and the site was not. The customer was asked to try again.</td><td>Delete the leftover repository in <code>kiln-sites</code>.</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln: DOMAIN is still not live N hours after its name servers changed</td><td>Cloudflare has the domain, and either its certificate is not ready or the site does not answer there.</td><td>The note says which and where to look in the hosting account. Kiln keeps trying every five minutes and makes the domain live by itself once it is mended. You are told once.</td></tr>
-          <tr><td><span class="chip c-warn">Hand</span>Kiln: N hosted sites with a plan that ended and no end date</td><td>A paid hosted site stopped being paid for, and the record has no day on which editing stopped. Kiln leaves such a site up and writes nothing to its owner.</td><td>Look at each subscription in Stripe (or in Lemon Squeezy, for an older one). If it is paid, set the site to <code>active</code> on the admin page. If it is over, write to the customer yourself and remove the site when the time you gave them has passed.</td></tr>
+          <tr><td><span class="chip c-warn">Hand</span>Kiln: N hosted sites with a plan that ended and no end date</td><td>A paid hosted site stopped being paid for, and the record has no day on which editing stopped. Kiln leaves such a site up and writes nothing to its owner.</td><td>Look at each subscription in Stripe. If it is paid, set the site to <code>active</code> on the admin page. If it is over, write to the customer yourself and remove the site when the time you gave them has passed.</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln could not start copying ADDRESS into REPOSITORY</td><td>The copying job in <code>kiln-converter</code> could not be started.</td><td>The customer can press Try again. If it happens twice, open the Actions page of <code>kiln-converter</code> on GitHub and check the job is there and enabled.</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln's copy of ADDRESS stopped</td><td>The job ran and said it could not finish. The note has what it said and which try it was, of three.</td><td>Nothing at first: the customer was told and can try again. After the third try they are told to write to you (section 05).</td></tr>
           <tr><td><span class="chip c-warn">Hand</span>Kiln's copy of ADDRESS gave no answer in 30 minutes</td><td>The job never reported back.</td><td>Find the job's run on the Actions page of <code>kiln-converter</code> and read where it stopped.</td></tr>
@@ -441,7 +439,7 @@ npx wrangler secret list --env production</pre>
       <h3 class="sub">Hand job 3: reopen a site that was closed</h3>
       <p>Clearing a mark does not reopen a site that is already closed. Either the customer removes the site and adds it again, or you reopen it. First find the site's id by its repository, then reopen it. The second command only touches a site that has no subscription.</p>
       <pre>npx wrangler d1 execute kiln-cloud --env production --remote --command "SELECT id, repo, origin, status FROM sites WHERE lower(repo) = lower('OWNER/REPOSITORY');"</pre>
-      <pre>npx wrangler d1 execute kiln-cloud --env production --remote --command "UPDATE sites SET status = 'trialing', created_at = TIME_IN_MILLISECONDS WHERE id = 'SITE_ID' AND ls_subscription_id IS NULL;"</pre>
+      <pre>npx wrangler d1 execute kiln-cloud --env production --remote --command "UPDATE sites SET status = 'trialing', created_at = TIME_IN_MILLISECONDS WHERE id = 'SITE_ID' AND stripe_subscription_id IS NULL;"</pre>
       <p>A good answer says one row was written. Use the time of this moment for seven full days. Zero rows means the id is wrong or the site has a subscription.</p>
     </section>
 
@@ -476,8 +474,8 @@ npx wrangler secret list --env production</pre>
       <p>The only way that takes a site down at once is to remove it.</p>
       <ol class="steps">
         <li>On the admin page, press Remove on the site's row and confirm.</li>
-        <li>Kiln cancels the subscription with the billing company it is with (Stripe, or Lemon Squeezy for an older one), takes the site's Worker away, and deletes the site's row. The repository is not touched. A domain's zone stays (section 09).</li>
-        <li>If Remove fails and the page shows an error with the number 502, the subscription could not be cancelled. Cancel it yourself in Stripe (Customers, then the customer, then the subscription), or in Lemon Squeezy for an older one, then press Remove again.</li>
+        <li>Kiln cancels the subscription in Stripe, takes the site's Worker away, and deletes the site's row. The repository is not touched. A domain's zone stays (section 09).</li>
+        <li>If Remove fails and the page shows an error with the number 502, the subscription could not be cancelled. Cancel it yourself in Stripe (Customers, then the customer, then the subscription), then press Remove again.</li>
         <li>If it was a kept site, you get the same note as when its owner removes it, naming the day its repository may be deleted. The 30 days of section 16 apply.</li>
       </ol>
       <p>There is no button that takes a site down and keeps it on the customer's account. Setting a site to <code>canceled</code> on the admin page stops editing at once, and the site then comes down by the timer's rules below.</p>
@@ -713,7 +711,7 @@ npx wrangler tail --env production</pre>
       <h2><span class="sn">15</span> Billing</h2>
       <ul class="plain">
         <li><strong>Payment is by Stripe Managed Payments once its keys are set, and it is not open to the public yet.</strong> Stripe is the seller of record: it charges the card, handles the taxes and the disputes, and customers see "Sold through Link". Link sends the receipts and answers questions about a charge. You never touch a card number.</li>
-        <li><strong>Which company sells</strong> is decided by one setting: with <code>STRIPE_SECRET_KEY</code> set it is Stripe, and without it Lemon Squeezy, as before. Lemon Squeezy stops taking payments on 31 March 2027, so the Stripe settings must be in place well before then. A site that was paid through Lemon Squeezy is still looked after there (Manage billing, Remove) until its subscription ends.</li>
+        <li><strong>Stripe is the only billing company.</strong> With <code>STRIPE_SECRET_KEY</code> set, Stripe sells. Without it nobody can pay, and the free days work as they always have.</li>
         <li><strong>Only a signed notice from the billing company makes a site "active".</strong> A customer cannot fake having paid. A notice that is not signed, or is more than five minutes old, is refused.</li>
         <li><strong>Free days</strong> last seven days and end by themselves (section 06). Kiln asks Stripe for no trial of its own, so nobody needs a card to try Kiln.</li>
         <li><strong>The admin page</strong> at app.kilncms.com/admin shows accounts, sites, how many are active, the monthly income, and a line that says "Store live", "Store in test mode" or "Billing not configured". With Stripe, the admin answer also says whether the account can take charges and whether each price exists and is active. A plan paid by the year counts as a twelfth of its yearly price each month.</li>
@@ -741,11 +739,11 @@ npx wrangler tail --env production</pre>
       </ul>
       <h3 class="sub">A customer paid and the site still says Trial</h3>
       <ol class="steps">
-        <li>In Stripe, open Developers, then Webhooks, then the endpoint, and look at the events it sent to Kiln. (For an older Lemon Squeezy subscription, look at its webhooks in Lemon Squeezy.)</li>
+        <li>In Stripe, open Developers, then Webhooks, then the endpoint, and look at the events it sent to Kiln.</li>
         <li>If one failed, send it again from there. A good result: you get "Kiln billing" with the status active, and the dashboard says so.</li>
         <li>Meanwhile, set the site to <code>active</code> on the admin page so the customer is not held up.</li>
       </ol>
-      <p>To cancel, a customer presses "Manage billing" on the site's row, which opens Stripe's own billing page (Lemon Squeezy's, for an older subscription). During the free days they press Remove, and nothing is charged.</p>
+      <p>To cancel, a customer presses "Manage billing" on the site's row, which opens Stripe's own billing page. During the free days they press Remove, and nothing is charged.</p>
     </section>
 
     <section id="s16">

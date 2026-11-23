@@ -98,13 +98,13 @@ function world({ on = true, site = {}, env: extra = {} } = {}) {
   const sent = [];
   const env = cloudEnv(fakeKV({ 'itok:ada/club': 'inst-token' }), {
     HOSTING_ACCOUNT_ID: cf.account, HOSTING_API_TOKEN: cf.token, HOSTING_SUBDOMAIN: 'kiln-sites', CLOUD_DASHBOARD: 'https://app.example',
-    LS_VARIANT_MANAGED: '22', LS_VARIANT_MANAGED_YEARLY: '33',
+    STRIPE_PRICE_MANAGED: 'price_managed_m', STRIPE_PRICE_MANAGED_YEARLY: 'price_managed_y',
     NOTIFY: { send: async (m) => { sent.push(m); return { messageId: '<1@kilncms.com>' }; } }, NOTIFY_TO: OPS, CUSTOMER_MAIL_FROM: 'hello@kilncms.com',
     ...(on ? { REGISTER_DOMAINS: 'on' } : {}),
     ...extra,
   });
-  const s = { billing_period: 'year', paid_until: Date.now() + 300 * DAY, status: 'active', ls_subscription_id: 'sub-1', plan: 'managed', ...site };
-  addSite(env, { id: 'site1', plan: s.plan, status: s.status, ls_subscription_id: s.ls_subscription_id });
+  const s = { billing_period: 'year', paid_until: Date.now() + 300 * DAY, status: 'active', stripe_subscription_id: 'sub-1', plan: 'managed', ...site };
+  addSite(env, { id: 'site1', plan: s.plan, status: s.status, stripe_subscription_id: s.stripe_subscription_id });
   try { env.kiln_cloud.exec('UPDATE sites SET billing_period = ?, paid_until = ? WHERE id = ?', s.billing_period, s.paid_until, 'site1'); } catch { /* a database without migration 0016 */ }
   cf.addScript(WORKER);
   env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, deployed_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'site1', WORKER, `https://${WORKER}.kiln-sites.workers.dev`, 'live', 1, 1, 1);

@@ -14,7 +14,7 @@
  *     only where the service sells one.
  *
  * The real handlers run over the SQLite-backed D1 stand-in. Cloudflare's
- * registrar and Lemon Squeezy are fetch stand-ins. Nothing touches the network.
+ * registrar and Stripe are fetch stand-ins. Nothing touches the network.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,7 +25,7 @@ import { fakeKV, withFetch, jsonRes } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip, schemaFiles } from './d1-fake.js';
 import { fakeGitHub } from './github-fake.js';
 import { fakeCloudflare } from './cloudflare-fake.js';
-import { planForVariant, periodForVariant } from '../worker/cloud.js';
+import { planForPrice, periodForPrice } from '../worker/billing.js';
 import { registerOn, registrar, mayHave, mayAsk, whyNot, registerSentence, readTyped, holderOf, clockWords, ENDINGS, LIMITS } from '../worker/register.js';
 
 const saved = (name) => JSON.parse(readFileSync(new URL(`./fixtures/registrar/${name}.json`, import.meta.url), 'utf8'));
@@ -35,7 +35,7 @@ const LINES = Object.fromEntries(['check-1', 'check-odd', 'check-premium'].flatM
 const J = 'juniperhollowpottery';
 const DAY = 86400e3;
 const REG = 'https://api.cloudflare.com/client/v4/accounts/acct-hosting/registrar';
-const LS = 'https://api.lemonsqueezy.com/v1';
+const STRIPE = 'https://api.stripe.com/v1';
 const WORKER = 'club-site1';
 const SENTENCES = {
   can: 'Included with your yearly plan',
@@ -72,12 +72,12 @@ function world({ on = true, site = {}, hosted = true, env: extra = {}, registrar
   const reg = fakeRegistrar({ down: registrarDown });
   const env = cloudEnv(fakeKV({ 'itok:ada/club': 'inst-token' }), {
     HOSTING_ACCOUNT_ID: cf.account, HOSTING_API_TOKEN: cf.token, HOSTING_SUBDOMAIN: 'kiln-sites', CLOUD_DASHBOARD: 'https://app.example',
-    LS_VARIANT_MANAGED: '22', LS_VARIANT_MANAGED_YEARLY: '33', LS_VARIANT_CLOUD_YEARLY: '44',
+    STRIPE_PRICE_CLOUD: 'price_11', STRIPE_PRICE_MANAGED: 'price_22', STRIPE_PRICE_MANAGED_YEARLY: 'price_33', STRIPE_PRICE_CLOUD_YEARLY: 'price_44',
     ...(on ? { REGISTER_DOMAINS: 'on' } : {}),
     ...extra,
   });
-  const s = { billing_period: 'year', paid_until: Date.now() + 300 * DAY, status: 'active', ls_subscription_id: 'sub-1', plan: 'managed', ...site };
-  addSite(env, { id: 'site1', plan: s.plan, status: s.status, ls_subscription_id: s.ls_subscription_id });
+  const s = { billing_period: 'year', paid_until: Date.now() + 300 * DAY, status: 'active', stripe_subscription_id: 'sub-1', plan: 'managed', ...site };
+  addSite(env, { id: 'site1', plan: s.plan, status: s.status, stripe_subscription_id: s.stripe_subscription_id });
   try { env.kiln_cloud.exec('UPDATE sites SET billing_period = ?, paid_until = ? WHERE id = ?', s.billing_period, s.paid_until, 'site1'); } catch { /* a database without migration 0016 */ }
   if (hosted) env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, deployed_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'site1', WORKER, `https://${WORKER}.kiln-sites.workers.dev`, 'live', 1, 1, 1);
   const handler = async (url, init) => (await reg.handler(url, init)) || (await cf.handler(url, init)) || gh.handler(url, init);
@@ -401,85 +401,99 @@ test('on the test service the stand-in answers and nothing is asked of Cloudflar
 
 // ─── The paid year ────────────────────────────────────────────────────────────
 
-async function hook(env, attributes, { event = 'subscription_updated', site = 'site1', sub = 'sub-1' } = {}) {
+const seconds = (iso) => Date.parse(iso) / 1000;
+let events = 0;
+/**
+ * One signed Stripe notice about the site's subscription: its status, the
+ * price it pays, and the day its paid period ends. `ends` is a day the
+ * customer set it to end on. `at` is the event's own time; Stripe's notices
+ * are applied in that order, so a later one in a test is given a later time.
+ */
+async function hook(env, { status, price, renews, ends = null, at = Date.now() }, { type = 'customer.subscription.updated', site = 'site1', sub = 'sub-1' } = {}) {
   const body = JSON.stringify({
-    meta: { event_name: event, ...(site ? { custom_data: { site_id: site } } : {}) },
-    data: { type: 'subscriptions', id: sub, attributes: { updated_at: new Date().toISOString(), ends_at: null, ...attributes } },
+    id: `evt_year_${++events}`, object: 'event', type, created: Math.floor(at / 1000),
+    data: { object: {
+      id: sub, object: 'subscription', customer: 'cus_1', status, cancel_at_period_end: false, cancel_at: ends ? seconds(ends) : null, ended_at: null,
+      metadata: site ? { site_id: site } : {}, items: { data: [{ current_period_end: seconds(renews), price: { id: price } }] },
+    } },
   });
-  const sig = createHmac('sha256', 'whsec').update(body).digest('hex');
-  const res = await worker.fetch(new Request('https://worker.example/cloud/webhook/ls', { method: 'POST', headers: { 'X-Signature': sig }, body }), env);
+  const t = Math.floor(Date.now() / 1000);
+  const header = `t=${t},v1=${createHmac('sha256', 'whsec').update(`${t}.${body}`).digest('hex')}`;
+  const res = await worker.fetch(new Request('https://worker.example/cloud/webhook/stripe', { method: 'POST', headers: { 'Stripe-Signature': header }, body }), env);
   return res.status;
 }
 const row = (env) => env.kiln_cloud.row('SELECT * FROM sites WHERE id = ?', 'site1');
-const unpaid = { site: { billing_period: null, paid_until: null, status: 'trialing', ls_subscription_id: null } };
-const RENEWS = '2027-11-13T15:00:00.000000Z', ENDS = '2027-03-01T00:00:00.000000Z';
+const unpaid = { site: { billing_period: null, paid_until: null, status: 'trialing', stripe_subscription_id: null } };
+const RENEWS = '2027-11-13T15:00:00.000Z', ENDS = '2027-03-01T00:00:00.000Z';
 
 test('a yearly subscription marks the site yearly and paid up to the day it renews; a monthly one says month', { skip: d1Skip }, async () => {
+  const now = Date.now();
   const w = world({ on: false, ...unpaid });
-  assert.equal(await hook(w.env, { status: 'active', variant_id: 33, renews_at: RENEWS }, { event: 'subscription_created' }), 200);
+  assert.equal(await hook(w.env, { status: 'active', price: 'price_33', renews: RENEWS, at: now }, { type: 'customer.subscription.created' }), 200);
   assert.deepEqual((({ plan, status, billing_period, paid_until }) => ({ plan, status, billing_period, paid_until }))(row(w.env)),
     { plan: 'managed', status: 'active', billing_period: 'year', paid_until: Date.parse(RENEWS) });
-  // Cancelled: paid up to the day it ends, and still yearly.
-  assert.equal(await hook(w.env, { status: 'cancelled', variant_id: 33, renews_at: RENEWS, ends_at: ENDS, updated_at: '2026-12-01T00:00:00Z' }), 200);
+  // Set to end: paid up to the day it ends, and still yearly.
+  assert.equal(await hook(w.env, { status: 'active', price: 'price_33', renews: RENEWS, ends: ENDS, at: now + 1000 }), 200);
   assert.equal(row(w.env).paid_until, Date.parse(ENDS));
   assert.equal(row(w.env).billing_period, 'year');
 
   const m = world({ on: false, ...unpaid });
-  assert.equal(await hook(m.env, { status: 'active', variant_id: 22, renews_at: '2026-12-13T15:00:00.000000Z' }), 200);
+  const MONTH = '2026-12-13T15:00:00.000Z';
+  assert.equal(await hook(m.env, { status: 'active', price: 'price_22', renews: MONTH, at: now }), 200);
   assert.equal(row(m.env).billing_period, 'month');
-  assert.equal(row(m.env).paid_until, Date.parse('2026-12-13T15:00:00.000000Z'));
-  // A payment that failed: the day already paid for stays as it was, whatever day the next try is set for.
-  assert.equal(await hook(m.env, { status: 'past_due', variant_id: 22, renews_at: '2026-12-17T15:00:00.000000Z', updated_at: '2026-12-13T15:01:00Z' }), 200);
+  assert.equal(row(m.env).paid_until, Date.parse(MONTH));
+  // A payment that failed: the day already paid for stays as it was, whatever day the subscription names next.
+  assert.equal(await hook(m.env, { status: 'past_due', price: 'price_22', renews: '2026-12-17T15:00:00.000Z', at: now + 1000 }), 200);
   assert.equal(row(m.env).status, 'past_due');
-  assert.equal(row(m.env).paid_until, Date.parse('2026-12-13T15:00:00.000000Z'));
+  assert.equal(row(m.env).paid_until, Date.parse(MONTH));
   // Moved to the yearly form later (in the billing portal): the row follows.
-  assert.equal(await hook(m.env, { status: 'active', variant_id: 33, renews_at: RENEWS, updated_at: '2026-12-14T00:00:00Z' }), 200);
+  assert.equal(await hook(m.env, { status: 'active', price: 'price_33', renews: RENEWS, at: now + 2000 }), 200);
   assert.equal(row(m.env).billing_period, 'year');
   assert.equal(row(m.env).paid_until, Date.parse(RENEWS));
 });
 
-test('where no yearly variant is set, a webhook that names an unknown variant is treated exactly as today', { skip: d1Skip }, async () => {
-  const w = world({ on: false, ...unpaid, env: { LS_VARIANT_MANAGED_YEARLY: undefined } });
-  assert.equal(planForVariant(w.env, 33), null);
-  assert.equal(periodForVariant(w.env, 33), null);
-  assert.equal(periodForVariant(w.env, 22), 'month');
-  assert.equal(await hook(w.env, { status: 'active', variant_id: 33, renews_at: RENEWS }), 200);
+test('where no yearly price is set, a notice that names that price is about one this service does not sell: the site is paid for, and nothing says by the year', { skip: d1Skip }, async () => {
+  const w = world({ on: false, ...unpaid, env: { STRIPE_PRICE_MANAGED_YEARLY: undefined } });
+  assert.equal(planForPrice(w.env, 'price_33'), null);
+  assert.equal(periodForPrice(w.env, 'price_33'), null);
+  assert.equal(periodForPrice(w.env, 'price_22'), 'month');
+  assert.equal(await hook(w.env, { status: 'active', price: 'price_33', renews: RENEWS }), 200);
   const r = row(w.env);
-  assert.deepEqual([r.status, r.plan, r.ls_subscription_id, r.billing_period, r.paid_until], ['active', 'managed', 'sub-1', null, null]);
+  assert.deepEqual([r.status, r.plan, r.stripe_subscription_id, r.billing_period, r.paid_until], ['active', 'managed', 'sub-1', null, null]);
   assert.equal('yearly' in (await me(w)), false);
 });
 
-test('the checkout offers the yearly form only where the service sells one, and only for the hosting plan', { skip: d1Skip }, async () => {
-  const lemon = async (url, init) => (url === `${LS}/checkouts` && init.method === 'POST' ? jsonRes({ data: { attributes: { url: 'https://kiln.lemonsqueezy.com/checkout/custom/abc' } } }, 201) : undefined);
-  const variantOf = async (w, query) => withFetch(lemon, async (calls) => {
+test('the checkout offers the yearly form only where the service sells one, for each plan by its own yearly price', { skip: d1Skip }, async () => {
+  const stripe = async (url, init) => (url === `${STRIPE}/checkout/sessions` && init.method === 'POST' ? jsonRes({ id: 'cs_1', url: 'https://checkout.stripe.com/c/pay/cs_1' }) : undefined);
+  const priceOf = async (w, query) => withFetch(stripe, async (calls) => {
     const r = await ask(w.env, `/cloud/checkout?site=site1${query}`);
     assert.equal(r.status, 200);
-    const sent = calls.find(c => c.url === `${LS}/checkouts`).body.data;
-    return [sent.relationships.variant.data.id, sent.attributes.product_options.enabled_variants];
+    const sent = Object.fromEntries(new URLSearchParams(calls.find(c => c.url === `${STRIPE}/checkout/sessions`).body));
+    return [sent['line_items[0][price]'], sent['metadata[period]']];
   });
   const w = world({ on: false, ...unpaid });
-  assert.deepEqual(await variantOf(w, '&period=year'), ['33', [33]]);
-  assert.deepEqual(await variantOf(w, ''), ['22', [22]]);
-  assert.deepEqual(await variantOf(w, '&period=forever'), ['22', [22]]);
+  assert.deepEqual(await priceOf(w, '&period=year'), ['price_33', 'year']);
+  assert.deepEqual(await priceOf(w, ''), ['price_22', 'month']);
+  assert.deepEqual(await priceOf(w, '&period=forever'), ['price_22', 'month']);
   assert.equal((await me(w)).yearly, true);
-  // No yearly variant: asking for a year changes nothing.
-  const none = world({ on: false, ...unpaid, env: { LS_VARIANT_MANAGED_YEARLY: undefined } });
-  assert.deepEqual(await variantOf(none, '&period=year'), ['22', [22]]);
-  // The plan without hosting is sold by the year too, where its yearly variant is set, and includes no domain.
+  // No yearly price: asking for a year changes nothing.
+  const none = world({ on: false, ...unpaid, env: { STRIPE_PRICE_MANAGED_YEARLY: undefined } });
+  assert.deepEqual(await priceOf(none, '&period=year'), ['price_22', 'month']);
+  // The plan without hosting is sold by the year too, where its yearly price is set, and includes no domain.
   const cloud = world({ on: false, site: { ...unpaid.site, plan: 'cloud' } });
-  assert.deepEqual(await variantOf(cloud, '&period=year'), ['44', [44]]);
-  assert.deepEqual(await variantOf(cloud, ''), ['11', [11]]);
+  assert.deepEqual(await priceOf(cloud, '&period=year'), ['price_44', 'year']);
+  assert.deepEqual(await priceOf(cloud, ''), ['price_11', 'month']);
   assert.equal((await me(cloud)).yearly_cloud, true);
-  const noCloudYear = world({ on: false, site: { ...unpaid.site, plan: 'cloud' }, env: { LS_VARIANT_CLOUD_YEARLY: undefined } });
-  assert.deepEqual(await variantOf(noCloudYear, '&period=year'), ['11', [11]]);
+  const noCloudYear = world({ on: false, site: { ...unpaid.site, plan: 'cloud' }, env: { STRIPE_PRICE_CLOUD_YEARLY: undefined } });
+  assert.deepEqual(await priceOf(noCloudYear, '&period=year'), ['price_11', 'month']);
   assert.equal('yearly_cloud' in (await me(noCloudYear)), false);
 });
 
 test('a yearly subscription to the plan without hosting is the plan without hosting, paid by the year, and is offered no domain', { skip: d1Skip }, async () => {
   const w = world({ on: true, site: { ...unpaid.site, plan: 'cloud' } });
-  assert.equal(planForVariant(w.env, 44), 'cloud');
-  assert.equal(periodForVariant(w.env, 44), 'year');
-  assert.equal(await hook(w.env, { status: 'active', variant_id: 44, renews_at: RENEWS }, { event: 'subscription_created' }), 200);
+  assert.equal(planForPrice(w.env, 'price_44'), 'cloud');
+  assert.equal(periodForPrice(w.env, 'price_44'), 'year');
+  assert.equal(await hook(w.env, { status: 'active', price: 'price_44', renews: RENEWS }, { type: 'customer.subscription.created' }), 200);
   assert.deepEqual((({ plan, status, billing_period, paid_until }) => ({ plan, status, billing_period, paid_until }))(row(w.env)),
     { plan: 'cloud', status: 'active', billing_period: 'year', paid_until: Date.parse(RENEWS) });
   const seen = await me(w);
@@ -489,7 +503,7 @@ test('a yearly subscription to the plan without hosting is the plan without host
 
 // ─── A database the migration has not reached ─────────────────────────────────
 
-test('a database without migration 0016 still answers the dashboard and the webhook', { skip: d1Skip }, async () => {
+test('a database without migration 0016 still answers the dashboard', { skip: d1Skip }, async () => {
   const before = schemaFiles().findIndex(f => f.endsWith('0016_registrations.sql'));
   assert.ok(before > 0);
   const w = world({ ...unpaid, env: { d1: { upTo: before } } });
@@ -499,8 +513,7 @@ test('a database without migration 0016 still answers the dashboard and the webh
   assert.equal(seen.sites.length, 1);
   assert.equal('new_domain' in seen.sites[0], false);
   await withFetch(w.handler, async () => assert.equal((await ask(w.env, `/cloud/sites/newdomain?site=site1&q=${J}`)).status, 404));
-  assert.equal(await hook(w.env, { status: 'active', variant_id: 33, renews_at: RENEWS }), 200);
-  assert.deepEqual([row(w.env).status, row(w.env).plan, row(w.env).ls_subscription_id], ['active', 'managed', 'sub-1']);
+  assert.deepEqual([row(w.env).status, row(w.env).plan], ['trialing', 'managed']);
 });
 
 test('the table keeps its own three rules', { skip: d1Skip }, () => {

@@ -91,12 +91,12 @@ function world({ on = true, admin = 'ada', env: extra = {} } = {}) {
   const sent = [];
   const env = cloudEnv(fakeKV({ 'itok:ada/club': 'inst-token' }), {
     HOSTING_ACCOUNT_ID: cf.account, HOSTING_API_TOKEN: cf.token, HOSTING_SUBDOMAIN: 'kiln-sites', CLOUD_DASHBOARD: 'https://app.example',
-    LS_VARIANT_MANAGED: '22', LS_VARIANT_MANAGED_YEARLY: '33', CLOUD_ADMIN: admin,
+    STRIPE_PRICE_MANAGED: 'price_managed_m', STRIPE_PRICE_MANAGED_YEARLY: 'price_managed_y', CLOUD_ADMIN: admin,
     NOTIFY: { send: async (m) => { sent.push(m); return { messageId: '<1@kilncms.com>' }; } }, NOTIFY_TO: OPS, CUSTOMER_MAIL_FROM: 'hello@kilncms.com',
     ...(on ? { REGISTER_DOMAINS: 'on' } : {}),
     ...extra,
   });
-  addSite(env, { id: 'site1', plan: 'managed', status: 'active', ls_subscription_id: 'sub-1' });
+  addSite(env, { id: 'site1', plan: 'managed', status: 'active', stripe_subscription_id: 'sub-1' });
   try { env.kiln_cloud.exec('UPDATE sites SET billing_period = ?, paid_until = ? WHERE id = ?', 'year', NOW + 300 * DAY, 'site1'); } catch { /* a database without migration 0016 */ }
   cf.addScript(WORKER);
   env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, deployed_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'site1', WORKER, `https://${WORKER}.kiln-sites.workers.dev`, 'live', 1, 1, 1);
@@ -132,14 +132,19 @@ const one = async (env, id = 'reg-1') => (await regs(env)).find(r => r.id === id
 const canceled = (w) => w.env.kiln_cloud.exec("UPDATE sites SET status = 'canceled' WHERE id = 'site1'");
 const domainOn = (w, state = 'live') => w.env.kiln_cloud.exec('INSERT INTO domains (site_id, name, zone_id, state, registered, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'site1', N, 'zone-1', state, 1, 1, 1);
 const domains = (env) => env.kiln_cloud.prepare('SELECT * FROM domains').all().then(r => r.results || []);
-/** The billing company's webhook, signed as the earlier chunks' tests sign it. */
-async function hook(env, attributes) {
+/** A signed Stripe notice about the site's subscription, which is paid by the year. `ends` is the day its owner set it to end on; `at` is the event's own time. */
+async function hook(env, { ends = null, at }) {
+  const seconds = (ms) => Math.floor(ms / 1000);
   const body = JSON.stringify({
-    meta: { event_name: 'subscription_updated', custom_data: { site_id: 'site1' } },
-    data: { type: 'subscriptions', id: 'sub-1', attributes: { ends_at: null, variant_id: 33, renews_at: '2027-11-13T15:00:00.000000Z', ...attributes } },
+    id: `evt_leave_${at}`, object: 'event', type: 'customer.subscription.updated', created: seconds(at),
+    data: { object: {
+      id: 'sub-1', object: 'subscription', customer: 'cus_1', status: 'active', cancel_at_period_end: !!ends, cancel_at: ends ? seconds(Date.parse(ends)) : null, ended_at: null,
+      metadata: { site_id: 'site1' }, items: { data: [{ current_period_end: seconds(Date.parse('2027-11-13T15:00:00.000Z')), price: { id: 'price_managed_y' } }] },
+    } },
   });
-  const sig = createHmac('sha256', 'whsec').update(body).digest('hex');
-  return (await worker.fetch(new Request('https://worker.example/cloud/webhook/ls', { method: 'POST', headers: { 'X-Signature': sig }, body }), env)).status;
+  const t = seconds(Date.now());
+  const header = `t=${t},v1=${createHmac('sha256', 'whsec').update(`${t}.${body}`).digest('hex')}`;
+  return (await worker.fetch(new Request('https://worker.example/cloud/webhook/stripe', { method: 'POST', headers: { 'Stripe-Signature': header }, body }), env)).status;
 }
 /** Every line the service logs while `fn` runs. */
 async function logged(fn) {
@@ -156,7 +161,7 @@ test('a cancel webhook leads to one change of renewal, written down only after C
   hold(w);
   await timer(w);
   assert.equal(w.reg.seen.length, 0, 'a paid plan, read today: nothing is asked of Cloudflare');
-  assert.equal(await withFetch(w.handler, () => hook(w.env, { status: 'cancelled', ends_at: '2027-11-13T15:00:00.000000Z', updated_at: iso(NOW + 1000) })), 200);
+  assert.equal(await withFetch(w.handler, () => hook(w.env, { ends: '2027-11-13T15:00:00.000Z', at: NOW + 1000 })), 200);
   const lines = await logged(() => timer(w));
   assert.deepEqual(w.reg.patches().map(c => [c.path, c.body]), [[`/registrations/${N}`, { auto_renew: false }]]);
   assert.equal(w.reg.reads().length, 1);
@@ -169,7 +174,7 @@ test('a cancel webhook leads to one change of renewal, written down only after C
   assert.equal(w.notes('Switch renewal').length, 0);
 
   // The plan is taken up again before the name runs out.
-  assert.equal(await withFetch(w.handler, () => hook(w.env, { status: 'active', updated_at: iso(NOW + 2000) })), 200);
+  assert.equal(await withFetch(w.handler, () => hook(w.env, { at: NOW + 2000 })), 200);
   const again = await logged(() => timer(w));
   assert.deepEqual(w.reg.patches().map(c => c.body), [{ auto_renew: false }, { auto_renew: true }]);
   assert.equal((await one(w.env)).renews, 1);

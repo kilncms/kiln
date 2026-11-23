@@ -379,7 +379,7 @@ test('look after: publishing a site that is already up does not repeat the steps
 /** Three paid, hosted, live sites whose editor is r1, looked at by the sweep in the order s1, s2, s3. */
 async function fleet(n = 3, opts = {}) {
   const repos = ['ada/one', 'ada/two', 'ada/three'].slice(0, n);
-  const w = world(Object.fromEntries(repos.map((r, i) => [r, lookedAfterSite('r1', r, `s${i + 1}`)])), { site: { status: 'active', ls_subscription_id: '77' }, ...opts });
+  const w = world(Object.fromEntries(repos.map((r, i) => [r, lookedAfterSite('r1', r, `s${i + 1}`)])), { site: { status: 'active', stripe_subscription_id: '77' }, ...opts });
   await withFetch(w.handler, async () => { for (let i = 1; i <= n; i++) assert.equal((await switchOn(w.env, `s${i}`)).status, 200); });
   for (let i = 1; i <= n; i++) w.env.kiln_cloud.exec('UPDATE hosting SET checked_at = ? WHERE site_id = ?', i, `s${i}`);
   w.editors = () => repos.map(r => w.ghs[r].read('assets/kiln.js').match(/KILN_VERSION="(\w+)"/)[1]);
@@ -476,7 +476,7 @@ test('editor: one site is looked at once a day, and an editor released since the
 
 test('editor: a site that cannot be updated is logged and does not stop the next one, and a site that may not be edited is left alone', { skip: d1Skip }, async () => {
   const w = await fleet(3, { shut: ['ada/one'] });
-  w.env.kiln_cloud.exec("UPDATE sites SET status = 'canceled', ls_subscription_id = NULL WHERE id = 's3'");
+  w.env.kiln_cloud.exec("UPDATE sites SET status = 'canceled', stripe_subscription_id = NULL WHERE id = 's3'");
   await knownFor(w, 'r2', 25);
   const logged = await warnings(() => withFetch(w.handler, async () => { await sweep(w.env); }));
   assert.deepEqual(w.editors(), ['r1', 'r2', 'r1']);

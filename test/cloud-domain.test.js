@@ -1535,7 +1535,7 @@ test('own domain, fair use: the domain is marked when a site that is not paid fo
     assert.deepEqual([w.env.KILN.map.get(DOMAIN_MARK), site.status], [String(site.created_at), 'trialing']);
   });
   const p = world();
-  p.env.kiln_cloud.exec("UPDATE sites SET status = 'active', ls_subscription_id = 'sub-1' WHERE id = 'site1'");
+  p.env.kiln_cloud.exec("UPDATE sites SET status = 'active', stripe_subscription_id = 'sub-1' WHERE id = 'site1'");
   p.env.KILN.map.set(DOMAIN_MARK, String(Date.now() - 30 * DAY));
   await withFetch(p.handler, async () => {
     let res; await hush(async () => { res = await setup(p.env); });

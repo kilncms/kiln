@@ -2,14 +2,15 @@
  * Kiln Cloud's billing through Stripe Managed Payments (worker/billing.js and
  * the Stripe routes in worker/cloud.js).
  *
- *   · Stripe sells once STRIPE_SECRET_KEY is set; without it Lemon Squeezy
- *     works exactly as before.
+ *   · Stripe sells once STRIPE_SECRET_KEY is set; without it nobody can pay,
+ *     whatever settings of an older billing company are still there.
  *   · Subscribe opens a Checkout Session for the site's one price, with
  *     Managed Payments on, no Stripe trial, and the site's id on it.
  *   · Only a notice signed with the endpoint's secret, and fresh, changes a
  *     site; the same notice twice changes it once.
- *   · Each subscription status means for the site what the Lemon Squeezy
- *     statuses mean, and the plan on record follows the price paid for.
+ *   · Each subscription status comes to a status for the site and to how
+ *     long it can still be edited, and the plan on record follows the price
+ *     paid for.
  *   · Manage billing opens Stripe's Billing Portal; Remove cancels the
  *     subscription first.
  *
@@ -20,17 +21,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import worker from '../worker/index.js';
-import { billingProvider, verifyStripeSignature, formBody, planForPrice, periodForPrice, subscriptionOf } from '../worker/billing.js';
+import { billingProvider, billingOn, verifyStripeSignature, formBody, planForPrice, periodForPrice, subscriptionOf, subscriptionProvider, subscriptionSql } from '../worker/billing.js';
 import { stripeStateFor, PAST_DUE_GRACE_DAYS } from '../worker/cloud.js';
 import { fakeKV, withFetch, jsonRes } from './worker-harness.js';
-import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
+import { cloudEnv, addSite, d1Skip, schemaFiles } from './d1-fake.js';
 
 const API = 'https://api.stripe.com/v1';
-const LS = 'https://api.lemonsqueezy.com/v1';
 const DAY = 86400e3;
 const SECRET = 'whsec_stripe_endpoint';
 const PRICES = { STRIPE_PRICE_CLOUD: 'price_cloud_m', STRIPE_PRICE_CLOUD_YEARLY: 'price_cloud_y', STRIPE_PRICE_MANAGED: 'price_managed_m', STRIPE_PRICE_MANAGED_YEARLY: 'price_managed_y' };
-/** A Cloud env where Stripe sells. The Lemon Squeezy keys cloudEnv sets stay, and are not used. */
+/** A Cloud env where Stripe sells both plans, by the month and by the year. */
 const stripeEnv = (extra = {}) => cloudEnv(fakeKV(), { STRIPE_SECRET_KEY: 'sk_test_kiln', STRIPE_WEBHOOK_SECRET: SECRET, CLOUD_DASHBOARD: 'https://app.example', ...PRICES, ...extra });
 
 const ask = (env, path, { method = 'GET', body } = {}) => worker.fetch(new Request(`https://worker.example${path}`, {
@@ -70,16 +70,54 @@ const paidThroughStripe = (env, over = {}) => {
 };
 const mailbox = () => { const out = []; return { out, binding: { send: async (m) => { out.push(String(m.raw || '')); } } }; };
 
-test('billingProvider: Stripe once its secret key is set, Lemon Squeezy otherwise, and nothing with neither', () => {
-  assert.equal(billingProvider({ STRIPE_SECRET_KEY: 'sk', LS_API_KEY: 'k', LS_STORE_ID: '1' }), 'stripe');
-  assert.equal(billingProvider({ LS_API_KEY: 'k', LS_STORE_ID: '1' }), 'lemonsqueezy');
-  assert.equal(billingProvider({ LS_API_KEY: 'k' }), null);
+// What a service that once sold through the older billing company may still have set. None of it is read.
+const OLD_SETTINGS = { LS_API_KEY: 'ls_key', LS_STORE_ID: '1', LS_VARIANT_CLOUD: '11', LS_VARIANT_MANAGED: '22', LS_VARIANT_CLOUD_YEARLY: '44', LS_VARIANT_MANAGED_YEARLY: '33', LS_WEBHOOK_SECRET: 'whsec' };
+
+test('billingProvider: Stripe once its secret key is set, and nothing without it, whatever an older billing company left set', () => {
+  assert.equal(billingProvider({ STRIPE_SECRET_KEY: 'sk' }), 'stripe');
+  assert.equal(billingProvider({ STRIPE_SECRET_KEY: 'sk', ...OLD_SETTINGS }), 'stripe');
+  assert.equal(billingProvider(OLD_SETTINGS), null);
+  assert.equal(billingOn(OLD_SETTINGS), false);
+  assert.equal(billingProvider({ ...PRICES, STRIPE_WEBHOOK_SECRET: SECRET }), null, 'prices and a webhook secret without the key sell nothing');
   assert.equal(billingProvider({}), null);
   assert.equal(billingProvider(undefined), null);
-  assert.equal(subscriptionOf({ ls_subscription_id: '77' }), '77');
-  assert.equal(subscriptionOf({ ls_subscription_id: null, stripe_subscription_id: 'sub_1' }), 'sub_1');
-  assert.equal(subscriptionOf({ subscription_id: null, ls_subscription_id: null }), null);
+  // A site's subscription is its Stripe one. An id left in the older company's column is not read.
+  assert.equal(subscriptionOf({ stripe_subscription_id: 'sub_1' }), 'sub_1');
+  assert.equal(subscriptionOf({ subscription_id: 'sub_2' }), 'sub_2');
+  assert.equal(subscriptionOf({ subscription_id: null, stripe_subscription_id: null }), null);
+  assert.equal(subscriptionOf({ ls_subscription_id: '77' }), null);
+  assert.equal(subscriptionProvider({ stripe_subscription_id: 'sub_1' }), 'stripe');
+  assert.equal(subscriptionProvider({ ls_subscription_id: '77' }), null);
+  assert.equal(subscriptionProvider(null), null);
   assert.equal(formBody({ a: [{ b: 1 }], c: { d: 'x y' }, e: null }), 'a%5B0%5D%5Bb%5D=1&c%5Bd%5D=x+y');
+});
+
+test('subscriptionSql: the Stripe column, and the word NULL on a database that has no such column yet, so every query that uses it still runs', { skip: d1Skip }, async () => {
+  const today = stripeEnv();
+  assert.equal(await subscriptionSql(today), 'stripe_subscription_id');
+  assert.equal(await subscriptionSql(today, 's.'), 's.stripe_subscription_id');
+  assert.equal(await subscriptionSql({}), 'NULL', 'no database at all');
+  // A database migration 0017 has not reached: no Stripe columns.
+  const before = schemaFiles().findIndex(f => f.endsWith('0017_stripe.sql'));
+  assert.ok(before > 0);
+  const old = cloudEnv(fakeKV(), { d1: { upTo: before }, STRIPE_SECRET_KEY: 'sk_test_kiln', CLOUD_ADMIN: 'ada' });
+  assert.throws(() => old.kiln_cloud.row('SELECT stripe_subscription_id FROM sites'));
+  addSite(old, { status: 'trialing', created_at: Date.now() - 8 * DAY });
+  // An id left by the older billing company counts for nothing: nobody on this database has a subscription.
+  old.kiln_cloud.exec("INSERT INTO sites (id, account_id, repo, origin, plan, status, ls_subscription_id, created_at) VALUES ('site-2', 'acct-1', 'ada/two', 'https://two.example', 'cloud', 'active', '77', 1)");
+  assert.equal(await subscriptionSql(old), 'NULL');
+  assert.equal(await subscriptionSql(old, 's.'), 'NULL');
+  // In a SELECT and in a WHERE, as the worker writes them.
+  const paidBy = await subscriptionSql(old, 's.');
+  assert.deepEqual(old.kiln_cloud.db.prepare(`SELECT s.id, ${paidBy} AS subscription_id FROM sites s WHERE ${paidBy} IS NULL ORDER BY s.id`).all().map(r => ({ ...r })), [{ id: 'site-1', subscription_id: null }, { id: 'site-2', subscription_id: null }]);
+  assert.equal(old.kiln_cloud.db.prepare(`SELECT COUNT(*) n FROM sites s WHERE ${paidBy} IS NOT NULL`).get().n, 0);
+  // The dashboard, the five-minute job and the admin page all answer there.
+  const me = await ask(old, '/cloud/me');
+  assert.equal(me.status, 200);
+  assert.deepEqual((await me.json()).sites.map(x => [x.id, x.subscribed]).sort(), [['site-1', false], ['site-2', false]]);
+  await worker.scheduled({}, old);
+  assert.equal(old.kiln_cloud.row("SELECT status FROM sites WHERE id = 'site-1'").status, 'canceled', 'a free trial past its days is ended, as on any database');
+  assert.equal(old.kiln_cloud.row("SELECT status FROM sites WHERE id = 'site-2'").status, 'active');
 });
 
 test('the plan and period of a Stripe price, and nothing for a price this service does not sell or a yearly one not set', () => {
@@ -115,7 +153,7 @@ test('Subscribe: one Checkout Session for the site\'s price, plan and period, Ma
       const res = await ask(env, `/cloud/checkout?site=site-1${period === 'year' ? '&period=year' : ''}`);
       assert.equal(res.status, 200, `${plan} ${period}`);
       assert.deepEqual(await res.json(), { url: 'https://checkout.stripe.com/c/pay/cs_1' });
-      assert.equal(calls.some(c => c.url.startsWith(LS)), false, 'Lemon Squeezy is not asked');
+      assert.equal(calls.length, 1, 'one call, to Stripe');
       const [call] = toStripe(calls);
       assert.equal(call.url, `${API}/checkout/sessions`);
       assert.equal(call.method, 'POST');
@@ -169,21 +207,50 @@ test('Subscribe: a yearly asking with no yearly price set gets the monthly one; 
   });
 });
 
-test('the provider switch: without a Stripe key Lemon Squeezy takes the payment exactly as before, and the dashboard\'s answer keeps its shape', { skip: d1Skip }, async () => {
-  const env = cloudEnv(fakeKV(), { CLOUD_DASHBOARD: 'https://app.example', ...PRICES });   // Stripe prices but no Stripe key
+test('with no Stripe key billing is off, whatever an older billing company left set: no payment page, nobody asked, and the dashboard\'s answer keeps its shape', { skip: d1Skip }, async () => {
+  const env = cloudEnv(fakeKV(), { CLOUD_DASHBOARD: 'https://app.example', ...PRICES, ...OLD_SETTINGS, STRIPE_SECRET_KEY: '' });
   addSite(env, { status: 'trialing' });
-  const lemon = async (url, init) => (url === `${LS}/checkouts` && init.method === 'POST' ? jsonRes({ data: { attributes: { url: 'https://kiln.lemonsqueezy.com/checkout/custom/abc' } } }, 201) : undefined);
-  await withFetch(lemon, async (calls) => {
+  await withFetch(async () => jsonRes({ url: 'https://pay.example/never' }, 201), async (calls) => {
     const res = await ask(env, '/cloud/checkout?site=site-1');
-    assert.deepEqual(await res.json(), { url: 'https://kiln.lemonsqueezy.com/checkout/custom/abc' });
-    assert.equal(toStripe(calls).length, 0);
-    assert.equal(calls[0].body.data.relationships.variant.data.id, '11');
+    assert.equal(res.status, 503);
+    assert.equal((await res.json()).code, 'billing_not_configured');
+    assert.equal(calls.length, 0, 'no billing company is asked for a payment page');
   });
   const me = await (await ask(env, '/cloud/me')).json();
-  assert.equal(me.billing, true);
-  assert.equal(me.yearly, undefined, 'Stripe\'s yearly prices mean nothing while Lemon Squeezy sells');
+  assert.equal(me.billing, false);
+  assert.equal(me.yearly, undefined, 'yearly prices mean nothing while nobody can pay');
+  assert.equal(me.yearly_cloud, undefined);
+  // The store line on the admin page says so too.
+  const o = await (await ask({ ...env, CLOUD_ADMIN: 'ada' }, '/admin/cloud/overview')).json();
+  assert.equal(o.store.mode, 'unconfigured');
   const s = await (await ask(stripeEnv(), '/cloud/me')).json();
   assert.deepEqual([s.billing, s.yearly, s.yearly_cloud], [true, true, true]);
+});
+
+test('the older billing company\'s webhook address is gone: a notice signed its way gets what any unknown /cloud address gets, and changes nothing', { skip: d1Skip }, async () => {
+  const env = stripeEnv(OLD_SETTINGS);
+  paidThroughStripe(env);
+  const body = JSON.stringify({
+    meta: { event_name: 'subscription_expired', custom_data: { site_id: 'site-1' } },
+    data: { type: 'subscriptions', id: 'sub_1', attributes: { status: 'expired', updated_at: new Date().toISOString(), ends_at: null } },
+  });
+  const signed = createHmac('sha256', OLD_SETTINGS.LS_WEBHOOK_SECRET).update(body).digest('hex');
+  const gone = await worker.fetch(new Request('https://worker.example/cloud/webhook/ls', { method: 'POST', headers: { 'X-Signature': signed }, body }), env);
+  const unknown = await worker.fetch(new Request('https://worker.example/cloud/no-such-address', { method: 'POST', body }), env);
+  assert.equal(gone.status, 404);
+  assert.deepEqual([gone.status, await gone.text()], [unknown.status, await unknown.text()]);
+  assert.deepEqual([row(env).status, row(env).access_until, row(env).stripe_subscription_id], ['active', null, 'sub_1']);
+});
+
+test('the dashboard\'s account carries no customer id, of Stripe or of the older billing company', { skip: d1Skip }, async () => {
+  const env = stripeEnv();
+  paidThroughStripe(env);
+  env.kiln_cloud.exec("UPDATE accounts SET ls_customer_id = 'old-9', stripe_customer_id = 'cus_1' WHERE id = 'acct-1'");
+  const text = await (await ask(env, '/cloud/me')).text();
+  const me = JSON.parse(text);
+  assert.deepEqual(me.account, { id: 'acct-1', github_login: 'ada', email: 'ada@example.com', name: null, google: false, by_email: false });
+  assert.equal('ls_customer_id' in me.account, false);
+  assert.equal(/old-9|cus_1/.test(text), false);
 });
 
 test('webhook: a paid checkout ties the site to its customer and subscription and makes it active; a bad or old signature changes nothing', { skip: d1Skip }, async () => {
@@ -228,7 +295,7 @@ test('webhook: the same event twice changes the site once, and an older change a
   assert.equal(row(env).status, 'past_due');
 });
 
-test('webhook: each Stripe status means for the site what the Lemon Squeezy statuses mean', { skip: d1Skip }, async () => {
+test('webhook: each Stripe status comes to the site\'s status and to how long it can still be edited', { skip: d1Skip }, async () => {
   const at = Math.floor(Date.now() / 1000) - 3600;
   // Paid and active: editing on, the paid period on record.
   let env = stripeEnv();
@@ -320,14 +387,16 @@ test('Remove cancels the site\'s Stripe subscription first, and keeps the site w
     assert.equal((await res.json()).code, 'subscription_not_cancelled');
     assert.ok(row(stuck), 'the site stays, so Manage billing stays');
   });
-  // A Lemon Squeezy subscription is still cancelled at Lemon Squeezy, though Stripe sells now.
+  // An id left in the older billing company's column is not a subscription any more: the site is removed, and nobody is asked.
   const old = stripeEnv();
-  addSite(old, { status: 'active', ls_subscription_id: '77' });
-  const lemon = async (url, init) => (url === `${LS}/subscriptions/77` ? jsonRes({ data: { attributes: { status: init.method === 'DELETE' ? 'cancelled' : 'active' } } }) : undefined);
-  await withFetch(lemon, async (calls) => {
-    assert.equal((await ask(old, '/cloud/sites/remove', { method: 'POST', body: { id: 'site-1' } })).status, 200);
-    assert.ok(calls.some(c => c.method === 'DELETE' && c.url === `${LS}/subscriptions/77`));
-    assert.equal(toStripe(calls).length, 0);
+  addSite(old, { status: 'active' });
+  old.kiln_cloud.exec("UPDATE sites SET ls_subscription_id = '77' WHERE id = 'site-1'");
+  await withFetch(stripe(), async (calls) => {
+    const res = await ask(old, '/cloud/sites/remove', { method: 'POST', body: { id: 'site-1' } });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).subscription, 'none');
+    assert.equal(calls.length, 0);
+    assert.equal(row(old), null);
   });
 });
 

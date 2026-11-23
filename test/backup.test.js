@@ -42,7 +42,7 @@ const KV = () => ({
   // Never backed up: sessions (they hold tokens), one-time codes, caches.
   'rsee:ada/club': '{"id":4242,"name":"ada/club"}',
   'csess:tok': '{"gh":"gho_SECRET_TOKEN"}', 'esess:a': '{"email":"e@example.com"}', 'msess:b': '{}', 'sid:c': '{}',
-  'itok:ada/club': 'ghs_INSTALLATION_TOKEN', 'gcode:d': '{}', 'cstate:e': '1', 'lsevt:f': '1', 'pres:g': '{}',
+  'itok:ada/club': 'ghs_INSTALLATION_TOKEN', 'gcode:d': '{}', 'cstate:e': '1', 'stripeevt:f': '1', 'pres:g': '{}',
 });
 
 /** A scratch world: stub state, a call log, an empty HOME, a backup directory. */
@@ -101,7 +101,7 @@ test('KLR-03 backup: sessions, tokens and caches are not in it', async () => {
   const u = unpack((await w.run()).file);
   const text = JSON.stringify(u.kv);
   for (const secret of ['gho_SECRET_TOKEN', 'ghs_INSTALLATION_TOKEN']) assert.equal(text.includes(secret), false, secret);
-  for (const p of ['csess:', 'esess:', 'msess:', 'sid:', 'itok:', 'gcode:', 'cstate:', 'lsevt:', 'pres:', 'rsee:']) assert.equal(u.kv.some(e => e.key.startsWith(p)), false, p);
+  for (const p of ['csess:', 'esess:', 'msess:', 'sid:', 'itok:', 'gcode:', 'cstate:', 'stripeevt:', 'pres:', 'rsee:']) assert.equal(u.kv.some(e => e.key.startsWith(p)), false, p);
   assert.deepEqual(KV_PREFIXES, ['app:creds', 'people:', 'atok:', 'cmt:', 'sug:', 'sched:', 'firstseen:', 'rid:', 'rname:', 'cloudgone:']);
 });
 

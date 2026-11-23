@@ -114,7 +114,7 @@ test('hosting: it is part of the hosting plan, of a service that hosts, and of t
     assert.match(body.error, /During the free days Kiln hosts 2 sites/);
     assert.equal(w.cf.scripts.size, 2);
     assert.equal((await switchOn(w.env, 'site1')).status, 200, 'publishing a site that is already up again is not a new site');
-    w.env.kiln_cloud.exec("UPDATE sites SET ls_subscription_id = '77', status = 'active' WHERE id = 'site1'");
+    w.env.kiln_cloud.exec("UPDATE sites SET stripe_subscription_id = '77', status = 'active' WHERE id = 'site1'");
     assert.equal((await switchOn(w.env, 'site3')).status, 200);
   });
 });
@@ -324,7 +324,7 @@ test('hosting: a hosted site whose free days ran out unpaid comes down three day
     await sweep(w.env);
     assert.equal(w.cf.scripts.size, 0, 'and it is not put back by the sweep');
     // Subscribed: the owner puts it up again, and its address is switched on again.
-    w.env.kiln_cloud.exec("UPDATE sites SET status = 'active', ls_subscription_id = '77' WHERE id = 'site1'");
+    w.env.kiln_cloud.exec("UPDATE sites SET status = 'active', stripe_subscription_id = '77' WHERE id = 'site1'");
     const shown = (await standing(w.env)).hosting;
     assert.equal(shown.state, 'ended');
     assert.match(shown.error, /because the free days ran out\. Your repository is untouched\./);
@@ -337,7 +337,7 @@ test('hosting: a hosted site whose free days ran out unpaid comes down three day
 
   // A site that was paid for and then cancelled is on another clock (the next
   // tests): twenty days after its paid time ran out it is still up.
-  const p = world(pages, { site: { ls_subscription_id: '77', status: 'active' } });
+  const p = world(pages, { site: { stripe_subscription_id: '77', status: 'active' } });
   await withFetch(p.handler, async () => {
     await switchOn(p.env);
     p.env.kiln_cloud.exec("UPDATE sites SET status = 'canceled', access_until = ?, created_at = ? WHERE id = 'site1'", Date.now() - 20 * day, Date.now() - 60 * day);
@@ -349,7 +349,7 @@ test('hosting: a hosted site whose free days ran out unpaid comes down three day
 
 test('hosting: a site that was paid for comes down thirty days after its plan ended, and subscribing again puts it back', { skip: d1Skip }, async () => {
   const day = 86400 * 1000;
-  const w = world(pages, { site: { ls_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day } });
+  const w = world(pages, { site: { stripe_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day } });
   const stopped = (status, until) => w.env.kiln_cloud.exec("UPDATE sites SET status = ?, access_until = ? WHERE id = 'site1'", status, until);
   const me = async () => (await (await ask(w.env, 'GET', '/cloud/me')).json()).sites[0];
   await withFetch(w.handler, async () => {
@@ -372,7 +372,7 @@ test('hosting: a site that was paid for comes down thirty days after its plan en
     const mine = await me();
     assert.equal(mine.editable, false);
     assert.equal(mine.hosting.ends_at, until + 30 * day);
-    assert.equal('ls_subscription_id' in mine, false, 'the subscription is still not handed to the browser');
+    assert.equal('stripe_subscription_id' in mine, false, 'the subscription is still not handed to the browser');
     // Paid again in time: it is not on its way down any more.
     stopped('active', null);
     await sweep(w.env);
@@ -408,7 +408,7 @@ test('hosting: a site that was paid for comes down thirty days after its plan en
   assert.equal(served(w, '/index.html'), '<!doctype html><h1>After the plan</h1>');
 
   // A payment that failed, and whose grace ran out 31 days ago, ends the same way.
-  const f = world(pages, { site: { ls_subscription_id: '78', status: 'active' } });
+  const f = world(pages, { site: { stripe_subscription_id: '78', status: 'active' } });
   await withFetch(f.handler, async () => {
     await switchOn(f.env);
     f.env.kiln_cloud.exec("UPDATE sites SET status = 'past_due', access_until = ? WHERE id = 'site1'", Date.now() - 31 * day);
@@ -422,8 +422,8 @@ test('hosting: with an owner to write to, the sweep leaves a paid site up until 
   const day = 86400 * 1000;
   const sent = [];
   const w = world(pages, {
-    site: { ls_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day },
-    env: { NOTIFY: { send: async (m) => { sent.push(m); return { messageId: '<1@kilncms.com>' }; } }, NOTIFY_TO: 'ops@example.com', CUSTOMER_MAIL_FROM: 'hello@kilncms.com', LS_API_KEY: '' },
+    site: { stripe_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day },
+    env: { NOTIFY: { send: async (m) => { sent.push(m); return { messageId: '<1@kilncms.com>' }; } }, NOTIFY_TO: 'ops@example.com', CUSTOMER_MAIL_FROM: 'hello@kilncms.com', STRIPE_SECRET_KEY: '' },
   });
   const toOwner = () => sent.filter(m => m.subject).map(m => m.subject);
   const toOperator = () => sent.filter(m => m.raw && /took ada\/club down/.test(m.raw));
@@ -464,7 +464,7 @@ test('hosting: a paid site with no day on record is left up, and the operator is
   const day = 86400 * 1000;
   const notes = [];
   const w = world(pages, {
-    site: { ls_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day },
+    site: { stripe_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day },
     env: { NOTIFY: { send: async (m) => { notes.push(m); } }, NOTIFY_TO: 'ops@example.com' },
   });
   const told = () => notes.filter(m => /no end date/.test(m.raw));
@@ -482,7 +482,7 @@ test('hosting: a paid site with no day on record is left up, and the operator is
     assert.match(told()[0].raw, /ada\/club \(https:\/\/club\.example\), status canceled/);
     assert.equal(await w.env.KILN.get('hostnodate:site1:77') !== null, true);
     // Subscribed anew and ended again with no day: that is another ending, and it is said again.
-    w.env.kiln_cloud.exec("UPDATE sites SET status = 'past_due', ls_subscription_id = '99' WHERE id = 'site1'");
+    w.env.kiln_cloud.exec("UPDATE sites SET status = 'past_due', stripe_subscription_id = '99' WHERE id = 'site1'");
     await sweep(w.env);
     await sweep(w.env);
     assert.equal(told().length, 2);
@@ -492,7 +492,7 @@ test('hosting: a paid site with no day on record is left up, and the operator is
 
 test('hosting: when a hosted site comes down, in so many words', () => {
   const day = 86400 * 1000, now = Date.UTC(2026, 10, 12, 12);
-  const paid = { ls_subscription_id: '77', created_at: now - 300 * day };
+  const paid = { stripe_subscription_id: '77', created_at: now - 300 * day };
   // a trial nobody subscribed for: ten days after it was added, as before
   assert.equal(hostingEndsAt({ status: 'canceled', created_at: now - 8 * day }, now), now + 2 * day);
   assert.equal(hostingEndsAt({ status: 'trialing', created_at: now - 3 * day }, now), null);
@@ -513,20 +513,25 @@ test('hosting: a plan that is cancelled and then runs out leaves its day on reco
   const day = 86400 * 1000;
   const notes = [];
   const w = world(pages, {
-    site: { ls_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day },
+    site: { stripe_subscription_id: '77', status: 'active', created_at: Date.now() - 200 * day },
     env: { NOTIFY: { send: async (m) => { notes.push(m); } }, NOTIFY_TO: 'ops@example.com' },
   });
-  /** A subscription notice as the payment company sends it, signed. */
-  const billing = (status, { at, ends_at }) => {
-    const body = JSON.stringify({ meta: { event_name: `subscription_${status}`, custom_data: { site_id: 'site1' } },
-      data: { type: 'subscriptions', id: '77', attributes: { status, updated_at: new Date(at).toISOString(), ends_at: new Date(ends_at).toISOString() } } });
-    return worker.fetch(new Request('https://worker.example/cloud/webhook/ls', { method: 'POST', headers: { 'X-Signature': createHmac('sha256', 'whsec').update(body).digest('hex') }, body }), w.env);
+  /** A notice about the site's subscription as Stripe sends it, signed. `ends` is the day the customer set it to end on, `over` the moment it ended. */
+  const seconds = (ms) => Math.floor(ms / 1000);
+  const billing = (type, status, { at, ends = null, over = null }) => {
+    const body = JSON.stringify({
+      id: `evt_${type}_${at}`, object: 'event', type: `customer.subscription.${type}`, created: seconds(at),
+      data: { object: { id: '77', object: 'subscription', customer: 'cus_1', status, cancel_at_period_end: !!ends, cancel_at: ends ? seconds(ends) : null, ended_at: over ? seconds(over) : null,
+        metadata: { site_id: 'site1' }, items: { data: [{ current_period_end: seconds(ends || at) }] } } },
+    });
+    const t = seconds(Date.now());
+    return worker.fetch(new Request('https://worker.example/cloud/webhook/stripe', { method: 'POST', headers: { 'Stripe-Signature': `t=${t},v1=${createHmac('sha256', 'whsec').update(`${t}.${body}`).digest('hex')}` }, body }), w.env);
   };
   await withFetch(w.handler, async () => {
     await switchOn(w.env);
-    const paidUntil = Date.now() - 2 * day;
-    assert.equal((await billing('cancelled', { at: paidUntil - 10 * day, ends_at: paidUntil })).status, 200);
-    assert.equal((await billing('expired', { at: paidUntil + 1000, ends_at: paidUntil })).status, 200);
+    const paidUntil = seconds(Date.now()) * 1000 - 2 * day;   // Stripe counts in whole seconds
+    assert.equal((await billing('updated', 'active', { at: paidUntil - 10 * day, ends: paidUntil })).status, 200);
+    assert.equal((await billing('deleted', 'canceled', { at: paidUntil + 1000, over: paidUntil + 1000 })).status, 200);
     assert.equal(w.env.kiln_cloud.row('SELECT status, access_until FROM sites WHERE id = ?', 'site1').access_until, paidUntil);
     await sweep(w.env);
     assert.equal(row(w.env).state, 'live', 'two days after: still up');

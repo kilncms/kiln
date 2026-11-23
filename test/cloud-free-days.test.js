@@ -33,7 +33,7 @@ const domainOver = (d) => `${d} has had its free days on Kiln, and they are over
  * kept (token 'tok'). GitHub knows each repository in `numbers` by its number.
  */
 function world(numbers = { 'ada/club': 4242 }) {
-  const env = cloudEnv(fakeKV(), { CLOUD_DASHBOARD: 'https://app.example', LS_API_KEY: '' });
+  const env = cloudEnv(fakeKV(), { CLOUD_DASHBOARD: 'https://app.example', STRIPE_SECRET_KEY: '' });
   env.KILN.map.set('app:creds', JSON.stringify({ app_id: 1, slug: 'kiln-cms', client_id: 'cid', client_secret: 'sec', pk8: APP_KEY }));
   env.kiln_cloud.exec("INSERT INTO accounts (id, github_login, email, created_at) VALUES ('acct-2', 'bo', 'bo@example.com', 1)");
   env.KILN.map.set('csess:ada', JSON.stringify({ account_id: 'acct-1', login: 'ada', uid: 101, gh: 'gho_a' }));
@@ -123,7 +123,7 @@ test('free days: an account that pays for nothing has them once, so a new reposi
 
 test('free days: an account that pays for a site gets fresh days on a new repository, and is held to its mark again once it pays for nothing', { skip: d1Skip }, async () => {
   const w = world({ 'ada/shop': 777, 'ada/blog': 778 });
-  addSite(w.env, { id: 'paid', repo: 'ada/paid', origin: 'https://paid.example', status: 'active', ls_subscription_id: 'sub-1', created_at: 1 });
+  addSite(w.env, { id: 'paid', repo: 'ada/paid', origin: 'https://paid.example', status: 'active', stripe_subscription_id: 'sub-1', created_at: 1 });
   ago(w.env, 30, 'firstseen:gh:101');
   const t0 = Date.now();
   const shop = await added(w, 'ada', 'ada/shop', 'https://shop.example');
@@ -203,7 +203,7 @@ test('free days: a domain is marked when a site that is not paid for goes live o
   assert.equal(await domainFreeDays(env, 's2', 'oakbakery.test', { now: later }), domainOver('oakbakery.test'));
   assert.deepEqual({ ...(await row(env, 's2')) }, { status: 'canceled', created_at: now - 2 * DAY });
   // a site that is paid for is left alone, and writes no mark
-  addSite(env, { id: 's4', repo: 'k/s4', origin: 'https://s4.example', status: 'active', ls_subscription_id: 'sub-4', created_at: later });
+  addSite(env, { id: 's4', repo: 'k/s4', origin: 'https://s4.example', status: 'active', stripe_subscription_id: 'sub-4', created_at: later });
   assert.equal(await domainFreeDays(env, 's4', 'oakbakery.test', { now: later, goesLive: true }), null);
   assert.deepEqual({ ...(await row(env, 's4')) }, { status: 'active', created_at: later });
   assert.equal(await domainFreeDays(env, 's4', 'paid.test', { now: later, goesLive: true }), null);

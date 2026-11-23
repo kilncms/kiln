@@ -47,18 +47,26 @@ export function fakeD1({ upTo = Infinity } = {}) {
   };
 }
 
-/** A Cloud worker env: one account ('acct-1', login 'ada') signed in to the dashboard with token 'tok'. */
+/** A Cloud worker env: one account ('acct-1', login 'ada') signed in to the dashboard with token 'tok'. Billing is on: Stripe's key, the price of the plan without hosting and the webhook's secret are set. */
 export function cloudEnv(kv, extra = {}) {
   const d1 = fakeD1(extra.d1 || {});
   d1.exec("INSERT INTO accounts (id, github_login, email, created_at) VALUES ('acct-1', 'ada', 'ada@example.com', 1)");
   kv.map.set('csess:tok', JSON.stringify({ account_id: 'acct-1', login: 'ada', gh: 'gho_x' }));
   const { d1: _opts, ...rest } = extra;
-  return { KILN: kv, kiln_cloud: d1, ALLOWED_ORIGINS: 'https://app.example', LS_API_KEY: 'ls_test_key', LS_STORE_ID: '1', LS_VARIANT_CLOUD: '11', LS_WEBHOOK_SECRET: 'whsec', ...rest };
+  return { KILN: kv, kiln_cloud: d1, ALLOWED_ORIGINS: 'https://app.example', STRIPE_SECRET_KEY: 'sk_test_key', STRIPE_PRICE_CLOUD: 'price_cloud', STRIPE_WEBHOOK_SECRET: 'whsec', ...rest };
 }
 
+/**
+ * One site. `stripe_subscription_id` says it is paid for. A database that
+ * migration 0017 has not reached has no column for it, and there the site is
+ * added without one: on such a database no site has a subscription.
+ */
 export function addSite(env, over = {}) {
-  const s = { id: 'site-1', account_id: 'acct-1', repo: 'ada/club', origin: 'https://club.example', plan: 'cloud', status: 'active', ls_subscription_id: null, created_at: Date.now(), ...over };
-  env.kiln_cloud.exec('INSERT INTO sites (id, account_id, repo, origin, plan, status, ls_subscription_id, created_at) VALUES (?,?,?,?,?,?,?,?)',
-    s.id, s.account_id, s.repo, s.origin, s.plan, s.status, s.ls_subscription_id, s.created_at);
+  const s = { id: 'site-1', account_id: 'acct-1', repo: 'ada/club', origin: 'https://club.example', plan: 'cloud', status: 'active', stripe_subscription_id: null, created_at: Date.now(), ...over };
+  env.kiln_cloud.exec('INSERT INTO sites (id, account_id, repo, origin, plan, status, created_at) VALUES (?,?,?,?,?,?,?)',
+    s.id, s.account_id, s.repo, s.origin, s.plan, s.status, s.created_at);
+  if (s.stripe_subscription_id !== null && s.stripe_subscription_id !== undefined) {
+    try { env.kiln_cloud.exec('UPDATE sites SET stripe_subscription_id = ? WHERE id = ?', s.stripe_subscription_id, s.id); } catch { /* a database without migration 0017 */ }
+  }
   return s;
 }

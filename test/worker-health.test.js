@@ -125,9 +125,9 @@ test('KLR-09 a rejected billing webhook leaves a line', async () => {
   const realWarn = console.warn;
   console.warn = (l) => lines.push(l);
   try {
-    const res = await worker.fetch(new Request('https://worker.example/cloud/webhook/ls', { method: 'POST', headers: { 'X-Signature': 'bad' }, body: '{"meta":{}}' }), { KILN: fakeKV(), LS_WEBHOOK_SECRET: 'whsec' });
-    assert.equal(res.status, 401);
-    assert.deepEqual(JSON.parse(lines[0]), { evt: 'webhook_rejected', reason: 'bad signature', bytes: 11 });
+    const res = await worker.fetch(new Request('https://worker.example/cloud/webhook/stripe', { method: 'POST', headers: { 'Stripe-Signature': 't=1,v1=bad' }, body: '{"meta":{}}' }), { KILN: fakeKV(), STRIPE_WEBHOOK_SECRET: 'whsec' });
+    assert.equal(res.status, 400);
+    assert.deepEqual(JSON.parse(lines[0]), { evt: 'webhook_rejected', provider: 'stripe', reason: 'bad or old signature', bytes: 11 });
   } finally { console.warn = realWarn; }
 });
 

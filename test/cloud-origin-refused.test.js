@@ -25,7 +25,7 @@ const cloud = (extra = {}) => { const kv = fakeKV(); creds(kv); return cloudEnv(
 
 test('a site whose free trial ran out: the page says so, and sends the owner to Subscribe', { skip: d1Skip }, async () => {
   const env = cloud();
-  addSite(env, { status: 'canceled', ls_subscription_id: null });
+  addSite(env, { status: 'canceled', stripe_subscription_id: null });
   for (const path of ['/auth/login', '/google/login']) {
     const r = await signIn(env, 'https://club.example', path);
     assert.equal(r.status, 403, path);
@@ -39,7 +39,7 @@ test('a site whose free trial ran out: the page says so, and sends the owner to 
 
 test('a site whose paid plan ended: the page says the plan ended, and that subscribing again brings editing back', { skip: d1Skip }, async () => {
   const env = cloud();
-  addSite(env, { status: 'canceled', ls_subscription_id: '77' });
+  addSite(env, { status: 'canceled', stripe_subscription_id: '77' });
   const r = await signIn(env, 'https://club.example');
   assert.equal(r.status, 403);
   assert.match(r.text, /This site’s Kiln plan has ended/);
@@ -90,8 +90,8 @@ async function standing(env, origin) {
 test('/standing: tells the editor whether an address may be edited, and when it may not, whether a trial or a plan ended', { skip: d1Skip }, async () => {
   const env = cloud();
   addSite(env, { id: 'a', origin: 'https://live.example', status: 'trialing' });
-  addSite(env, { id: 'b', origin: 'https://trial-over.example', status: 'canceled', ls_subscription_id: null });
-  addSite(env, { id: 'c', origin: 'https://plan-over.example', status: 'canceled', ls_subscription_id: '77' });
+  addSite(env, { id: 'b', origin: 'https://trial-over.example', status: 'canceled', stripe_subscription_id: null });
+  addSite(env, { id: 'c', origin: 'https://plan-over.example', status: 'canceled', stripe_subscription_id: '77' });
   const live = await standing(env, 'https://live.example');
   assert.equal(live.status, 200);
   assert.equal(live.acao, '*', 'readable from a page whose address may not be edited');

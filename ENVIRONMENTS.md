@@ -20,7 +20,7 @@ TL;DR of what to say:
 | KV / D1 | local, disposable | **own** KV `KILN_STAGING` + D1 `kiln-cloud-staging` | prod KV `KILN` + D1 `kiln-cloud` |
 | Sites | `python3 -m http.server` locally | CF Pages **preview** branch (e.g. `staging.kilncms.com`) | `kilncms.com`, `app.kilncms.com` (git-connected); `demo.kilncms.com` (uploaded by hand) |
 | GitHub App | prod app, or a test app | its own staging app (one-click `/setup`) | prod `kiln-cms` app |
-| Lemon Squeezy | off | off, until test-mode keys are put on staging | **live** |
+| Stripe (billing) | off | Stripe's sandbox: the six `STRIPE_*` secrets hold sandbox values | **live** |
 | Real customers / money | never | never | yes |
 | How you get there | `npm run dev` | `npm run deploy:test` | `npm run deploy:prod` (from `main` only) |
 
@@ -87,7 +87,7 @@ Wired in `worker/wrangler.toml` under `[env.staging]`:
 | Editing through the worker as invited editors (publish, uploads, drafts, versions, every refused write) | yes, as one command, once the two one-time steps below are done: `scripts/e2e.mjs` |
 | GitHub sign-in as the site owner | yes, once the staging App exists |
 | Google sign-in (editors and members) | no: staging has no Google client. A member being signed out after removal has to be checked by hand, with a Google client added to staging, or on production |
-| Kiln Cloud billing | no: staging has no Lemon Squeezy keys. Put test-mode keys on staging to try cancel and remove |
+| Kiln Cloud billing | yes, against Stripe's sandbox: the six `STRIPE_*` secrets on staging hold sandbox values, so a checkout, a cancel and a remove can be tried and no real money moves. Stripe's notices reach staging only while the sandbox has a webhook endpoint for the staging worker's address (`/cloud/webhook/stripe`) |
 | The Kiln Cloud dashboard | no: `app.kilncms.com` talks to the production worker only |
 | `staging.kilncms.com`, `staging-app.kilncms.com` | these names are in the staging config but have no DNS record. Use a `*.pages.dev` address and add it to `ALLOWED_ORIGINS` under `[env.staging.vars]` |
 
@@ -472,6 +472,10 @@ npx wrangler d1 migrations apply kiln-cloud --local                          # y
   "Backups and restore" above.
 - **After `0012_github_id.sql`**, an account made before it has no GitHub number until its person signs in. To fill the numbers in at once, run `node scripts/fill-github-ids.mjs <login> …`: it prints one `UPDATE` for each login and changes nothing.
   Check that each login still belongs to the person who made the account, then run the statements with `npx wrangler d1 execute kiln-cloud --env production --remote --file <file>` (staging first).
+- **Two columns are left over from Lemon Squeezy**, the billing company Kiln
+  Cloud could sell through before Stripe: `sites.ls_subscription_id` and
+  `accounts.ls_customer_id`. The worker no longer reads or writes them. They
+  stay because the tables were created with them, in `0001_init.sql`.
 
 ---
 
@@ -507,34 +511,25 @@ and are never in a file. A self-hosted worker needs only the rows marked
 | `GOOGLE_CLIENT_ID` | secret | Google sign-in for invited editors and members | Google Cloud console → Credentials → OAuth client (web). Redirect URI: `<worker>/google/callback` | production; optional for self-host and staging |
 | `GOOGLE_CLIENT_SECRET` | secret | the same client's secret | same place | with the id |
 | `AI_API_KEY` | secret | AI assist (the owner's own Anthropic key) | console.anthropic.com | optional; without it `/ai/assist` answers 501 |
-| `STRIPE_SECRET_KEY` | secret | makes Stripe the billing company (Stripe Managed Payments, `worker/billing.js`): creates Checkout Sessions, opens the Billing Portal, cancels subscriptions on Remove, reads the account and the prices for the admin page. Once it is set, the `LS_*` settings below are no longer used for new payments | Stripe Dashboard → Developers → API keys, the secret key (or a restricted key with Checkout Sessions, Billing Portal, Subscriptions, Prices and Account) | staging with a sandbox key, production with the live key, once the owner switches to Stripe |
+| `STRIPE_SECRET_KEY` | secret | makes Stripe the billing company (Stripe Managed Payments, `worker/billing.js`): creates Checkout Sessions, opens the Billing Portal, cancels subscriptions on Remove, reads the account and the prices for the admin page. Without it nobody can pay | Stripe Dashboard → Developers → API keys, the secret key (or a restricted key with Checkout Sessions, Billing Portal, Subscriptions, Prices and Account) | staging with a sandbox key, production with the live key |
 | `STRIPE_WEBHOOK_SECRET` | secret | verifies that a notice at `/cloud/webhook/stripe` came from Stripe. Without it every notice there is refused | Stripe Dashboard → Developers → Webhooks → the endpoint → Signing secret | with the secret key |
 | `STRIPE_PRICE_CLOUD` | secret | the price id of Kiln Cloud paid by the month (product tax code `txcd_10103001`, software as a service for business use) | Stripe Dashboard → Product catalog → the product → the price's id | with the secret key |
 | `STRIPE_PRICE_MANAGED` | secret | the price id of Kiln Cloud + hosting paid by the month (product tax code `txcd_10701100`, website hosting) | same | with the secret key |
 | `STRIPE_PRICE_CLOUD_YEARLY` | secret | the price id of Kiln Cloud paid by the year. Without it Subscribe offers that plan by the month only, and the webhook treats that price as one it does not sell | same | once the yearly price exists in Stripe |
 | `STRIPE_PRICE_MANAGED_YEARLY` | secret | the price id of Kiln Cloud + hosting paid by the year (it includes a domain). Without it nothing knows of a yearly hosting plan | same | once the yearly price exists in Stripe |
-| `LS_API_KEY` | secret | creates checkouts, reads and cancels subscriptions | Lemon Squeezy → Settings → API | production (test-mode key on staging) |
-| `LS_STORE_ID` | secret | the store checkouts belong to | Lemon Squeezy → Settings → Stores | with the API key |
-| `LS_VARIANT_CLOUD` | secret | the variant id of the Kiln Cloud plan | Lemon Squeezy → the product → variant | with the API key |
-| `LS_VARIANT_MANAGED` | secret | the variant id of the managed plan | same | with the API key |
-| `LS_VARIANT_MANAGED_YEARLY` | secret | the variant id of the hosting plan paid by the year. Without it nothing knows of a yearly plan: the checkout offers none and the webhook treats that variant as one it does not sell. The yearly price is set in Lemon Squeezy, never in the code | same | only once a yearly variant exists in billing |
-| `LS_VARIANT_CLOUD_YEARLY` | secret | the variant id of the plan without hosting paid by the year ($49). It includes no domain. Without it Subscribe offers that plan by the month only, and the webhook treats the id as unknown | the number from Lemon Squeezy | production once the yearly price exists in the store |
 | `REGISTER_DOMAINS` | var | the switch for a new domain through Kiln (`worker/register.js`). On only when it is exactly `on`. NOT SET on staging or production: it stays off until the matters outside the code are settled (Cloudflare's written answer, a payment method and a default contact on the hosting account, the terms). Off: nothing is offered and the routes do not exist | you set it | not yet |
 | `REGISTER_HOLDER` | var | who a registered name is held by. `kiln` (the default): Kiln's company holds it for the customer to use. Only that way is built; any other value keeps the piece off | you set it | optional |
 | `REGISTER_MAX_USD` | var | the most a name may cost in a year, first year and renewal alike. Default 15 | you set it | optional |
 | `REGISTER_DAILY_MAX` | var | how many names the whole service registers in 24 hours. Default 3 | you set it | optional |
 | `REGISTER_STANDIN` | var | `on` puts a stand-in in the place of Cloudflare's registrar, so nothing is asked of Cloudflare and nothing can be bought. For staging only: it is refused unless `HOSTING_PREFIX` is `stg-`, and a service where it is refused offers nothing | you set it | staging, for trying the dashboard |
-| `LS_WEBHOOK_SECRET` | secret | verifies that a webhook came from Lemon Squeezy | you choose it when creating the webhook | with the API key |
 | `HOSTING_API_TOKEN` | secret | lets the worker put sites up in the hosting account. Without it nothing is hosted and the dashboard does not offer it | a token of the hosting account alone (Workers Scripts: Edit). On the Mini: `~/.keys/kiln-hosting-cf.token` | staging; production once hosting is released |
 | `HOSTING_MEMBER_KEY` | secret | switches the members area on for the sites Kiln hosts: each hosted site's own secret, which signs its members' cookies, is worked out from this key and the site's id at every upload and is kept nowhere (`worker/hosting.js`). Unset, the pages under `members/` are left out when a hosted site goes up, so they answer "not found" and are never served openly, and "Check this site" says so. Changing it signs every member of every hosted site out at the site's next upload | a long random value, `openssl rand -hex 32`, set once with `wrangler secret put HOSTING_MEMBER_KEY` | staging; production when hosting is released |
 | `GH_WEBHOOK_SECRET` | secret | verifies that a notice at `/gh/webhook` came from GitHub. Without it that route answers 404 | you choose it, and enter the same value in the GitHub App's settings (Webhook secret) | with the hosting token |
 | `NOTIFY_TO` | secret | where operator notes go (new signup, billing change, trials expiring unpaid) | a VERIFIED Email Routing destination address on the account | production only, beside the `NOTIFY` send_email binding in wrangler.toml |
 
-Which billing company sells is decided in one place (`billingProvider` in
-`worker/billing.js`): Stripe when `STRIPE_SECRET_KEY` is set, otherwise Lemon
-Squeezy when `LS_API_KEY` and `LS_STORE_ID` are set. A site that is already
-paid for is looked after by the company its subscription is with. Without
-either the worker still runs: sites register as trialing and checkout answers
+Stripe is the only billing company the worker can sell through
+(`worker/billing.js`), and it sells once `STRIPE_SECRET_KEY` is set. Without
+the key the worker still runs: sites register as trialing and checkout answers
 that the payment page could not be opened (code `billing_not_configured`).
 
 **The Stripe webhook.** URL: `<worker>/cloud/webhook/stripe`, signing secret:
@@ -546,12 +541,6 @@ and ignores everything else. Managed Payments must be switched on in the
 Stripe Dashboard (Settings → Managed Payments), and both products need a tax
 code that is eligible for it. Migration `0017_stripe.sql` adds the columns
 the webhook writes: apply it before the Stripe keys are set.
-
-**The Lemon Squeezy webhook.** URL: `<worker>/cloud/webhook/ls`, signing secret:
-the value of `LS_WEBHOOK_SECRET`. Events: `subscription_created`,
-`subscription_updated`, `subscription_cancelled`, `subscription_resumed`,
-`subscription_expired`, `subscription_paused`, `subscription_unpaused`. The
-worker ignores everything else (order and payment events).
 
 **The GitHub App's webhook (hosted sites).** In the App's settings: Webhook → Active, URL `<worker>/gh/webhook`, the secret in `GH_WEBHOOK_SECRET`; Permissions & events → Subscribe to events → Push. A push to a hosted site's default branch then publishes it within seconds. Without the webhook the five-minute job still notices the change.
 

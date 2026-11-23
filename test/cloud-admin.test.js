@@ -61,7 +61,7 @@ test('KLR-08 end to end: sign-in records the numeric id, and /admin/cloud/* answ
     'npm run deploy:prod', 'GitHub 500', 'Retry deployment',                // releasing
     'wrangler rollback VERSION_ID', 'does not roll back with the code',     // rolling back
     'wrangler tail --env production', 'Worker exceeded memory limit',       // looking at what happened
-    'Lemon Squeezy', 'While billing is not set up',                         // billing
+    'Stripe is the only billing company', 'While billing is not set up',                         // billing
     'Every day, in five minutes', 'Every week',                             // the two looks
     'Known gaps',
   ]) assert.ok(text.includes(words), `the playbook says nothing of "${words}"`);

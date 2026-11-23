@@ -214,7 +214,7 @@ test('previews: a site that is not hosted, whose hosting is down, or that may no
   assert.equal(rows(w.env).length, 0);
 
   // May not be edited: its plan ended.
-  w = world(pages, { site: { ls_subscription_id: '77', status: 'active' } });
+  w = world(pages, { site: { stripe_subscription_id: '77', status: 'active' } });
   await withFetch(w.handler, async () => {
     await switchOn(w.env);
     w.env.kiln_cloud.exec("UPDATE sites SET status = 'canceled', access_until = ? WHERE id = 'site1'", Date.now() - DAY);

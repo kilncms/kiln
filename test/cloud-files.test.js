@@ -57,9 +57,9 @@ function world({ env: extra = {}, site = {}, token = 'keep-token' } = {}) {
   });
   env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, name, google_sub, google_email, created_at) VALUES (?, NULL, ?, ?, ?, ?, 1)', 'acct-g', ROSA.email, ROSA.name, ROSA.sub, ROSA.email);
   env.KILN.map.set('csess:rosa', JSON.stringify({ account_id: 'acct-g', login: null, uid: null, gh: null, google: ROSA }));
-  addSite(env, { id: 'kept1', account_id: 'acct-g', repo: REPO, origin: SITE, plan: 'managed', status: 'active', ls_subscription_id: 'sub-1', ...site });
+  addSite(env, { id: 'kept1', account_id: 'acct-g', repo: REPO, origin: SITE, plan: 'managed', status: 'active', stripe_subscription_id: 'sub-1', ...site });
   env.kiln_cloud.exec("UPDATE sites SET kept = 1, name = 'Oak Bakery' WHERE id = 'kept1'");
-  addSite(env, { id: 'site-1', ls_subscription_id: 'sub-2' });   // ada/club, in ada's own repository
+  addSite(env, { id: 'site-1', stripe_subscription_id: 'sub-2' });   // ada/club, in ada's own repository
   if (token) env.KILN.map.set('keeptok:kiln-sites:4242', token);   // the token the service holds for the second app
   return { hub, env, notes };
 }
@@ -115,7 +115,7 @@ test('files: with editing switched off the files can still be taken', { skip: d1
 });
 
 test('files: a site that has not been paid for is told to subscribe first, and GitHub is not asked', { skip: d1Skip }, async () => {
-  const w = world({ site: { status: 'trialing', ls_subscription_id: null } });
+  const w = world({ site: { status: 'trialing', stripe_subscription_id: null } });
   const out = await files(w);
   assert.equal(out.status, 403);
   assert.deepEqual(out.json, { error: PAID_FIRST, code: 'paid_first' });
@@ -124,7 +124,7 @@ test('files: a site that has not been paid for is told to subscribe first, and G
 });
 
 test('files: where billing is not set up on the service, nobody could ever pay, so the download is open', { skip: d1Skip }, async () => {
-  const w = world({ env: { LS_API_KEY: '' }, site: { status: 'trialing', ls_subscription_id: null } });
+  const w = world({ env: { STRIPE_SECRET_KEY: '' }, site: { status: 'trialing', stripe_subscription_id: null } });
   const out = await files(w);
   assert.equal(out.status, 200);
   assert.deepEqual(out.json, { ok: true, url: LINK, name: 'Oak Bakery.zip' });

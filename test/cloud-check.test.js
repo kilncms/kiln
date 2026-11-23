@@ -291,17 +291,17 @@ test('check: a trial that ended is said in a line of its own at the top, and the
   assert.equal(r.body.all_ok, false);
 
   // A plan that was paid for and ended, and a payment that failed, are worded as what they are.
-  w = world(withKiln(), { site: { status: 'canceled', ls_subscription_id: 'sub_1' } });
+  w = world(withKiln(), { site: { status: 'canceled', stripe_subscription_id: 'sub_1' } });
   r = await check(w);
   assert.match(r.by.editing.detail, /because its plan has ended\. Subscribe/);
-  w = world(withKiln(), { site: { status: 'past_due', ls_subscription_id: 'sub_1' } });
+  w = world(withKiln(), { site: { status: 'past_due', stripe_subscription_id: 'sub_1' } });
   w.env.kiln_cloud.exec('UPDATE sites SET access_until = 1 WHERE id = ?', 'site-1');
   r = await check(w);
   assert.match(r.by.editing.detail, /because a payment did not go through\. Update your card under Manage billing/);
   assert.deepEqual(r.by.editing.fix, { action: 'portal', label: 'Manage billing' });
 
   // Cancelled but paid up for now: editing is on, so there is no such line.
-  w = world(withKiln(), { site: { status: 'canceled', ls_subscription_id: 'sub_1' } });
+  w = world(withKiln(), { site: { status: 'canceled', stripe_subscription_id: 'sub_1' } });
   w.env.kiln_cloud.exec('UPDATE sites SET access_until = ? WHERE id = ?', Date.now() + 86400000, 'site-1');
   r = await check(w);
   assert.deepEqual(r.body.checks.map(c => c.id), ALL);

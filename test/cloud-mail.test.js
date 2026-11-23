@@ -20,7 +20,7 @@ import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 const DAY = 86400e3;
 const DASH = 'https://app.example';
 const box = () => { const out = []; return { out, binding: { send: async (m) => { out.push(m); return { messageId: `<${out.length}@kilncms.com>` }; } } }; };
-const cloud = (mail, extra = {}) => cloudEnv(fakeKV(), { CLOUD_DASHBOARD: DASH, NOTIFY: mail.binding, CUSTOMER_MAIL_FROM: 'hello@kilncms.com', CUSTOMER_MAIL_REPLY_TO: 'info@kilncms.com', LS_API_KEY: '', ...extra });
+const cloud = (mail, extra = {}) => cloudEnv(fakeKV(), { CLOUD_DASHBOARD: DASH, NOTIFY: mail.binding, CUSTOMER_MAIL_FROM: 'hello@kilncms.com', CUSTOMER_MAIL_REPLY_TO: 'info@kilncms.com', STRIPE_SECRET_KEY: '', ...extra });
 // A GitHub App key of this test's own, so the real "is the app installed?" check can sign its question.
 const APP_KEY = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64');
 const post = (env, path, body) => worker.fetch(new Request(`https://worker.example${path}`, { method: 'POST', headers: { Authorization: 'Bearer tok', 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), env);
@@ -101,8 +101,8 @@ test('two days before a trial ends its owner is told, once, and only for a trial
   const now = Date.now();
   addSite(env, { id: 'fresh', origin: 'https://fresh.example', status: 'trialing', created_at: now - 1 * DAY });
   addSite(env, { id: 'soon', origin: 'https://soon.example', status: 'trialing', created_at: now - 5.2 * DAY });
-  addSite(env, { id: 'paid', origin: 'https://paid.example', status: 'trialing', ls_subscription_id: '77', created_at: now - 5.5 * DAY });
-  addSite(env, { id: 'live', origin: 'https://live.example', status: 'active', ls_subscription_id: '78', created_at: now - 5.5 * DAY });
+  addSite(env, { id: 'paid', origin: 'https://paid.example', status: 'trialing', stripe_subscription_id: '77', created_at: now - 5.5 * DAY });
+  addSite(env, { id: 'live', origin: 'https://live.example', status: 'active', stripe_subscription_id: '78', created_at: now - 5.5 * DAY });
   assert.equal(await remindEndingTrials(env, now), 1);
   assert.equal(mail.out.length, 1);
   assert.equal(mail.out[0].to, 'ada@example.com');
@@ -168,7 +168,7 @@ test('customer mail: on the hosting plan, the two trial notices say what happens
 const HOSTS = { HOSTING_ACCOUNT_ID: 'acc', HOSTING_API_TOKEN: 'cf-token', HOSTING_SUBDOMAIN: 'kiln-sites' };
 /** A hosted site that was paid for: its row, and its record on Kiln's hosting. */
 function hosted(env, id, { status = 'canceled', until = null, sub = `sub-${id}`, state = 'live', deployed_at = 5, ...site } = {}) {
-  addSite(env, { id, origin: `https://${id}.example`, repo: `ada/${id}`, plan: 'managed', status, ls_subscription_id: sub, created_at: Date.now() - 300 * DAY, ...site });
+  addSite(env, { id, origin: `https://${id}.example`, repo: `ada/${id}`, plan: 'managed', status, stripe_subscription_id: sub, created_at: Date.now() - 300 * DAY, ...site });
   env.kiln_cloud.exec('UPDATE sites SET access_until = ? WHERE id = ?', until, id);
   env.kiln_cloud.exec('INSERT INTO hosting (site_id, name, url, state, deployed_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
     id, `${id}-x`, `https://${id}-x.kiln-sites.workers.dev`, state, deployed_at, 1, 1);

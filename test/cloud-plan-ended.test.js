@@ -109,25 +109,25 @@ test('after Remove, the repository counts as ended (tokens and schedules stay st
 });
 
 test('renewing: a subscription that has run out can be replaced; one still paid up is resumed, not paid twice', { skip: d1Skip }, async () => {
-  const ls = async (url) => url.includes('/checkouts')
-    ? new Response(JSON.stringify({ data: { attributes: { url: 'https://pay.example/c' } } }), { status: 201 })
-    : undefined;
-  await withFetch(ls, async () => {
+  const stripe = async (url, init) => (url === 'https://api.stripe.com/v1/checkout/sessions' && init.method === 'POST'
+    ? new Response(JSON.stringify({ id: 'cs_1', url: 'https://pay.example/c' }), { status: 200 })
+    : undefined);
+  await withFetch(stripe, async () => {
     const ended = cloudEnv(fakeKV());
-    addSite(ended, { status: 'canceled', ls_subscription_id: '77' });
+    addSite(ended, { status: 'canceled', stripe_subscription_id: '77' });
     const r1 = await cloudCall(ended, 'GET', '/cloud/checkout?site=site-1');
     assert.equal(r1.status, 200);
     assert.equal((await r1.json()).url, 'https://pay.example/c');
 
     const paidUp = cloudEnv(fakeKV());
-    addSite(paidUp, { status: 'canceled', ls_subscription_id: '77' });
+    addSite(paidUp, { status: 'canceled', stripe_subscription_id: '77' });
     paidUp.kiln_cloud.exec('UPDATE sites SET access_until = ?', Date.now() + 5 * DAY);
     const r2 = await cloudCall(paidUp, 'GET', '/cloud/checkout?site=site-1');
     assert.equal(r2.status, 409);
     assert.match((await r2.json()).error, /resume it under Manage billing/);
 
     const active = cloudEnv(fakeKV());
-    addSite(active, { status: 'active', ls_subscription_id: '77' });
+    addSite(active, { status: 'active', stripe_subscription_id: '77' });
     assert.equal((await cloudCall(active, 'GET', '/cloud/checkout?site=site-1')).status, 409);
   });
 });

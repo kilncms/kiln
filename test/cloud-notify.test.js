@@ -13,13 +13,16 @@ import { notifyOwner } from '../worker/cloud.js';
 import { fakeKV } from './worker-harness.js';
 import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 
-const hook = async (env, { event = 'subscription_updated', status = 'active', site = 'site-1', sub = '77' } = {}) => {
+let events = 0;
+/** One signed Stripe notice about a subscription of the site. A `type` that is not about a subscription is one this service does not act on. */
+const hook = async (env, { type = 'customer.subscription.updated', status = 'active', site = 'site-1', sub = 'sub_77' } = {}) => {
+  const now = Math.floor(Date.now() / 1000);
   const body = JSON.stringify({
-    meta: { event_name: event, custom_data: { site_id: site } },
-    data: { type: 'subscriptions', id: sub, attributes: { status, updated_at: new Date().toISOString(), ends_at: null } },
+    id: `evt_note_${++events}`, object: 'event', type, created: now,
+    data: { object: { id: sub, object: 'subscription', customer: 'cus_1', status, metadata: { site_id: site }, items: { data: [{ current_period_end: now + 30 * 86400, price: { id: 'price_cloud' } }] } } },
   });
-  const sig = createHmac('sha256', 'whsec').update(body).digest('hex');
-  return worker.fetch(new Request('https://worker.example/cloud/webhook/ls', { method: 'POST', headers: { 'X-Signature': sig }, body }), env);
+  const header = `t=${now},v1=${createHmac('sha256', 'whsec').update(`${now}.${body}`).digest('hex')}`;
+  return worker.fetch(new Request('https://worker.example/cloud/webhook/stripe', { method: 'POST', headers: { 'Stripe-Signature': header }, body }), env);
 };
 const withNotify = (env) => { const sent = []; env.NOTIFY = { send: async (m) => sent.push(m) }; env.NOTIFY_TO = 'owner@example.com'; return sent; };
 
@@ -46,19 +49,19 @@ test('billing webhook: an applied event notifies the operator, an ignored one do
   const env = cloudEnv(fakeKV());
   addSite(env, { status: 'trialing' });
   const sent = withNotify(env);
-  const res = await hook(env, { event: 'subscription_created', status: 'active' });
+  const res = await hook(env, { type: 'customer.subscription.created', status: 'active' });
   assert.equal(res.status, 200);
   assert.equal(sent.length, 1);
-  assert.match(sent[0].raw, /subscription_created/);
+  assert.match(sent[0].raw, /customer\.subscription\.created/);
   assert.match(sent[0].raw, /Status: active/);
-  await hook(env, { event: 'subscription_payment_success', status: 'paid' });   // ignored class
+  await hook(env, { type: 'invoice.paid', status: 'paid' });   // a kind of event this service does not act on
   assert.equal(sent.length, 1, 'ignored events say nothing');
 });
 
 test('billing webhook without the binding: behavior unchanged', { skip: d1Skip }, async () => {
   const env = cloudEnv(fakeKV());
   addSite(env, { status: 'trialing' });
-  const res = await hook(env, { event: 'subscription_created', status: 'active' });
+  const res = await hook(env, { type: 'customer.subscription.created', status: 'active' });
   assert.equal(res.status, 200);
   assert.equal((await env.kiln_cloud.row('SELECT status FROM sites WHERE id = ?', 'site-1')).status, 'active');
 });
