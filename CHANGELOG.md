@@ -6,6 +6,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-23
+
 ### Removed
 
 - **Lemon Squeezy is no longer a billing company the service can use.** Kiln
