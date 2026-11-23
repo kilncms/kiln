@@ -564,11 +564,20 @@ test('check, hosted: a site that was taken down says why, and no address is aske
   assert.equal(by.repository.ok, true);
   assert.equal(by.files.ok, true);
   assert.equal(by.address.ok, false);
-  assert.equal(by.address.detail, 'Kiln took this site down from its hosting because the free days ran out. Your repository is untouched. Now that the site is subscribed, put it up again.');
+  // This site may be edited, so its owner has subscribed since it was taken down: the line says what to press, not to subscribe.
+  assert.equal(by.address.detail, 'Kiln took this site down from its hosting because the free days ran out. Your repository is untouched. Now that the site is subscribed, press the button to put it up again.');
   for (const id of ['live', 'signin']) { assert.equal(by[id].ok, null); assert.equal(by[id].detail, 'Not checked, because the site is not online.'); }
   assert.deepEqual(urls(w), []);
   assert.equal(body.all_ok, false);
   noHostWords(body);
+});
+
+test('check, hosted: a site taken down after free days nobody subscribed for is told to subscribe first', { skip: d1Skip }, async () => {
+  const w = hostedWorld(withKiln(), { state: 'ended', reason: 'trial_ended', deployed: null, site: { status: 'canceled' } });
+  const { res, by } = await check(w);
+  assert.equal(res.status, 200);
+  assert.equal(by.address.ok, false);
+  assert.equal(by.address.detail, 'Kiln took this site down from its hosting because the free days ran out. Your repository is untouched. To put the site back, subscribe and then press the button to put it up.');
 });
 
 test('check, hosted: a site that is going up for the first time says so, and one whose last copy failed is still looked at where it serves', { skip: d1Skip }, async () => {

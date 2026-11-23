@@ -437,8 +437,21 @@ test('leaving: the email when editing stops is worded for a kept site that is li
 
 test('leaving: a site Kiln took down says "Kiln keeps your site\'s files" to an owner who has never seen a repository', async () => {
   const { hostingSentence } = await import('../worker/hosting.js');
-  assert.match(hostingSentence('trial_ended', { kept: true }), /ran out\. Kiln keeps your site's files\. Now that the site is subscribed, put it up again\.$/);
+  assert.match(hostingSentence('trial_ended', { kept: true }), /ran out\. Kiln keeps your site's files\. To put the site back, subscribe and then press the button to put it up\.$/);
   assert.match(hostingSentence('plan_ended', { kept: true }), /its plan ended\. Kiln keeps your site's files\. To put the site back, subscribe again/);
   assert.match(hostingSentence('trial_ended'), /Your repository is untouched\./);
   assert.match(hostingSentence('plan_ended'), /Your repository still has everything\./);
+});
+
+test('a site Kiln took down tells an owner who has not subscribed to subscribe first, and one who has to press the button', async () => {
+  const { hostingSentence } = await import('../worker/hosting.js');
+  // Free days ran out, nobody subscribed: there is no button yet, so the sentence starts with subscribing.
+  assert.match(hostingSentence('trial_ended'), /ran out\. Your repository is untouched\. To put the site back, subscribe and then press the button to put it up\.$/);
+  assert.doesNotMatch(hostingSentence('trial_ended'), /Now that the site is subscribed/);
+  // The owner has subscribed since: nothing tells them to subscribe again.
+  assert.match(hostingSentence('trial_ended', { paid: true }), /ran out\. Your repository is untouched\. Now that the site is subscribed, press the button to put it up again\.$/);
+  assert.doesNotMatch(hostingSentence('trial_ended', { paid: true }), /To put the site back, subscribe/);
+  // The same for a plan that ended.
+  assert.match(hostingSentence('plan_ended'), /To put the site back, subscribe again and then press the button to put it up\.$/);
+  assert.match(hostingSentence('plan_ended', { paid: true, kept: true }), /Kiln keeps your site's files\. Now that the site is subscribed again, press the button to put it up\.$/);
 });

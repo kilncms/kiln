@@ -29,6 +29,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that way counts as having no subscription: Remove would take the site away
   without cancelling it, and Manage billing would not open for it.
 
+### Fixed
+
+- **A site Kiln took down from its hosting is told what gets it back, in
+  words that fit where its owner stands.** After free days nobody subscribed
+  for, the owner read "Now that the site is subscribed, put it up again",
+  though nobody had subscribed. An owner who has not subscribed now reads "To
+  put the site back, subscribe and then press the button to put it up", and
+  one who has subscribed since reads "Now that the site is subscribed, press
+  the button to put it up again". A site whose plan ended is told the same two
+  ways.
+
 ## [0.7.0] - 2026-11-17
 
 ### Added

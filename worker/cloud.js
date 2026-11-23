@@ -1036,7 +1036,8 @@ async function shownHosting(env, row, site, now = Date.now()) {
   const down = row && row.state !== 'ended' && row.state !== 'removing' ? await hostingDownAt(env, site, { now, deployed: !!row.deployed_at }) : null;
   // The sentence for a site that was taken down says where its files are, so only such a site is asked about.
   const kept = !!row && (row.reason === 'trial_ended' || row.reason === 'plan_ended') && !!(await keptSite(env, site.id));
-  return publicHosting(row, { repo: site.repo, endsAt: down?.at || null, planEnded: Number(site.access_until) || null, kept });
+  // `paid`: an owner who has subscribed since the site was taken down reads what to press, and one who has not reads to subscribe first.
+  return publicHosting(row, { repo: site.repo, endsAt: down?.at || null, planEnded: Number(site.access_until) || null, kept, paid: siteHasAccess(site, now) });
 }
 // ─── A hosted site on its owner's own domain (domain.js) ─────────────────────
 
@@ -3109,7 +3110,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const row = hostingOn(env) ? await hostingRow(env, site.id) : null;
     // A site whose files Kiln keeps: its owner has never seen a repository, and the list is worded for them (sitecheck.js).
     const isKept = !!(await keptSite(env, site.id));
-    const hosting = row ? publicHosting(row, { repo: site.repo, planEnded: Number(site.access_until) || null, kept: isKept }) : null;
+    const hosting = row ? publicHosting(row, { repo: site.repo, planEnded: Number(site.access_until) || null, kept: isKept, paid: access }) : null;
     const up = !!(hosting && hosting.url && (hosting.state === 'live' || hosting.serving));
     const down = hosting && !up
       ? hosting.error || (hosting.state === 'ended' ? 'Kiln took this site down from its hosting.' : 'Kiln is putting this site up now. Check again in a minute.')

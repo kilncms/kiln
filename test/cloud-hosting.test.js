@@ -399,7 +399,7 @@ test('hosting: a site that was paid for comes down thirty days after its plan en
     stopped('active', null);
     await sweep(w.env);
     assert.equal(w.cf.scripts.size, 0);
-    assert.match((await standing(w.env)).hosting.error, /because its plan ended\. Your repository still has everything\./);
+    assert.equal((await standing(w.env)).hosting.error, 'Kiln took this site down from its hosting because its plan ended. Your repository still has everything. Now that the site is subscribed again, press the button to put it up.', 'an owner who has subscribed again is not told to subscribe');
     const res = await switchOn(w.env);
     assert.equal(res.status, 200);
     assert.equal((await res.json()).hosting.state, 'live');

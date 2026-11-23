@@ -74,10 +74,10 @@ export async function hostingForAccount(env, accountId) {
  * ended, for the sentence that says why it was taken down. `kept`: Kiln
  * keeps the site's files, so that sentence does not speak of a repository.
  */
-export function publicHosting(row, { repo, endsAt = null, planEnded = null, kept = false } = {}) {
+export function publicHosting(row, { repo, endsAt = null, planEnded = null, kept = false, paid = false } = {}) {
   if (!row || row.state === 'removing') return null;
   const out = { state: row.state, url: row.url, commit: row.commit_sha || null, files: row.files ?? null, deployed_at: row.deployed_at || null };
-  if (row.state !== 'live' && row.reason) { out.reason = row.reason; out.error = hostingSentence(row.reason, { repo, planEnded, kept }); }
+  if (row.state !== 'live' && row.reason) { out.reason = row.reason; out.error = hostingSentence(row.reason, { repo, planEnded, kept, paid }); }
   // A site that was live and whose last copy failed still serves what it served.
   if (row.state !== 'live' && row.deployed_at) out.serving = true;
   if (endsAt && row.state !== 'ended') out.ends_at = endsAt;
