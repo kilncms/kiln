@@ -710,12 +710,12 @@ npx wrangler tail --env production</pre>
     <section id="s15">
       <h2><span class="sn">15</span> Billing</h2>
       <ul class="plain">
-        <li><strong>Payment is by Stripe Managed Payments once its keys are set, and it is not open to the public yet.</strong> Stripe is the seller of record: it charges the card, handles the taxes and the disputes, and customers see "Sold through Link". Link sends the receipts and answers questions about a charge. You never touch a card number.</li>
+        <li><strong>Payment is by Stripe Managed Payments,</strong> and production has taken real payments since 23 November 2026. Stripe is the seller of record: it charges the card, handles the taxes and the disputes, and customers see "Sold through Link". Link sends the receipts and answers questions about a charge. You never touch a card number.</li>
         <li><strong>Stripe is the only billing company.</strong> With <code>STRIPE_SECRET_KEY</code> set, Stripe sells. Without it nobody can pay, and the free days work as they always have.</li>
         <li><strong>Only a signed notice from the billing company makes a site "active".</strong> A customer cannot fake having paid. A notice that is not signed, or is more than five minutes old, is refused.</li>
         <li><strong>Free days</strong> last seven days and end by themselves (section 06). Kiln asks Stripe for no trial of its own, so nobody needs a card to try Kiln.</li>
         <li><strong>The admin page</strong> at app.kilncms.com/admin shows accounts, sites, how many are active, the monthly income, and a line that says "Store live", "Store in test mode" or "Billing not configured". With Stripe, the admin answer also says whether the account can take charges and whether each price exists and is active. A plan paid by the year counts as a twelfth of its yearly price each month.</li>
-        <li><strong>Prices are in three places that must agree:</strong> the prices in Stripe, the service's income sum when Stripe's prices cannot be read, and the website. Today: Kiln Cloud <strong>$4.99</strong> a month, Kiln Cloud + hosting <strong>$14.99</strong> a month.</li>
+        <li><strong>Prices are in three places that must agree:</strong> the prices in Stripe, the service's income sum when Stripe's prices cannot be read, and the website. Today: Kiln Cloud <strong>$4.99</strong> a month or <strong>$49.99</strong> a year, Kiln Cloud + hosting <strong>$14.99</strong> a month or <strong>$149.99</strong> a year.</li>
         <li><strong>Setting a site up for a customer is not sold.</strong> The payment company does not allow it. Point people to the plan with hosting and to the guides.</li>
       </ul>
       <h3 class="sub">Setting Stripe up, once</h3>
@@ -800,8 +800,7 @@ npx wrangler d1 execute kiln-cloud --env production --remote --command "SELECT n
         <li><span class="chip c-warn">Edge</span><strong>Free days of kept sites are counted apart</strong> from sites in a customer's own repository, so one person can have seven free days of each kind.</li>
         <li><span class="chip c-warn">Edge</span><strong>The preview limit of section 08:</strong> an editor of the whole site can show old content at a preview address.</li>
         <li><span class="chip c-warn">Open</span><strong>"Worker exceeded memory limit" on the test service:</strong> seen once, cause not found (section 14).</li>
-        <li><span class="chip c-good">Later</span><strong>A new domain through Kiln is built and switched off</strong> (sections 02 and 10). It waits for Cloudflare's written answer, a payment method on the hosting account, and a yearly price. The first real name is registered by you, on the test service, with the day's limit set to one.</li>
-        <li><span class="chip c-good">Later</span><strong>Billing is not open to the public yet</strong> (section 15).</li>
+        <li><span class="chip c-good">Later</span><strong>A new domain through Kiln is built and switched off</strong> (sections 02 and 10). It waits for Cloudflare's written answer and a payment method on the hosting account. The first real name is registered by you, on the test service, with the day's limit set to one.</li>
       </ul>
     </section>
   </main>
