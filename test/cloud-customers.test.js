@@ -112,13 +112,13 @@ test('needs you: a trial that ends within three days for an account Kiln cannot 
   assert.deepEqual(ending(5 * DAY, {}, { stripe_subscription_id: 'sub_1' }), [], 'someone subscribed');
   const [row] = view([account({ github_login: 'ada' })], [site({ id: 's9', created_at: NOW - 5 * DAY, kept: 1, name: 'Rowing Club' })]).needs_you;
   assert.deepEqual({ ...row, detail: '' }, { kind: 'trial_no_address', account_id: 'a1', site_id: 's9', who: '@ada', label: 'Trial ending, no address', detail: '' });
-  assert.equal(row.detail, 'The free days of Rowing Club end on 26 November and Kiln\'s reminder cannot reach this person: Kiln has no address for them, so reach them on GitHub as @ada, or keep the site open yourself with its status control.');
+  assert.equal(row.detail, 'The free days of Rowing Club end on November 26 and Kiln\'s reminder cannot reach this person: Kiln has no address for them, so reach them on GitHub as @ada, or keep the site open yourself with its status control.');
 });
 
 test('needs you: a payment that failed', () => {
   const out = view([account({ email: 'a@example.com' })], [site({ status: 'past_due', kept: 1, stripe_subscription_id: 'sub_1', access_until: NOW + 2 * DAY })]);
   assert.deepEqual(kinds(out), ['payment_failed']);
-  assert.equal(out.needs_you[0].detail, 'The last charge for ada/club did not go through and editing stops on 26 November unless a later one does: write to them at a@example.com, or look at the subscription in Stripe.');
+  assert.equal(out.needs_you[0].detail, 'The last charge for ada/club did not go through and editing stops on November 26 unless a later one does: write to them at a@example.com, or look at the subscription in Stripe.');
   assert.equal(out.needs_you[0].label, 'Payment failed');
 });
 

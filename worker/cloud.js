@@ -3879,7 +3879,7 @@ const NEEDS_UNTIL_DAYS = 30;    // an account with no site is no longer news aft
  */
 export function buildCustomers(accounts, rows, { now = Date.now(), asking = null } = {}) {
   const day = 86400 * 1000;
-  const dayOf = (t) => new Date(Number(t)).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' });
+  const dayOf = (t) => new Date(Number(t)).toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
   const daysAgo = (t) => { const n = Math.floor((now - Number(t)) / day); return n === 1 ? '1 day ago' : `${n} days ago`; };
   const host = (origin) => { try { return new URL(origin).host; } catch { return null; } };
   const byAccount = new Map();
