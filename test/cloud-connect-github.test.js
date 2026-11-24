@@ -83,7 +83,8 @@ const keys = (e, prefix) => [...e.KILN.map.keys()].filter(k => k.startsWith(pref
 const sessions = (e) => keys(e, 'csess:').filter(k => k !== 'csess:tok');
 const rowOf = (e, id) => ({ ...e.kiln_cloud.row('SELECT id, github_login, github_id, linked_at, email, signin_email, google_sub, google_email, name FROM accounts WHERE id = ?', id) });
 const accounts = (e) => e.kiln_cloud.row('SELECT COUNT(*) n FROM accounts').n;
-const everything = (e) => JSON.stringify(e.kiln_cloud.db.prepare('SELECT * FROM accounts ORDER BY id').all());
+// Every account as it stands, but for when each person was last seen (migration 0020): any new session moves that.
+const everything = (e) => JSON.stringify(e.kiln_cloud.db.prepare('SELECT * FROM accounts ORDER BY id').all().map(({ last_seen: _seen, ...row }) => row));
 
 /** A sign-in with a link sent to `email`. */
 async function byEmail(e, email = EVE) { return signedIn(e, await emailDashboardSignIn(e, { email })); }
@@ -552,8 +553,9 @@ test('what needs a GitHub sign-in is decided by the session, and what needs a co
 
 test('on a database migration 0019 has not reached, connecting is not offered and everything else works as before', { skip: d1Skip }, async () => {
   const files = schemaFiles();
-  assert.equal(path.basename(files[files.length - 1]), '0019_linked.sql', 'this test stands for a database without the newest migration');
-  const e = env({ d1: { upTo: files.length - 1 } });
+  const before0019 = files.findIndex(f => path.basename(f) === '0019_linked.sql');
+  assert.ok(before0019 > 0, 'this test stands for a database that migration 0019 has not reached');
+  const e = env({ d1: { upTo: before0019 } });
   assert.throws(() => e.kiln_cloud.row('SELECT linked_at FROM accounts LIMIT 1'), /no such column/);
   const eve = await byEmail(e);
   assert.deepEqual(await start(e, eve.sid), { status: 503, body: { error: NOT_READY, code: 'not_ready' } });

@@ -31,6 +31,8 @@
  *   GET  /cloud/portal?site=     → "Manage billing": Stripe's Billing Portal for the customer the site's subscription belongs to
  *   POST /cloud/webhook/stripe   → Stripe webhook (signed) → set site status (billing.js has the Stripe calls)
  *   GET  /admin/cloud/overview   → (owner only) accounts, sites (with the editor build each runs), MRR
+ *                                  and `customers`, `needs_you`, `funnel`: who has an account, how far each
+ *                                  one got, and what needs the operator (buildCustomers)
  *   POST /admin/cloud/grant      → (owner only) manually set a site's status
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
@@ -1885,6 +1887,40 @@ export function isCloudAdmin(sess, env) {
 // When Kiln was added to each site's repository from the dashboard (or found
 // already there). The columns arrive with migration 0003; a database it has
 // not reached answers as if nothing were recorded, and nothing else changes.
+/**
+ * When a person was last at the dashboard (`accounts.last_seen`, migration
+ * 0020), for the operator's list of customers. A sign-in always writes it.
+ * The dashboard's own account request passes `olderThan`, and then it is
+ * written only when what is stored is older than that, so an open dashboard
+ * costs one write an hour: the database makes the comparison in the same
+ * statement, and a statement that matches no row writes nothing. Never
+ * throws: a database the column has not reached, or one that is not
+ * answering, changes nothing for the person.
+ */
+const SEEN_EVERY = 3600 * 1000;
+export async function noteSeen(env, accountId, { now = Date.now(), olderThan = 0 } = {}) {
+  try {
+    if (!env.kiln_cloud || !accountId) return;
+    await env.kiln_cloud.prepare('UPDATE accounts SET last_seen = ? WHERE id = ? AND (last_seen IS NULL OR last_seen <= ?)').bind(now, accountId, now - olderThan).run();
+  } catch { /* nothing is recorded, and the request goes on */ }
+}
+
+/**
+ * A change was saved to a repository through Kiln: every Cloud site of that
+ * repository gets the moment (`sites.last_publish`, migration 0020). index.js
+ * calls it wherever the worker itself learns that GitHub took a write to a
+ * site's branch. At most one write a minute for a repository, by the same
+ * comparison in the statement as `noteSeen`. A repository that is no Cloud
+ * site matches no row. Never throws, so it cannot fail the save it follows.
+ */
+const PUBLISH_EVERY = 60 * 1000;
+export async function notePublish(env, repo, { now = Date.now() } = {}) {
+  try {
+    if (!env.kiln_cloud || typeof repo !== 'string' || !repo) return;
+    await env.kiln_cloud.prepare('UPDATE sites SET last_publish = ? WHERE lower(repo) = lower(?) AND (last_publish IS NULL OR last_publish <= ?)').bind(now, repo, now - PUBLISH_EVERY).run();
+  } catch { /* the save went through all the same */ }
+}
+
 async function preparedTimes(env, accountId) {
   const read = async (cols) => {
     const rows = await env.kiln_cloud.prepare(`SELECT id, ${cols} FROM sites WHERE account_id = ?`).bind(accountId).all();
@@ -2174,6 +2210,7 @@ export async function googleDashboardSignIn(env, state, { identity = null, page 
   catch (e) { return refuse(ACCOUNT_NOT_READY, e && e.message); }
   const sid = uuid();
   await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: account.id, login: null, uid: null, gh: null, google: { sub, email, name } }), { expirationTtl: 30 * 24 * 3600 });
+  await noteSeen(env, account.id);
   return Response.redirect(`${dash}#kc_token=${sid}`, 302);   // the dashboard reads and keeps this, as after a GitHub sign-in
 }
 
@@ -2201,6 +2238,7 @@ export async function emailDashboardSignIn(env, { email } = {}, { page = plainPa
   if (found.twice) return refuse(TWO_ACCOUNTS);
   const sid = uuid();
   await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: found.account.id, login: null, uid: null, gh: null, byEmail: { email: address, name: found.account.name || null } }), { expirationTtl: 30 * 24 * 3600 });
+  await noteSeen(env, found.account.id);
   return Response.redirect(`${dash}#kc_token=${sid}`, 302);
 }
 
@@ -2299,6 +2337,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // `uid` is GitHub's numeric user id: unlike the login, it cannot be
     // renamed away or registered by someone else later.
     await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: account.id, login: user.login, uid: user.id ?? null, gh: tok.access_token || null }), { expirationTtl: 30 * 24 * 3600 });
+    await noteSeen(env, account.id);
     return signInOver(url, Response.redirect(`${dash}#kc_token=${sid}`, 302));   // dashboard reads + stores this
   }
 
@@ -2362,12 +2401,14 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       ...(sess.google ? { google: sess.google } : {}), ...(sess.byEmail ? { byEmail: sess.byEmail } : {}),
     }), { expirationTtl: 30 * 24 * 3600 });
     await env.KILN.delete(`csess:${asking}`);
+    await noteSeen(env, sess.account_id);
     // `token` is the new session: the dashboard keeps it in place of the one it sent.
     return json({ ok: true, token: sid, login: back.login, connected: out.connected }, 200, { 'Cache-Control': 'no-store' });
   }
 
   if (path === '/cloud/me') {
     if (!sess) return json({ error: 'not signed in' }, 401);
+    await noteSeen(env, sess.account_id, { olderThan: SEEN_EVERY });   // the operator's list says when each person was last here
     // `name` and `google_sub` arrive with migration 0008. A database it has not
     // reached has neither, and every account there signed in with GitHub.
     // `signin_email` arrives with migration 0018, `linked_at` with 0019.
@@ -3452,7 +3493,13 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const price = (p, period) => monthlyFromPrices(store, p, period) ?? (p === 'managed' ? 14.99 : 4.99);
       const mrr = active.reduce((m, s) => m + price(s.plan, s.billing_period), 0);
       const insights = buildInsights(rows, accounts.n, price);
-      return json({ accounts: accounts.n, sites: rows, active: active.length, mrr: Number(mrr.toFixed(2)), store, insights });
+      // Who the customers are, where each one stopped and who needs a word from the operator (buildCustomers).
+      // It is read after everything the answer already had and left out whole when it cannot be read, so
+      // nothing that was answered before depends on it.
+      let people = {};
+      try { people = buildCustomers(await customerAccounts(env), rows, { asking: sess.account_id }); }
+      catch (e) { console.warn(JSON.stringify({ evt: 'cloud_customers_not_read', detail: String(e?.message || e).slice(0, 160) })); people = {}; }
+      return json({ accounts: accounts.n, sites: rows, active: active.length, mrr: Number(mrr.toFixed(2)), store, insights, ...people });
     }
     if (path === '/admin/cloud/grant' && request.method === 'POST') {
       const { site_id, status } = await request.json().catch(() => ({}));
@@ -3772,6 +3819,134 @@ function buildInsights(rows, accountCount, price) {
     trialsExpiring: trialsExpiring.sort((a, b) => a.daysLeft - b.daysLeft),
     conversion,
   };
+}
+
+/**
+ * Every account, newest first, with the address Kiln may write to (mail.js,
+ * addressSql). Each column that arrived with a later migration is asked for,
+ * then done without: `last_seen` (0020), `linked_at` (0019), `signin_email`
+ * (0018), `name` and `google_sub` (0008).
+ */
+async function customerAccounts(env) {
+  const address = await addressSql(env);
+  const asked = [
+    'a.name, a.google_sub, a.signin_email, a.linked_at, a.last_seen',
+    'a.name, a.google_sub, a.signin_email, a.linked_at',
+    'a.name, a.google_sub, a.signin_email',
+    'a.name, a.google_sub',
+    'NULL AS name',
+  ];
+  for (const columns of asked) {
+    try { return (await env.kiln_cloud.prepare(`SELECT a.id, a.github_login, a.created_at, ${columns}, ${address} FROM accounts a ORDER BY a.created_at DESC, a.id`).all()).results || []; }
+    catch (e) { if (columns === asked[asked.length - 1]) throw e; }
+  }
+  return [];
+}
+
+/**
+ * How far a site's set-up has got, in the operator's words. The dashboard
+ * calls a site set up once Kiln is in its repository (`prepared_at`) or Kiln
+ * keeps its files (`kept`); "ready to edit" is one step on: a first pass of
+ * what can be edited is marked (`firstpass_at`), or Kiln made the site itself
+ * (`kept`), or a change has already been published through Kiln, which shows
+ * that the site can be edited whoever marked it.
+ */
+function siteSetUp(s) {
+  if (s.firstpass_at || s.kept || s.last_publish) return 'ready to edit';
+  return s.prepared_at ? 'kiln added' : 'not started';
+}
+
+// The furthest an account got, in order. Each one counts as having reached every stage before it.
+const STAGES = ['signed up', 'added a site', 'set up', 'published', 'paying'];
+const FUNNEL_KEYS = ['signed_up', 'added_site', 'set_up', 'published', 'paying'];
+// What the operator is told needs them, most urgent first, with the few words the admin page puts on each.
+const NEEDS = [['trial_no_address', 'Trial ending, no address'], ['payment_failed', 'Payment failed'], ['stuck_setup', 'Stuck in set-up'], ['no_site', 'No site yet']];
+const NEEDS_TRIAL_DAYS = 3;     // a trial that ends within this many days
+const NEEDS_AFTER_DAYS = 2;     // a site or an account is left alone for its first two days
+const NEEDS_UNTIL_DAYS = 30;    // an account with no site is no longer news after a month
+
+/**
+ * The operator's view of the customers, from every account (customerAccounts)
+ * and the site rows the overview already read:
+ *   customers  one entry for an account, newest first, with its sites
+ *   needs_you  the few things only the operator can do something about
+ *   funnel     how many accounts reached at least each stage
+ * `asking` is the operator's own account: it is listed like any other, and
+ * never told to write to itself for having no site. Nothing here is a token
+ * or an id at Stripe or GitHub. `paying` means a subscription that is running
+ * or whose last charge failed: a site the operator set to active by hand has
+ * no subscription and is not counted.
+ */
+export function buildCustomers(accounts, rows, { now = Date.now(), asking = null } = {}) {
+  const day = 86400 * 1000;
+  const dayOf = (t) => new Date(Number(t)).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' });
+  const daysAgo = (t) => { const n = Math.floor((now - Number(t)) / day); return n === 1 ? '1 day ago' : `${n} days ago`; };
+  const host = (origin) => { try { return new URL(origin).host; } catch { return null; } };
+  const byAccount = new Map();
+  for (const s of rows) { if (!byAccount.has(s.account_id)) byAccount.set(s.account_id, []); byAccount.get(s.account_id).push(s); }
+  const needs = Object.fromEntries(NEEDS.map(([kind]) => [kind, []]));
+  const labels = Object.fromEntries(NEEDS);
+  const funnel = Object.fromEntries(FUNNEL_KEYS.map(k => [k, 0]));
+  const customers = accounts.map(a => {
+    const address = a.email || null;
+    const login = a.github_login || null;
+    const who = login ? `@${login}` : a.name || address || 'no name';
+    // How each sentence ends: what the operator can do, given how this person can be reached.
+    const reach = (then, alone) => address ? `write to them at ${address}${then}`
+      : login ? `Kiln has no address for them, so reach them on GitHub as @${login}${then}`
+        : `Kiln has no address for them and they have no GitHub login, so ${alone}`;
+    const own = byAccount.get(a.id) || [];
+    const sites = own.map(s => ({
+      id: s.id,
+      label: s.name || s.repo || host(s.origin) || s.id,
+      origin: s.origin || null,
+      plan: s.plan,
+      status: s.status,
+      kept: !!s.kept,
+      trial_ends: s.status === 'trialing' && !subscriptionOf(s) && Number(s.created_at) ? trialEndsAt(s.created_at, TRIAL_GRACE_DAYS) : null,
+      paid_until: s.paid_until ?? null,
+      billing_period: s.billing_period ?? null,
+      access_until: s.access_until ?? null,
+      set_up: siteSetUp(s),
+      last_publish: s.last_publish ?? null,
+    }));
+    let reached = sites.length ? 1 : 0;
+    if (sites.some(s => s.set_up !== 'not started')) reached = 2;
+    if (sites.some(s => s.last_publish)) reached = 3;
+    if (own.some(s => (s.status === 'active' || s.status === 'past_due') && subscriptionOf(s))) reached = 4;
+    for (let i = 0; i <= reached; i++) funnel[FUNNEL_KEYS[i]]++;
+    const need = (kind, site, at, detail) => needs[kind].push({ at, row: { kind, account_id: a.id, site_id: site ? site.id : null, who, label: labels[kind], detail } });
+    sites.forEach((s, i) => {
+      const added = Number(own[i].created_at) || 0;
+      if (s.trial_ends && !address && s.trial_ends > now && s.trial_ends - now <= NEEDS_TRIAL_DAYS * day) {
+        need('trial_no_address', s, s.trial_ends, `The free days of ${s.label} end on ${dayOf(s.trial_ends)} and Kiln's reminder cannot reach this person: ${reach(', or keep the site open yourself with its status control', 'all you can do is keep the site open yourself with its status control')}.`);
+      }
+      if (s.status === 'past_due') {
+        need('payment_failed', s, s.access_until || Infinity, `The last charge for ${s.label} did not go through${s.access_until ? ` and editing stops on ${dayOf(s.access_until)} unless a later one does` : ''}: ${reach(', or look at the subscription in Stripe', 'look at the subscription in Stripe')}.`);
+      }
+      if (s.status !== 'canceled' && s.set_up !== 'ready to edit' && added && now - added > NEEDS_AFTER_DAYS * day) {
+        const where = s.set_up === 'kiln added' ? 'Kiln is in its repository, but nothing is marked for editing yet' : 'Kiln is not in its repository yet';
+        need('stuck_setup', s, added, `${s.label} was added ${daysAgo(added)} and ${where}: ${reach(' and offer to help', 'there is nobody to write to')}.`);
+      }
+    });
+    const since = Number(a.created_at) || 0;
+    if (!sites.length && a.id !== asking && since && now - since > NEEDS_AFTER_DAYS * day && now - since < NEEDS_UNTIL_DAYS * day) {
+      need('no_site', null, -since, `Signed up ${daysAgo(since)} and has not added a site: ${reach(' and ask what stopped them', 'there is nobody to write to')}.`);
+    }
+    return {
+      id: a.id, who,
+      signs_in: [login && 'github', a.google_sub && 'google', a.signin_email && 'email'].filter(Boolean),
+      linked: !!a.linked_at,
+      address,
+      created_at: a.created_at ?? null,
+      last_seen: a.last_seen ?? null,
+      stage: STAGES[reached],
+      sites,
+    };
+  });
+  // Within a kind: the trial that ends soonest, the access that stops soonest, the site stuck longest, the newest sign-up.
+  const needs_you = NEEDS.flatMap(([kind]) => needs[kind].sort((x, y) => x.at - y.at).map(n => n.row));
+  return { customers, needs_you, funnel };
 }
 
 // What register.js is handed from here: how the operator is written to, and what "up on Kiln's hosting" means.

@@ -68,5 +68,27 @@ export function addSite(env, over = {}) {
   if (s.stripe_subscription_id !== null && s.stripe_subscription_id !== undefined) {
     try { env.kiln_cloud.exec('UPDATE sites SET stripe_subscription_id = ? WHERE id = ?', s.stripe_subscription_id, s.id); } catch { /* a database without migration 0017 */ }
   }
+  // What a later migration added, when a test gives it: how far set-up got, whether Kiln keeps the files,
+  // what was paid for, and when a change was last published through Kiln (0020). A database the column
+  // has not reached is left without it.
+  for (const column of ['prepared_at', 'firstpass_at', 'kept', 'name', 'access_until', 'billing_period', 'paid_until', 'last_publish']) {
+    if (s[column] === undefined) continue;
+    try { env.kiln_cloud.exec(`UPDATE sites SET ${column} = ? WHERE id = ?`, s[column], s.id); } catch { /* not on this database yet */ }
+  }
   return s;
+}
+
+/**
+ * One more account. `google_sub` with `google_email`, `signin_email`, `name`,
+ * `linked_at` and `last_seen` (0020) are written when given, each where the
+ * database has the column.
+ */
+export function addAccount(env, over = {}) {
+  const a = { id: 'acct-2', github_login: null, email: null, created_at: Date.now(), ...over };
+  env.kiln_cloud.exec('INSERT INTO accounts (id, github_login, email, created_at) VALUES (?,?,?,?)', a.id, a.github_login, a.email, a.created_at);
+  for (const column of ['github_id', 'name', 'google_sub', 'google_email', 'signin_email', 'linked_at', 'last_seen']) {
+    if (a[column] === undefined) continue;
+    try { env.kiln_cloud.exec(`UPDATE accounts SET ${column} = ? WHERE id = ?`, a[column], a.id); } catch { /* not on this database yet */ }
+  }
+  return a;
 }

@@ -93,7 +93,7 @@ import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
 import { VIA_KILN } from './prepare.js';
 import { keepsReady, keptStands } from './keeps.js';
 import { bringOn } from './bring.js';
-import { sweepBrings, sweepRegistrations, sweepRenewals } from './cloud.js';
+import { sweepBrings, sweepRegistrations, sweepRenewals, notePublish } from './cloud.js';
 import { customerMailOn, sendMail, mailAddress, signInLinkMail } from './mail.js';
 import { githubTrouble, googleTrouble, troubleBody, troubleLog, githubSilent, GITHUB_DID_NOT_ANSWER, STALE_SIGN_IN, HALF_A_SIGN_IN, UNCONFIRMED_GOOGLE } from './signin-trouble.js';
 import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '../src/engine.js';
@@ -1465,6 +1465,7 @@ async function runDueSchedules(env) {
           if (vs.error) { console.log(`[kiln-cron] ${k.name} not published: ${vs.error}`); await env.KILN.delete(k.name); continue; }
           const r = await commitSourceEdits(h, target, v.branch, vs, { message: v.message, author: `${v.by} (via Kiln, scheduled)`, email: schedEmail(v) });
           if (r.status === 200 || r.status === 422 || r.status === 404) await env.KILN.delete(k.name);
+          if (r.status === 200 && !r.body.unchanged && !KILN_BRANCH_RE.test(String(v.branch))) await notePublish(env, target);
           if (r.status !== 200) console.log(`[kiln-cron] ${k.name}: ${r.body.error}`);
         } catch (err) {
           console.error('[kiln-cron]', k.name, err);
@@ -1500,6 +1501,7 @@ async function runDueSchedules(env) {
             author: { name: `${v.by} (via Kiln, scheduled)`, email: schedEmail(v) } }),
         });
         if (res.ok || res.status === 409) await env.KILN.delete(k.name);
+        if (res.ok && !KILN_BRANCH_RE.test(String(v.branch))) await notePublish(env, target);
       } catch (err) {
         console.error('[kiln-cron]', k.name, err);
       }
@@ -2008,6 +2010,7 @@ async function suggestionDecide(request, env) {
         }),
       });
       if (put.ok) {
+        await notePublish(env, repo);   // a suggestion that is accepted goes onto the site
         const out = await put.json();
         sug.status = 'approved';
         sug.decided = decided;
@@ -2439,6 +2442,7 @@ async function sourceCommit(request, env) {
     message: (typeof message === 'string' && message.trim()) ? message : `Kiln: update ${v.file}`,
     author: `${actor.name}${VIA_KILN}`,
   });
+  if (r.status === 200 && !r.body.unchanged && !KILN_BRANCH_RE.test(branch)) await notePublish(env, repo);
   return json(r.body, r.status);
 }
 
@@ -2560,6 +2564,7 @@ async function sourceCreate(request, env) {
         author: { name: `${d.actor.name}${VIA_KILN}`, email: 'kiln-editor@users.noreply.github.com' } }),
     });
     if (put.ok) {
+      if (!KILN_BRANCH_RE.test(String(d.branch))) await notePublish(env, d.repo);
       const out = await put.json();
       return json({ ok: true, file: plan.file, commit: { sha: out.commit?.sha, parent: out.commit?.parents?.[0]?.sha || null } });
     }
@@ -2600,6 +2605,7 @@ async function sourceRemove(request, env) {
         author: { name: `${d.actor.name}${VIA_KILN}`, email: 'kiln-editor@users.noreply.github.com' } }),
     });
     if (del.ok) {
+      if (!KILN_BRANCH_RE.test(String(d.branch))) await notePublish(env, d.repo);
       const out = await del.json();
       return json({ ok: true, file: p.file, commit: { sha: out.commit?.sha, parent: out.commit?.parents?.[0]?.sha || null } });
     }
@@ -3979,6 +3985,26 @@ function proxyAllowed(method, path, repo) {
 // `body` is the request's parsed JSON body (null when absent/non-JSON, which
 // for PUT /contents means no branch → blocked). Exported for unit tests.
 const KILN_BRANCH_RE = /^kiln[/-]/;
+/**
+ * Did a write that GitHub accepted change what a site's branch holds? A file
+ * put on a branch or removed from one does, and so does moving a branch to a
+ * new commit. A blob, a tree or a commit by itself changes no branch, and
+ * Kiln's own scratch branches (drafts, the preview of a suggestion) are not
+ * the site. It decides when `notePublish` (cloud.js) records a publish.
+ * `body` is what was sent, as text or already read.
+ */
+function savesToSite(method, ghPath, body) {
+  let clean = String(ghPath || '').split('?')[0];
+  try { clean = decodeURIComponent(clean); } catch { /* judged as it was written */ }
+  if ((method === 'PUT' || method === 'DELETE') && clean.includes('/contents/')) {
+    let sent = body;
+    if (typeof sent === 'string') { try { sent = JSON.parse(sent); } catch { sent = null; } }
+    const branch = sent && typeof sent === 'object' ? sent.branch : undefined;
+    return !(typeof branch === 'string' && KILN_BRANCH_RE.test(branch));   // no branch named is the repository's own
+  }
+  const head = /\/git\/refs\/heads\/(.+)$/.exec(clean);
+  return method === 'PATCH' && !!head && !KILN_BRANCH_RE.test(head[1]);
+}
 function suggestWriteViolation(method, path, body) {
   const deny = 'suggest-mode: publish goes through suggestions';
   let clean = String(path).split('?')[0];
@@ -4054,6 +4080,7 @@ async function ownerProxy(request, env, owner, ghPath) {
   try { res = await fetch(`${GH}${forward}`, { method: request.method, headers, body }); }
   catch { return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502); }
   if (res.status === 401) { await endOwnerSession(env, request, owner); return signinEnded(); }
+  if (res.ok && body !== undefined && savesToSite(request.method, forward, body)) await notePublish(env, sess.repo);
   return ownerAnswer(res);
 }
 
@@ -4172,7 +4199,10 @@ async function keptProxy(request, env, owner, ghPath) {
     if (!token) return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502);
     try { res = await fetch(`${GH}/repos/${sess.repo}${rest}`, { method: request.method, headers: { ...headers, Authorization: `Bearer ${token}` }, body }); }
     catch { return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502); }
-    if (res.status !== 401) return ownerAnswer(res);
+    if (res.status !== 401) {
+      if (write && res.ok && savesToSite(request.method, rest, body)) await notePublish(env, sess.repo);
+      return ownerAnswer(res);
+    }
     await env.KILN.delete(`itok:${sess.repo}`);   // the service's own token went stale: ask for a new one
   }
   return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502);
@@ -4405,6 +4435,7 @@ async function ghProxy(request, env, ghPath) {
     body = stampedBody(rawBody, parsedBody, ghPath, editorStamp(sess));
   }
   const res = await fetch(`${GH}${ghPath}`, { method: request.method, headers, body });
+  if (isWrite && res.ok && savesToSite(request.method, ghPath, parsedBody)) await notePublish(env, sess.repo);
   return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'application/json', 'Cache-Control': GH_ANSWER_CACHE } });
 }
 
