@@ -85,10 +85,10 @@ const GH = 'https://api.github.com';
 const UA = 'kiln-auth-worker';
 // Reported by /healthz for the editor's capability handshake (§13). Keep in
 // step with package.json "version" when cutting a release.
-const WORKER_VERSION = '0.10.2';
+const WORKER_VERSION = '0.10.3';
 
 import { startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
-import { handleCloud, googleDashboardSignIn, emailDashboardSignIn, keptOwnerAtSite, keptOwnerAddress, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, userPushAnswer, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
+import { handleCloud, selfOrigin, googleDashboardSignIn, emailDashboardSignIn, keptOwnerAtSite, keptOwnerAddress, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, userPushAnswer, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
 import { VIA_KILN } from './prepare.js';
 import { keepsReady, keptStands } from './keeps.js';
@@ -162,6 +162,14 @@ export default {
     });
   },
   async fetch(request, env, ctx) {
+    // Plain http is never answered: it is sent to the same address over https, a sign-in and a form
+    // included (308 keeps a POST a POST), so no code, token or callback travels unencrypted. HSTS
+    // (guarded) covers a browser only after its first https answer; this covers the first request.
+    // A local development server (localhost, 127.0.0.1) has no certificate and is left alone.
+    const asked = new URL(request.url);
+    if (asked.protocol === 'http:' && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(asked.hostname)) {
+      return new Response(null, { status: request.method === 'GET' || request.method === 'HEAD' ? 301 : 308, headers: { Location: `https://${asked.host}${asked.pathname}${asked.search}`, 'Cache-Control': 'no-store' } });
+    }
     const response = await routeRequest(request, env, ctx);
     // An owner session that GitHub stopped accepting while this request was
     // being answered has been ended (endOwnerSession): whatever the route made
@@ -594,8 +602,8 @@ async function setupPage(url, env) {
   const manifest = {
     name: 'Kiln CMS',
     url: 'https://kilncms.com',
-    redirect_url: `${url.origin}/setup/callback`,
-    callback_urls: [`${url.origin}/auth/callback`],
+    redirect_url: `${selfOrigin(url, env)}/setup/callback`,
+    callback_urls: [`${selfOrigin(url, env)}/auth/callback`],
     public: false,
     request_oauth_on_install: false,
     default_permissions: { contents: 'write', metadata: 'read', deployments: 'read', statuses: 'read' },
@@ -618,7 +626,7 @@ async function setupCallback(url, env) {
   const code = url.searchParams.get('code');
   if (!code) return html('<h1>Missing code</h1><p>Start again at <a href="/setup">/setup</a>.</p>', 400);
   const existing = await env.KILN.get('app:creds', 'json');
-  if (existing) return Response.redirect(`${url.origin}/setup`, 302);
+  if (existing) return Response.redirect(`${selfOrigin(url, env)}/setup`, 302);
 
   const res = await fetch(`${GH}/app-manifests/${encodeURIComponent(code)}/conversions`, {
     method: 'POST',
@@ -677,7 +685,7 @@ async function authLogin(url, env) {
 
   const params = new URLSearchParams({
     client_id: creds.client_id,
-    redirect_uri: `${url.origin}/auth/callback`,
+    redirect_uri: `${selfOrigin(url, env)}/auth/callback`,
     state: nonce,
   });
   return Response.redirect(`https://github.com/login/oauth/authorize?${params}`, 302);
@@ -3033,7 +3041,7 @@ async function googleLogin(url, env) {
   await env.KILN.put(`gstate:${nonce}`, JSON.stringify({ origin, returnTo, repo }), { expirationTtl: 600 });
   const params = new URLSearchParams({
     client_id: env.GOOGLE_CLIENT_ID,
-    redirect_uri: `${url.origin}/google/callback`,
+    redirect_uri: `${selfOrigin(url, env)}/google/callback`,
     response_type: 'code',
     scope: 'openid email profile',
     state: nonce,
@@ -3057,7 +3065,7 @@ async function googleIdentity(url, env, code) {
       code,
       client_id: env.GOOGLE_CLIENT_ID,
       client_secret: env.GOOGLE_CLIENT_SECRET,
-      redirect_uri: `${url.origin}/google/callback`,
+      redirect_uri: `${selfOrigin(url, env)}/google/callback`,
       grant_type: 'authorization_code',
     }),
   });
@@ -3389,8 +3397,8 @@ async function emailLoginSend(request, url, env) {
     await env.KILN.put(`elink:${linkHash}`, JSON.stringify({ ...place, email, req: reqHash, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
     await env.KILN.put(`ecode:${reqHash}`, JSON.stringify({ ...place, email, code: await sha256Hex(`${req}:${code}`), link: linkHash, tries: 0, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
     await sendMail(env, email, place.for
-      ? signInLinkMail({ dashboard: true, link: `${url.origin}/email/open?t=${token}&for=dashboard`, code })
-      : signInLinkMail({ site: siteWords(place.origin), link: `${url.origin}/email/open?t=${token}`, code }));
+      ? signInLinkMail({ dashboard: true, link: `${selfOrigin(url, env)}/email/open?t=${token}&for=dashboard`, code })
+      : signInLinkMail({ site: siteWords(place.origin), link: `${selfOrigin(url, env)}/email/open?t=${token}`, code }));
   } else {
     await env.KILN.put(`ecode:${reqHash}`, JSON.stringify({ ...place, code: null, link: null, tries: 0, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
   }

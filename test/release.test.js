@@ -55,6 +55,11 @@ function world(over = {}) {
       if (w.failOn && line.includes(w.failOn)) throw new Error(`${args[1]} failed (exit 1)`);
       if (w.failOnce && !failedOnce && line.includes(w.failOnce)) { failedOnce = true; throw new Error(`${args[1]} failed (exit 1)`); }
     },
+    redirectOf: async (url) => {
+      if (w.plainHttp) return w.plainHttp;
+      if (url === `${STAGING_URL.replace('https:', 'http:')}/healthz` || url === `${PRODUCTION_URL.replace('https:', 'http:')}/healthz`) return { status: 301, location: url.replace('http:', 'https:') };
+      throw new Error(`unexpected redirect ask ${url}`);
+    },
     distDrift: () => w.drift,
     log: (l) => lines.push(l),
     now: () => new Date('2026-10-06T15:00:00Z'),
@@ -138,7 +143,20 @@ test('KLR-01 --dry-run with every check passing lists the steps and changes noth
   assert.deepEqual(r.steps, [
     'run the end-to-end tests on staging (scripts/e2e.mjs, scripts/e2e-source.mjs)',
     'apply database migrations to production', 'tag this commit prod-2026-10-06', 'deploy abc1234 to production',
-    'confirm https://auth.kilncms.com/healthz reports build abc1234', 'push the tag prod-2026-10-06', 'fast-forward the release branch to abc1234']);
+    'confirm https://auth.kilncms.com/healthz reports build abc1234', 'confirm http://auth.kilncms.com/healthz is sent to https',
+    'push the tag prod-2026-10-06', 'fast-forward the release branch to abc1234']);
+});
+
+test('a release stops when plain http to the worker is answered instead of being sent to https', async () => {
+  for (const answer of [{ status: 200, location: '' }, { status: 302, location: 'https://auth.kilncms.com/healthz' }, { status: 301, location: 'http://auth.kilncms.com/healthz' }]) {
+    const { io, ran } = world({ plainHttp: answer });
+    io.sleep = async () => {};
+    let err = null;
+    try { await release(io, {}); } catch (e) { err = e; }
+    assert.ok(err, `refused ${JSON.stringify(answer)}`);
+    assert.match(err.message, /plain http is not being sent to https/);
+    assert.equal(ran.includes('git push origin prod-2026-10-06'), false, 'the tag is not pushed for a release that failed its checks');
+  }
 });
 
 test('KLR-01 a release: migrations, tag, deploy with the commit, tag and message, verify, push the tag — in that order', async () => {

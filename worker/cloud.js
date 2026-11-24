@@ -53,7 +53,7 @@ import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, S
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence, astroAfterSentences } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
-import { hostingOn, hostingSentence, membersGateOn, previewPattern } from './hosting.js';
+import { hostingOn, hostingSentence, membersGateOn, previewPattern, serviceAddress } from './hosting.js';
 import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence, keptFilesLink, keptFilesName } from './keeps.js';
 import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies, MOST_ANSWER } from './bring.js';
 import { hostingRow, hostingForAccount, publicHosting, publishSite, forgetHosting, siteForHostingAddress, lookAgain } from './hosted.js';
@@ -78,6 +78,21 @@ const NOT_YOUR_REPO = 'The GitHub account you signed in with cannot change that 
 const json = (obj, status = 200, headers = {}) =>
   new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json', ...headers } });
 const uuid = () => crypto.randomUUID();
+
+/**
+ * This service's own address, for every address it hands out: a sign-in's
+ * callback at GitHub or Google, a link in an email, the address a copying job
+ * answers to, the one written into a site's settings. Never taken from how a
+ * request happened to arrive: it is HOSTING_SERVICE_URL where that is set
+ * (https only), and otherwise the request's host over https. A local
+ * development server (localhost, 127.0.0.1) has no certificate and keeps its
+ * own plain address.
+ */
+export function selfOrigin(url, env) {
+  const fixed = serviceAddress(env);
+  if (fixed) return fixed;
+  return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(url.hostname) ? url.origin : `https://${url.host}`;
+}
 // What a person signed in with Google is told when they ask for something that takes a GitHub account.
 const NEEDS_GITHUB_TO_ADD = 'Adding a repository of your own needs a GitHub sign-in. Sign out, then sign in with GitHub.';
 const NEEDS_GITHUB_FOR_SITE = 'This site is in a GitHub repository, and you are signed in with Google. Sign out, then sign in with GitHub.';
@@ -2292,7 +2307,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const c = await creds(env);
     const nonce = uuid();
     await env.KILN.put(`cstate:${nonce}`, link === null ? '1' : JSON.stringify({ link }), { expirationTtl: 600 });
-    const params = new URLSearchParams({ client_id: c.client_id, redirect_uri: `${url.origin}/cloud/callback`, state: nonce });
+    const params = new URLSearchParams({ client_id: c.client_id, redirect_uri: `${selfOrigin(url, env)}/cloud/callback`, state: nonce });
     return startSignIn(url, `https://github.com/login/oauth/authorize?${params}`, nonce);   // with the cookie that ties it to this browser
   }
 
@@ -2308,7 +2323,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const nonce = uuid();
     await env.KILN.put(`gstate:${nonce}`, JSON.stringify({ for: 'dashboard', dash }), { expirationTtl: 600 });
     const params = new URLSearchParams({
-      client_id: env.GOOGLE_CLIENT_ID, redirect_uri: `${url.origin}/google/callback`, response_type: 'code',
+      client_id: env.GOOGLE_CLIENT_ID, redirect_uri: `${selfOrigin(url, env)}/google/callback`, response_type: 'code',
       scope: 'openid email profile', state: nonce, prompt: 'select_account',
     });
     return startSignIn(url, `https://accounts.google.com/o/oauth2/v2/auth?${params}`, nonce);   // with the cookie that ties it to this browser
@@ -2384,7 +2399,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const code = linkCode();
     await env.KILN.put(`link:${code}`, JSON.stringify({ account_id: acct.id, by: await fingerprint(bearer(request)) }), { expirationTtl: 600 });
     // `reconnect`: the account has GitHub already, and this gives the session its GitHub part.
-    return json({ ok: true, url: `${url.origin}/cloud/login?link=${code}`, code, reconnect: acct.github_login != null || acct.github_id != null }, 200, { 'Cache-Control': 'no-store' });
+    return json({ ok: true, url: `${selfOrigin(url, env)}/cloud/login?link=${code}`, code, reconnect: acct.github_login != null || acct.github_id != null }, 200, { 'Cache-Control': 'no-store' });
   }
 
   // Step 4: the one place the account is changed. The request must carry the
@@ -2671,7 +2686,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     let typed = null;   // the name as it is put on the site's row: what the person typed, tidied
     let since = null;   // when this site's free days began, if they began with an earlier site of the account
     const out = await startKept(env, {
-      accountId: sess.account_id, name, worker: url.origin, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
+      accountId: sess.account_id, name, worker: selfOrigin(url, env), by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
       register: ({ id, repo, origin, name, since: began }) => { typed = name; since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began }); },
       forget: (id) => env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(),
       note: (subject, lines) => notifyOwner(env, subject, lines),
@@ -2698,7 +2713,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const { address, name, mine } = await request.json().catch(() => ({}));
     let since = null;   // as for a site that is started: when its free days began, if with an earlier site
     const out = await bringIn(env, {
-      accountId: sess.account_id, address, name, mine, worker: url.origin, dashboard: dash, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
+      accountId: sess.account_id, address, name, mine, worker: selfOrigin(url, env), dashboard: dash, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
       register: ({ id, repo, origin, name, since: began }) => { since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began }); },
       forget: (id) => env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(),
       note: (subject, lines) => notifyOwner(env, subject, lines),
@@ -2720,7 +2735,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
   if (path === '/cloud/sites/bring/again' && request.method === 'POST') {
     if (!sess) return json({ error: 'not signed in' }, 401);
     const asked = await request.json().catch(() => ({}));
-    const out = await bringAgain(env, { accountId: sess.account_id, id: asked.id ?? asked.site, worker: url.origin, sign: appJwt, pkcs1: tools.pkcs1 || null,
+    const out = await bringAgain(env, { accountId: sess.account_id, id: asked.id ?? asked.site, worker: selfOrigin(url, env), sign: appJwt, pkcs1: tools.pkcs1 || null,
       note: (subject, lines) => notifyOwner(env, subject, lines) });
     return out.ok ? json({ ok: true, site: out.site, bring: out.bring }) : json({ error: out.error, code: out.code, ...(out.bring ? { bring: out.bring } : {}) }, out.status);
   }
@@ -2734,10 +2749,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const read = await tools.readBody(request, MOST_ANSWER);
     if (read.tooLarge) return json({ error: 'too large' }, 413);
     const out = await copyAnswered(env, {
-      body: read.text || '', signature: request.headers.get('X-Kiln-Signature'), worker: url.origin, dashboard: dash,
+      body: read.text || '', signature: request.headers.get('X-Kiln-Signature'), worker: selfOrigin(url, env), dashboard: dash,
       trialDays: TRIAL_GRACE_DAYS, sign: appJwt, pkcs1: tools.pkcs1 || null, note: (subject, lines) => notifyOwner(env, subject, lines),
       // A copy that worked goes up on Kiln's hosting by itself, before the job has its answer.
-      host: (site) => hostCopied(env, tools, { id: site.id, accountId: site.account_id, worker: url.origin }),
+      host: (site) => hostCopied(env, tools, { id: site.id, accountId: site.account_id, worker: selfOrigin(url, env) }),
       // The job waits for its answer while the site is put up, which takes about half a minute. Work handed on to
       // run after the answer (`tools.later`) is cut off by Cloudflare about 30 seconds in, which could stop the
       // publishing half way and send the owner a mail that says the site is not up while it is going up.
@@ -2768,7 +2783,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       // both. A site Kiln does not host is asked nothing more than before.
       const hosted = hostingOn(env) && !!(await hostingRow(env, site.id));
       const read = hosted ? await readPages({ token, repo: site.repo }) : null;
-      const plan = await planPrepare({ token, repo: site.repo, worker: url.origin, read });
+      const plan = await planPrepare({ token, repo: site.repo, worker: selfOrigin(url, env), read });
       // A site Astro builds has no pages of its own in the repository to add that line to.
       const charset = hosted && !plan.astro && (plan.state === 'ready' || plan.state === 'prepared') ? await planCharset({ token, repo: site.repo, read }) : null;
       const owed = !!charset && charset.state === 'ready';
@@ -2815,7 +2830,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       let done;
       try {
         done = await applyPrepare({
-          token, repo: site.repo, worker: url.origin, plan, author,
+          token, repo: site.repo, worker: selfOrigin(url, env), plan, author,
           ...(env.KILN_RELEASE_BASE ? { releaseBase: env.KILN_RELEASE_BASE } : {}),
         });
       } catch (e) {
@@ -2939,7 +2954,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         ? await env.kiln_cloud.prepare(`SELECT created_at, ${await subscriptionSql(env)} AS subscription_id FROM sites WHERE id = ?`).bind(site.id).first().catch(() => null) : null;
       return json({ ok: true, available, on_plan: site.plan === 'managed', hosting: await shownHosting(env, row, { ...site, ...(rest || {}) }), ...(care ? { looked_after: care } : {}) });
     }
-    const put = await putOnHosting(env, { site, token, accountId: sess.account_id, author: () => commitAuthor(env, sess), by: signedInAs(sess), worker: url.origin });
+    const put = await putOnHosting(env, { site, token, accountId: sess.account_id, author: () => commitAuthor(env, sess), by: signedInAs(sess), worker: selfOrigin(url, env) });
     return json(put.body, put.status);
   }
 
@@ -3394,7 +3409,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       await env.KILN.put(lock, '1', { expirationTtl: 120 });
     }
     try {
-      const plan = await planUpdate({ token, repo: site.repo, worker: url.origin, releaseBase: env.KILN_RELEASE_BASE });
+      const plan = await planUpdate({ token, repo: site.repo, worker: selfOrigin(url, env), releaseBase: env.KILN_RELEASE_BASE });
       const shown = publicUpdate(plan, { repo: site.repo });
       if (plan.state === 'no_access') return site.kept ? keptNotReached() : refused('no_access', 409, { install_url: await installUrlFor(env) });
       if (plan.state === 'github' || plan.state === 'release') return refused(plan.state, 502);
@@ -3468,7 +3483,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const lookAt = !up ? site.origin
       : !onDomain ? hosting.url
         : [dom.name, `www.${dom.name}`].includes(hostName(site.origin)) ? site.origin : `https://${dom.name}`;
-    const checks = await checkSite({ token, repo: site.repo, origin: lookAt, hosted: up, ownDomain: onDomain, down, worker: url.origin, installUrl: await installUrlFor(env), canAdd: access, kept: isKept, membersOn: membersGateOn(env), preview: up ? previewPattern(env, site) : null });
+    const checks = await checkSite({ token, repo: site.repo, origin: lookAt, hosted: up, ownDomain: onDomain, down, worker: selfOrigin(url, env), installUrl: await installUrlFor(env), canAdd: access, kept: isKept, membersOn: membersGateOn(env), preview: up ? previewPattern(env, site) : null });
     if (dom && dom.state === 'waiting' && dom.name) checks.push(domainWaitingLine({ name: dom.name, seller: publicDomain(dom, { records: false })?.seller?.name }));
     if (!access) {
       let sub = null;

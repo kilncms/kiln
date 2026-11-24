@@ -6,6 +6,26 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-11-24
+
+### Security
+
+- **Plain http to the service is sent to https, and nothing is answered
+  over it.** A read gets a 301 to the same address over https, anything
+  else a 308 (a POST stays a POST). Before, the service answered plain
+  http, and a sign-in started over it sent GitHub a plain http callback,
+  where the sign-in's code would have come back unencrypted. HSTS (0.10.2)
+  covers a browser only after its first https answer; this covers the
+  first request. A local development server (localhost) keeps plain http.
+- **Every address the service hands out is built from its own fixed https
+  address**, never from how a request arrived: the callbacks of the GitHub
+  and Google sign-ins, the links in its emails, the Connect GitHub link, and
+  the address written into a site's settings or given to a copying job. It
+  is `HOSTING_SERVICE_URL` where that is set, and otherwise the request's
+  host over https.
+- The release script checks after each deploy that plain http to the
+  worker is sent to https, and stops the release if it is not.
+
 ## [0.10.2] - 2026-11-24
 
 ### Security

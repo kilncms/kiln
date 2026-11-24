@@ -51,6 +51,11 @@ export function realIo() {
       if (!res.ok) throw new Error(`${url} answered ${res.status}`);
       return res.json();
     },
+    /** What an address answers before any redirect is followed: { status, location }. */
+    redirectOf: async (url) => {
+      const res = await fetch(url, { redirect: 'manual', headers: { 'User-Agent': 'kiln-release' }, signal: AbortSignal.timeout(20000) });
+      return { status: res.status, location: res.headers.get('Location') || '' };
+    },
     /** Run a command from `cwd` (relative to the repo), inheriting the terminal, with `env` added to the environment. Throws when it fails. */
     run: (cmd, args, cwd = '.', env = {}) => {
       const r = spawnSync(cmd, args, { cwd: path.join(ROOT, cwd), stdio: 'inherit', env: { ...process.env, ...env } });
@@ -174,6 +179,8 @@ export async function release(io, { target = 'production', dryRun = false, hotfi
     ...(target === 'production' ? [{ say: `tag this commit ${tag}`, git: ['tag', '-a', tag, '-m', `Production release of ${c.short}: ${c.subject}`] }] : []),
     { say: `deploy ${c.short} to ${target}`, cmd: wrangler('deploy', '--env', target, '--var', `KILN_BUILD:${c.short}`, '--tag', tag, '--message', message) },
     { say: `confirm ${url}/healthz reports build ${c.short}`, verify: true },
+    // Plain http must never be answered: it is sent to https (worker/index.js, the front door).
+    { say: `confirm ${url.replace(/^https:/, 'http:')}/healthz is sent to https`, plainHttp: true },
     ...(target === 'staging' ? [e2e] : []),
     ...(target === 'production' ? [{ say: `push the tag ${tag}`, git: ['push', 'origin', tag] }] : []),
     // `release` is the branch that always points at what production runs: the
@@ -228,6 +235,18 @@ export async function release(io, { target = 'production', dryRun = false, hotfi
         }
         if (!health.ok || !health.build || !c.sha.startsWith(health.build)) {
           throw new Error(`${url}/healthz reports build ${health.build || 'none'}, not ${c.short}`);
+        }
+      }
+      if (s.plainHttp) {
+        const plain = `${url.replace(/^https:/, 'http:')}/healthz`, want = `${url}/healthz`;
+        let got = {};
+        for (let attempt = 0; attempt < 6; attempt++) {
+          try { got = await io.redirectOf(plain); } catch (err) { got = { status: 0, location: String(err.message) }; }
+          if (got.status === 301 && got.location === want) break;
+          if (attempt < 5 && io.sleep) await io.sleep(5000);
+        }
+        if (!(got.status === 301 && got.location === want)) {
+          throw new Error(`${plain} answered ${got.status}${got.location ? ` to ${got.location}` : ''}, not 301 to ${want}: plain http is not being sent to https`);
         }
       }
     }
