@@ -6,6 +6,42 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The operator of Kiln Cloud can see who the customers are, how far each
+  one got, and who needs a word.** Until now the operator's overview counted
+  accounts and listed sites, so an account that never added a site was a
+  number and nothing more. `GET /admin/cloud/overview` now also answers
+  `customers`, one entry for each account, newest first: what to call the
+  person, how they sign in (GitHub, Google, email), the address Kiln writes
+  to for them or none, when they signed up, when they were last at the
+  dashboard, the furthest stage they reached (signed up, added a site, set
+  up, published, paying) and each of their sites with its plan, its status,
+  how far its set-up got, when its free days end or what it is paid until,
+  and when a change was last published to it. `needs_you` is the short list
+  of what only the operator can act on, most urgent first: a trial that ends
+  within three days for an account Kiln has no address for (so Kiln's own
+  reminder cannot reach them), a payment that failed, a site added more than
+  two days ago that is not ready to edit, and a person who signed up between
+  two and thirty days ago and has no site. Each says in one sentence what is
+  so and what can be done. `funnel` counts the accounts that reached at
+  least each stage. Everything the overview answered before is unchanged,
+  it is still answered to the operator alone, and the new part holds no
+  token and no id at Stripe or GitHub. Two moments are recorded for it:
+  `accounts.last_seen`, written at a sign-in to the dashboard and otherwise
+  at most once an hour while a dashboard is open, and `sites.last_publish`,
+  written at most once a minute for a repository when a change is saved to
+  it through Kiln: someone publishing in the editor, a content file saved,
+  an entry added or removed, a suggestion accepted, a scheduled change going
+  out. A commit made on GitHub directly is not counted, and neither is a
+  draft on one of Kiln's own branches. Neither write can fail the sign-in or
+  the save it follows. For someone who runs the service: database migration
+  0020 adds the two columns and must be applied before the service
+  (`wrangler d1 migrations apply`). On a database it has not reached
+  everything works as before, the overview still answers, and both moments
+  are empty. Both are also empty for everything that happened before the
+  migration: a site shows a last publish from its first one afterwards.
+
 ## [0.9.0] - 2026-11-23
 
 ### Added
