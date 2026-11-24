@@ -3848,11 +3848,14 @@ async function customerAccounts(env) {
  * calls a site set up once Kiln is in its repository (`prepared_at`) or Kiln
  * keeps its files (`kept`); "ready to edit" is one step on: a first pass of
  * what can be edited is marked (`firstpass_at`), or Kiln made the site itself
- * (`kept`), or a change has already been published through Kiln, which shows
- * that the site can be edited whoever marked it.
+ * (`kept`), or a change has already been published through Kiln, or someone
+ * has had the editor open on the site (`editor_seen`, which the overview
+ * reads for each site before this is asked). The last two show that the site
+ * can be edited whoever marked it: a site its owner prepared by hand has no
+ * first pass, and one in use before migration 0020 has no publish recorded.
  */
 function siteSetUp(s) {
-  if (s.firstpass_at || s.kept || s.last_publish) return 'ready to edit';
+  if (s.firstpass_at || s.kept || s.last_publish || s.editor_seen) return 'ready to edit';
   return s.prepared_at ? 'kiln added' : 'not started';
 }
 

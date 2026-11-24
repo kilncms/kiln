@@ -1401,6 +1401,7 @@ async function runDueSchedules(env) {
   // place that also publishes and deletes schedules: one pass reads each
   // schedule once, so it can be moved and published, never published twice.
   const moving = await movesUnderWay(env);
+  const began = Date.now();
   let cursor;
   do {
     const page = await env.KILN.list({ prefix: 'sched:', cursor });
@@ -1508,10 +1509,13 @@ async function runDueSchedules(env) {
     }
     cursor = page.list_complete ? null : page.cursor;
   } while (cursor);
-  // Every schedule has been read once: none names an old name any more.
+  // Every schedule the listing showed has been read once: none names an old
+  // name any more. A move that began too shortly before this pass may have a
+  // schedule the listing did not show yet (MOVE_LIST_LAG_MS): a later pass
+  // marks it.
   for (const [id, to] of new Map([...moving.values()].map(m => [m.id, m.to]))) {
     const mv = await env.KILN.get(`rmove:${id}`, 'json');
-    if (mv && mv.to === to && !(mv.done && mv.done.sched)) {
+    if (mv && mv.to === to && !(mv.done && mv.done.sched) && began - (Number(mv.at) || 0) > MOVE_LIST_LAG_MS) {
       await env.KILN.put(`rmove:${id}`, JSON.stringify({ ...mv, done: { ...(mv.done || {}), sched: true } }));
     }
   }
@@ -5279,6 +5283,15 @@ const MOVE_SCHED_WAIT_MS = 60 * 60 * 1000;
 // What a step may spend outside its copying: reading the two records, the
 // people list, and writing down where it got to.
 const MOVE_OVERHEAD = 12;
+// How long a KV listing may go on leaving out a key that was just written: a
+// list is cached where it is asked, and can be a minute behind. A scheduled
+// publish written seconds before a rename may be missing from every listing
+// made in the first minute of the move, so neither the empty-listing shortcut
+// in moveStep nor the cron pass in runDueSchedules calls a move's schedules
+// filed until its listings are this far past the moment the move began.
+// (Without this a post scheduled just before a rename stayed under the old
+// name once the move was done: not listed, and not cancellable, under the new.)
+const MOVE_LIST_LAG_MS = 2 * 60 * 1000;
 
 /** The two bounds, for the tests. */
 function moveBounds() {
@@ -5383,7 +5396,10 @@ async function moveStep(env, id, budget) {
     // Scheduled publishes are filed under the new name by the cron pass that
     // publishes them. With none stored there is nothing for it to do; and if
     // an hour has gone by without it, no cron is running and a step does it.
-    if (!mv.done.sched && !(await anyKey(kv, 'sched:'))) mv.done.sched = true;
+    // "None stored" is believed only once a listing can show every key written
+    // before the move began (MOVE_LIST_LAG_MS).
+    const listed = Date.now() - (Number(mv.at) || 0) > MOVE_LIST_LAG_MS;
+    if (!mv.done.sched && listed && !(await anyKey(kv, 'sched:'))) mv.done.sched = true;
     const overdue = Date.now() - (Number(mv.at) || 0) > MOVE_SCHED_WAIT_MS;
     for (const kind of ['atok', 'msess', 'esess', ...(overdue ? ['sched'] : [])]) {
       if (mv.done[kind]) continue;

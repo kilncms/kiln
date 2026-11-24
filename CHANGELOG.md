@@ -41,6 +41,23 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   everything works as before, the overview still answers, and both moments
   are empty. Both are also empty for everything that happened before the
   migration: a site shows a last publish from its first one afterwards.
+  A site counts as ready to edit once a first pass marked what can be
+  edited, Kiln keeps its files, a change was published through Kiln, or an
+  editor has been open on it, so a site that is in use is not listed as
+  stuck for want of a recorded publish.
+
+### Fixed
+
+- **A post scheduled just before its repository was renamed stays in the
+  list under the new name.** A rename moves what Kiln stores for a site to
+  the new name, and scheduled posts are found by listing what is stored.
+  Such a listing can be a minute behind a write, and a move that began in
+  that minute could take it as "nothing is scheduled", finish at once, and
+  leave the post under the old name: still published when it was due, but
+  missing from the list under the new name and not cancellable there. A
+  move now waits two minutes past its start before it believes a listing
+  that shows no scheduled posts, and the scheduled job files them under the
+  new name in that time.
 
 ## [0.9.0] - 2026-11-23
 

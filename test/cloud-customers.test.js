@@ -57,6 +57,7 @@ test('a site says how far its set-up got, when its free days end, and what to ca
   assert.equal(one({ prepared_at: 5, firstpass_at: 6 }).set_up, 'ready to edit');
   assert.equal(one({ kept: 1 }).set_up, 'ready to edit', 'a site Kiln made is ready as it is');
   assert.equal(one({ prepared_at: 5, last_publish: 9 }).set_up, 'ready to edit', 'a published change shows it can be edited');
+  assert.equal(one({ prepared_at: 5, editor_seen: 9 }).set_up, 'ready to edit', 'so does an editor that has been open on it');
   assert.equal(one({ created_at: NOW - DAY }).trial_ends, NOW + 6 * DAY, 'seven free days from the day it was added');
   assert.equal(one({ stripe_subscription_id: 'sub_1' }).trial_ends, null, 'someone subscribed: nothing runs out');
   assert.equal(one({ status: 'active' }).trial_ends, null);
@@ -129,6 +130,7 @@ test('needs you: a site added more than two days ago that is not ready to edit',
   assert.deepEqual(stuck({ created_at: NOW - 5 * DAY, prepared_at: 5 }), ['stuck_setup'], 'Kiln is added, nothing is marked');
   assert.deepEqual(stuck({ created_at: NOW - 5 * DAY, prepared_at: 5, firstpass_at: 6 }), []);
   assert.deepEqual(stuck({ created_at: NOW - 5 * DAY, kept: 1 }), []);
+  assert.deepEqual(stuck({ created_at: NOW - 5 * DAY, prepared_at: 5, editor_seen: NOW - DAY }), [], 'someone is editing it: nothing is marked by a first pass, and it is not stuck');
   assert.deepEqual(stuck({ created_at: NOW - 40 * DAY, status: 'canceled' }), [], 'a site that ended is not waiting for anything');
   const [row] = view([account({ email: 'a@example.com' })], [site({ created_at: NOW - 5 * DAY, prepared_at: 5 })]).needs_you;
   assert.equal(row.detail, 'ada/club was added 5 days ago and Kiln is in its repository, but nothing is marked for editing yet: write to them at a@example.com and offer to help.');

@@ -9,7 +9,7 @@ request is answered is the operator's promise to make, in the privacy policy.
 
 | What | Where | Gone by itself |
 |---|---|---|
-| A Kiln Cloud account: GitHub login, public email | D1 `accounts` | Never |
+| A Kiln Cloud account: GitHub login, public email, when it was last at the dashboard | D1 `accounts` | Never |
 | A Cloud site: repository, address, plan, subscription id | D1 `sites` | When the site is removed |
 | The people invited to a site: email, name, role, folders | KV `people:<owner/repo>` | Never |
 | An editor's or member's sign-in | KV `esess:…`, `msess:…` | After the days the owner chose; never when that is 0 |

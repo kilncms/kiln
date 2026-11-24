@@ -83,8 +83,18 @@ async function ask(env, method, path, { body, headers = {} } = {}) {
   try { json = await res.clone().json(); } catch { /* not JSON */ }
   return { status: res.status, json, res };
 }
-/** One cron run, without its log lines. */
+/**
+ * The clock these tests run on. Each cron run comes a minute after the one
+ * before it, as production's does, so a move that waits for KV's listings to
+ * catch up with its start (two minutes, MOVE_LIST_LAG_MS in index.js) is
+ * finished within a few runs, as it is there. Requests in between take no time.
+ */
+const realNow = Date.now;
+let clockAhead = 0;
+Date.now = () => realNow() + clockAhead;
+/** One cron run, a minute after the last, without its log lines. */
 async function cron(env) {
+  clockAhead += 60 * 1000;
   const real = { log: console.log, error: console.error };
   console.log = () => {}; console.error = () => {};
   try { await worker.scheduled({}, env); } finally { console.log = real.log; console.error = real.error; }
@@ -188,6 +198,33 @@ test('rename: scheduled publishes come along, and are shown under the new name b
     assert.equal((await ask(w.env, 'POST', '/schedule/cancel', { headers: OWNER, body: { repo: OLD, id: '1'.repeat(32) } })).status, 200);
   });
   assert.equal(w.kv.map.has(`sched:${'1'.repeat(32)}`), false);
+});
+
+/**
+ * The same KV, with a listing that leaves out every key written in the last
+ * `ms`, as KV's cached lists can: get, put and delete see everything at once.
+ */
+function laggingList(kv, ms) {
+  const written = new Map();
+  return { ...kv, async put(key, value, opts) { written.set(key, Date.now()); return kv.put(key, value, opts); },
+    async list(opts = {}) {
+      const page = await kv.list(opts);
+      return { ...page, keys: page.keys.filter(k => !(Date.now() - (written.get(k.name) ?? -Infinity) < ms)) };
+    } };
+}
+test('rename: a post scheduled just before the rename, which no listing shows yet, is under the new name when the move is done', async () => {
+  const id = '9'.repeat(32);
+  const w = world({ ...met(OLD) });
+  w.env.KILN = laggingList(w.kv, 60 * 1000);
+  await w.env.KILN.put(`sched:${id}`, JSON.stringify(schedule(OLD, Date.now() + 3 * 24 * 3600 * 1000)), { expiration: FAR });
+  await withFetch(github(renamed), async () => {
+    await comments(w.env, NEW, 'index.html');   // the move begins while no listing shows the post: nothing else is stored, so it could finish at once
+    assert.equal(w.keys('rmove:').length, 1, 'the move waits for the listings to catch up with its start');
+    await settle(w);
+    assert.equal(w.json(`sched:${id}`).repo, NEW, 'the cron pass filed it under the new name');
+    assert.deepEqual((await ask(w.env, 'GET', `/schedules?repo=${NEW}`, { headers: OWNER })).json.schedules.map(s => s.id), [id], 'listed under the new name');
+    assert.equal((await ask(w.env, 'POST', '/schedule/cancel', { headers: OWNER, body: { repo: NEW, id } })).status, 200, 'and cancelled there');
+  });
 });
 
 test('rename: a member stays signed in (the sign-in moves); an editor signs in again (the session under the old name ends)', async () => {
