@@ -96,7 +96,7 @@ test('Google sign-in to the dashboard: the first one makes an account and a sess
     const account = { ...env.kiln_cloud.row("SELECT * FROM accounts WHERE google_sub = 'g-1001'") };
     assert.match(account.id, /^[0-9a-f-]{36}$/);
     assert.ok(account.last_seen > 0, 'the sign-in is when they were last seen');
-    assert.deepEqual({ ...account, id: 'x', created_at: 0, last_seen: 0 }, { id: 'x', github_login: null, email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: 'g-1001', name: 'Rosa Diaz', google_email: 'rosa@example.com', github_id: null, stripe_customer_id: null, signin_email: null, linked_at: null, last_seen: 0 });
+    assert.deepEqual({ ...account, id: 'x', created_at: 0, last_seen: 0 }, { id: 'x', github_login: null, email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: 'g-1001', name: 'Rosa Diaz', google_email: 'rosa@example.com', github_id: null, stripe_customer_id: null, signin_email: null, linked_at: null, last_seen: 0, utm_source: null, utm_medium: null, utm_campaign: null });
     assert.deepEqual(JSON.parse(env.KILN.map.get(`csess:${sid}`)), { account_id: account.id, login: null, uid: null, gh: null, google: { sub: 'g-1001', email: 'rosa@example.com', name: 'Rosa Diaz' } });
     const life = env.KILN.expires.get(`csess:${sid}`) - Date.now() / 1000;
     assert.ok(life > 30 * 86400 - 60 && life <= 30 * 86400, 'the session lasts 30 days');
@@ -299,7 +299,7 @@ test('a GitHub sign-in to the dashboard is exactly as before: the same session, 
     const row = { ...env.kiln_cloud.row("SELECT * FROM accounts WHERE github_login = 'rosa'") };
     assert.deepEqual(JSON.parse(env.KILN.map.get(`csess:${sid}`)), { account_id: row.id, login: 'rosa', uid: 7, gh: 'ghu_new' });
     assert.ok(row.last_seen > 0, 'the sign-in is when they were last seen');
-    assert.deepEqual({ ...row, id: 'x', created_at: 0, last_seen: 0 }, { id: 'x', github_login: 'rosa', email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: null, name: null, google_email: null, github_id: 7, stripe_customer_id: null, signin_email: null, linked_at: null, last_seen: 0 });
+    assert.deepEqual({ ...row, id: 'x', created_at: 0, last_seen: 0 }, { id: 'x', github_login: 'rosa', email: 'rosa@example.com', ls_customer_id: null, created_at: 0, google_sub: null, name: null, google_email: null, github_id: 7, stripe_customer_id: null, signin_email: null, linked_at: null, last_seen: 0, utm_source: null, utm_medium: null, utm_campaign: null });
     // the same person then signs in with Google at the same address: a second account, and the first is as it was
     const g = tokenOf((await signIn(env)).res);
     assert.notEqual(JSON.parse(env.KILN.map.get(`csess:${g}`)).account_id, row.id);
