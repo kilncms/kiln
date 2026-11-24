@@ -398,9 +398,11 @@ export async function followsARename({ cfg, io, owner, step, record, run, field,
     for (let i = 0; ; i++) {
       const missing = await missingUnder(repo);
       if (!missing.length) return;
-      // The worker reads its scheduled posts from a KV listing, and a listing can be up to a minute behind a
-      // write. So this asks for a minute and a half before it calls a moved record missing: at half a minute
-      // it failed two releases in three on a busy evening, with nothing wrong in the worker.
+      // This asks for a minute and a half before it calls a moved record missing. Why the scheduled post is
+      // sometimes not shown is not known yet. What is known: these checks pass when the script is run once,
+      // and they fail on the scheduled post when the whole script is run a second time within a few minutes
+      // (pass, fail, pass, fail over six runs on 2026-11-23). A release runs them once (KILN_E2E_RENAME=1 is
+      // set on the staging step only).
       if (i >= 22) throw new Error(`the worker does not show ${missing.join(', ')}`);
       await io.sleep(4000);
     }
