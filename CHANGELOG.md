@@ -6,6 +6,30 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-24
+
+### Changed
+
+- **The operator's own accounts are not customers in the operator's view.**
+  The account that asks for the overview, and any other account Kiln
+  writes to at the same address (the operator trying the dashboard with
+  Google or with an email link), are no longer in `needs_you` and are not
+  counted in `funnel`. They are still listed in `customers`, each with
+  `operator: true`, so the admin page can mark them. Before, the overview
+  told the operator to write to themself about a test account with no site,
+  and counted the operator's own paid test site as a paying customer.
+
+### Added
+
+- **A line of "Needs you" can be hidden.** Each line of `needs_you` has a
+  `key` (its kind, the account and the site), and `POST
+  /admin/cloud/needs/hide {key}` hides it for 30 days: for someone the
+  operator has already written to, or a test account Kiln cannot tell from
+  a customer. `{key, undo: true}` shows it again at once. If it is still so
+  after 30 days, it comes back by itself. Kept in KV `nhide:<key>`, which
+  is read key by key, so a line hidden a moment ago stays hidden on the
+  next load. Operator only, as the rest of `/admin/cloud/`.
+
 ## [0.10.0] - 2026-11-24
 
 ### Added

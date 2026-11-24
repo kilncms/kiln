@@ -33,6 +33,7 @@
  *   GET  /admin/cloud/overview   → (owner only) accounts, sites (with the editor build each runs), MRR
  *                                  and `customers`, `needs_you`, `funnel`: who has an account, how far each
  *                                  one got, and what needs the operator (buildCustomers)
+ *   POST /admin/cloud/needs/hide → (owner only) {key}: hide one line of `needs_you` for 30 days; {key, undo: true} shows it again
  *   POST /admin/cloud/grant      → (owner only) manually set a site's status
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
@@ -3497,7 +3498,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       // It is read after everything the answer already had and left out whole when it cannot be read, so
       // nothing that was answered before depends on it.
       let people = {};
-      try { people = buildCustomers(await customerAccounts(env), rows, { asking: sess.account_id }); }
+      try {
+        people = buildCustomers(await customerAccounts(env), rows, { asking: sess.account_id });
+        people.needs_you = await withoutHidden(env, people.needs_you);
+      }
       catch (e) { console.warn(JSON.stringify({ evt: 'cloud_customers_not_read', detail: String(e?.message || e).slice(0, 160) })); people = {}; }
       return json({ accounts: accounts.n, sites: rows, active: active.length, mrr: Number(mrr.toFixed(2)), store, insights, ...people });
     }
@@ -3510,6 +3514,17 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         () => env.kiln_cloud.prepare('UPDATE sites SET status = ? WHERE id = ?').bind(status, site_id).run(),
       );
       return json({ ok: true });
+    }
+    // One line of "Needs you" hidden for NEEDS_HIDE_DAYS: someone the operator has already written to, or
+    // one of the operator's own test accounts. If it is still so when the days are over, it is shown again.
+    // `undo: true` shows it again at once (the admin page's Undo, right after Hide).
+    if (path === '/admin/cloud/needs/hide' && request.method === 'POST') {
+      const { key, undo } = await request.json().catch(() => ({}));
+      if (typeof key !== 'string' || !NEED_KEY_RE.test(key)) return json({ error: 'That is not a line of Needs you.' }, 400);
+      if (undo === true) { await env.KILN.delete(`nhide:${key}`); return json({ ok: true, hidden: false }); }
+      const until = Date.now() + NEEDS_HIDE_DAYS * 86400 * 1000;
+      await env.KILN.put(`nhide:${key}`, JSON.stringify({ at: Date.now(), until }), { expirationTtl: NEEDS_HIDE_DAYS * 86400 });
+      return json({ ok: true, until });
     }
     if (path === '/admin/cloud/remove' && request.method === 'POST') {
       const { site_id, force } = await request.json().catch(() => ({}));
@@ -3867,6 +3882,23 @@ const NEEDS = [['trial_no_address', 'Trial ending, no address'], ['payment_faile
 const NEEDS_TRIAL_DAYS = 3;     // a trial that ends within this many days
 const NEEDS_AFTER_DAYS = 2;     // a site or an account is left alone for its first two days
 const NEEDS_UNTIL_DAYS = 30;    // an account with no site is no longer news after a month
+const NEEDS_HIDE_DAYS = 30;     // a line the operator hid stays hidden this long, and comes back if it is still so then
+/** What a line of `needs_you` is known and hidden by: its kind, the account, and the site or "-". */
+const needKey = (kind, accountId, siteId) => `${kind}:${accountId}:${siteId || '-'}`;
+const NEED_KEY_RE = /^(trial_no_address|payment_failed|stuck_setup|no_site):[\w-]{1,80}:[\w-]{1,80}$/;
+/**
+ * `needs_you` without the lines the operator hid (KV `nhide:<key>`, written by
+ * POST /admin/cloud/needs/hide). Each is read by its own key, not listed, so a
+ * line hidden a moment ago stays hidden on the next load. KV not answering
+ * leaves every line shown.
+ */
+async function withoutHidden(env, list) {
+  if (!Array.isArray(list) || !list.length) return list || [];
+  const shown = await Promise.all(list.map(async (n) => {
+    try { return (await env.KILN.get(`nhide:${n.key}`)) ? null : n; } catch { return n; }
+  }));
+  return shown.filter(Boolean);
+}
 
 /**
  * The operator's view of the customers, from every account (customerAccounts)
@@ -3874,14 +3906,19 @@ const NEEDS_UNTIL_DAYS = 30;    // an account with no site is no longer news aft
  *   customers  one entry for an account, newest first, with its sites
  *   needs_you  the few things only the operator can do something about
  *   funnel     how many accounts reached at least each stage
- * `asking` is the operator's own account: it is listed like any other, and
- * never told to write to itself for having no site. Nothing here is a token
- * or an id at Stripe or GitHub. `paying` means a subscription that is running
- * or whose last charge failed: a site the operator set to active by hand has
- * no subscription and is not counted.
+ * `asking` is the operator's own account. It, and any other account Kiln
+ * writes to at the same address (the operator signing in with Google or by
+ * email to try the dashboard), is listed like any other with `operator: true`,
+ * but is never in `needs_you` and is not counted in `funnel`: neither is about
+ * a customer. Each line of `needs_you` has a `key` (kind, account, site) that
+ * the operator can hide it by (POST /admin/cloud/needs/hide). Nothing here is
+ * a token or an id at Stripe or GitHub. `paying` means a subscription that is
+ * running or whose last charge failed: a site the operator set to active by
+ * hand has no subscription and is not counted.
  */
 export function buildCustomers(accounts, rows, { now = Date.now(), asking = null } = {}) {
   const day = 86400 * 1000;
+  const opAddress = String((asking && accounts.find(a => a.id === asking)?.email) || '').toLowerCase() || null;
   const dayOf = (t) => new Date(Number(t)).toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
   const daysAgo = (t) => { const n = Math.floor((now - Number(t)) / day); return n === 1 ? '1 day ago' : `${n} days ago`; };
   const host = (origin) => { try { return new URL(origin).host; } catch { return null; } };
@@ -3892,6 +3929,7 @@ export function buildCustomers(accounts, rows, { now = Date.now(), asking = null
   const funnel = Object.fromEntries(FUNNEL_KEYS.map(k => [k, 0]));
   const customers = accounts.map(a => {
     const address = a.email || null;
+    const operator = a.id === asking || (!!opAddress && !!address && address.toLowerCase() === opAddress);
     const login = a.github_login || null;
     const who = login ? `@${login}` : a.name || address || 'no name';
     // How each sentence ends: what the operator can do, given how this person can be reached.
@@ -3917,8 +3955,9 @@ export function buildCustomers(accounts, rows, { now = Date.now(), asking = null
     if (sites.some(s => s.set_up !== 'not started')) reached = 2;
     if (sites.some(s => s.last_publish)) reached = 3;
     if (own.some(s => (s.status === 'active' || s.status === 'past_due') && subscriptionOf(s))) reached = 4;
-    for (let i = 0; i <= reached; i++) funnel[FUNNEL_KEYS[i]]++;
-    const need = (kind, site, at, detail) => needs[kind].push({ at, row: { kind, account_id: a.id, site_id: site ? site.id : null, who, label: labels[kind], detail } });
+    if (!operator) for (let i = 0; i <= reached; i++) funnel[FUNNEL_KEYS[i]]++;
+    // The operator's own accounts are nobody the operator has to write to.
+    const need = (kind, site, at, detail) => operator ? null : needs[kind].push({ at, row: { kind, account_id: a.id, site_id: site ? site.id : null, key: needKey(kind, a.id, site ? site.id : null), who, label: labels[kind], detail } });
     sites.forEach((s, i) => {
       const added = Number(own[i].created_at) || 0;
       if (s.trial_ends && !address && s.trial_ends > now && s.trial_ends - now <= NEEDS_TRIAL_DAYS * day) {
@@ -3933,7 +3972,7 @@ export function buildCustomers(accounts, rows, { now = Date.now(), asking = null
       }
     });
     const since = Number(a.created_at) || 0;
-    if (!sites.length && a.id !== asking && since && now - since > NEEDS_AFTER_DAYS * day && now - since < NEEDS_UNTIL_DAYS * day) {
+    if (!sites.length && since && now - since > NEEDS_AFTER_DAYS * day && now - since < NEEDS_UNTIL_DAYS * day) {
       need('no_site', null, -since, `Signed up ${daysAgo(since)} and has not added a site: ${reach(' and ask what stopped them', 'there is nobody to write to')}.`);
     }
     return {
@@ -3944,6 +3983,7 @@ export function buildCustomers(accounts, rows, { now = Date.now(), asking = null
       created_at: a.created_at ?? null,
       last_seen: a.last_seen ?? null,
       stage: STAGES[reached],
+      operator,
       sites,
     };
   });

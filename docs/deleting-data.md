@@ -19,6 +19,7 @@ request is answered is the operator's promise to make, in the privacy policy.
 | Comment threads: each message's name, email and words | KV `cmt:<owner/repo>:…` | Never |
 | Suggestions: who, their note, the edited page | KV `sug:<owner/repo>:…` | Never |
 | Scheduled publishes: who, the edits | KV `sched:…` | 14 days after they fire |
+| A line of the operator's "Needs you" that the operator hid: its kind, an account id, a site id | KV `nhide:…` | 30 days |
 | API tokens: a label, folders | KV `atok:…` | After their days; never when 0 |
 | When a site address was first registered (for the trial) | KV `firstseen:<origin>` | Never |
 | That a repository was removed from Kiln Cloud (keeps its tokens and schedules stopped) | KV `cloudgone:<owner/repo>` | Never; cleared if the site is added again |

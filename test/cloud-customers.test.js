@@ -27,7 +27,7 @@ test('a customer is answered whole: who they are, how they sign in, their addres
   );
   assert.deepEqual(out.customers, [{
     id: 'a1', who: '@ada', signs_in: ['github', 'google'], linked: true, address: 'ada@example.com',
-    created_at: NOW - 10 * DAY, last_seen: NOW - 3600, stage: 'paying',
+    created_at: NOW - 10 * DAY, last_seen: NOW - 3600, stage: 'paying', operator: false,
     sites: [{
       id: 's1', label: 'Rowing Club', origin: 'https://club.example', plan: 'managed', status: 'active', kept: true,
       trial_ends: null, paid_until: NOW + 300 * DAY, billing_period: 'year', access_until: null, set_up: 'ready to edit', last_publish: NOW - 60,
@@ -112,7 +112,7 @@ test('needs you: a trial that ends within three days for an account Kiln cannot 
   assert.deepEqual(ending(5 * DAY, { email: 'a@example.com' }), [], 'Kiln\'s own reminder reaches them');
   assert.deepEqual(ending(5 * DAY, {}, { stripe_subscription_id: 'sub_1' }), [], 'someone subscribed');
   const [row] = view([account({ github_login: 'ada' })], [site({ id: 's9', created_at: NOW - 5 * DAY, kept: 1, name: 'Rowing Club' })]).needs_you;
-  assert.deepEqual({ ...row, detail: '' }, { kind: 'trial_no_address', account_id: 'a1', site_id: 's9', who: '@ada', label: 'Trial ending, no address', detail: '' });
+  assert.deepEqual({ ...row, detail: '' }, { kind: 'trial_no_address', account_id: 'a1', site_id: 's9', key: 'trial_no_address:a1:s9', who: '@ada', label: 'Trial ending, no address', detail: '' });
   assert.equal(row.detail, 'The free days of Rowing Club end on November 26 and Kiln\'s reminder cannot reach this person: Kiln has no address for them, so reach them on GitHub as @ada, or keep the site open yourself with its status control.');
 });
 
@@ -145,7 +145,7 @@ test('needs you: someone who signed up between two and thirty days ago and has n
   assert.deepEqual(lone(30 * DAY), [], 'after a month it is no longer news');
   assert.deepEqual(lone(5 * DAY, {}, { asking: 'a1' }), [], 'the operator is not told to write to themself');
   const [row] = view([account({ created_at: NOW - 4 * DAY, name: 'Eve Park' })], []).needs_you;
-  assert.deepEqual(row, { kind: 'no_site', account_id: 'a1', site_id: null, who: 'Eve Park', label: 'No site yet', detail: 'Signed up 4 days ago and has not added a site: Kiln has no address for them and they have no GitHub login, so there is nobody to write to.' });
+  assert.deepEqual(row, { kind: 'no_site', account_id: 'a1', site_id: null, key: 'no_site:a1:-', who: 'Eve Park', label: 'No site yet', detail: 'Signed up 4 days ago and has not added a site: Kiln has no address for them and they have no GitHub login, so there is nobody to write to.' });
   const [written] = view([account({ created_at: NOW - 4 * DAY, email: 'eve@example.com' })], []).needs_you;
   assert.equal(written.detail, 'Signed up 4 days ago and has not added a site: write to them at eve@example.com and ask what stopped them.');
 });
@@ -162,6 +162,34 @@ test('needs you is in order: the most urgent kind first, and the most pressing o
   );
   assert.deepEqual(out.needs_you.map(n => n.site_id || n.account_id), ['soon', 'late', 'failed', 'stuck', 'lone2', 'lone']);
   for (const n of out.needs_you) assert.equal(n.detail.includes('—'), false);
+});
+
+test('the operator\'s own accounts: marked, never in needs you, not counted in the funnel', () => {
+  const op = account({ id: 'op', github_login: 'ada', email: 'ada@example.com', created_at: NOW - 40 * DAY });
+  const google = account({ id: 'g', google_sub: 'g-1', name: 'Ada Lovelace', email: 'ADA@example.com', created_at: NOW - 5 * DAY });
+  const stranger = account({ id: 's', email: 'sam@example.com', created_at: NOW - 5 * DAY });
+  const out = view([op, google, stranger], [site({ id: 'mine', account_id: 'g', created_at: NOW - 9 * DAY })], { asking: 'op' });
+  const by = Object.fromEntries(out.customers.map(c => [c.id, c]));
+  assert.equal(by.op.operator, true, 'the account that asks');
+  assert.equal(by.g.operator, true, 'and another account Kiln writes to at the same address, whatever its case');
+  assert.equal(by.s.operator, false);
+  assert.deepEqual(out.needs_you.map(n => n.account_id), ['s'], 'only the stranger: not the operator with no site, not the operator\'s stuck test site');
+  assert.equal(out.funnel.signed_up, 1);
+  assert.equal(out.funnel.added_site, 0);
+  // Without `asking`, nobody is the operator, and an address alone makes nobody so.
+  const anyone = view([op, google, stranger], []);
+  assert.deepEqual(anyone.customers.map(c => c.operator), [false, false, false]);
+  assert.equal(anyone.funnel.signed_up, 3);
+  // An operator with no address of their own makes nobody else the operator.
+  const bare = view([account({ id: 'op', github_login: 'ada' }), account({ id: 'x', created_at: NOW - 5 * DAY })], [], { asking: 'op' });
+  assert.deepEqual(bare.customers.map(c => c.operator), [true, false]);
+  assert.deepEqual(bare.needs_you.map(n => n.account_id), ['x']);
+});
+
+test('each line of needs you has a key: its kind, the account, and the site or "-"', () => {
+  const out = view([account({ id: 'a1', created_at: NOW - 5 * DAY }), account({ id: 'a2', created_at: NOW - 5 * DAY, email: 'b@example.com' })],
+    [site({ id: 's9', account_id: 'a2', status: 'past_due', kept: 1 })]);
+  assert.deepEqual(out.needs_you.map(n => n.key).sort(), ['no_site:a1:-', 'payment_failed:a2:s9']);
 });
 
 // ─── the service ─────────────────────────────────────────────────────────────
@@ -202,7 +230,9 @@ test('the overview answers customers, needs_you and funnel beside everything it 
     assert.equal(by['acct-3'].sites[0].trial_ends, now + 2 * DAY);
     assert.equal(by['acct-1'].stage, 'paying');
     assert.equal(by['acct-1'].sites[0].last_publish, now - 1000);
-    assert.deepEqual(o.funnel, { signed_up: 3, added_site: 2, set_up: 2, published: 1, paying: 1 });
+    assert.equal(by['acct-1'].operator, true, 'the operator is listed, and marked as the operator');
+    assert.equal(by['acct-2'].operator, false);
+    assert.deepEqual(o.funnel, { signed_up: 2, added_site: 1, set_up: 1, published: 0, paying: 0 }, 'the funnel counts customers: the operator\'s own paying site is not one');
     assert.deepEqual(o.needs_you.map(n => [n.kind, n.account_id]), [['no_site', 'acct-2']]);
     assert.equal(/gho_x|sub_live_1|csess|"gh"|stripe_customer_id":"cus/.test(JSON.stringify({ c: o.customers, n: o.needs_you, f: o.funnel })), false, 'no token and no id at Stripe in the new part');
     // Anyone else is refused, as before.
@@ -212,22 +242,63 @@ test('the overview answers customers, needs_you and funnel beside everything it 
   });
 });
 
+test('the operator hides a line of needs you for thirty days, and only the operator can', { skip: d1Skip }, async () => {
+  const kv = fakeKV();
+  const env = cloudEnv(kv, { CLOUD_ADMIN: 'ada' });
+  const now = Date.now();
+  addAccount(env, { id: 'acct-2', created_at: now - 5 * DAY, email: 'eve@example.com' });
+  addAccount(env, { id: 'acct-3', created_at: now - 6 * DAY, email: 'kit@example.com' });
+  const post = (body, token = 'tok') => worker.fetch(new Request('https://worker.example/admin/cloud/needs/hide', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) }), env);
+  const needs = async () => (await (await ask(env, '/admin/cloud/overview')).json()).needs_you.map(n => n.key);
+  await quiet(async () => {
+    assert.deepEqual(await needs(), ['no_site:acct-2:-', 'no_site:acct-3:-']);
+    const res = await post({ key: 'no_site:acct-2:-' });
+    assert.equal(res.status, 200);
+    const said = await res.json();
+    assert.equal(said.ok, true);
+    assert.ok(Math.abs(said.until - (now + 30 * DAY)) < 60 * 1000, 'for thirty days');
+    assert.equal(kv.expires.get('nhide:no_site:acct-2:-') - Math.floor(Date.now() / 1000) > 29 * 86400, true, 'and KV lets it go by itself then');
+    assert.deepEqual(await needs(), ['no_site:acct-3:-'], 'hidden at once, on the very next load');
+    // Undo shows it again at once.
+    const undone = await post({ key: 'no_site:acct-2:-', undo: true });
+    assert.equal(undone.status, 200);
+    assert.deepEqual(await undone.json(), { ok: true, hidden: false });
+    assert.deepEqual(await needs(), ['no_site:acct-2:-', 'no_site:acct-3:-']);
+    assert.equal((await post({ key: 'no_site:acct-2:-' })).status, 200, 'and hidden again');
+    assert.deepEqual(await needs(), ['no_site:acct-3:-']);
+    // What is not a line of needs you is refused, and nothing is written.
+    for (const key of ['', 'no_site', 'other:acct-2:-', 'no_site:acct 2:-', 'no_site:acct-2:-:x', 42]) {
+      assert.equal((await post({ key })).status, 400, String(key));
+    }
+    assert.equal([...kv.map.keys()].filter(k => k.startsWith('nhide:')).length, 1);
+    // Anyone else is refused.
+    kv.map.set('csess:other', JSON.stringify({ account_id: 'acct-2', login: 'eve', gh: 'gho_y' }));
+    assert.equal((await post({ key: 'no_site:acct-3:-' }, 'other')).status, 403);
+    assert.equal((await post({ key: 'no_site:acct-2:-', undo: true }, 'other')).status, 403, 'nor can anyone else show one again');
+    assert.equal((await post({ key: 'no_site:acct-3:-' }, null)).status, 403);
+    assert.deepEqual(await needs(), ['no_site:acct-3:-']);
+  });
+});
+
 test('on a database migration 0020 has not reached, the overview still answers, with nothing seen and nothing published', { skip: d1Skip }, async () => {
   const kv = fakeKV();
   const before0020 = schemaFiles().findIndex(f => f.includes('0020_'));
   assert.ok(before0020 > 0);
   const env = cloudEnv(kv, { CLOUD_ADMIN: 'ada', d1: { upTo: before0020 } });
   addSite(env, { id: 'site-1', status: 'active', last_publish: 5 });
+  addAccount(env, { id: 'acct-2', github_login: 'bea', created_at: 2 });
+  addSite(env, { id: 'site-2', account_id: 'acct-2', repo: 'bea/shop', origin: 'https://shop.example', status: 'trialing' });
   assert.throws(() => env.kiln_cloud.row('SELECT last_seen FROM accounts'), 'this database has no such column');
   await quiet(async () => {
     assert.equal((await ask(env, '/cloud/me')).status, 200, 'the dashboard is not troubled by a moment it cannot record');
     const o = await (await ask(env, '/admin/cloud/overview')).json();
-    assert.equal(o.accounts, 1);
-    assert.equal(o.customers.length, 1);
-    assert.equal(o.customers[0].last_seen, null);
-    assert.equal(o.customers[0].sites[0].last_publish, null);
-    assert.equal(o.customers[0].address, 'ada@example.com');
-    assert.deepEqual(o.funnel, { signed_up: 1, added_site: 1, set_up: 0, published: 0, paying: 0 });
+    assert.equal(o.accounts, 2);
+    assert.equal(o.customers.length, 2);
+    const ada = o.customers.find(c => c.id === 'acct-1');
+    assert.equal(ada.last_seen, null);
+    assert.equal(ada.sites[0].last_publish, null);
+    assert.equal(ada.address, 'ada@example.com');
+    assert.deepEqual(o.funnel, { signed_up: 1, added_site: 1, set_up: 0, published: 0, paying: 0 }, 'Bea, the one customer');
   });
   await noteSeen(env, 'acct-1');           // neither throws
   await notePublish(env, 'ada/club');
