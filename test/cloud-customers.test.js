@@ -27,7 +27,7 @@ test('a customer is answered whole: who they are, how they sign in, their addres
   );
   assert.deepEqual(out.customers, [{
     id: 'a1', who: '@ada', signs_in: ['github', 'google'], linked: true, address: 'ada@example.com',
-    created_at: NOW - 10 * DAY, last_seen: NOW - 3600, stage: 'paying', operator: false,
+    created_at: NOW - 10 * DAY, last_seen: NOW - 3600, stage: 'paying', operator: false, came_from: null,
     sites: [{
       id: 's1', label: 'Rowing Club', origin: 'https://club.example', plan: 'managed', status: 'active', kept: true,
       trial_ends: null, paid_until: NOW + 300 * DAY, billing_period: 'year', access_until: null, set_up: 'ready to edit', last_publish: NOW - 60,

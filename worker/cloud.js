@@ -33,6 +33,8 @@
  *   GET  /admin/cloud/overview   → (owner only) accounts, sites (with the editor build each runs), MRR
  *                                  and `customers`, `needs_you`, `funnel`: who has an account, how far each
  *                                  one got, and what needs the operator (buildCustomers)
+ *   POST /cloud/account/came-from → {source, medium, campaign}: the campaign tags of the link the person
+ *                                  followed, kept on a new account once (only while CAMPAIGN_TAGS is "on")
  *   POST /admin/cloud/needs/hide → (owner only) {key}: hide one line of `needs_you` for 30 days; {key, undo: true} shows it again
  *   POST /admin/cloud/grant      → (owner only) manually set a site's status
  *
@@ -1899,6 +1901,23 @@ export function isCloudAdmin(sess, env) {
  * answering, changes nothing for the person.
  */
 const SEEN_EVERY = 3600 * 1000;
+
+/**
+ * The campaign tags a dashboard sent ({source, medium, campaign}, or the same
+ * named utm_*), each trimmed, at most 80 characters of letters, digits, spaces
+ * and . _ ~ + -; a tag that is anything else is left out. Null when none is
+ * left. Nothing else of the request is kept.
+ */
+const CAME_FROM_WINDOW_MS = 3600 * 1000;   // tags describe how an account was made: they are taken in its first hour only
+export function campaignTags(body) {
+  const one = (k) => {
+    const v = body && typeof body === 'object' ? (body[k] ?? body[`utm_${k}`]) : null;
+    const t = typeof v === 'string' ? v.trim() : '';
+    return t && t.length <= 80 && /^[\w .~+-]+$/.test(t) ? t : null;
+  };
+  const tags = { source: one('source'), medium: one('medium'), campaign: one('campaign') };
+  return tags.source || tags.medium || tags.campaign ? tags : null;
+}
 export async function noteSeen(env, accountId, { now = Date.now(), olderThan = 0 } = {}) {
   try {
     if (!env.kiln_cloud || !accountId) return;
@@ -2577,6 +2596,23 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     if (email !== '' && email !== null && !clean) return json({ error: 'That does not look like an email address. Please check it and try again.' }, 400);
     await env.kiln_cloud.prepare('UPDATE accounts SET email = ? WHERE id = ?').bind(clean, sess.account_id).run();
     return json({ ok: true, email: clean });
+  }
+
+  // The campaign tags of the link a person followed to Kiln (utm_source, utm_medium, utm_campaign), recorded on
+  // their account once, in the first hour after it was made, so the operator can read the funnel per campaign.
+  // First-party: the dashboard sends what it found in its own address, and nothing else is asked or kept. Off
+  // unless the service's CAMPAIGN_TAGS setting is "on", which waits for the privacy page to say so.
+  if (path === '/cloud/account/came-from' && request.method === 'POST') {
+    if (!sess) return json({ error: 'not signed in' }, 401);
+    if (String(env.CAMPAIGN_TAGS || '').trim() !== 'on') return json({ ok: true, recorded: false, reason: 'off' });
+    const tags = campaignTags(await request.json().catch(() => ({})));
+    if (!tags) return json({ ok: true, recorded: false, reason: 'none' });
+    try {
+      const r = await env.kiln_cloud.prepare(
+        'UPDATE accounts SET utm_source = ?, utm_medium = ?, utm_campaign = ? WHERE id = ? AND utm_source IS NULL AND utm_medium IS NULL AND utm_campaign IS NULL AND created_at > ?',
+      ).bind(tags.source, tags.medium, tags.campaign, sess.account_id, Date.now() - CAME_FROM_WINDOW_MS).run();
+      return json({ ok: true, recorded: !!(r && r.meta && r.meta.changes) });
+    } catch { return json({ ok: true, recorded: false, reason: 'not_ready' }); }   // migration 0021 has not reached this database
   }
 
   if (path === '/cloud/sites' && request.method === 'POST') {
@@ -3839,12 +3875,13 @@ function buildInsights(rows, accountCount, price) {
 /**
  * Every account, newest first, with the address Kiln may write to (mail.js,
  * addressSql). Each column that arrived with a later migration is asked for,
- * then done without: `last_seen` (0020), `linked_at` (0019), `signin_email`
- * (0018), `name` and `google_sub` (0008).
+ * then done without: the campaign tags (0021), `last_seen` (0020), `linked_at`
+ * (0019), `signin_email` (0018), `name` and `google_sub` (0008).
  */
 async function customerAccounts(env) {
   const address = await addressSql(env);
   const asked = [
+    'a.name, a.google_sub, a.signin_email, a.linked_at, a.last_seen, a.utm_source, a.utm_medium, a.utm_campaign',
     'a.name, a.google_sub, a.signin_email, a.linked_at, a.last_seen',
     'a.name, a.google_sub, a.signin_email, a.linked_at',
     'a.name, a.google_sub, a.signin_email',
@@ -3984,6 +4021,7 @@ export function buildCustomers(accounts, rows, { now = Date.now(), asking = null
       last_seen: a.last_seen ?? null,
       stage: STAGES[reached],
       operator,
+      came_from: a.utm_source || a.utm_medium || a.utm_campaign ? { source: a.utm_source || null, medium: a.utm_medium || null, campaign: a.utm_campaign || null } : null,
       sites,
     };
   });

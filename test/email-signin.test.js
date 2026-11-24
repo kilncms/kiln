@@ -256,6 +256,48 @@ test('links asked for one address are limited to three in 15 minutes, whatever i
   }
 });
 
+test('links asked for one address are limited to eight in a day too, so its codes cannot be guessed at for long', async (t) => {
+  const real = Date.now;
+  let ahead = 0;
+  Date.now = () => real() + ahead;
+  t.after(() => { Date.now = real; });
+  const w = world();
+  const quarter = 16 * 60 * 1000;   // past one 15-minute window
+  let sentOk = 0;
+  for (const batch of [3, 3, 2]) {
+    for (let i = 0; i < batch; i++) { assert.equal((await ask(w, 'ada@example.com')).status, 200); sentOk++; }
+    ahead += quarter;
+  }
+  assert.equal(sentOk, 8);
+  const ninth = await ask(w, 'ada@example.com');
+  assert.equal(ninth.status, 429);
+  assert.match(ninth.text, /Sign-in links for this address were asked for 8 times in the last day/);
+  assert.equal(ninth.mail, null, 'nothing is sent');
+  assert.equal(w.sent.length, 8);
+  assert.ok(![...w.kv.map.keys()].some(k => k.includes('ada@example.com')), 'the day\'s count is kept under a hash of the address too');
+  // Another address is not held up by it, and a day after the first link the address may ask again.
+  assert.equal((await ask(w, 'may@example.com')).status, 200);
+  ahead += 24 * 3600 * 1000;
+  assert.equal((await ask(w, 'ada@example.com')).status, 200);
+});
+
+test('one network address may have only so many sign-in emails sent in a minute, to any addresses (RL_MAIL)', async () => {
+  const w = world();
+  let left = 2;
+  const keys = [];
+  w.env.RL_MAIL = { limit: async ({ key }) => { keys.push(key); return { success: left-- > 0 }; } };
+  assert.equal((await ask(w, 'ada@example.com')).status, 200);
+  assert.equal((await ask(w, 'may@example.com')).status, 200);
+  const third = await ask(w, 'nobody@example.com');
+  assert.equal(third.status, 429);
+  assert.match(third.text, /Many sign-in links were asked for from this network in the last minute/);
+  assert.equal(w.sent.length, 2, 'the refused one sent nothing');
+  assert.equal(keys.length, 3, 'every send is counted, for an address on the list or not');
+  // An address that was refused here has not used up its own count.
+  left = 5;
+  for (let i = 0; i < 3; i++) assert.equal((await ask(w, 'nobody@example.com')).status, 200);
+});
+
 test('a worker that cannot send email says so plainly, and sends nothing', async () => {
   const w = world({ mail: false });
   const page = await hit(w, 'GET', `/email/login?${new URLSearchParams(PLACE)}`);

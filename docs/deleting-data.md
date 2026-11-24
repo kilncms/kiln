@@ -9,7 +9,8 @@ request is answered is the operator's promise to make, in the privacy policy.
 
 | What | Where | Gone by itself |
 |---|---|---|
-| A Kiln Cloud account: GitHub login, public email, when it was last at the dashboard | D1 `accounts` | Never |
+| A Kiln Cloud account: GitHub login, public email, when it was last at the dashboard, and (only while `CAMPAIGN_TAGS` is on) the campaign tags of the link it was made from | D1 `accounts` | Never |
+| How many sign-in links were asked for an address: a scrambled copy (SHA-256) of the address and a count | KV `ecount:…`, `ecountday:…` | 15 minutes; a day |
 | A Cloud site: repository, address, plan, subscription id | D1 `sites` | When the site is removed |
 | The people invited to a site: email, name, role, folders | KV `people:<owner/repo>` | Never |
 | An editor's or member's sign-in | KV `esess:…`, `msess:…` | After the days the owner chose; never when that is 0 |

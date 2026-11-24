@@ -85,7 +85,7 @@ const GH = 'https://api.github.com';
 const UA = 'kiln-auth-worker';
 // Reported by /healthz for the editor's capability handshake (§13). Keep in
 // step with package.json "version" when cutting a release.
-const WORKER_VERSION = '0.10.1';
+const WORKER_VERSION = '0.10.2';
 
 import { startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { handleCloud, googleDashboardSignIn, emailDashboardSignIn, keptOwnerAtSite, keptOwnerAddress, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, userPushAnswer, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
@@ -166,10 +166,33 @@ export default {
     // An owner session that GitHub stopped accepting while this request was
     // being answered has been ended (endOwnerSession): whatever the route made
     // of that, the editor is told the sign-in has ended, so it can say so.
-    if (endedSignIns.has(request)) return await cors(env, request, signinEnded());
-    return response;
+    if (endedSignIns.has(request)) return guarded(await cors(env, request, signinEnded()));
+    return guarded(response);
   },
 };
+
+/**
+ * The headers every answer of this service carries: browsers are told to come
+ * here over HTTPS only, and not to guess a type the answer does not state. A
+ * page (the sign-in pages, the setup page) may not be shown inside another
+ * site's frame, where a press could be got from someone by a page laid over
+ * it. Nothing of this service is meant to be framed: the editor opens sign-in
+ * in a window of its own. An answer that already says one of these keeps its
+ * own. Never throws: an answer it cannot copy goes out as it was.
+ */
+function guarded(res) {
+  try {
+    if (!res || res.status === 101 || res.webSocket) return res;
+    const h = new Headers(res.headers);
+    if (!h.has('Strict-Transport-Security')) h.set('Strict-Transport-Security', 'max-age=31536000');
+    if (!h.has('X-Content-Type-Options')) h.set('X-Content-Type-Options', 'nosniff');
+    if (/text\/html/i.test(h.get('Content-Type') || '')) {
+      if (!h.has('X-Frame-Options')) h.set('X-Frame-Options', 'DENY');
+      if (!h.has('Content-Security-Policy')) h.set('Content-Security-Policy', "frame-ancestors 'none'");
+    }
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+  } catch { return res; }
+}
 
 async function routeRequest(request, env, ctx) {
   const url = new URL(request.url);
@@ -3204,6 +3227,10 @@ async function signInAtSite(env, state, who) {
 const EMAIL_SIGN_IN_SECONDS = 15 * 60;
 const EMAIL_CODE_TRIES = 5;
 const EMAIL_LINKS_PER_ADDRESS = 3;   // in any 15 minutes, counted for every address asked for
+// And in any 24 hours. Three links every 15 minutes with five tries each would still let someone make
+// 1,440 guesses a day at the codes sent to one person; eight a day is 40, a chance of about one in
+// 25,000 a day, and one inbox gets at most eight of these emails a day however often it is asked for.
+const EMAIL_LINKS_PER_DAY = 8;
 
 const randomHex = (bytes) => [...crypto.getRandomValues(new Uint8Array(bytes))].map(b => b.toString(16).padStart(2, '0')).join('');
 /** Six digits, each of the million equally likely. */
@@ -3316,16 +3343,37 @@ async function emailLoginSend(request, url, env) {
   if (!mailAddress(email)) return emailAskPage(place, { note: 'That does not look like an email address. Check it and try again.', email: typed }, 400);
 
   // Counted for every address, on the list or not, so this limit tells nobody who is invited either.
+  // The address is kept only as a scrambled copy (its SHA-256), with the count, until its window ends.
   const now = Date.now();
-  const countKey = `ecount:${await sha256Hex(email)}`;
-  const was = await env.KILN.get(countKey, 'json');
+  const scrambled = await sha256Hex(email);
+  const countKey = `ecount:${scrambled}`, dayKey = `ecountday:${scrambled}`;
+  const [was, wasToday] = await Promise.all([env.KILN.get(countKey, 'json'), env.KILN.get(dayKey, 'json')]);
   const count = was && was.until > now ? was : { n: 0, until: now + EMAIL_SIGN_IN_SECONDS * 1000 };
+  const today = wasToday && wasToday.until > now ? wasToday : { n: 0, until: now + 24 * 3600 * 1000 };
   if (count.n >= EMAIL_LINKS_PER_ADDRESS) {
     return privatePage(html(`<h1>Too many sign-in links for this address</h1>
       <p>Sign-in links for this address were asked for ${EMAIL_LINKS_PER_ADDRESS} times in the last 15 minutes, so no more are sent for now. Use a link or code you already have, or try again in 15 minutes.</p>
       ${backToSite(place)}`, 429));
   }
-  await env.KILN.put(countKey, JSON.stringify({ n: count.n + 1, until: count.until }), { expirationTtl: secondsLeft(count.until) });
+  if (today.n >= EMAIL_LINKS_PER_DAY) {
+    return privatePage(html(`<h1>Too many sign-in links for this address today</h1>
+      <p>Sign-in links for this address were asked for ${EMAIL_LINKS_PER_DAY} times in the last day, so no more are sent until a day has passed since the first. Use a link or code you already have, or sign in another way.</p>
+      ${backToSite(place)}`, 429));
+  }
+  // Sending is also counted for the network address the request comes from (RL_MAIL, a minute at a
+  // time, as the other limits are), so one machine cannot have Kiln write to address after address.
+  if (env.RL_MAIL) {
+    const { success } = await env.RL_MAIL.limit({ key: addressOf(request) });
+    if (!success) {
+      return privatePage(html(`<h1>Too many sign-in links from here</h1>
+        <p>Many sign-in links were asked for from this network in the last minute, so this one was not sent. Wait a minute and try again.</p>
+        ${backToSite(place)}`, 429));
+    }
+  }
+  await Promise.all([
+    env.KILN.put(countKey, JSON.stringify({ n: count.n + 1, until: count.until }), { expirationTtl: secondsLeft(count.until) }),
+    env.KILN.put(dayKey, JSON.stringify({ n: today.n + 1, until: today.until }), { expirationTtl: secondsLeft(today.until) }),
+  ]);
 
   const req = randomHex(32);
   const reqHash = await sha256Hex(req);

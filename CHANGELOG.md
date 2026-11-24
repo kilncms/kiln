@@ -6,6 +6,40 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-24
+
+### Security
+
+- **A sign-in code sent by email can be guessed at only a few times a day.**
+  An address could be sent three sign-in links every 15 minutes, and each
+  code allows five wrong tries, which added up to 1,440 guesses a day at one
+  person's codes and as many emails in their inbox. An address now gets at
+  most eight sign-in links in any 24 hours as well (at most 40 guesses a
+  day), and one network address may have at most five sign-in emails sent in
+  a minute, to any addresses (a new rate-limit binding, `RL_MAIL`). Each
+  address's counts are kept as a scrambled copy of it, as before.
+- **Every answer of the service tells browsers to use HTTPS only and not to
+  guess types,** and a page of the service (the sign-in pages, the setup
+  page) may not be shown inside another site's frame. Nothing of Kiln is
+  meant to be framed: the editor opens sign-in in a window of its own.
+- A test now asks every dashboard route that takes a site, as three other
+  people (signed in with GitHub, with Google and by email), about a site of
+  another account: nothing of that account is in any answer, nothing of it
+  changes, and no outside service is asked about it. The operator's routes
+  refuse them all.
+
+### Added
+
+- **Where a customer came from, ready to switch on.** `POST
+  /cloud/account/came-from` keeps the campaign tags of the link a person
+  followed to Kiln (`utm_source`, `utm_medium`, `utm_campaign`) on their
+  account, once, in its first hour, so the operator's funnel can be read per
+  campaign; the overview answers them as `came_from`. First-party: the
+  dashboard sends what it found in its own address, and nothing else is
+  asked or kept. Off unless the setting `CAMPAIGN_TAGS` is `on`, which waits
+  for the privacy page to say so. Database migration 0021 adds the three
+  columns and is applied before the service.
+
 ## [0.10.1] - 2026-11-24
 
 ### Changed

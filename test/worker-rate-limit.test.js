@@ -217,22 +217,29 @@ test('limit: with no limiter bound, nothing is refused for asking too often', as
   });
 });
 
-test('limit: all three environments bind both limiters, and the guide to the settings names them', () => {
+test('limit: all three environments bind the three limiters, and the guide to the settings names them', () => {
   const toml = readFileSync(new URL('../worker/wrangler.toml', import.meta.url), 'utf8');
-  for (const name of ['RL', 'RL_ROOMY']) {
+  for (const name of ['RL', 'RL_ROOMY', 'RL_MAIL']) {
     assert.equal(toml.split(`name = "${name}"`).length - 1, 3, `${name} at the top level, in staging and in production`);
   }
   for (const head of ['[[unsafe.bindings]]', '[[env.staging.unsafe.bindings]]', '[[env.production.unsafe.bindings]]']) {
-    assert.equal(toml.split(head).length - 1, 2, head);
+    assert.equal(toml.split(head).length - 1, 3, head);
   }
-  // The counts as shipped: 100 a minute for one address, 120 for one signed-in person.
-  const shipped = [...toml.matchAll(/name = "(RL|RL_ROOMY)"[\s\S]*?simple = \{ limit = (\d+), period = (\d+) \}/g)]
+  // The counts as shipped: 100 a minute for one address, 120 for one signed-in person, 5 sign-in emails a minute from one address.
+  const shipped = [...toml.matchAll(/name = "(RL|RL_ROOMY|RL_MAIL)"[\s\S]*?simple = \{ limit = (\d+), period = (\d+) \}/g)]
     .map(m => `${m[1]} ${m[2]} in ${m[3]}s`);
   assert.deepEqual(shipped.sort(), [
     'RL 100 in 60s', 'RL 100 in 60s', 'RL 100 in 60s',
+    'RL_MAIL 5 in 60s', 'RL_MAIL 5 in 60s', 'RL_MAIL 5 in 60s',
     'RL_ROOMY 120 in 60s', 'RL_ROOMY 120 in 60s', 'RL_ROOMY 120 in 60s',
   ]);
+  // Each limiter has its own number in each environment, as Cloudflare requires within one worker.
+  for (const env of [/^\[\[unsafe\.bindings\]\][\s\S]*?(?=^\[env\.staging)/m, /^\[\[env\.staging\.unsafe\.bindings\]\][\s\S]*?(?=^\[env\.staging\.version)/m]) {
+    const ids = [...(toml.match(env) || [''])[0].matchAll(/namespace_id = "(\d+)"/g)].map(m => m[1]);
+    assert.equal(new Set(ids).size, ids.length, `no number twice: ${ids}`);
+  }
   const guide = readFileSync(new URL('../ENVIRONMENTS.md', import.meta.url), 'utf8');
   assert.match(guide, /^\| `RL` \|/m);
   assert.match(guide, /^\| `RL_ROOMY` \|/m);
+  assert.match(guide, /^\| `RL_MAIL` \|/m);
 });
