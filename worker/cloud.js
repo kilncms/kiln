@@ -2531,7 +2531,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     }
     // `yearly`: the hosting plan can be paid by the year here (`/cloud/checkout?site=…&period=year`), and `yearly_cloud` the plan
     // without hosting. Each is absent where it cannot.
-    return json({ account, sites: rows, billing: billingOn(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env), brings: can && bringOn(env), registers, ...(billingOn(env) && yearlyOn(env) ? { yearly: true } : {}), ...(cloudYearlyOn(env) ? { yearly_cloud: true } : {}) });
+    // `operator`: whether this person runs the service, so the dashboard shows its Admin link without asking the admin page.
+    return json({ account, operator: isCloudAdmin(sess, env), sites: rows, billing: billingOn(env), mail: customerMailOn(env), prepare: can, firstpass: can, editor_latest: editors.latest, hosting: can && hostingOn(env), domains, forwarding, keeps: can && keepsReady(env), brings: can && bringOn(env), registers, ...(billingOn(env) && yearlyOn(env) ? { yearly: true } : {}), ...(cloudYearlyOn(env) ? { yearly_cloud: true } : {}) });
   }
 
   // Which repositories Kiln's GitHub App can reach for the person signed in:

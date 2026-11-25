@@ -6,6 +6,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-24
+
+### Changed
+
+- **The email a customer gets when they add a site says how editors sign
+  in as it is now:** "with Google, or with a link sent to their email". It
+  said Google only. The guides for editors, for the members area and for
+  self-hosting say the same.
+- `/cloud/me` answers `operator`: whether the person signed in runs the
+  service. The dashboard shows its Admin link from it, instead of asking the
+  operator's overview once a visit, which every customer's browser was
+  refused and noted as an error in its console.
+
 ## [0.10.3] - 2026-11-24
 
 ### Security

@@ -90,8 +90,10 @@ this GitHub App public") if you'll ever invite editors or serve other people's r
 
 ## Google sign-in
 
-Needed if you'll invite editors or members (both sign in with Google). Skip it if
-you're the only person who'll ever touch the site.
+Needed if you'll invite editors or members who sign in with Google. They can also
+sign in with a link sent to their email once the worker can send email
+(`CUSTOMER_MAIL_FROM` in [ENVIRONMENTS.md](../ENVIRONMENTS.md)). Skip both if you're the
+only person who'll ever touch the site.
 
 Follow [Google sign-in setup](google-sign-in.md). Short
 version: create a Google OAuth 2.0 Client ID (Web application), add the redirect URI

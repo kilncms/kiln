@@ -131,7 +131,7 @@ export function siteAddedMail({ origin, plan, endsAt, dashboard }) {
     'Hello,',
     `${host} is added to Kiln, and its free trial runs until ${day}. No card is needed for the trial.`,
     `To edit the site, open ${String(origin).replace(/\/+$/, '')}/kiln and sign in with GitHub. Click any outlined words or picture, change them, and press Publish.`,
-    'To let someone else edit, open the Kiln menu on your site and choose People & access. They sign in with Google and need no GitHub account.',
+    'To let someone else edit, open the Kiln menu on your site and choose People & access. They sign in with Google, or with a link sent to their email, and need no GitHub account.',
     `To keep editing after ${day}, press Subscribe on the site's row in your dashboard. ${planOf(plan)} is ${priceOf(plan)} a month for the site, and you can cancel any time.`,
     dashboard,
     'The guide for site owners covers the rest:',

@@ -18,8 +18,10 @@ to set up: put the pages under `members/`, copy `templates/members-login.html` t
 top of the site, and Kiln guards those pages by itself the next time it publishes the
 site, at the site's temporary address and at its own domain. Then press "Check this
 site" in the dashboard: its last line says whether the members area is on. Members
-sign in with Google, so the sign-in service needs [Google sign-in](google-sign-in.md)
-(sites on Kiln Cloud, with or without hosting, have it already).
+sign in with Google, or with a link sent to their email, so the sign-in service needs
+[Google sign-in](google-sign-in.md) or a way to send email (`CUSTOMER_MAIL_FROM` in
+[ENVIRONMENTS.md](../ENVIRONMENTS.md)); sites on Kiln Cloud, with or without hosting,
+have both already.
 
 ## Setup
 
@@ -47,7 +49,7 @@ cookie, and `KILN_WORKER` points the sign-in function at your sign-in service.
 
 ## Adding members
 
-Open **People & access** in the Kiln menu and add someone by their Google email as a
+Open **People & access** in the Kiln menu and add someone by the email address they sign in with as a
 **Member**, for 1 to 360 days or with no end date. They sign in at
 `/members-login.html`. Removing someone ends their access within about five minutes, even while they
 are signed in.

@@ -294,12 +294,12 @@ a real site has no such limit. **Start over** asks first and says what it would
 clear.
 
 **I got signed out.** Your access has an expiry the owner set. Go back to
-`yoursite.com/kiln` and sign in with Google again. If it says you're not on the list,
+`yoursite.com/kiln` and sign in again, with Google or with a link sent to your email. If it says you're not on the list,
 your access may have lapsed — ask the owner to renew it.
 
 **It says my sign-in has ended.** The site no longer accepts the sign-in this browser
 was holding: the time the owner gave you ran out, or the owner changed your access or
-the site's setup. Press **Sign in again** and sign in with Google as before; edits you
+the site's setup. Press **Sign in again** and sign in the way you did before; edits you
 had not published are kept in this browser and put back on the page. The message can
 come up wherever you are, not only at Publish, and whatever you were typing is still
 there when you close it: a comment, a reply, the note for a publish, the time for a

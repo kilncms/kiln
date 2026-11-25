@@ -153,3 +153,14 @@ test('nobody signed in reaches any site route, and a made-up token is nobody', {
     }
   });
 });
+
+test('the dashboard is told who runs the service: operator is true for the operator only, however the others signed in', { skip: d1Skip }, async () => {
+  const { env } = world();
+  await withFetch(async () => undefined, async () => {
+    for (const [token, want] of [['tok', true], ['tok-eve', false], ['tok-gus', false], ['tok-em', false]]) {
+      const res = await worker.fetch(new Request('https://worker.example/cloud/me', { headers: { Authorization: `Bearer ${token}`, Origin: 'https://app.example' } }), env);
+      assert.equal(res.status, 200, token);
+      assert.equal((await res.json()).operator, want, token);
+    }
+  });
+});
