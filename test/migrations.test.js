@@ -12,11 +12,10 @@ import { schemaFiles, fakeD1, d1Skip } from './d1-fake.js';
 const files = schemaFiles();
 const names = files.map(f => path.basename(f));
 
-// 0014, 0015 and 0017 are promised to work that is not in this branch yet
-// (0017 to the Stripe billing work). Until each lands, its number is a gap
-// allowed; `wrangler d1 migrations apply` goes by file name and applies
-// whatever it has not applied, so a gap breaks nothing.
-const PROMISED = [14, 15, 17];
+// 0015 was promised to work that never landed; its number stays a gap
+// (0014 and 0017 have landed). `wrangler d1 migrations apply` goes by file
+// name and applies whatever it has not applied, so a gap breaks nothing.
+const PROMISED = [15];
 
 test('KLR-24 migrations: numbered 0001, 0002, … with no gap and no repeat, and both environments point at the directory', () => {
   assert.ok(names.length >= 1);
