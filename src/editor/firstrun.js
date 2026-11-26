@@ -25,6 +25,8 @@ export function publishLabel(n, { suggest = false } = {}) {
  * `waiting` are the journal entries not yet seen on the site ({ desc }).
  */
 export function goingLiveLabel(waiting) {
+  // A watch that brings its own line says it (a set: "Your 2 pages are going live…").
+  if (waiting.length === 1 && typeof waiting[0].going === 'string' && waiting[0].going) return waiting[0].going;
   const what = waiting.length === 1 ? `“${waiting[0].desc}” is` : `${waiting.length} changes are`;
   return `${what} going live… usually under a minute`;
 }

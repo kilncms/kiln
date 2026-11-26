@@ -91,6 +91,35 @@ export function setDoneText({ pages, left = [] }) {
   return `${head} ${left.length === 1 ? '1 edit is' : `${left.length} edits are`} still waiting${why}.`;
 }
 
+/** What the "going live" watch after a set is called: "Your 2 pages" (the live line reads "Your 2 pages: live ✓"). */
+export const setDeployName = (pages) => (pages > 1 ? `Your ${pages} pages` : 'Your page');
+
+/** The "going live" line after a set: "Your 2 pages are going live… usually under a minute". */
+export const setGoingLine = (pages) => `${setDeployName(pages)} ${pages > 1 ? 'are' : 'is'} going live… usually under a minute`;
+
+/** How long the done line after a set is left to be read before the "going live" line may take its place (ms). */
+export const SET_DONE_STAYS = 5000;
+
+/**
+ * The question when someone else changed a part of a set's page since it was
+ * edited here. `page` is the page's title, or null for the page that is open.
+ * Its own words: the question for sites a generator builds
+ * (source-fields.js theirsOrMine) says something else happened.
+ */
+export function setTheirsOrMine({ part, page, theirs, mine } = {}) {
+  const clip = (t) => { const s = String(t ?? ''); return s.length > 600 ? `${s.slice(0, 600)}…` : s; };
+  const where = String(page ?? '').trim() ? `on “${String(page).trim()}”` : 'on this page';
+  return {
+    title: 'Someone else changed this',
+    body: `${String(part || 'A part').trim()} ${where} was changed by someone else since you edited it.`,
+    theirs: clip(theirs) || '(nothing)',
+    mine: clip(mine) || '(nothing)',
+    keep: 'Keep theirs',
+    use: 'Use mine',
+    note: 'Keep theirs discards your edit. Use mine publishes yours in its place.',
+  };
+}
+
 /**
  * A saved copy of a page that is not open, with every HTML value that fails
  * `safe` taken out. Those stay waiting in storage and are not published.

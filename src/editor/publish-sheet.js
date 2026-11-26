@@ -426,6 +426,18 @@ export function openPublishSheet(deps) {
  *   note            optional: a line already typed
  * }
  */
+/**
+ * The set sheet's title: "2 changes on 2 pages", each waiting change once.
+ * This page counts as its own Publish button does (countChanges); a page that
+ * is not open counts one change per row, as "Publish all" does (one per part),
+ * a held-back change included: it is still waiting.
+ */
+export function setSheetTitle(groups) {
+  const edits = (groups || []).reduce((n, g) => n + (g.here ? countChanges(g.items || []) : (g.items || []).length), 0);
+  const pages = (groups || []).length;
+  return `${edits} change${edits === 1 ? '' : 's'} on ${pages} page${pages === 1 ? '' : 's'}`;
+}
+
 export function openSetSheet(deps) {
   const m = deps.modal(`<h3 id="kiln-ss-title"></h3><div id="kiln-ss-list"></div>
     <p class="kiln-ps-extra" id="kiln-ss-say" role="status" hidden></p>
@@ -445,13 +457,19 @@ export function openSetSheet(deps) {
   const say = m.querySelector('#kiln-ss-say');
   if (deps.note) note.value = cleanNote(deps.note);
   let busy = false, next = null;
+  // While the set is being sent nothing puts the sheet away: Cancel and ✕ are dimmed, and a click outside or Escape does nothing (main.js modal).
+  const shut = [m.querySelector('.kiln-modal-actions [data-close]'), m.querySelector('.kiln-modal-x')].filter(Boolean);
+  const sending = (on) => {
+    busy = on;
+    for (const b of [go, only, ...shut]) b.disabled = on;
+    if (on) m.dataset.busy = '1'; else delete m.dataset.busy;
+  };
   const tell = (text) => { say.textContent = text || ''; say.hidden = !text; };
 
   const render = () => {
     const groups = deps.groups();
     if (!groups.length) { m.querySelector('[data-close]').click(); return; }
-    const edits = groups.reduce((n, g) => n + countChanges(g.items), 0);
-    m.querySelector('#kiln-ss-title').textContent = `${edits} change${edits === 1 ? '' : 's'} on ${groups.length} page${groups.length === 1 ? '' : 's'}`;
+    m.querySelector('#kiln-ss-title').textContent = setSheetTitle(groups);
     list.textContent = '';
     for (const g of groups) {
       const box = el('section', 'kiln-ss-page');
@@ -492,8 +510,7 @@ export function openSetSheet(deps) {
   const ui = {
     step: (text) => tell(text),
     stop: (text, after = null) => {
-      busy = false; next = after;
-      for (const b of [go, only]) b.disabled = false;
+      sending(false); next = after;
       tell(text);
       if (m.isConnected) render();
     },
@@ -502,12 +519,13 @@ export function openSetSheet(deps) {
   if (deps.said) ui.stop(deps.said.text, deps.said.next || null);
   go.addEventListener('click', async () => {
     if (busy || go.disabled) return;
-    busy = true;
-    for (const b of [go, only]) b.disabled = true;
+    sending(true);
     const run = next ? next.run : deps.publishAll;
     next = null;
-    const done = await run(cleanNote(note.value), ui);
-    if (done && m.isConnected) m.querySelector('[data-close]').click();
+    let done = false;
+    try { done = await run(cleanNote(note.value), ui); }
+    finally { if (busy) sending(false); }
+    if (done && m.isConnected) m.querySelector('.kiln-modal-actions [data-close]').click();
   });
   only.addEventListener('click', () => {
     if (busy) return;
@@ -569,7 +587,7 @@ export function publishSheetCss(mobileMq) {
 .kiln-ss-facts{font:12px var(--kiln-font);color:#6b7280;overflow-wrap:anywhere}
 .kiln-ss-ctl{display:flex;gap:6px;flex:none}
 .kiln-setsheet #kiln-ss-go{min-width:150px;padding:9px 18px;font-size:14px}
-.kiln-setsheet #kiln-ss-only:disabled{opacity:.5;cursor:default}
+.kiln-setsheet #kiln-ss-only:disabled,.kiln-setsheet .kiln-modal-actions [data-close]:disabled,.kiln-setsheet .kiln-modal-x:disabled{opacity:.5;cursor:default}
 /* The first-visit guide points at the button from above: leave it a strip of its own. */
 .kiln-pubsheet.kiln-guided .kiln-ps-notefield{margin-bottom:56px}
 @media ${mobileMq}{

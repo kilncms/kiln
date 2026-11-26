@@ -353,5 +353,5 @@ test('Theme: the history entry and the status line say what changed in plain wor
   assert.match(mainSrc, /if \(e\.live\) setStatus\(e\.live, 'saved', \{ hold, rest: true \}\);\n\s+else if \(e\.deployed\) setStatus\('Live ✓ View site'/);
   // every other publish says what it always said
   assert.match(mainSrc, /else setStatus\(`\$\{e\.desc\}: live ✓`, 'saved', \{ hold, rest: true \}\);/);
-  assert.match(mainSrc, /function watchDeploy\(sha, committedText, desc = 'Your page edit'\)/);
+  assert.match(mainSrc, /function watchDeploy\(sha, committedText, desc = 'Your page edit'(, set = null)?\)/);
 });

@@ -21,7 +21,8 @@ import {
 import { publishSet, setStepText, setConflictText, SET_FILES_MAX } from './publish-set.js';
 import { waitingPages, dropPage, keptFor, wayNow, wayOffered, setWay, WAYS, togetherLabel, leaveIsSafe, backLine, NO_ROOM_TEXT } from './waiting.js';
 import { EDITOR_SET_PAGES_MAX, waitingItemLabel, editedAgo, setLabel, dropPageCopy, HELD_TEXT, OWN_PUBLISH_TEXT, editorLimitText, firstPagesLabel,
-  overText, blockedText, setDoneText, holdBack, withoutKeys, copyPath, canJoinSet, firstPages, sentKeys, OTHER_TAB_TEXT } from './set-sheet.js';
+  overText, blockedText, setDoneText, holdBack, withoutKeys, copyPath, canJoinSet, firstPages, sentKeys, OTHER_TAB_TEXT,
+  setDeployName, setGoingLine, SET_DONE_STAYS, setTheirsOrMine } from './set-sheet.js';
 import { SOURCE_ATTR, parseSourceRef, safeSourcePath } from '../adapters/pointer.js';
 import { uploadProblem, fileRefusalText, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../file-policy.js';
 import { generatorSignals } from '../adapters/detect.js';
@@ -3989,6 +3990,11 @@ function savedRows(p, saved, held) {
   const rows = [];
   for (const [key, e] of Object.entries(saved?.edits || {})) {
     if (!e || typeof e !== 'object') continue;
+    // A held-back change shows its name and why it waits: never what its code would put on the page.
+    if (held.includes(key)) {
+      rows.push({ id: `${p.key}\n${key}`, key, label: readableName(key), parts: [{ type: 'note', tone: 'remove', text: HELD_TEXT }], warnings: [], drop: () => dropSavedKey(p, key) });
+      continue;
+    }
     const parts = [];
     if (typeof e.html === 'string') {
       const was = more[key]?.was;
@@ -3999,7 +4005,6 @@ function savedRows(p, saved, held) {
       if (attr === 'src') parts.push({ type: 'note', tone: 'plain', text: `New picture: ${pictureName(String(value))}` });
       else parts.push({ type: 'text', name: attr === 'href' ? 'Link goes to' : attr === 'alt' ? 'Picture description' : humanizeKey(attr), before: '', after: String(value ?? '') });
     }
-    if (held.includes(key)) parts.push({ type: 'note', tone: 'remove', text: HELD_TEXT });
     rows.push({ id: `${p.key}\n${key}`, key, label: readableName(key), parts, warnings: [], drop: () => dropSavedKey(p, key) });
   }
   return rows;
@@ -4131,8 +4136,8 @@ async function runSet(note, ui, answers = [], skip = [], max = setPagesMax()) {
     ui.step(setConflictText(res.conflicts.length));
     const picks = [];
     for (const c of res.conflicts) {
-      const label = `${readableName(c.key)} on ${nameOf(c.path)}`;
-      const a = await askWhich(modal, theirsOrMine({ label, theirs: plainText(c.theirs ?? ''), mine: plainText(c.mine ?? '') }));
+      const page = c.path === state.page?.path ? null : nameOf(c.path);
+      const a = await askWhich(modal, setTheirsOrMine({ part: readableName(c.key), page, theirs: plainText(c.theirs ?? ''), mine: plainText(c.mine ?? '') }));
       if (a !== 'theirs' && a !== 'mine') { ui.stop(setConflictText(res.conflicts.length)); return false; }
       picks.push({ ...c, pick: a });
     }
@@ -4229,7 +4234,8 @@ async function afterSetHere(keys, res, snapshot, sent) {
   }
   // "Keep theirs": the page shows their words.
   for (const key of dropped) applyKeyDom(key, state.baseline?.[key]);
-  if (res.commit && file) watchDeploy(res.commit.sha, file.text);
+  // Named for the set, and quiet while the done line is read (set-sheet.js setGoingLine, SET_DONE_STAYS).
+  if (res.commit && file) watchDeploy(res.commit.sha, file.text, setDeployName(res.files.length), { going: setGoingLine(res.files.length), stays: SET_DONE_STAYS });
   if (done.length) retireResumedDraft(done.filter(k => !dropped.has(k)));
 }
 
@@ -6953,7 +6959,7 @@ function runJournal() {
       }
     }
     journalSave(keep);
-    if (keep.length && !failed) {
+    if (keep.length && !failed && !keep.every(e => Number(e.quiet) > Date.now())) {
       setStatus(goingLiveLabel(keep), 'saving');
     }
   };
@@ -6996,9 +7002,11 @@ function swapImagePreviews() {
 }
 
 /** Compatibility wrapper: page-edit publishes register a compare entry. */
-function watchDeploy(sha, committedText, desc = 'Your page edit') {
+function watchDeploy(sha, committedText, desc = 'Your page edit', set = null) {
   if (committedText) {
-    journalAdd({ type: 'compare', target: location.pathname, expect: djb2(committedText), desc, sha });
+    // A set brings its own "going live" line, and leaves its done line to be read first (quiet).
+    journalAdd({ type: 'compare', target: location.pathname, expect: djb2(committedText), desc, sha,
+      ...(set ? { going: set.going, quiet: Date.now() + set.stays } : {}) });
   } else {
     setStatus(ownerWords('Published to GitHub ✓', state.kept), 'saved');
     setStatusIdle();
@@ -10237,13 +10245,14 @@ function modal(bodyHtml, opts = {}) {
   };
   wrap._kilnClose = close;
   wrap.addEventListener('click', (e) => {
+    if (wrap.dataset.busy) return;   // being sent (the set sheet): it stays until the sending has ended
     if (e.target === wrap || e.target.closest('[data-close]')) close();
   });
   // Esc closes; Tab is trapped inside the dialog so keyboard focus can't wander
   // onto the page behind it.
   const onKey = (e) => {
     if (wrap.id !== 'kiln-modal') return;   // set aside under another dialog: that one has the keyboard
-    if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+    if (e.key === 'Escape') { e.stopPropagation(); if (!wrap.dataset.busy) close(); return; }
     if (e.key !== 'Tab') return;
     const f = [...wrap.querySelectorAll('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])')]
       .filter(el => !el.disabled && el.offsetParent !== null);
