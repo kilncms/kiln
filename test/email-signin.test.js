@@ -8,8 +8,9 @@
  *   - a link and a code work once, for 15 minutes, and only for their site
  *   - opening the link (a GET) does not use it up: mail scanners open links
  *   - an address not on the list gets the same page, and nothing is sent
- *   - five wrong codes and the code is void, and the link with it
+ *   - five wrong codes and the code is void; the link in the same email still works
  *   - links asked for one address are limited, whatever its case and spaces
+ *   - past eight in a day an email carries the link and no code, so nobody can be kept out by a stranger asking
  *   - the session is the one "Continue with Google" gives the same person
  *   - a worker with no mail set up says so, and sends nothing
  */
@@ -181,7 +182,7 @@ test('a code is for the site and the page it was asked at: typed for another, it
   assert.ok(r.to.startsWith(`${ORIGIN}/#`));
 });
 
-test('five wrong codes and the code is void, and the link in the same email with it', async () => {
+test('five wrong codes and the code is void, and the link in the same email still works', async () => {
   const w = world();
   const a = await ask(w, 'ada@example.com');
   const wrong = a.code === '000000' ? '111111' : '000000';
@@ -192,10 +193,15 @@ test('five wrong codes and the code is void, and the link in the same email with
   }
   const fifth = await typeCode(w, a.req, wrong);
   assert.equal(fifth.status, 403);
-  assert.match(fifth.text, /typed wrong 5 times, so it no longer works, and neither does the link in the same email/);
+  assert.match(fifth.text, /typed wrong 5 times, so it no longer works\. The link in the same email still does, until its 15 minutes are over\./);
   assert.equal((await typeCode(w, a.req, a.code)).status, 410, 'the right code no longer works either');
-  assert.equal((await pressSignIn(w, a.token)).status, 410);
-  assert.equal(w.keys('esess:').length, 0);
+  assert.equal(w.keys('esess:').length, 0, 'nobody is signed in by guessing');
+  // The link went to the inbox alone, and whoever typed the wrong codes cannot have cancelled it.
+  const r = await pressSignIn(w, a.token);
+  assert.equal(r.status, 302);
+  assert.ok(r.to.startsWith(`${ORIGIN}/#`));
+  assert.equal(w.keys('esess:').length, 1);
+  assert.equal((await pressSignIn(w, a.token)).status, 410, 'and it works once');
 });
 
 test('the right code, typed in the window that asked, signs in once', async () => {
@@ -256,29 +262,60 @@ test('links asked for one address are limited to three in 15 minutes, whatever i
   }
 });
 
-test('links asked for one address are limited to eight in a day too, so its codes cannot be guessed at for long', async (t) => {
+test('past eight links in a day an address is sent the link with no code, so its codes cannot be guessed at for long and nobody is kept out', async (t) => {
   const real = Date.now;
   let ahead = 0;
   Date.now = () => real() + ahead;
   t.after(() => { Date.now = real; });
   const w = world();
   const quarter = 16 * 60 * 1000;   // past one 15-minute window
-  let sentOk = 0;
+  // A stranger who knows Ada's address asks eight times and types five wrong codes each time.
   for (const batch of [3, 3, 2]) {
-    for (let i = 0; i < batch; i++) { assert.equal((await ask(w, 'ada@example.com')).status, 200); sentOk++; }
+    for (let i = 0; i < batch; i++) {
+      const a = await ask(w, 'ada@example.com');
+      assert.equal(a.status, 200);
+      assert.match(a.code, /^\d{6}$/, 'the first eight carry a code');
+      const wrong = a.code === '000000' ? '111111' : '000000';
+      for (let k = 0; k < 5; k++) await typeCode(w, a.req, wrong);
+    }
     ahead += quarter;
   }
-  assert.equal(sentOk, 8);
-  const ninth = await ask(w, 'ada@example.com');
-  assert.equal(ninth.status, 429);
-  assert.match(ninth.text, /Sign-in links for this address were asked for 8 times in the last day/);
-  assert.equal(ninth.mail, null, 'nothing is sent');
   assert.equal(w.sent.length, 8);
+  assert.equal(w.keys('esess:').length, 0);
+  // Ada asks herself. The ninth email of the day has the link and no code, and the page offers no code to type.
+  const ninth = await ask(w, 'ada@example.com');
+  assert.equal(ninth.status, 200);
+  assert.match(ninth.text, /Check your email/);
+  assert.match(ninth.text, /Open the link in the email to sign in\. Sign-in links were asked for this address 8 times in the last day, so for now the emails come with the link and no code to type\./);
+  assert.equal(ninth.req, null, 'no code form');
+  assert.doesNotMatch(ninth.text, /Code from the email/);
+  assert.ok(ninth.mail, 'the email is still sent');
+  assert.match(ninth.token, /^[a-f0-9]{64}$/);
+  assert.ok(!ninth.code, 'no code in the email');
+  assert.doesNotMatch(ninth.mail.text, /\b\d{6}\b/);
+  assert.match(ninth.mail.text, /This email has no code to type, because several sign-in links were asked for with this address today\./);
+  assert.match(ninth.mail.text, /Nobody can sign in without the link\./);
+  assert.equal(w.keys('ecode:').length, 0, 'there is no code to guess at');
+  const r = await pressSignIn(w, ninth.token);
+  assert.equal(r.status, 302, 'and the link signs her in');
+  assert.ok(r.to.startsWith(`${ORIGIN}/#`));
+  assert.equal(w.keys('esess:').length, 1);
+  assert.equal(w.sent.length, 9);
   assert.ok(![...w.kv.map.keys()].some(k => k.includes('ada@example.com')), 'the day\'s count is kept under a hash of the address too');
-  // Another address is not held up by it, and a day after the first link the address may ask again.
-  assert.equal((await ask(w, 'may@example.com')).status, 200);
+  // An address that is not on the list reads the very same page past its eighth, and is sent nothing.
+  const quiet = world();
+  ahead = 0;
+  for (const batch of [3, 3, 2]) { for (let i = 0; i < batch; i++) assert.equal((await ask(quiet, 'nobody@example.com')).status, 200); ahead += quarter; }
+  const nobody = await ask(quiet, 'nobody@example.com');
+  assert.equal(nobody.status, 200);
+  assert.equal(nobody.text.replaceAll('nobody@example.com', 'X'), ninth.text.replaceAll('ada@example.com', 'X'));
+  assert.equal(quiet.sent.length, 0);
+  // Another address is not held up by it, and a day after the first link the address gets a code again.
+  assert.match((await ask(w, 'may@example.com')).code, /^\d{6}$/);
   ahead += 24 * 3600 * 1000;
-  assert.equal((await ask(w, 'ada@example.com')).status, 200);
+  const next = await ask(w, 'ada@example.com');
+  assert.equal(next.status, 200);
+  assert.match(next.code, /^\d{6}$/);
 });
 
 test('one network address may have only so many sign-in emails sent in a minute, to any addresses (RL_MAIL)', async () => {

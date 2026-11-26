@@ -3221,6 +3221,7 @@ async function signInAtSite(env, state, who) {
 //   elink:<sha256(token)>      { origin, returnTo, repo, email, req: <sha256(window id)>, exp }
 //   ecode:<sha256(window id)>  { origin, returnTo, repo, email, code: <sha256(window id:code)>, link: <sha256(token)>, tries, exp }
 //   ecount:<sha256(address)>   { n, until }: links asked for one address in the last 15 minutes
+//   ecountday:<sha256(address)> { n, until }: and in the last 24 hours; past EMAIL_LINKS_PER_DAY an email carries the link and no code
 //
 // An address that is not on the list gets the very same page, and its window
 // an ecode record with no code and no address, so a typed code is answered
@@ -3235,9 +3236,11 @@ async function signInAtSite(env, state, who) {
 const EMAIL_SIGN_IN_SECONDS = 15 * 60;
 const EMAIL_CODE_TRIES = 5;
 const EMAIL_LINKS_PER_ADDRESS = 3;   // in any 15 minutes, counted for every address asked for
-// And in any 24 hours. Three links every 15 minutes with five tries each would still let someone make
-// 1,440 guesses a day at the codes sent to one person; eight a day is 40, a chance of about one in
-// 25,000 a day, and one inbox gets at most eight of these emails a day however often it is asked for.
+// And in any 24 hours, the links that come with a code. Three every 15 minutes with five tries each would
+// let someone make 1,440 guesses a day at the codes sent to one person; eight a day is 40, a chance of
+// about one in 25,000 a day. Past the eighth a link is still sent, with no code: the count is kept for an
+// address whoever asks, so refusing outright would let a stranger who knows an address keep its owner from
+// signing in for a day with eight requests. The link itself cannot be guessed, and only the inbox sees it.
 const EMAIL_LINKS_PER_DAY = 8;
 
 const randomHex = (bytes) => [...crypto.getRandomValues(new Uint8Array(bytes))].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -3307,7 +3310,7 @@ function emailAskPage(place, { note = '', email = '' } = {}, status = 200) {
     ${backToSite(place)}`, status));
 }
 
-function emailCheckPage(place, { req, email = '', note = '' }, status = 200) {
+function emailCheckPage(place, { req, email = '', note = '', linkOnly = false }, status = 200) {
   const site = esc(siteWords(place.origin));
   return privatePage(html(`<h1>Check your email</h1>
     ${place.for
@@ -3315,13 +3318,15 @@ function emailCheckPage(place, { req, email = '', note = '' }, status = 200) {
       : email
       ? `<p>If ${esc(email)} can sign in to ${site}, a link is on its way to it. The link works once, for 15 minutes.</p>`
       : `<p>If the address you typed can sign in to ${site}, a link is on its way to it. The link works once, for 15 minutes.</p>`}
-    <p>You can also type the code from the email here.</p>
+    ${linkOnly
+      ? `<p>Open the link in the email to sign in. Sign-in links were asked for this address ${EMAIL_LINKS_PER_DAY} times in the last day, so for now the emails come with the link and no code to type.</p>`
+      : `<p>You can also type the code from the email here.</p>
     ${note ? `<p><strong>${esc(note)}</strong></p>` : ''}
     <form method="post" action="/email/code">${placeFields(place)}<input type="hidden" name="req" value="${esc(req)}">
       <p><label for="code">Code from the email</label><br>
       <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required style="${FIELD}"></p>
       <p><button class="btn" type="submit">Sign in</button></p>
-    </form>
+    </form>`}
     <p class="dim">No email after a few minutes? Look in your spam folder, and ${place.for
       ? 'check that you typed the address the way you meant to.'
       : "check that this is the address the site's owner added for you. If it is not on the site's list, no email is sent."} <a href="${esc(askAgainLink(place))}">Ask for a new link</a></p>`, status));
@@ -3363,11 +3368,9 @@ async function emailLoginSend(request, url, env) {
       <p>Sign-in links for this address were asked for ${EMAIL_LINKS_PER_ADDRESS} times in the last 15 minutes, so no more are sent for now. Use a link or code you already have, or try again in 15 minutes.</p>
       ${backToSite(place)}`, 429));
   }
-  if (today.n >= EMAIL_LINKS_PER_DAY) {
-    return privatePage(html(`<h1>Too many sign-in links for this address today</h1>
-      <p>Sign-in links for this address were asked for ${EMAIL_LINKS_PER_DAY} times in the last day, so no more are sent until a day has passed since the first. Use a link or code you already have, or sign in another way.</p>
-      ${backToSite(place)}`, 429));
-  }
+  // Past the day's count the email carries the link and no code (see EMAIL_LINKS_PER_DAY). Like the counts,
+  // this depends on the address alone, on a site's list or not, so it tells nobody who is invited.
+  const linkOnly = today.n >= EMAIL_LINKS_PER_DAY;
   // Sending is also counted for the network address the request comes from (RL_MAIL, a minute at a
   // time, as the other limits are), so one machine cannot have Kiln write to address after address.
   if (env.RL_MAIL) {
@@ -3392,17 +3395,17 @@ async function emailLoginSend(request, url, env) {
     : (await getPeople(env, place.repo)).find(p => p.email === email) || await keptOwnerAddress(env, { email, repo: place.repo });
   if (person) {
     const token = randomHex(32);
-    const code = sixDigits();
+    const code = linkOnly ? null : sixDigits();
     const linkHash = await sha256Hex(token);
-    await env.KILN.put(`elink:${linkHash}`, JSON.stringify({ ...place, email, req: reqHash, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
-    await env.KILN.put(`ecode:${reqHash}`, JSON.stringify({ ...place, email, code: await sha256Hex(`${req}:${code}`), link: linkHash, tries: 0, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
+    await env.KILN.put(`elink:${linkHash}`, JSON.stringify({ ...place, email, req: linkOnly ? null : reqHash, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
+    if (!linkOnly) await env.KILN.put(`ecode:${reqHash}`, JSON.stringify({ ...place, email, code: await sha256Hex(`${req}:${code}`), link: linkHash, tries: 0, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
     await sendMail(env, email, place.for
       ? signInLinkMail({ dashboard: true, link: `${selfOrigin(url, env)}/email/open?t=${token}&for=dashboard`, code })
       : signInLinkMail({ site: siteWords(place.origin), link: `${selfOrigin(url, env)}/email/open?t=${token}`, code }));
-  } else {
+  } else if (!linkOnly) {
     await env.KILN.put(`ecode:${reqHash}`, JSON.stringify({ ...place, code: null, link: null, tries: 0, exp }), { expirationTtl: EMAIL_SIGN_IN_SECONDS });
   }
-  return emailCheckPage(place, { req, email: typed });
+  return emailCheckPage(place, { req, email: typed, linkOnly });
 }
 
 /**
@@ -3446,7 +3449,9 @@ function emailSignedIn(env, rec) {
 /**
  * POST /email/code {req, code, origin, return_to, repo}: the code's sign-in,
  * from the window that asked (`req` is its id, which no email carries). Five
- * wrong tries and the code is void, and the link in the same email with it.
+ * wrong tries and the code is void. The link in the same email still works:
+ * it cannot be guessed and only the inbox has it, and voiding it would let
+ * whoever asked for the email cancel it for the person it went to.
  */
 async function emailCodeFinish(request, env) {
   const form = await request.formData().catch(() => null);
@@ -3467,9 +3472,8 @@ async function emailCodeFinish(request, env) {
     const tries = (Number(rec.tries) || 0) + 1;
     if (tries >= EMAIL_CODE_TRIES) {
       await env.KILN.delete(key);
-      if (rec.link) await env.KILN.delete(`elink:${rec.link}`);
       return privatePage(html(`<h1>This code no longer works</h1>
-        <p>The code was typed wrong ${EMAIL_CODE_TRIES} times, so it no longer works, and neither does the link in the same email.</p>
+        <p>The code was typed wrong ${EMAIL_CODE_TRIES} times, so it no longer works. The link in the same email still does, until its 15 minutes are over.</p>
         <p><a class="btn" href="${esc(askAgainLink(place))}">Ask for a new link</a></p>`, 403));
     }
     await env.KILN.put(key, JSON.stringify({ ...rec, tries }), { expirationTtl: secondsLeft(rec.exp) });

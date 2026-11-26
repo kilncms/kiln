@@ -495,14 +495,21 @@ export function domainMovedMail({ name, tempUrl, dashboard }) {
  */
 export function signInLinkMail({ site, link, code, dashboard = false }) {
   const name = String(site || '').replace(/[\s\u0000-\u001f]+/g, ' ').trim() || 'your site';
-  const lines = (to) => [
+  // `code` null: an address asked for many times in a day gets the link alone (index.js, EMAIL_LINKS_PER_DAY).
+  const lines = (to) => (code ? [
     'Hello,',
     `To sign in to ${to}, open this link and press Sign in:`,
     link,
     `Or type this code in the window where you asked for the link: ${code}`,
     'The link and the code work once, for 15 minutes.',
     'If you did not ask to sign in, you can ignore this email. Nobody can sign in without the link or the code.',
-  ];
+  ] : [
+    'Hello,',
+    `To sign in to ${to}, open this link and press Sign in:`,
+    link,
+    'The link works once, for 15 minutes. This email has no code to type, because several sign-in links were asked for with this address today.',
+    'If you did not ask to sign in, you can ignore this email. Nobody can sign in without the link.',
+  ]);
   // `dashboard`: asked for from the Kiln dashboard's sign-in (index.js, for=dashboard), where any address may sign in.
   if (dashboard) return message('Your sign-in link for Kiln', lines('your Kiln dashboard'), 'You are getting this because someone asked for a sign-in link for the Kiln dashboard with this email address.');
   return message(`Your sign-in link for ${name}`, lines(name), `You are getting this because someone asked for a sign-in link for ${name} with this email address, which can sign in there.`);

@@ -162,7 +162,7 @@ test('a Google sign-in for the address an email sign-in made an account with is 
   assert.equal([...w.env.KILN.map.keys()].filter(k => k.startsWith('csess:')).length, 4, 'no new session: tok, and the three above');
 });
 
-test('the dashboard\'s link and code run out after 15 minutes, the code works only in the window that asked, and five wrong codes void both', { skip: d1Skip }, async () => {
+test('the dashboard\'s link and code run out after 15 minutes, the code works only in the window that asked, and five wrong codes void the code alone', { skip: d1Skip }, async () => {
   const w = world();
   const a = await ask(w, EVE);
   const linkKey = [...w.env.KILN.map.keys()].find(k => k.startsWith('elink:'));
@@ -189,7 +189,11 @@ test('the dashboard\'s link and code run out after 15 minutes, the code works on
   for (let i = 0; i < 4; i++) assert.equal((await hit(w, 'POST', '/email/code', { ...FOR, req: e.req, code: e.code === '000000' ? '111111' : '000000' })).status, 400);
   const fifth = await hit(w, 'POST', '/email/code', { ...FOR, req: e.req, code: e.code === '000000' ? '111111' : '000000' });
   assert.equal(fifth.status, 403);
-  assert.equal((await hit(w, 'POST', '/email/open', { t: e.token })).status, 410, 'the link in the same email is void too');
+  assert.equal((await hit(w, 'POST', '/email/code', { ...FOR, req: e.req, code: e.code })).status, 410, 'the right code no longer works');
+  assert.equal(accounts(w).filter(r => r.signin_email === 'fay@example.com').length, 0, 'guessing made no account');
+  // The link in the same email went to the inbox alone, and still signs its owner in.
+  assert.equal((await hit(w, 'POST', '/email/open', { t: e.token, for: 'dashboard' })).status, 302);
+  assert.equal(accounts(w).filter(r => r.signin_email === 'fay@example.com').length, 1);
 });
 
 test('the dashboard\'s email sign-in: three links for one address in 15 minutes, whatever its case and spaces; a worker with no mail says so and sends nothing', { skip: d1Skip }, async () => {
