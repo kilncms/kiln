@@ -16,14 +16,14 @@
  *   noteActivity     one line; the account of a site named alone is read from the site's row
  *   notePublished    one line for a publish, found by the site's repository
  *   noteEmailSent    one line for an email Kiln sent about a site: the kind of email only
- *   noteSiteRemoved  a removed site's lines go, and one line says it was removed
+ *   noteSiteRemoved  one line says a site was removed; its earlier lines stay with the account
  *   forgetActivity   the lines of an account or a site go
  *   activityPage     newest first, for the operator
  */
 
 export const ACTIVITY_KINDS = Object.freeze([
   'signed_up', 'site_added', 'setup_step', 'published',
-  'subscription_started', 'subscription_renewed', 'payment_failed', 'subscription_ended',
+  'subscription_started', 'subscription_renewed', 'payment_failed', 'subscription_ending', 'subscription_ended',
   'free_days_ended', 'free_days_given', 'email_sent', 'site_removed',
   'hosting_down', 'hosting_up', 'domain_live', 'operator_status_set', 'operator_line_hidden',
 ]);
@@ -120,10 +120,13 @@ export async function forgetActivity(env, { account_id = null, site_id = null } 
   } catch (e) { notWritten('forget', e); return false; }
 }
 
-/** A site was removed: its own lines go with it, and one line, kept with the account, says it was removed. */
+/**
+ * A site was removed: one line says so. Its earlier lines stay, kept with the
+ * account and removed with it, as the privacy page says: they are what tells
+ * the operator how a site went before it was removed.
+ */
 export async function noteSiteRemoved(env, { account_id = null, site_id, by }) {
   if (!activityOn(env)) return false;
-  await forgetActivity(env, { site_id });
   return noteActivity(env, { account_id, site_id, kind: 'site_removed', by });
 }
 

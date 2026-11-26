@@ -3951,7 +3951,13 @@ async function stripeSubscriptionChanged(env, type, sub, at) {
   }
   // The activity record (activity.js): a subscription that started, was paid again (a renewal, or a charge
   // that went through after one failed) or ended. Nothing about the card or the amount.
-  const paidKind = !was ? null : type === 'customer.subscription.deleted' ? 'subscription_ended'
+  // A subscription set to end with its period (paid until then, stored as cancelled) is the clearest sign a
+  // customer is leaving; set back before the end, it is said again with `undo`.
+  const ending = !!was && type !== 'customer.subscription.deleted' && state.access === 'until' && was.status === 'active' && was.sub === subId;
+  const resumed = !!was && type !== 'customer.subscription.deleted' && state.access === 'yes' && state.status === 'active'
+    && was.status === 'canceled' && was.sub === subId && Number(was.paid_until) > Date.now();
+  if (ending || resumed) await noteActivity(env, { account_id: site.account_id, site_id: site.id, kind: 'subscription_ending', by: 'stripe', detail: { plan: paidPlan || site.plan, period, ...(resumed ? { undo: true } : {}) } });
+  const paidKind = !was || ending || resumed ? null : type === 'customer.subscription.deleted' ? 'subscription_ended'
     : state.access !== 'yes' || state.status !== 'active' ? null
     : was.sub !== subId || !['active', 'past_due'].includes(was.status) ? 'subscription_started'
     : was.status === 'past_due' || (Number(was.paid_until) > 0 && Number(periodEndOf(sub)) > Number(was.paid_until)) ? 'subscription_renewed' : null;

@@ -98,7 +98,7 @@ test('a line keeps a few named words and numbers, never sentences, tokens, marku
   } finally { console.warn = was; }
   assert.equal(warned.length, 2);
   assert.ok(warned.every(w => JSON.parse(w).evt === 'activity_not_written'));
-  assert.equal(ACTIVITY_KINDS.length, 17);
+  assert.equal(ACTIVITY_KINDS.length, 18);   // with subscription_ending, the sign that a customer is leaving
 });
 
 /** What the operator's and the customer's routes answer, in one world: compared below with the record off and on. */
@@ -135,13 +135,13 @@ test('switched off, no line is written, the read route reads nothing, and every 
   assert.ok(count(on.env) > 0);
 });
 
-test('switched on, each writer leaves one line of its kind and "by", and a removed site takes its lines with it', { skip: d1Skip }, async () => {
+test('switched on, each writer leaves one line of its kind and "by", and a removed site keeps its lines with the account', { skip: d1Skip }, async () => {
   const { env } = world();
   await routes(env);
   const kinds = lines(env).map(r => [r.kind, r.by, r.account_id, r.site_id, r.detail]);
-  // site-2's own lines (free days given, its status set) went when the operator removed it, and site-1's
-  // (a publish, a set-up step) when its owner did: only the lines that say so are kept.
-  assert.deepEqual(kinds, [
+  // A removed site's earlier lines stay with the account (the privacy page: kept with your account and
+  // removed with it); one more line says it was removed.
+  assert.deepEqual(kinds.filter(k => k[1] !== 'person' || k[0] === 'site_removed').filter(k => ['operator_line_hidden', 'free_days_ended', 'email_sent', 'site_removed'].includes(k[0])), [
     ['operator_line_hidden', 'operator', 'acct-uma', 'site-3', { line: 'trial_ended' }],
     ['operator_line_hidden', 'operator', 'acct-uma', 'site-3', { line: 'trial_ended', undo: true }],
     ['free_days_ended', 'kiln', 'acct-uma', 'site-3', null],
@@ -149,8 +149,8 @@ test('switched on, each writer leaves one line of its kind and "by", and a remov
     ['site_removed', 'operator', 'acct-uma', 'site-2', null],
     ['site_removed', 'person', 'acct-1', 'site-1', null],
   ]);
-  assert.equal(lines(env, 'free_days_given').length + lines(env, 'operator_status_set').length + lines(env, 'setup_step').length, 0);
-  assert.equal(lines(env, 'published').length, 0);
+  assert.ok(lines(env, 'free_days_given').length >= 1, 'site-2\'s free days given are still there after it was removed');
+  assert.ok(lines(env, 'operator_status_set').length >= 1, 'and the status the operator set');
 });
 
 test('switched on: publishes, set-up steps, emails, sign-ups and a site added each leave exactly one line', { skip: d1Skip }, async () => {
@@ -200,14 +200,21 @@ test('switched on: Stripe\'s notices leave started, renewed, failed and ended, a
     const invoice = { id: 'in_act', object: 'invoice', subscription: 'sub_act', parent: { subscription_details: { subscription: 'sub_act', metadata: { site_id: 'site-4' } } } };
     assert.equal(await stripe(env, 'invoice.payment_failed', invoice, T + 3000), 200);
     assert.equal(await stripe(env, 'customer.subscription.updated', sub('active', T + 1000), T + 4000), 200);   // the charge went through after all
+    // Set to end with its period, then set back, then set to end again: the clearest sign of leaving, and its undo.
+    assert.equal(await stripe(env, 'customer.subscription.updated', sub('active', T + 1000, { cancel_at_period_end: true }), T + 4100), 200);
+    assert.equal(await stripe(env, 'customer.subscription.updated', sub('active', T + 1000), T + 4200), 200);
+    assert.equal(await stripe(env, 'customer.subscription.updated', sub('active', T + 1000, { cancel_at_period_end: true }), T + 4300), 200);
     assert.equal(await stripe(env, 'customer.subscription.deleted', sub('canceled', T + 1000, { ended_at: sec(T + 5000) }), T + 5000), 200);
   });
-  assert.deepEqual(lines(env).map(r => [r.kind, r.by, r.account_id, r.site_id]), [
-    ['subscription_started', 'stripe', 'acct-uma', 'site-4'],
-    ['subscription_renewed', 'stripe', 'acct-uma', 'site-4'],
-    ['payment_failed', 'stripe', 'acct-uma', 'site-4'],
-    ['subscription_renewed', 'stripe', 'acct-uma', 'site-4'],
-    ['subscription_ended', 'stripe', 'acct-uma', 'site-4'],
+  assert.deepEqual(lines(env).map(r => [r.kind, r.by, r.account_id, r.site_id, r.kind === 'subscription_ending' ? !!(r.detail && r.detail.undo) : null]), [
+    ['subscription_started', 'stripe', 'acct-uma', 'site-4', null],
+    ['subscription_renewed', 'stripe', 'acct-uma', 'site-4', null],
+    ['payment_failed', 'stripe', 'acct-uma', 'site-4', null],
+    ['subscription_renewed', 'stripe', 'acct-uma', 'site-4', null],
+    ['subscription_ending', 'stripe', 'acct-uma', 'site-4', false],
+    ['subscription_ending', 'stripe', 'acct-uma', 'site-4', true],
+    ['subscription_ending', 'stripe', 'acct-uma', 'site-4', false],
+    ['subscription_ended', 'stripe', 'acct-uma', 'site-4', null],
   ]);
   assert.ok(!JSON.stringify(lines(env)).includes('cus_1') && !JSON.stringify(lines(env)).includes('sub_act'));
 });
