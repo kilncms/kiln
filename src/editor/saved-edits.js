@@ -16,11 +16,17 @@
  * version. That is written only while the person is being told, and is taken
  * out again when they stay on the page or when it has been put back.
  *
+ * Beside all that, never inside it, the copy says enough about its page for
+ * the edits to be published without the page open (waiting.js lists such
+ * pages): `page`, `more` and `sourceWas`, described at pageRecord. An editor
+ * from before they were added reads the copy as it always did, and this one
+ * reads a copy without them as it always did.
+ *
  * This is the shape of that copy and how it is read back. Pure, so it is
  * tested in node; main.js does the storage and puts the edits on the page.
  */
 
-const WEEK = 7 * 24 * 3600 * 1000;   // how long a saved copy is offered back
+export const WEEK = 7 * 24 * 3600 * 1000;   // how long a saved copy is offered back
 
 /**
  * The staged edits with what is being typed in a box still open laid over
@@ -116,10 +122,12 @@ export function draftRecord(pending, pendingSource, now = Date.now(), typed = nu
  * or older than a week.
  * `known(ref)` says whether a content-file field is on this page and can be
  * edited now; an edit to one that is not is left behind.
+ * `keep` is how long a copy is offered back: a week unless something else is
+ * said (waiting.js keptFor).
  */
-export function readDraft(saved, { now = Date.now(), known = () => true } = {}) {
+export function readDraft(saved, { now = Date.now(), known = () => true, keep = WEEK } = {}) {
   if (!saved || typeof saved !== 'object' || !saved.edits || typeof saved.edits !== 'object') return null;
-  if (now - saved.ts > WEEK) return null;
+  if (now - saved.ts > (Number.isFinite(keep) && keep > 0 ? keep : WEEK)) return null;
   const source = {};
   const stored = saved.source && typeof saved.source === 'object' ? saved.source : {};
   for (const [ref, v] of Object.entries(stored)) {
@@ -148,4 +156,119 @@ export function draftHolds(saved, pending, pendingSource, typed = null) {
   return JSON.stringify(saved.edits || {}) === JSON.stringify(Object.fromEntries(pending))
     && JSON.stringify(saved.source || {}) === JSON.stringify(Object.fromEntries(pendingSource))
     && JSON.stringify(typedRecord(saved.typed)) === JSON.stringify(typedRecord(typed));
+}
+
+// ─── What lets a page's edits be published without the page open ─────────────
+// Three fields beside `edits` and `source`:
+//   page:      { path, url?, title?, sha? }: the page's file in the repository,
+//              its address on the site, its title, and the version of the file
+//              the edits were made against (git's name for the file's text).
+//   more:      { key: { was?, base?, shared? } }, keyed like `edits`:
+//                was     the part's text in the file when the person began, to
+//                        tell "someone changed this part" from "someone changed
+//                        another part";
+//                base    an edited list as the page showed it before the edit,
+//                        which a list needs to be written back without losing
+//                        what the editor's cleaner does not know (list-as-file.js);
+//                shared  true for an edit inside a part shared across pages
+//                        (data-cms-partial), which goes to every page that has it.
+//   sourceWas: { ref: value }, keyed like `source`: what a content-file field
+//              held when the page was read (source-fields.js readAs), sent with
+//              the edit so the service does not write over someone else's change.
+// What is read back from the browser's storage is not taken on trust: each
+// reader below gives only what is of the right kind, and nothing for the rest.
+
+const PATH_MAX = 1024, URL_MAX = 2048, TITLE_MAX = 300;
+const plainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+// No control character anywhere in a path or an address (a tab or a new line inside one is dropped by browsers, which would change where it leads).
+const clean = (s) => !/[\u0000-\u001f\u007f]/.test(s);
+
+/** A file's path in the repository: relative, no "." or ".." step, no empty step, no backslash. */
+function repoPath(v) {
+  if (typeof v !== 'string' || !v || v.length > PATH_MAX || !clean(v) || v.includes('\\')) return null;
+  return v.split('/').every(step => step && step !== '.' && step !== '..') ? v : null;
+}
+/** An address on this site: a path from the site's root, and never another site, a scheme or a script. */
+function siteUrl(v) {
+  if (typeof v !== 'string' || v.length > URL_MAX || !clean(v) || v.includes('\\')) return null;
+  return /^\/(?!\/)/.test(v) ? v : null;
+}
+
+/**
+ * The page a saved copy belongs to: { path } with `url`, `title` and `sha` when
+ * the copy holds them as they should be, or null when it names no file (a copy
+ * from an editor before this, or one that was tampered with). The title is
+ * text and is to be shown as text.
+ */
+export function savedPage(saved) {
+  const p = plainObject(saved) && plainObject(saved.page) ? saved.page : null;
+  const path = p ? repoPath(p.path) : null;
+  if (!path) return null;
+  const out = { path };
+  const url = siteUrl(p.url);
+  if (url) out.url = url;
+  if (typeof p.title === 'string' && p.title.trim()) out.title = p.title.trim().slice(0, TITLE_MAX);
+  if (typeof p.sha === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(p.sha)) out.sha = p.sha;
+  return out;
+}
+
+/**
+ * What a saved copy holds beside each of its edits: { key: { was?, base?,
+ * shared? } }, only for keys `edits` holds, and only what is of the right
+ * kind. `base` is kept only beside an edit that holds HTML. An edit with
+ * nothing beside it is left out, and so is everything in a copy from before.
+ */
+export function savedMore(saved) {
+  const out = {};
+  if (!plainObject(saved) || !plainObject(saved.edits) || !plainObject(saved.more)) return out;
+  for (const [key, edit] of Object.entries(saved.edits)) {
+    const m = Object.hasOwn(saved.more, key) ? saved.more[key] : null;
+    if (!plainObject(m) || !plainObject(edit)) continue;
+    const one = {};
+    if (typeof m.was === 'string') one.was = m.was;
+    if (typeof m.base === 'string' && edit.html !== undefined) one.base = m.base;
+    if (m.shared === true) one.shared = true;
+    if (Object.keys(one).length) Object.defineProperty(out, key, { value: one, enumerable: true, writable: true, configurable: true });
+  }
+  return out;
+}
+
+const scalar = (v) => typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v));
+/** A value a content-file field can hold as it is sent to the service: text, a number, yes or no, or a short list of those. */
+const fieldValue = (v) => scalar(v) || (Array.isArray(v) && v.length <= 200 && v.every(scalar));
+
+/**
+ * What each content-file field of a saved copy held when its page was read:
+ * { ref: value }, only for the fields `source` holds an edit to. A field
+ * with nothing known is left out, and its edit is sent as it always was.
+ */
+export function savedSourceWas(saved) {
+  const out = {};
+  if (!plainObject(saved) || !plainObject(saved.source) || !plainObject(saved.sourceWas)) return out;
+  for (const ref of Object.keys(saved.source)) {
+    if (!Object.hasOwn(saved.sourceWas, ref) || !fieldValue(saved.sourceWas[ref])) continue;
+    Object.defineProperty(out, ref, { value: saved.sourceWas[ref], enumerable: true, writable: true, configurable: true });
+  }
+  return out;
+}
+
+/**
+ * A saved copy (what draftRecord gives) with what is known of its page put
+ * beside the edits: `page`, `more` and `sourceWas` as described above, each
+ * only when there is something of the right kind to say. `edits`, `source`,
+ * `typed`, `n` and `ts` are the same objects, untouched, so what is offered
+ * back and what "it is saved" means do not change. A copy with no edits (only
+ * something that was being typed) is given back as it is, and so is null.
+ */
+export function pageRecord(record, { page, more, sourceWas } = {}) {
+  if (!record || (!Object.keys(record.edits || {}).length && !Object.keys(record.source || {}).length)) return record;
+  const out = { ...record };
+  delete out.page; delete out.more; delete out.sourceWas;
+  const p = savedPage({ page });
+  if (p) out.page = p;
+  const m = savedMore({ edits: record.edits, more });
+  if (Object.keys(m).length) out.more = m;
+  const w = savedSourceWas({ source: record.source, sourceWas });
+  if (Object.keys(w).length) out.sourceWas = w;
+  return out;
 }

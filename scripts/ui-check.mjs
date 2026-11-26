@@ -16,7 +16,8 @@
  * and as a first-time one (who gets the demo guide on top of everything else).
  * Then once more at 1440 and 390 as a signed-in editor on a real (not sandbox)
  * site, with the worker played by this script: the demo-only parts must be
- * absent, Publish must send the commit, and a refused upload must say why.
+ * absent, the edit kept in the browser must name its page and what the part
+ * held before, Publish must send the commit, and a refused upload must say why.
  * In sandbox mode again, the safety net: in each list a block is removed,
  * added, moved and duplicated, and after each Undo and Redo every block must
  * be there to be seen, the same elements as before. Removing asks nothing in a
@@ -2297,6 +2298,17 @@ async function runSignedIn(browser, size, opts = {}) {
   await page.waitForTimeout(300);
   const publish = page.getByRole('button', { name: /^Publish/ }).filter({ visible: true }).first();
   check(scope, 'a control named "Publish…" is visible after one edit', (await publish.count()) === 1 && (await publish.textContent()).trim() === 'Publish 1 edit');
+  // What is kept in the browser for this edit says which page it belongs to and what the part held
+  // before, so that it can be published without the page open (saved-edits.js pageRecord).
+  const kept = await page.evaluate(([mine, k]) => {
+    const name = Object.keys(localStorage).find(n => n.startsWith(mine));
+    try {
+      const c = JSON.parse(localStorage.getItem(name));
+      return { at: name.slice(mine.length), path: c.page?.path, url: c.page?.url, title: c.page?.title || '', was: c.more?.[k]?.was, html: c.edits?.[k]?.html, here: location.pathname, named: document.title.trim().slice(0, 300) };
+    } catch { return null; }
+  }, [`kiln_pending:${REPO}:`, key]);
+  check(scope, 'the edit kept in this browser names its page and what the part held before', !!kept && !!kept.path && kept.path === kept.at && kept.url === kept.here && kept.title === kept.named
+    && typeof kept.was === 'string' && typeof kept.html === 'string' && kept.was !== kept.html, JSON.stringify(kept).slice(0, 240));
 
   // An upload the worker will not take is turned away the moment it is picked…
   const para = page.locator('p.kiln-field:not([data-cms-plain])').first();

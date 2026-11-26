@@ -60,7 +60,7 @@ import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
-import { draftRecord, readDraft, draftHolds, TYPED, openBoxEdit, openListEdit } from './saved-edits.js';
+import { draftRecord, readDraft, draftHolds, TYPED, openBoxEdit, openListEdit, pageRecord } from './saved-edits.js';
 import { TYPING_PAUSE, afterLastKey } from './typing-counts.js';
 import { wayOf, onLoadFailure, endedNotice, notStartedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
@@ -10046,11 +10046,55 @@ function savePendingToStorage() {
     if (record && state.restoring) localStorage.setItem(restoreMarkKey(), JSON.stringify(restoreMark(state.restoring)));
     else if (record) localStorage.removeItem(restoreMarkKey());
     if (!record) { localStorage.removeItem(pendingStorageKey()); return; }
-    localStorage.setItem(pendingStorageKey(), JSON.stringify(record));
+    const plain = JSON.stringify(record);
+    // What is known of this page goes beside the edits, so that they can be published without the
+    // page open (saved-edits.js pageRecord). It is an addition: if it cannot be made, or there is
+    // room for the edits and not for it, the copy is written as it always was.
+    let whole = plain;
+    try { whole = JSON.stringify(pageRecord(record, pageFacts(record))); } catch { whole = plain; }
+    try { localStorage.setItem(pendingStorageKey(), whole); }
+    catch (err) {
+      if (whole === plain) throw err;
+      localStorage.setItem(pendingStorageKey(), plain);
+    }
   } catch {
     // No room for the copy. An older copy left in its place would hold room for edits that may be gone: remove it.
     try { localStorage.removeItem(pendingStorageKey()); } catch { /* storage blocked */ }
   }
+}
+
+/**
+ * What this page knows while it is open and a saved copy needs in order to
+ * be published without it: the page's file, address, title and the version
+ * of the file that was read; for each edit, what the file held for that part
+ * (what confirmOverwrites compares), a list as it showed before the edit
+ * (what listsWaiting hands editsForFile), and whether the part is shared
+ * across pages (found as publishNow finds it); for each content-file field,
+ * what it held when the page was read (sourceWas). Nothing in the demo, which
+ * publishes into the browser, and nothing for a page whose file is not known.
+ */
+function pageFacts(record) {
+  if (cfg.sandbox || !state.page?.path) return {};
+  const more = Object.create(null);
+  const baseline = state.baseline || {};
+  for (const [key, v] of Object.entries(record.edits)) {
+    const m = {};
+    if (Object.hasOwn(baseline, key) && typeof baseline[key] === 'string') m.was = baseline[key];
+    if (v.html !== undefined && isListKey(key) && typeof state.undoBase.get(key) === 'string') m.base = state.undoBase.get(key);
+    let el = null;
+    try { el = document.querySelector('[data-cms="' + key + '"]'); } catch { el = null; }
+    if (el && el.closest('[data-cms-partial]')) m.shared = true;
+    more[key] = m;
+  }
+  const was = Object.create(null);
+  for (const ref of Object.keys(record.source || {})) {
+    const held = sourceWas(ref);
+    if (held !== undefined) was[ref] = held;
+  }
+  return {
+    page: { path: state.page.path, url: location.pathname, title: document.title, sha: state.page.sha },
+    more, sourceWas: was,
+  };
 }
 
 // Words typed in a box that is still open are kept like a finished edit: a
