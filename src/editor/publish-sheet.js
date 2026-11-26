@@ -15,6 +15,8 @@
  * itemWarnings and the preview setting are pure and exported for tests.
  */
 
+import { PAGE_CONTROLS } from './set-sheet.js';
+
 const NOTE_MAX = 140;
 const NO_PREVIEW_KEY = 'kiln_publish_nopreview';
 
@@ -402,6 +404,114 @@ export function openPublishSheet(deps) {
   return m;
 }
 
+/**
+ * The sheet for the edits waiting on several pages ("Waiting on other pages"),
+ * grouped by page, this page first. A sibling of openPublishSheet, which stays
+ * the sheet of a one-page publish. It stays open while the set is sent and
+ * shows where it is.
+ *
+ * deps: {
+ *   modal(html)
+ *   groups()        → [{ id, title, address, ago, here, own, gone, items, open?(), drop?() }]
+ *                     `items` as openPublishSheet's; `own` says this page is
+ *                     published from the page itself; drop() asks first and
+ *                     resolves true when the page's changes were dropped
+ *   label()         → the main button's words ("Publish 7 edits on 3 pages"), '' when nothing can go
+ *   limit()         → a line that holds the set back (an invited editor's limit), or ''
+ *   only()          → true when "Only this page" is offered
+ *   publishAll(note, ui)   ui: { step(text), stop(text, next?: { label, run(note, ui) }) }; resolves true when done
+ *   onlyThis(note)  today's one-page publish; the sheet has closed
+ *   note            optional: a line already typed
+ * }
+ */
+export function openSetSheet(deps) {
+  const m = deps.modal(`<h3 id="kiln-ss-title"></h3><div id="kiln-ss-list"></div>
+    <p class="kiln-ps-extra" id="kiln-ss-say" role="status" hidden></p>
+    <label class="kiln-ps-notefield"><span>What changed?</span>
+      <input type="text" id="kiln-ss-note" maxlength="${NOTE_MAX}" autocomplete="off" placeholder="Optional. Saved with this change."></label>
+    <div class="kiln-modal-actions kiln-ps-actions">
+      <button class="kiln-btn-ghost" data-close type="button">Cancel</button>
+      <button class="kiln-btn-ghost" id="kiln-ss-only" type="button" style="display:none">Only this page</button>
+      <button class="kiln-btn-publish" id="kiln-ss-go" type="button"></button>
+    </div>`);
+  m.classList.add('kiln-pubsheet', 'kiln-setsheet');
+  m.querySelector('.kiln-modal-card').setAttribute('aria-labelledby', 'kiln-ss-title');
+  const list = m.querySelector('#kiln-ss-list');
+  const go = m.querySelector('#kiln-ss-go');
+  const only = m.querySelector('#kiln-ss-only');
+  const note = m.querySelector('#kiln-ss-note');
+  const say = m.querySelector('#kiln-ss-say');
+  if (deps.note) note.value = cleanNote(deps.note);
+  let busy = false, next = null;
+  const tell = (text) => { say.textContent = text || ''; say.hidden = !text; };
+
+  const render = () => {
+    const groups = deps.groups();
+    if (!groups.length) { m.querySelector('[data-close]').click(); return; }
+    const edits = groups.reduce((n, g) => n + countChanges(g.items), 0);
+    m.querySelector('#kiln-ss-title').textContent = `${edits} change${edits === 1 ? '' : 's'} on ${groups.length} page${groups.length === 1 ? '' : 's'}`;
+    list.textContent = '';
+    for (const g of groups) {
+      const box = el('section', 'kiln-ss-page');
+      box.dataset.page = g.id;
+      const head = el('div', 'kiln-ss-head');
+      const who = el('div', 'kiln-ss-who');
+      who.append(el('strong', null, g.title || g.address || 'A page'));
+      const facts = [g.address, g.ago].filter(Boolean).join(' · ');
+      if (facts) who.append(el('span', 'kiln-ss-facts', facts));
+      head.append(who);
+      const ctl = el('div', 'kiln-ss-ctl');
+      if (g.open) { const b = el('button', 'kiln-ps-drop', PAGE_CONTROLS.open); b.type = 'button'; b.addEventListener('click', () => g.open()); ctl.append(b); }
+      if (g.drop) {
+        const b = el('button', 'kiln-ps-drop', PAGE_CONTROLS.drop);
+        b.type = 'button';
+        b.addEventListener('click', async () => { if (busy) return; if (await g.drop()) render(); });
+        ctl.append(b);
+      }
+      head.append(ctl);
+      box.append(head);
+      if (g.own) box.append(el('div', 'kiln-ps-note', `${g.own}. Use “Only this page” for it.`));
+      if (g.gone) box.append(el('div', 'kiln-ps-note kiln-ps-note--remove', g.gone));
+      for (const item of g.items) box.append(renderItem(item, { jump: () => {} }, () => { if (!busy) render(); }));
+      list.append(box);
+    }
+    const limit = deps.limit?.() || '';
+    if (!busy && !next) tell(limit);
+    go.textContent = next ? next.label : deps.label();
+    go.style.display = go.textContent ? '' : 'none';
+    only.style.display = deps.only?.() ? '' : 'none';
+    return groups;
+  };
+  if (!render() || !m.isConnected) return null;
+
+  const ui = {
+    step: (text) => tell(text),
+    stop: (text, after = null) => {
+      busy = false; next = after;
+      for (const b of [go, only]) b.disabled = false;
+      tell(text);
+      if (m.isConnected) render();
+    },
+  };
+  go.addEventListener('click', async () => {
+    if (busy || go.disabled) return;
+    busy = true;
+    for (const b of [go, only]) b.disabled = true;
+    const run = next ? next.run : deps.publishAll;
+    next = null;
+    const done = await run(cleanNote(note.value), ui);
+    if (done && m.isConnected) m.querySelector('[data-close]').click();
+  });
+  only.addEventListener('click', () => {
+    if (busy) return;
+    const text = cleanNote(note.value);
+    m.querySelector('[data-close]').click();
+    deps.onlyThis(text);
+  });
+  go.focus({ preventScroll: true });
+  return m;
+}
+
 export function publishSheetCss(mobileMq) {
   return `
 .kiln-pubsheet .kiln-modal-card{max-width:560px}
@@ -443,6 +553,14 @@ export function publishSheetCss(mobileMq) {
 .kiln-pubsheet .kiln-ps-notefield input{font-weight:400}
 .kiln-pubsheet .kiln-ps-actions{margin:14px -22px 0;padding:12px 22px;border-top:1px solid #eef0f3;background:#fafafb}
 .kiln-pubsheet #kiln-pubsheet-go{min-width:150px;padding:9px 18px;font-size:14px}
+.kiln-ss-page{display:flex;flex-direction:column;gap:8px;padding:0 0 10px;border-bottom:1px solid #eef0f3}
+.kiln-ss-page:last-child{border-bottom:0}
+.kiln-ss-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.kiln-ss-who{display:flex;flex-direction:column;gap:2px;min-width:0}
+.kiln-ss-who strong{font:600 14px/1.3 var(--kiln-font);color:#1c1c28;overflow-wrap:anywhere}
+.kiln-ss-facts{font:12px var(--kiln-font);color:#6b7280;overflow-wrap:anywhere}
+.kiln-ss-ctl{display:flex;gap:6px;flex:none}
+.kiln-setsheet #kiln-ss-go{min-width:150px;padding:9px 18px;font-size:14px}
 /* The first-visit guide points at the button from above: leave it a strip of its own. */
 .kiln-pubsheet.kiln-guided .kiln-ps-notefield{margin-bottom:56px}
 @media ${mobileMq}{
@@ -453,6 +571,8 @@ export function publishSheetCss(mobileMq) {
 .kiln-pubsheet .kiln-ps-actions button{min-height:46px;font-size:15px}
 .kiln-pubsheet .kiln-ps-actions .kiln-btn-ghost{flex:0 0 auto;padding:0 18px}
 .kiln-pubsheet #kiln-pubsheet-go{flex:1 1 auto}
+.kiln-setsheet #kiln-ss-go{flex:1 1 auto;min-width:0}
+.kiln-ss-head{flex-wrap:wrap}
 .kiln-pubsheet .kiln-ps-notefield input{font-size:16px}
 .kiln-ps-drop{min-height:34px;padding:4px 14px;font-size:12.5px}
 .kiln-ps-warn{min-height:40px}

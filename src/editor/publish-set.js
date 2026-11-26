@@ -44,6 +44,7 @@
 import { indexHtml, applyEdits } from '../engine.js';
 import { getFile, branchHead, commitFilesOn, HeadMoved } from '../github.js';
 import { listAsFile, ListLoss } from './list-as-file.js';
+import { savedPage, savedMore } from './saved-edits.js';
 
 /** No more files than this are written in one set. */
 export const SET_FILES_MAX = 100;
@@ -100,8 +101,9 @@ const safePath = (p) => typeof p === 'string' && !!p && !p.includes('\\') && p.s
 /** One saved copy as this needs it. What is read back from the browser's storage is not taken on trust. */
 function readCopy(copy) {
   if (!copy || typeof copy !== 'object' || !copy.edits || typeof copy.edits !== 'object') return null;
-  const page = copy.page && typeof copy.page === 'object' ? copy.page : {};
-  const more = copy.more && typeof copy.more === 'object' ? copy.more : {};
+  // One reader for what the browser kept (saved-edits.js): a path, a version, and per part what it held.
+  const page = savedPage(copy) || {};
+  const more = savedMore(copy);
   const parts = [];
   for (const [key, entry] of Object.entries(copy.edits)) {
     if (!entry || typeof entry !== 'object') continue;
@@ -111,7 +113,7 @@ function readCopy(copy) {
       for (const [attr, value] of Object.entries(entry.attrs)) edits.push({ key, attr, value });
     }
     if (!edits.length) continue;
-    const m = Object.hasOwn(more, key) && more[key] && typeof more[key] === 'object' ? more[key] : {};
+    const m = Object.hasOwn(more, key) ? more[key] : {};
     parts.push({
       key, entry, edits,
       was: typeof m.was === 'string' ? m.was : undefined,
@@ -121,7 +123,8 @@ function readCopy(copy) {
   }
   return {
     copy, parts,
-    path: safePath(page.path) ? page.path : null,
+    path: page.path && safePath(page.path) ? page.path : null,
+    // No version known means "compare part by part" (planSet's sameFile is then false), never "unchanged".
     sha: typeof page.sha === 'string' && page.sha ? page.sha : null,
     ts: Number(copy.ts) || 0,
   };

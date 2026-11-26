@@ -39,6 +39,39 @@ export function editCommitMessage(path, keys) {
 }
 
 /**
+ * The message of a set published as one commit (publish-set.js). The first
+ * line is the note when one was typed ("... (via Kiln)", publish-sheet.js
+ * noteMessage), else "Publish 30 pages together (via Kiln)". Below it, one
+ * line a page in the form a one-page publish uses. `pages` is
+ * [{ path, keys }] for every file the commit writes; a page that only takes
+ * a shared part has no keys of its own and is named with "shared part".
+ */
+export function setCommitMessage(noteMsg, pages) {
+  const list = (pages || []).filter(p => p && p.path);
+  const first = noteMsg || `Publish ${list.length} page${list.length === 1 ? '' : 's'} together (via Kiln)`;
+  const lines = list.map(p => `Edit ${p.path}: ${p.keys && p.keys.length ? [...new Set(p.keys)].join(', ') : 'shared part'}`);
+  return [first, '', ...lines].join('\n');
+}
+
+/**
+ * The History line of a set's commit, or null for any other commit:
+ * "Published with 29 other pages", and the note when there was one.
+ */
+export function setCommitLine(msg) {
+  const all = String(msg ?? '').split('\n');
+  const first = all[0] || '';
+  const lines = all.slice(1).filter(l => /^Edit \S+: /.test(l));
+  const together = first.match(/^Publish (\d+) pages? together \(via Kiln\)$/);
+  if (!together && lines.length < 2) return null;
+  const n = Math.max(lines.length, together ? +together[1] : 0);
+  if (n < 2) return null;
+  const others = `Published with ${n - 1} other page${n - 1 === 1 ? '' : 's'}`;
+  if (together) return others;
+  const note = first.replace(/ \(via Kiln\)$/, '').trim();
+  return note ? `${others}: ${note}` : others;
+}
+
+/**
  * Which guide step to show: 1 (make an edit), 2 (publish it), 3 (what just
  * happened), or 0 for nothing. Derived from the page's state rather than
  * counted, so undoing the only edit steps back to 1.

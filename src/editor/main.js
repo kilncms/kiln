@@ -18,6 +18,10 @@ import { indexHtml, applyEdits, attrNameAllowed, pageFileCandidates, editHead, r
 import {
   makeGh, getFile, resolvePageFile, editFile, putFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
+import { publishSet, setStepText, setConflictText, SET_FILES_MAX } from './publish-set.js';
+import { waitingPages, dropPage } from './waiting.js';
+import { EDITOR_SET_PAGES_MAX, waitingItemLabel, editedAgo, setLabel, dropPageCopy, HELD_TEXT, OWN_PUBLISH_TEXT, editorLimitText, firstPagesLabel,
+  overText, blockedText, setDoneText, holdBack, withoutKeys, copyPath, canJoinSet, firstPages } from './set-sheet.js';
 import { SOURCE_ATTR, parseSourceRef, safeSourcePath } from '../adapters/pointer.js';
 import { uploadProblem, fileRefusalText, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../file-policy.js';
 import { generatorSignals } from '../adapters/detect.js';
@@ -44,7 +48,7 @@ import { initTheme, openThemePanel } from './theme.js';
 import { initComments, openComments, commentsTick, resumeComment, typedComment } from './comments.js';
 import { initAssist, openAssistMenu, assistAltText, draftFill } from './assist.js';
 import { initBlocks } from './blocks.js';
-import { publishLabel, editCommitMessage, goingLiveLabel, initGuide, guideSync, guidePublished, guideUndone, guideWaiting, START_URL, START_LABEL } from './firstrun.js';
+import { publishLabel, editCommitMessage, setCommitMessage, setCommitLine, goingLiveLabel, initGuide, guideSync, guidePublished, guideUndone, guideWaiting, START_URL, START_LABEL } from './firstrun.js';
 import { revertPublish, publishRecord, restage } from './undo-publish.js';
 import { latestStamp, isStale, UPDATE_COMMAND } from './update-check.js';
 import { hasGrant, offersMakeEditable, helpUrl, startLine } from './grants.js';
@@ -58,9 +62,9 @@ import { DRAFT_BRANCH, draftSaveMessage, draftDeleteMessage, draftPublishedMessa
 import { resumedNote, draftWasPublished, noteIsStale } from './resumed-draft.js';
 import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
-import { openPublishSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
+import { openPublishSheet, openSetSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
-import { draftRecord, readDraft, draftHolds, TYPED, openBoxEdit, openListEdit, pageRecord } from './saved-edits.js';
+import { draftRecord, readDraft, draftHolds, TYPED, openBoxEdit, openListEdit, pageRecord, savedMore } from './saved-edits.js';
 import { TYPING_PAUSE, afterLastKey } from './typing-counts.js';
 import { wayOf, onLoadFailure, endedNotice, notStartedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
@@ -3860,6 +3864,324 @@ function requestPublish() {
   });
 }
 
+// ─── "Waiting on other pages": the edits waiting on several pages, as one commit ──
+// The default way of working stays "one page at a time": this is a menu item,
+// shown only while other pages of this site hold edits in this browser. Its
+// sheet (publish-sheet.js openSetSheet) lists them by page and publishes them
+// through publish-set.js as one commit. publishNow is not used and not changed.
+
+/** Where a tab that published or dropped a set says which parts went, for other tabs (the storage event). */
+function setDoneKey() { return `kiln_set_done:${cfg.repo}`; }
+
+function mayPublishSet() {
+  return !cfg.sandbox && !!cfg.repo && !!state.gh && !isSuggestMode() && !(mode === 'editor' && state.scope?.mode === 'review');
+}
+
+/** The other pages of this site with edits waiting in this browser. */
+function otherWaiting() {
+  if (!mayPublishSet()) return [];
+  try {
+    return waitingPages(localStorage, cfg.repo, { except: [pendingStorageKey().slice(`kiln_pending:${cfg.repo}:`.length)] })
+      .filter(p => !(p.path && p.path === state.page?.path));
+  } catch { return []; }
+}
+
+function readSaved(key) {
+  try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
+}
+
+/** This page's staged edits can go in a set: text, attributes and new pictures only (set-sheet.js canJoinSet). */
+function thisPageJoins() {
+  return state.pending.size > 0 && canJoinSet({ path: state.page?.path, structural: state.pendingStructural.length, restoring: !!state.restoring, source: state.pendingSource.size });
+}
+
+function hereHasAnything() {
+  return !!(state.pending.size || state.pendingSource.size || state.pendingBinaries.size || state.pendingStructural.length || state.restoring);
+}
+
+/** Say to other tabs which parts of which copies went (published or dropped). */
+function tellOtherTabs(pages, how) {
+  try { localStorage.setItem(setDoneKey(), JSON.stringify({ ts: Date.now(), how, pages })); } catch { /* storage blocked: the other tab reads the copy when it next writes */ }
+}
+
+/** The rows of a page that is not open, from its saved copy. Every value is shown as text. */
+function savedRows(p, saved, held) {
+  const more = savedMore(saved);
+  const rows = [];
+  for (const [key, e] of Object.entries(saved?.edits || {})) {
+    if (!e || typeof e !== 'object') continue;
+    const parts = [];
+    if (typeof e.html === 'string') {
+      const was = more[key]?.was;
+      parts.push(typeof was === 'string' ? { type: 'text', before: plainText(was), after: plainText(e.html) }
+        : { type: 'note', tone: 'plain', text: `Now reads: ${plainText(e.html).slice(0, 300)}` });
+    }
+    for (const [attr, value] of Object.entries(e.attrs && typeof e.attrs === 'object' ? e.attrs : {})) {
+      if (attr === 'src') parts.push({ type: 'note', tone: 'plain', text: `New picture: ${pictureName(String(value))}` });
+      else parts.push({ type: 'text', name: attr === 'href' ? 'Link goes to' : attr === 'alt' ? 'Picture description' : humanizeKey(attr), before: '', after: String(value ?? '') });
+    }
+    if (held.includes(key)) parts.push({ type: 'note', tone: 'remove', text: HELD_TEXT });
+    rows.push({ id: `${p.key}\n${key}`, key, label: readableName(key), parts, warnings: [], drop: () => dropSavedKey(p, key) });
+  }
+  return rows;
+}
+
+/** Drop one waiting change of a page that is not open. */
+function dropSavedKey(p, key) {
+  const out = withoutKeys(readSaved(p.key), [key]);
+  try {
+    if (out) localStorage.setItem(p.key, JSON.stringify(out));
+    else { dropPage(localStorage, cfg.repo, p.at); forgetFiles(p.key).catch(() => {}); }
+  } catch { /* storage blocked: nothing was dropped */ }
+  tellOtherTabs({ [p.key]: [key] }, 'dropped');
+  refreshPublishButton();
+}
+
+/** Drop every waiting change of a page that is not open, after asking with Kiln's own dialog. */
+async function askDropPage(p) {
+  if (!(await askFirst(modal, dropPageCopy(p.count, p.title || p.url || p.path)))) return false;
+  const keys = Object.keys(readSaved(p.key)?.edits || {});
+  if (dropPage(localStorage, cfg.repo, p.at)) forgetFiles(p.key).catch(() => {});
+  tellOtherTabs({ [p.key]: keys }, 'dropped');
+  refreshPublishButton();
+  return true;
+}
+
+/** The sheet's pages, this page first when it has edits. */
+function setGroups() {
+  const groups = [];
+  if (hereHasAnything()) {
+    groups.push({ id: 'here', here: true, title: document.title || 'This page', address: location.pathname, ago: 'on this page now',
+      own: thisPageJoins() ? '' : OWN_PUBLISH_TEXT, items: publishItems() });
+  }
+  for (const p of otherWaiting()) {
+    const saved = readSaved(p.key);
+    if (!saved) continue;
+    const { held } = holdBack(saved, safeToRestore);
+    groups.push({ id: p.key, title: p.title || p.url || p.path, address: p.url || p.path, ago: editedAgo(p.age),
+      gone: p.path ? '' : 'Kiln does not know which file holds this page. Open it to publish its changes.',
+      items: savedRows(p, saved, held), open: p.url ? () => { location.href = p.url; } : null, drop: () => askDropPage(p) });
+  }
+  return groups;
+}
+
+/** What "Publish all" would send: [{ key, at, path, copy, here }], this page first. */
+function setEntries() {
+  const entries = [];
+  if (thisPageJoins()) {
+    // What is on the page now, built in memory: never what storage was last able to hold.
+    const rec = draftRecord(state.pending, new Map(), Date.now());
+    if (rec) entries.push({ key: pendingStorageKey(), at: null, path: state.page.path, copy: pageRecord(rec, pageFacts(rec)), here: true });
+  }
+  for (const p of otherWaiting()) {
+    if (!p.path) continue;
+    const saved = readSaved(p.key);
+    const path = copyPath(saved);
+    // Values from storage are not trusted: an HTML value a restore would not put back is not published either.
+    const { copy } = holdBack(saved, safeToRestore);
+    if (copy && path) entries.push({ key: p.key, at: p.at, path, copy, here: false });
+  }
+  return entries;
+}
+
+function setPagesMax() { return mode === 'editor' ? EDITOR_SET_PAGES_MAX : SET_FILES_MAX; }
+
+function setButtonLabel() {
+  const entries = setEntries();
+  const paths = firstPages(entries, null);
+  if (!paths.length) return '';
+  if (mode === 'editor' && paths.length > EDITOR_SET_PAGES_MAX) return firstPagesLabel(EDITOR_SET_PAGES_MAX);
+  const edits = entries.reduce((n, e) => n + (e.here ? changeCount() : Object.keys(e.copy.edits).length), 0);
+  return setLabel({ edits, pages: paths.length });
+}
+
+function setLimitLine() {
+  return mode === 'editor' && firstPages(setEntries(), null).length > EDITOR_SET_PAGES_MAX ? editorLimitText() : '';
+}
+
+function openWaitingSheet() {
+  if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+  if (!mayPublishSet()) return;
+  openSetSheet({
+    modal, note: keptNote,
+    groups: setGroups, label: setButtonLabel, limit: setLimitLine,
+    only: () => hereHasAnything(),
+    publishAll: (note, ui) => whileSending(() => runSet(note, ui)),
+    onlyThis: (note) => publish({ note }),
+  });
+}
+
+/**
+ * "Publish all": the pages of the set as one commit (publish-set.js publishSet).
+ * Resolves true when the sheet may close. `answers` are the conflicts answered
+ * so far, `skip` paths left out (blocked), `max` the pages in this go.
+ */
+async function runSet(note, ui, answers = [], skip = [], max = setPagesMax()) {
+  if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
+  const entries = setEntries().filter(e => !skip.includes(e.path));
+  const paths = firstPages(entries, max);
+  const going = entries.filter(e => paths.includes(e.path));
+  if (!going.length) { ui.stop('There is nothing here that can be published together.'); return false; }
+  const here = going.find(e => e.here);
+  const snapshot = here ? new Map([...state.pending].map(([k, v]) => [k, JSON.stringify(v)])) : null;
+  // Pictures: this page's from memory, the others' from the browser's larger store (pending-files.js).
+  const pictures = [], picFrom = new Map();
+  if (here) for (const [path, base64] of state.pendingBinaries) pictures.push({ path, base64 });
+  for (const e of going) {
+    if (e.here) continue;
+    let kept = [];
+    try { kept = await keptFiles(e.key); } catch { kept = []; }
+    for (const f of kept) { pictures.push(f); picFrom.set(e.key, [...(picFrom.get(e.key) || []), f.path]); }
+  }
+  const nameOf = (path) => (path === state.page?.path ? 'this page' : going.find(e => e.path === path)?.copy?.page?.title || path);
+  let res;
+  try {
+    res = await publishSet({
+      gh: state.gh, repo: cfg.repo, branch: cfg.branch || 'main', copies: going.map(e => e.copy), pictures, answers, readList,
+      maxFiles: setPagesMax(), onStep: (s) => ui.step(setStepText(s)),
+      message: (plan) => setCommitMessage(noteMessage(note), plan.files.map(f => ({ path: f.path, keys: plan.published.find(p => p.path === f.path)?.keys || [] }))),
+    });
+  } catch (err) {
+    console.error('[kiln] publish set', err);
+    const f = readFailure(err);
+    ui.stop(f && f.kind === 'trouble' ? publishTrouble(f, { edits: going.length, source: 0 }) : `${notDone('That was not published.', err)} Your edits are still waiting.`);
+    return false;
+  }
+  if (res.conflicts.length) {
+    ui.step(setConflictText(res.conflicts.length));
+    const picks = [];
+    for (const c of res.conflicts) {
+      const label = `${readableName(c.key)} on ${nameOf(c.path)}`;
+      const a = await askWhich(modal, theirsOrMine({ label, theirs: plainText(c.theirs ?? ''), mine: plainText(c.mine ?? '') }));
+      if (a !== 'theirs' && a !== 'mine') { ui.stop(setConflictText(res.conflicts.length)); return false; }
+      picks.push({ ...c, pick: a });
+    }
+    return runSet(note, ui, [...answers, ...picks], skip, max);
+  }
+  if (res.blocked.length) {
+    const out = [...new Set(res.blocked.map(b => b.path).filter(p => paths.includes(p)))];
+    ui.stop(blockedText(res.blocked, nameOf), out.length && out.length < paths.length
+      ? { label: 'Publish the other pages', run: (n, u) => runSet(n, u, answers, [...skip, ...out], max) } : null);
+    return false;
+  }
+  if (res.over) {
+    const fewer = res.over.what === 'files' ? Math.min(res.over.max, paths.length - 1) : Math.max(1, Math.floor(paths.length / 2));
+    ui.stop(overText(res.over), fewer >= 1 ? { label: firstPagesLabel(fewer), run: (n, u) => runSet(n, u, answers, skip, fewer) } : null);
+    return false;
+  }
+  await afterSet(res, going, snapshot, picFrom);
+  return true;
+}
+
+/** Clear exactly what the set published, and nothing else; then say so. */
+async function afterSet(res, going, snapshot, picFrom) {
+  const clear = new Map();
+  const add = (path, keys) => clear.set(path, [...new Set([...(clear.get(path) || []), ...keys])]);
+  for (const p of res.published) add(p.path, p.keys);
+  for (const d of res.dropped) if (d.reason === 'theirs') add(d.path, [d.key]);
+  const sent = new Set(res.pictures.send.map(p => p.path));
+  const told = {};
+  // Every saved copy of a page in the set, both when one file was kept under two keys.
+  for (const e of going) {
+    if (e.here) continue;
+    const keys = clear.get(e.path);
+    if (!keys) continue;
+    const out = withoutKeys(readSaved(e.key), keys);
+    try {
+      if (out) localStorage.setItem(e.key, JSON.stringify(out));
+      else dropPage(localStorage, cfg.repo, e.at);
+    } catch { /* storage blocked: the copy stays, and is offered again */ }
+    told[e.key] = keys;
+    const pics = (picFrom.get(e.key) || []).filter(p => sent.has(p));
+    if (pics.length || !out) forgetFiles(e.key, out ? pics : null).catch(() => {});
+  }
+  const here = going.find(e => e.here);
+  const hereKeys = here ? clear.get(here.path) : null;
+  if (hereKeys) {
+    told[here.key] = hereKeys;
+    await afterSetHere(hereKeys, res, snapshot, sent);
+  }
+  tellOtherTabs(told, 'published');
+  refreshPublishButton();
+  setStatus(setDoneText({ pages: res.files.length, left: res.left }), res.left.length ? 'idle' : 'saved', { hold: 9000 });
+}
+
+/**
+ * This page was in the set: it is left as a one-page publish leaves it (the
+ * same steps publishNow takes after its commit): its published edits no
+ * longer waiting, its baseline and file version brought up to date, the
+ * "live" watch started. No ten-second Undo after a set, as for shared parts.
+ */
+async function afterSetHere(keys, res, snapshot, sent) {
+  const dropped = new Set(res.dropped.filter(d => d.reason === 'theirs' && d.path === state.page.path).map(d => d.key));
+  const done = [];
+  for (const key of keys) {
+    const snap = snapshot.get(key);
+    if (!state.pending.has(key) || JSON.stringify(state.pending.get(key)) !== snap) continue;
+    state.pending.delete(key);
+    done.push(key);
+    if (!dropped.has(key)) {
+      try {
+        const v = JSON.parse(snap);
+        if (v.html !== undefined) state.undoBase.set(key, v.html);
+        if (v.attrs) state.undoBaseAttrs.set(key, { ...(state.undoBaseAttrs.get(key) || {}), ...v.attrs });
+      } catch {}
+    }
+    try {
+      document.querySelectorAll('[data-cms="' + CSS.escape(key) + '"].kiln-modified, [data-cms-repeat="' + CSS.escape(key) + '"].kiln-modified')
+        .forEach(el => el.classList.remove('kiln-modified'));
+    } catch {}
+  }
+  for (const path of sent) state.pendingBinaries.delete(path);
+  if (sent.size) clearImageCache();
+  forgetEditHistory();
+  const file = res.files.find(f => f.path === state.page.path);
+  try { await loadPageSource(); }
+  catch (err) {
+    console.warn('[kiln] the page could not be read back after publishing', err);
+    if (file) {
+      state.page = { ...state.page, text: file.text, sha: null };
+      state.fields = indexHtml(file.text);
+      state.baseline = readValues(file.text);
+    }
+  }
+  // "Keep theirs": the page shows their words.
+  for (const key of dropped) applyKeyDom(key, state.baseline?.[key]);
+  if (res.commit && file) watchDeploy(res.commit.sha, file.text);
+  if (done.length) retireResumedDraft(done.filter(k => !dropped.has(k)));
+}
+
+/** Another tab published or dropped what this tab still shows as waiting for this page. */
+function onOtherTabStorage(e) {
+  if (e.storageArea !== localStorage || e.key !== setDoneKey() || !e.newValue) return;
+  let said = null;
+  try { said = JSON.parse(e.newValue); } catch { return; }
+  const listed = said && said.pages && typeof said.pages === 'object' && Object.hasOwn(said.pages, pendingStorageKey()) ? said.pages[pendingStorageKey()] : null;
+  const keys = Array.isArray(listed) ? listed.filter(k => typeof k === 'string' && state.pending.has(k)) : [];
+  if (!keys.length) { refreshPublishButton(); return; }
+  for (const key of keys) {
+    state.pending.delete(key);
+    try {
+      document.querySelectorAll('[data-cms="' + CSS.escape(key) + '"].kiln-modified, [data-cms-repeat="' + CSS.escape(key) + '"].kiln-modified')
+        .forEach(el => el.classList.remove('kiln-modified'));
+    } catch {}
+  }
+  forgetEditHistory();
+  loadPageSource()
+    .then(() => { for (const key of keys) applyKeyDom(key, state.baseline?.[key]); })
+    .catch(() => { /* the page is read again at the next publish */ })
+    .finally(() => {
+      refreshPublishButton();
+      setStatus(said.how === 'dropped' ? 'These were dropped in another tab.' : 'These were published from another tab.', 'idle', { hold: 9000 });
+    });
+}
+// The mark is kept on the function, not in a module variable: this runs during boot, above where a variable would be set.
+function hearOtherTabs() {
+  if (hearOtherTabs.on || cfg.sandbox) return;
+  hearOtherTabs.on = true;
+  window.addEventListener('storage', onOtherTabStorage);
+}
+
 /** The line under "What changed?", for stopped(): the saved copy holds it, and it is back in its box afterwards. */
 function noteTyped(text) {
   const words = String(text || '').trim();
@@ -7217,6 +7539,9 @@ function humanizeKey(k) {
 
 /** Turn a commit message into something a layperson can read in a history list. */
 function describeCommit(msg) {
+  // A set of pages published as one commit reads the same on each of its pages (firstrun.js setCommitLine).
+  const set = setCommitLine(msg);
+  if (set) return set;
   const first = String(msg).split('\n')[0];
   let m;
   if ((m = first.match(/^Edit [^:]+: (.+?) \(via Kiln\)$/))) {
@@ -9064,6 +9389,7 @@ function renderAdminBar() {
         <button id="kiln-draft" class="kiln-fab-item">Save as draft</button>
         <button id="kiln-sharepreview" class="kiln-fab-item">Share a preview link</button>
         <button id="kiln-schedule" class="kiln-fab-item">Schedule for later…</button>
+        <button id="kiln-waiting" class="kiln-fab-item" style="display:none">Waiting on other pages</button>
         <button id="kiln-discard" class="kiln-fab-item kiln-fab-danger">Discard edits</button>
       </div>
       <div class="kiln-fab-group">
@@ -9301,6 +9627,7 @@ function renderAdminBar() {
   fab.querySelector('#kiln-history').onclick = close(() => (generated() ? sourceHistoryPanel() : historyPanel()));
   fab.querySelector('#kiln-done').onclick = close(doneEditing);
   fab.querySelector('#kiln-discard').onclick = close(discardEdits);
+  fab.querySelector('#kiln-waiting').onclick = close(openWaitingSheet);
   fab.querySelector('#kiln-pagesettings').onclick = close(() => (generated() ? sourcePageSettings() : pageSettingsPanel()));
   const entriesBtn = fab.querySelector('#kiln-entries');
   if (entriesBtn) entriesBtn.onclick = close(() => entriesPanel(state.pageEntry?.collection));
@@ -9913,7 +10240,12 @@ function refreshPublishButton() {
   if (badge) { badge.hidden = !anything; badge.textContent = n || (state.pendingBinaries.size || state.pendingStructural.length || state.restoring ? '•' : ''); }
   // The whole "unpublished edits" group appears only when there's something to act on.
   const grp = document.getElementById('kiln-grp-edits');
-  if (grp) grp.hidden = !anything;
+  // Edits waiting on other pages of this site, in this browser: "Waiting on other pages (n)". None, and nothing is shown.
+  const others = closed ? [] : otherWaiting();
+  const waitingBtn = document.getElementById('kiln-waiting');
+  if (waitingBtn) { waitingBtn.style.display = others.length ? '' : 'none'; waitingBtn.textContent = waitingItemLabel(others.length); }
+  if (others.length) hearOtherTabs();
+  if (grp) grp.hidden = !anything && !others.length;
   const discard = document.getElementById('kiln-discard');
   if (discard) discard.textContent = discardLabel(n);
   // Draft + Schedule + Share preview need actual PAGE edits (not just an uploaded
@@ -9929,8 +10261,10 @@ function refreshPublishButton() {
     sched.textContent = item.label;
     // With nothing unpublished, the group holds "Scheduled changes (N)" alone: no heading and no Discard.
     if (grp) {
-      grp.hidden = !anything && !item.show;
+      grp.hidden = !anything && !item.show && !others.length;
       for (const el of grp.querySelectorAll('.kiln-fab-label, #kiln-discard')) el.style.display = anything ? '' : 'none';
+      // The group's heading stays over "Waiting on other pages"; Discard edits does not.
+      if (others.length) for (const el of grp.querySelectorAll('.kiln-fab-label')) el.style.display = '';
     }
   }
   const draftBtn = document.getElementById('kiln-draft');
