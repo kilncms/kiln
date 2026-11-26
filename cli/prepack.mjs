@@ -39,7 +39,8 @@ const items = [
   ['worker/prepare.js', 'worker/prepare.js'],               // ditto — adding Kiln to a repository from the dashboard
   ['worker/firstpass.js', 'worker/firstpass.js'],           // ditto — the first pass at what can be edited (uses src/autotag.js)
   ['worker/sitecheck.js', 'worker/sitecheck.js'],           // ditto — the "Check this site" checklist
-  ['worker/activity.js', 'worker/activity.js'],             // ditto — the activity record (switched off until ACTIVITY_RECORD is "on")
+  ['worker/activity.js', 'worker/activity.js'],
+  ['worker/daily-check.js', 'worker/daily-check.js'],       // ditto — the daily site check (switched off until SITE_CHECK_DAILY is "on")             // ditto — the activity record (switched off until ACTIVITY_RECORD is "on")
   ['worker/section-scope.js', 'worker/section-scope.js'],   // ditto — section limits on page writes
   ['worker/source.js', 'worker/source.js'],                 // ditto — source-mode endpoints
   ['worker/lookafter.js', 'worker/lookafter.js'],           // imported by worker/cloud.js and worker/hosted.js: a hosted site gets Kiln, a character set, a first pass and a current editor by itself

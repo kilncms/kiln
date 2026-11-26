@@ -90,6 +90,7 @@ const WORKER_VERSION = '0.11.0';
 
 import { startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { handleCloud, selfOrigin, googleDashboardSignIn, emailDashboardSignIn, keptOwnerAtSite, keptOwnerAddress, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, userPushAnswer, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
+import { dailyCheckOn, runDailySiteChecks } from './daily-check.js';
 import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
 import { VIA_KILN } from './prepare.js';
 import { keepsReady, keptStands } from './keeps.js';
@@ -161,6 +162,8 @@ export default {
         endsAt: (site) => hostingDownAt(env, site, { deployed: !!site.deployed_at }), ended: (site, reason, domain) => hostingEndedNote(env, site, reason, domain),
         care: { prepared: (id, sha) => markPrepared(env, id, sha, 'kiln'), firstPass: (id, sha) => markFirstPass(env, id, sha, 'kiln') } });
     });
+    // The daily site check (daily-check.js): a few sites a run, each once a day. It is not called while SITE_CHECK_DAILY is off.
+    if (dailyCheckOn(env)) await cronJob('sitechecks', () => runDailySiteChecks(env));
   },
   async fetch(request, env, ctx) {
     // Plain http is never answered: it is sent to the same address over https, a sign-in and a form

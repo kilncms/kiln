@@ -37,6 +37,7 @@
  *                                  followed, kept on a new account once (only while CAMPAIGN_TAGS is "on")
  *   POST /admin/cloud/needs/hide → (owner only) {key}: hide one line of `needs_you` for 30 days; {key, undo: true} shows it again
  *   GET  /admin/cloud/activity   → (owner only) the activity record, newest first (activity.js): ?account= or ?site=, limit, before
+ *   GET  /admin/cloud/checks     → (owner only) the latest daily check of each site (daily-check.js)
  *   POST /admin/cloud/grant      → (owner only) manually set a site's status, or give it seven more free days
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
@@ -55,6 +56,7 @@ import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence, astr
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { noteActivity, notePublished, noteSiteRemoved, forgetActivity, activityOn, activityPage } from './activity.js';
+import { dailyCheckOn, latestChecks } from './daily-check.js';
 import { hostingOn, hostingSentence, membersGateOn, previewPattern, serviceAddress } from './hosting.js';
 import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence, keptFilesLink, keptFilesName } from './keeps.js';
 import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies, MOST_ANSWER } from './bring.js';
@@ -3637,6 +3639,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       // `customers_not_read` lets the admin page say so: without it a failed read looks the same as an older service.
       catch (e) { console.warn(JSON.stringify({ evt: 'cloud_customers_not_read', detail: String(e?.message || e).slice(0, 160) })); people = { customers_not_read: true }; }
       return json({ accounts: accounts.n, sites: rows, active: active.length, mrr: Number(mrr.toFixed(2)), store, insights, ...people });
+    }
+    // The daily site check (daily-check.js): the latest check of each site, for the admin pages. Nothing is read while it is off.
+    if (path === '/admin/cloud/checks' && request.method === 'GET') {
+      if (!dailyCheckOn(env)) return json({ ok: true, checking: false, checks: [] });
+      try { return json({ ok: true, checking: true, checks: await latestChecks(env) }); }
+      catch (e) { console.warn(JSON.stringify({ evt: 'site_checks_not_read', detail: String(e?.message || e).slice(0, 160) })); return json({ ok: true, checking: true, checks: [], not_read: true }); }
     }
     // The activity record (activity.js), newest first, for the admin pages: ?account=<id> or ?site=<id> or
     // neither; `limit` up to 200; `before` is the `next` of the page before. Nothing is read while it is off.

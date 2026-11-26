@@ -456,6 +456,20 @@ function keptLines(checks, { repo, unread }) {
  * `preview` is its preview pattern (hosting.js: previewPattern; null when this
  * service hosts nothing) and the owner has not named previews themselves.
  */
+/**
+ * The lines that ask only the site's public address (address, live, signin),
+ * for the daily site check (daily-check.js): no token, nothing read from the
+ * repository, the same three lines checkSite gives. `home` is how the home
+ * page answered, for the word the daily check keeps.
+ */
+export async function checkPublic({ origin, timeoutMs = LIMITS.timeoutMs }) {
+  let base = String(origin || '');
+  try { base = new URL(base).origin === 'null' ? base : new URL(base).origin; } catch { /* said in the address line */ }
+  const home = await visit(`${base}/`, { read: true, timeoutMs });
+  const lines = [addressLine(home, base, timeoutMs), ...await liveLines(home, base, { state: 'no_access' }, timeoutMs)];
+  return { lines, home: { status: home.status ?? null, problem: home.problem ?? null } };
+}
+
 export async function checkSite({ token, repo, origin, worker, installUrl = INSTALL_URL, canAdd = true, timeoutMs = LIMITS.timeoutMs, hosted = false, ownDomain = false, down = null, kept = false, membersOn = false, preview = null }) {
   const checks = [];
   let unread = false;   // Kiln could not read the files this time

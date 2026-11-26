@@ -37,6 +37,10 @@ CLOUD_DASHBOARD = "http://localhost:8788"
 # each thing that happens to an account or a site. Off until the privacy page
 # says so. While it is anything but "on", nothing is written or read.
 ACTIVITY_RECORD = "off"
+# The daily site check (worker/daily-check.js, migration 0023): once a day each
+# site's public address and its Kiln page are asked whether they answer. Off
+# until the privacy page says so. While it is anything but "on", nothing runs.
+SITE_CHECK_DAILY = "off"
 
 # AI assist (optional, bring-your-own-key): store your Anthropic API key as a
 # SECRET — never a [vars] entry — with `npx wrangler secret put AI_API_KEY`.
@@ -143,6 +147,10 @@ HOSTING_SERVICE_URL = "https://kiln-auth-staging.erikkwilder.workers.dev"
 # each thing that happens to an account or a site. Off until the privacy page
 # says so. While it is anything but "on", nothing is written or read.
 ACTIVITY_RECORD = "off"
+# The daily site check (worker/daily-check.js, migration 0023): once a day each
+# site's public address and its Kiln page are asked whether they answer. Off
+# until the privacy page says so. While it is anything but "on", nothing runs.
+SITE_CHECK_DAILY = "off"
 
 [[env.staging.kv_namespaces]]
 binding = "KILN"
@@ -223,6 +231,10 @@ HOSTING_SERVICE_URL = "https://auth.kilncms.com"
 # each thing that happens to an account or a site. Off until the privacy page
 # says so. While it is anything but "on", nothing is written or read.
 ACTIVITY_RECORD = "off"
+# The daily site check (worker/daily-check.js, migration 0023): once a day each
+# site's public address and its Kiln page are asked whether they answer. Off
+# until the privacy page says so. While it is anything but "on", nothing runs.
+SITE_CHECK_DAILY = "off"
 
 [[env.production.kv_namespaces]]
 binding = "KILN"
