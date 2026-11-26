@@ -197,6 +197,92 @@ export async function commitFiles(gh, repo, branch, files, message, { inlineText
   return commit;
 }
 
+/**
+ * A commit of many files built on a commit the caller has already read, and
+ * never on whatever the branch holds a moment later.
+ *
+ * commitFiles reads the branch after its callers have read the files. A
+ * publish by somebody else that lands between the two is then built over for
+ * every file the new commit rewrites, and nobody is told. Here the order is
+ * the other way round: the caller reads the branch first (branchHead), reads
+ * each file at that commit, and hands the commit back as `head`. The new
+ * commit has it as its only parent and the branch is moved without force, so
+ * if the branch has moved meanwhile the move is refused, nothing is live, and
+ * HeadMoved is thrown: the caller reads again from the new head.
+ *
+ * files: [{ path, text } | { path, base64 }]. A text rides in the request
+ * that builds the tree (see `inlineText` above); a base64 file is sent as an
+ * object of its own. `sent` (a Map, path → the sha GitHub gave for it) is
+ * looked in first and filled in as those are sent, so a second try with the
+ * same Map sends no picture twice.
+ */
+export class HeadMoved extends Error {
+  constructor(branch, cause) {
+    super(`the branch "${branch}" moved while a commit was being made on it`);
+    this.name = 'HeadMoved';
+    this.code = 'head_moved';
+    this.branch = branch;
+    this.cause = cause;
+  }
+}
+
+/**
+ * Whether a refused move of a branch says the branch is no longer where the
+ * commit was built. GitHub answers 422 "Update is not a fast forward"; the
+ * Kiln service, which checks an invited editor's move itself before passing
+ * it on, answers with the code `ref_not_direct`.
+ */
+export function isHeadMoved(err) {
+  if (!err) return false;
+  if (err.data && err.data.code === 'ref_not_direct') return true;
+  return err.status === 422 && /fast[- ]?forward/i.test(String((err.data && err.data.message) || err.message || ''));
+}
+
+/** The commit a branch is at and that commit's tree: where commitFilesOn starts from. */
+export async function branchHead(gh, repo, branch) {
+  const ref = await gh.request('GET', `/repos/${repo}/git/ref/${encodeURIComponent('heads/' + branch)}`);
+  const commit = await gh.request('GET', `/repos/${repo}/git/commits/${ref.object.sha}`);
+  return { sha: ref.object.sha, tree: commit.tree.sha };
+}
+
+export async function commitFilesOn(gh, repo, branch, head, files, message, { sent = new Map() } = {}) {
+  const batches = [[]];
+  let size = 0;
+  for (const f of files) {
+    if (f.base64 === undefined && typeof f.text === 'string' && f.text) {
+      if (size && size + f.text.length > TREE_TEXT_MAX) { batches.push([]); size = 0; }
+      batches[batches.length - 1].push({ path: f.path, mode: '100644', type: 'blob', content: f.text });
+      size += f.text.length;
+      continue;
+    }
+    let sha = f.base64 !== undefined ? sent.get(f.path) : undefined;
+    if (!sha) {
+      sha = (await gh.request('POST', `/repos/${repo}/git/blobs`,
+        f.base64 !== undefined
+          ? { content: f.base64, encoding: 'base64' }
+          : { content: f.text, encoding: 'utf-8' })).sha;
+      if (f.base64 !== undefined) sent.set(f.path, sha);
+    }
+    batches[0].push({ path: f.path, mode: '100644', type: 'blob', sha });
+  }
+
+  let treeSha = head.tree;
+  for (const tree of batches) {
+    if (!tree.length && batches.length > 1) continue;
+    treeSha = (await gh.request('POST', `/repos/${repo}/git/trees`, { base_tree: treeSha, tree })).sha;
+  }
+  const commit = await gh.request('POST', `/repos/${repo}/git/commits`,
+    { message, tree: treeSha, parents: [head.sha] });
+  try {
+    await gh.request('PATCH', `/repos/${repo}/git/refs/${encodeURIComponent('heads/' + branch)}`,
+      { sha: commit.sha });
+  } catch (err) {
+    if (isHeadMoved(err)) throw new HeadMoved(branch, err);
+    throw err;
+  }
+  return commit;
+}
+
 /** Poll deploy state for a commit: GitHub deployment statuses, then commit status. */
 export async function deployState(gh, repo, sha) {
   try {
