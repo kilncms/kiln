@@ -66,6 +66,7 @@ import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } fro
 import { openPublishSheet, openSetSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
 import { draftRecord, readDraft, draftHolds, TYPED, openBoxEdit, openListEdit, pageRecord, savedMore } from './saved-edits.js';
+import { priorFacts, carried, keepWaiting, factsSha, changedUnder, reviewed } from './before.js';
 import { TYPING_PAUSE, afterLastKey } from './typing-counts.js';
 import { wayOf, onLoadFailure, endedNotice, notStartedNotice, signInUrl, readFailure, whatSurvives, publishEnded, publishRefused, publishTrouble, readRefused, editsAsText, backAfterSignIn } from './sign-in-ended.js';
 import { makeAsk } from './worker-call.js';
@@ -4695,11 +4696,12 @@ function undoSandboxPublish(rec) {
 async function confirmOverwrites(localEdits) {
   try {
     const fresh = await getFile(state.gh, cfg.repo, state.page.path, cfg.branch || 'main');
-    if (fresh.sha === state.page.sha) return true;         // nothing changed under us
-    const freshVals = readValues(fresh.text);
-    const base = state.baseline || {};
-    const conflicted = [...new Set(localEdits.map(e => e.key))]
-      .filter(k => k in freshVals && k in base && freshVals[k] !== base[k]);
+    // Compared with what each edit was made against: this page's reading of the file, or, for an edit
+    // put back after a reload, what it rested on then (before.js). Nothing changed under us: no question.
+    let freshVals = null;
+    const values = () => (freshVals = freshVals || readValues(fresh.text));
+    const conflicted = changedUnder({ keys: [...new Set(localEdits.map(e => e.key))], freshSha: fresh.sha, freshValues: values,
+      pageSha: state.page.sha, baseline: state.baseline || {}, prior: priorHere() });
     if (!conflicted.length) return true;                   // their edits touch other fields — clean merge
     return await new Promise((resolve) => {
       const m = modal(`
@@ -4711,7 +4713,11 @@ async function confirmOverwrites(localEdits) {
           <button class="kiln-btn-ghost" id="kiln-conf-reload">Reload &amp; review (keeps your edits)</button>
           <button class="kiln-btn-publish" id="kiln-conf-mine">Publish mine anyway</button>
         </div>`);
-      m.querySelector('#kiln-conf-reload').onclick = () => { savePendingToStorage(); location.reload(); };
+      // Looking again: what the file holds now is what these edits rest on, so the question does not come back after the reload.
+      m.querySelector('#kiln-conf-reload').onclick = () => {
+        state.before = reviewed(priorHere(), { path: state.page.path, sha: fresh.sha, keys: conflicted, values: values() });
+        savePendingToStorage(); location.reload();
+      };
       m.querySelector('#kiln-conf-mine').onclick = () => { m.remove(); resolve(true); };
       m.addEventListener('click', (e) => {
         if (e.target === m || e.target.closest('[data-close]')) resolve(false);
@@ -8816,7 +8822,7 @@ function settingsPanel() {
       <label class="kiln-role"><input type="checkbox" id="kiln-set-nopreview" ${previewOff(localStorage) ? 'checked' : ''}>
         <span><strong>Publish without the preview</strong><br><small>Publish goes live at once, without first showing what will change.</small></span></label>
     </div>
-    ${wayOffered(wayWho()) ? `<div class="kiln-roles">${WAYS.map(w => `
+    ${wayOffered(wayWho()) ? `<div class="kiln-roles-label">When you publish</div><div class="kiln-roles">${WAYS.map(w => `
       <label class="kiln-role"><input type="radio" name="kiln-way" value="${w.value}" ${way() === w.value ? 'checked' : ''}>
         <span><strong>${escapeHtml(w.name)}</strong><br><small>${escapeHtml(w.line)}</small></span></label>`).join('')}
     </div>` : ''}
@@ -10485,6 +10491,8 @@ function savePendingToStorage() {
     // earlier visit's edits are brought back, and the mark that came with them is read then.
     if (record && state.restoring) localStorage.setItem(restoreMarkKey(), JSON.stringify(restoreMark(state.restoring)));
     else if (record) localStorage.removeItem(restoreMarkKey());
+    // What put-back edits rest on is kept for those still waiting; one published or dropped starts afresh.
+    state.before = record ? keepWaiting(priorHere(), record.edits, record.source) : null;
     if (!record) { localStorage.removeItem(pendingStorageKey()); return; }
     const plain = JSON.stringify(record);
     // What is known of this page goes beside the edits, so that they can be published without the
@@ -10518,10 +10526,17 @@ function pageFacts(record) {
   if (cfg.sandbox || !state.page?.path) return {};
   const more = Object.create(null);
   const baseline = state.baseline || {};
+  // An edit put back after a reload keeps what it was made against, never this newer reading (before.js).
+  const prior = keepWaiting(priorHere(), record.edits, record.source);
   for (const [key, v] of Object.entries(record.edits)) {
     const m = {};
-    if (Object.hasOwn(baseline, key) && typeof baseline[key] === 'string') m.was = baseline[key];
-    if (v.html !== undefined && isListKey(key) && typeof state.undoBase.get(key) === 'string') m.base = state.undoBase.get(key);
+    const c = carried(prior, key);
+    if (c && c.was !== undefined) m.was = c.was;
+    else if (Object.hasOwn(baseline, key) && typeof baseline[key] === 'string') m.was = baseline[key];
+    if (v.html !== undefined && isListKey(key)) {
+      if (c && c.base !== undefined) m.base = c.base;
+      else if (typeof state.undoBase.get(key) === 'string') m.base = state.undoBase.get(key);
+    }
     let el = null;
     try { el = document.querySelector('[data-cms="' + key + '"]'); } catch { el = null; }
     if (el && el.closest('[data-cms-partial]')) m.shared = true;
@@ -10529,13 +10544,18 @@ function pageFacts(record) {
   }
   const was = Object.create(null);
   for (const ref of Object.keys(record.source || {})) {
-    const held = sourceWas(ref);
+    const held = prior && Object.hasOwn(prior.sourceWas || {}, ref) ? prior.sourceWas[ref] : sourceWas(ref);
     if (held !== undefined) was[ref] = held;
   }
   return {
-    page: { path: state.page.path, url: location.pathname, title: document.title, sha: state.page.sha },
+    page: { path: state.page.path, url: location.pathname, title: document.title, sha: factsSha(prior, state.page.path, state.page.sha) },
     more, sourceWas: was,
   };
+}
+
+/** What edits put back on this page were made against (before.js), or null. */
+function priorHere() {
+  return state.before && state.page?.path && state.before.path === state.page.path ? state.before : null;
 }
 
 // Words typed in a box that is still open are kept like a finished edit: a
@@ -10620,9 +10640,11 @@ function offerPendingRestore() {
   // Back from "Sign in again" in this tab: the edits are put back without asking.
   let back = false;
   try { back = sessionStorage.getItem(BACK_KEY) === '1'; sessionStorage.removeItem(BACK_KEY); } catch { /* private mode */ }
-  let saved, ts;
+  let saved, ts, prior = null;
   try {
     const stored = JSON.parse(localStorage.getItem(pendingStorageKey()));
+    // What these edits were made against, read now: the copy itself can be rewritten before an answer is given.
+    prior = priorFacts(stored);
     // A content-file edit comes back only to a field that is on this page and can be edited now.
     saved = readDraft(stored, { keep: keptFor(way()), known: (ref) => !!state.sourceFields?.get(ref)?.els.some(el => el.classList.contains('kiln-source-field') && !el.classList.contains('kiln-source-locked')) });
     ts = stored?.ts;
@@ -10630,9 +10652,9 @@ function offerPendingRestore() {
   if (!saved) return;
   // The demo starts over after a day, and what was not published goes with it.
   if (cfg.sandbox && Date.now() - ts > SANDBOX_TTL) { clearSavedPending(); return; }
-  if (back) { restoreSaved(saved, kept, true); return; }
+  if (back) { restoreSaved(saved, kept, true, false, prior); return; }
   // "Several pages together": the waiting edits are put back without the question, by the same steps as "Restore edits".
-  if (way() === 'together' && saved.count) { restoreSaved(saved, kept, false, true); return; }
+  if (way() === 'together' && saved.count) { restoreSaved(saved, kept, false, true, prior); return; }
   const names = [...Object.keys(saved.edits).map(readableName), ...Object.keys(saved.source).map(sourceName)];
   const when = new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   // What was being typed when a sign-in ended (a comment, a note, a time) is offered back with the edits, or on its own.
@@ -10649,11 +10671,11 @@ function offerPendingRestore() {
       <button class="kiln-btn-publish" id="kiln-rest-yes">${saved.count ? 'Restore edits' : 'Bring it back'}</button>
     </div>`, { onClose: () => answered() });
   m.querySelector('#kiln-rest-no').onclick = () => { clearSavedPending(); m.remove(); answered(); };
-  m.querySelector('#kiln-rest-yes').onclick = async () => { await restoreSaved(saved, kept, false); m.remove(); answered(); };
+  m.querySelector('#kiln-rest-yes').onclick = async () => { await restoreSaved(saved, kept, false, false, prior); m.remove(); answered(); };
 }
 
 /** Put saved edits (what readDraft gives) back on the page, staged as they were. `kept` resolves to the uploads kept beside them. */
-async function restoreSaved(saved, kept, signedInAgain, quiet = false) {
+async function restoreSaved(saved, kept, signedInAgain, quiet = false, prior = null) {
   const hidBefore = notPutBack;   // parts applyKeyDom did not show: said when they came back on arrival
   // The pictures and files those edits added: queue them again, and show each
   // picture from the kept bytes (its address on the site does not exist yet).
@@ -10680,6 +10702,9 @@ async function restoreSaved(saved, kept, signedInAgain, quiet = false) {
     document.querySelectorAll(`[data-cms="${esc}"], [data-cms-repeat="${esc}"]`)
       .forEach(n => n.classList.add('kiln-modified'));
   }
+  // The edits are staged again: they rest on what they were made against, not on this newer reading of the file (before.js).
+  // Set only now: while the uploads were being read, a save with nothing staged would have cleared it.
+  if (prior && state.page?.path && prior.path === state.page.path) state.before = prior;
   // A whole-page restore was waiting with these edits: it waits again, and its text is read when it is published.
   if (!cfg.sandbox && state.page?.path) {
     let mark = null;
@@ -11080,6 +11105,8 @@ img.kiln-field:hover{outline-style:solid;filter:brightness(.9)}
 .kiln-modal-actions .kiln-btn-ghost{color:#4b5563;border-color:#e5e7eb;background:#f9fafb}
 .kiln-modal-actions .kiln-btn-ghost:hover{color:#111;background:#f3f4f6}
 .kiln-roles{display:flex;flex-direction:column;gap:8px;margin:10px 0}
+/* A second set of choices under the same heading says what it is about, so two selected options do not read as one list. */
+.kiln-roles-label{margin:14px 2px -4px;font-size:12.5px;font-weight:600;color:#6b7280}
 .kiln-role{display:flex;gap:10px;align-items:flex-start;border:1.5px solid #e5e7eb;border-radius:12px;
   padding:11px;cursor:pointer;transition:all .15s}
 .kiln-role:has(input:checked){border-color:var(--kiln-accent);background:#eef2ff}

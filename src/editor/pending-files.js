@@ -54,12 +54,16 @@ export async function forgetFiles(page, paths = null) {
 }
 
 /**
- * The uploads kept for a page, newest state. Entries older than `maxAge` are
- * dropped: a week unless something else is said (the edits they belong to are
- * kept as long, waiting.js keptFor: 30 days in "Several pages together").
+ * The uploads kept for a page, newest state. An upload is kept as long as the
+ * longest time a page's unpublished edits are ever offered back (keptLasts):
+ * a copy of edits is offered for a week (30 days in "Several pages together",
+ * waiting.js keptFor) from its LAST edit, and a picture chosen days before
+ * that last edit must still be there when the copy is brought back, or the
+ * page would be published pointing at a file that was never sent. Which
+ * uploads are used is decided by the copy that is offered (filesToRestore).
  */
 export async function keptFiles(page, now = Date.now(), maxAge = MAX_AGE) {
-  const age = keptAge(maxAge);
+  const age = keptLasts(maxAge);
   const all = (await run('readonly', s => s.getAll())) || [];
   const old = all.filter(f => now - f.ts > age);
   if (old.length) run('readwrite', s => { for (const f of old) s.delete(f.id); }).catch(() => {});
@@ -69,6 +73,14 @@ export async function keptFiles(page, now = Date.now(), maxAge = MAX_AGE) {
 /** How long kept uploads last: the time asked for, or the week when none (or nothing usable) is said. */
 export function keptAge(maxAge) {
   return Number.isFinite(maxAge) && maxAge > 0 ? maxAge : MAX_AGE;
+}
+
+/** The longest time a page's unpublished edits are offered back in any way of working (waiting.js KEEP.together). */
+export const LONGEST_OFFER = 30 * 24 * 3600 * 1000;
+
+/** How long a kept upload lasts: never less than the longest time its edits can be offered back. */
+export function keptLasts(maxAge) {
+  return Math.max(keptAge(maxAge), LONGEST_OFFER);
 }
 
 // ─── pure ────────────────────────────────────────────────────────────────────

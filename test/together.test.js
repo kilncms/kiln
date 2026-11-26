@@ -118,8 +118,9 @@ test('the editor proves the copy before it skips the question, and one page at a
 
 test('coming back: put back without the question, by the same steps as "Restore edits"', () => {
   const offer = between('function offerPendingRestore()', '\n}\n');
-  assert.ok(offer.indexOf("if (way() === 'together' && saved.count) { restoreSaved(saved, kept, false, true); return; }") > offer.indexOf('if (back)'));
-  assert.ok(offer.indexOf("restoreSaved(saved, kept, false, true)") < offer.indexOf('<h3>Pick up where you left off?</h3>'));
+  // With what the edits were made against (before.js) carried along as the fifth argument.
+  assert.ok(offer.indexOf("if (way() === 'together' && saved.count) { restoreSaved(saved, kept, false, true, prior); return; }") > offer.indexOf('if (back)'));
+  assert.ok(offer.indexOf("restoreSaved(saved, kept, false, true, prior)") < offer.indexOf('<h3>Pick up where you left off?</h3>'));
   assert.equal(backLine(2), 'Your 2 waiting edits on this page are back. Not published yet.');
   assert.equal(backLine(1), 'Your waiting edit on this page is back. Not published yet.');
   assert.equal(backLine(3, 1), 'Your 3 waiting edits on this page are back. Not published yet. 1 of them could not be shown on the page, because it holds code Kiln does not put back by itself.');
@@ -186,4 +187,16 @@ test('Publish with "Several pages together": the set sheet, or the set at once w
   assert.ok(refresh.includes("const across = !closed && way() === 'together' ? acrossNow() : null;"));
   assert.ok(refresh.includes('const label = across?.label || today;'));
   assert.ok(refresh.includes('const live = anything || !!across;'));
+});
+
+// A picture waiting with a page's edits lasts as long as those edits can be offered back in any way of
+// working, so edits brought back days after the picture was chosen never point at a file that was thrown away.
+test('waiting pictures last as long as the longest offer of their edits', async () => {
+  const { keptLasts, LONGEST_OFFER } = await import('../src/editor/pending-files.js');
+  assert.equal(LONGEST_OFFER, KEEP.together, 'the same thirty days as "Several pages together"');
+  assert.equal(keptLasts(), KEEP.together, 'one page at a time: a picture chosen before the last edit is still there');
+  assert.equal(keptLasts(WEEK), KEEP.together);
+  assert.equal(keptLasts(KEEP.together), KEEP.together);
+  for (const bad of [0, -1, NaN, 'x', null]) assert.equal(keptLasts(bad), KEEP.together);
+  assert.ok(pendingFiles.includes('const age = keptLasts(maxAge);'), 'keptFiles uses it for what it drops and what it gives back');
 });

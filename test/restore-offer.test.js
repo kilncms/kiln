@@ -50,7 +50,8 @@ test('restore offer: a saved draft is asked about after the unpublished edits, n
   // every way out of the question settles it: both buttons, and putting it away
   assert.match(offer, /\{ onClose: \(\) => answered\(\) \}/);
   assert.match(offer, /#kiln-rest-no'\)\.onclick = \(\) => \{ clearSavedPending\(\); m\.remove\(\); answered\(\); \};/);
-  assert.match(offer, /#kiln-rest-yes'\)\.onclick = async \(\) => \{ await restoreSaved\(saved, kept, false\); m\.remove\(\); answered\(\); \};/);
+  // The edits come back with what they were made against (before.js): `prior`, read when the copy was read.
+  assert.match(offer, /#kiln-rest-yes'\)\.onclick = async \(\) => \{ await restoreSaved\(saved, kept, false(, false, prior)?\); m\.remove\(\); answered\(\); \};/);
   // and the demo asks in the same order
   assert.match(part('async function initSandbox()', '\n}\n'), /offerPendingRestore\(\);\s*\n\s*restoreAsked\.then\(offerDraftSandbox\);/);
   // declared before the editor starts, so that starting cannot be overtaken by the declaration

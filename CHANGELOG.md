@@ -58,6 +58,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The one address to write to is hello@kilncms.com everywhere.
 
+### Fixed
+
+- A new picture chosen on a page waits in the browser as long as the page's
+  unpublished edits can be offered back. Before, a picture chosen several days
+  before a page's last edit could be thrown away while the edits were still
+  offered, and the page was then published pointing at a picture that was never
+  sent.
+
 ## [0.10.6] - 2026-11-26
 
 ### Fixed
