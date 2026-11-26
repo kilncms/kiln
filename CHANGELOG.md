@@ -60,6 +60,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Unpublished edits brought back to a page, with "Pick up where you left off?"
+  or when coming back to a page, are compared with what the page held when they
+  were made. Before, they were compared with the page as it was loaded again, so
+  if someone else had published to the same part in between, publishing wrote
+  over their words without asking. Now it asks: **Someone else changed this
+  page** for one page, **Keep theirs** or **Use mine** for several.
 - A new picture chosen on a page waits in the browser as long as the page's
   unpublished edits can be offered back. Before, a picture chosen several days
   before a page's last edit could be thrown away while the edits were still
