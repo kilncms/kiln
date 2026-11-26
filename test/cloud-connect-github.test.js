@@ -37,7 +37,7 @@ const NOT_READY = 'This Kiln service cannot connect a GitHub account yet. That i
 const ALREADY = 'You are signed in with GitHub already, so there is nothing to connect.';
 const TOO_MANY = 'You have started connecting GitHub many times in a short while. Wait an hour, then try again.';
 const EXPIRED = 'Connecting GitHub works once and for ten minutes, in the browser it was started in. This time it was used already, or the time ran out. Nothing was changed. Start again from the dashboard.';
-const TAKEN = 'That GitHub account already has a Kiln account of its own, so it cannot be connected to this one. Nothing was changed. To get to its sites, sign out, then sign in with GitHub.';
+const TAKEN = 'That GitHub account already has a Kiln account of its own, so it cannot be connected to this one. Nothing was changed. Connect a different GitHub account, or sign out and sign in with GitHub to use that one.';
 const OTHER = 'This Kiln account is connected to the GitHub account eve-gh, and you came back from GitHub as mallory. Nothing was changed. Sign in to GitHub as eve-gh, then connect again.';
 const LINKED_ADDRESS = 'Kiln writes to the address this account was started with, the one Google or a sign-in link confirmed. Nobody confirms an address typed here, so it cannot take that one\'s place.';
 const NEEDS_GITHUB_TO_ADD = 'Adding a repository of your own needs a GitHub sign-in. Sign out, then sign in with GitHub.';
@@ -336,7 +336,9 @@ test('a GitHub account that already has a Kiln account of its own is not connect
   const eve = await byEmail(e);
   const settled = everything(e);
   const refused = await connect(e, eve.sid, { login: 'rosa', id: 7 });
-  assert.deepEqual({ status: refused.status, body: refused.body }, { status: 409, body: { error: TAKEN, code: 'taken' } });
+  assert.deepEqual({ status: refused.status, body: refused.body }, { status: 409, body: { error: TAKEN, code: 'taken', login: 'rosa' } });
+  // GitHub was asked to show its account picker, so the person could have chosen another GitHub account.
+  assert.equal(refused.round.to.searchParams.get('prompt'), 'select_account');
   // The same when GitHub's person renamed since: the number is what counts.
   assert.equal((await connect(e, eve.sid, { login: 'rosa-diaz', id: 7 })).body.code, 'taken');
   // And for an account from before numbers were kept, which is known by its login alone ('ada', the harness's account).
@@ -502,6 +504,7 @@ test('a plain sign-in with GitHub, with no code, goes as it always did', { skip:
   const people = accounts(e);
   const rosa = await byGitHub(e, { login: 'rosa', id: 7 });
   assert.equal(new URL(rosa.start.headers.get('Location')).search.includes('link'), false);
+  assert.equal(new URL(rosa.start.headers.get('Location')).searchParams.get('prompt'), null, 'a plain sign-in shows no account picker');
   assert.equal(rosa.res.status, 302);
   assert.equal(rosa.res.headers.get('Location'), `${DASH}/#kc_token=${rosa.sid}`);
   assert.deepEqual(rosa.sess, { account_id: rosa.sess.account_id, login: 'rosa', uid: 7, gh: 'ghu_plain' });

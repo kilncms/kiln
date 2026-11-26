@@ -101,7 +101,7 @@ const LINK_NOT_READY = 'This Kiln service cannot connect a GitHub account yet. T
 const LINK_ALREADY = 'You are signed in with GitHub already, so there is nothing to connect.';
 const LINK_TOO_MANY = 'You have started connecting GitHub many times in a short while. Wait an hour, then try again.';
 const LINK_EXPIRED = 'Connecting GitHub works once and for ten minutes, in the browser it was started in. This time it was used already, or the time ran out. Nothing was changed. Start again from the dashboard.';
-const LINK_TAKEN = 'That GitHub account already has a Kiln account of its own, so it cannot be connected to this one. Nothing was changed. To get to its sites, sign out, then sign in with GitHub.';
+const LINK_TAKEN = 'That GitHub account already has a Kiln account of its own, so it cannot be connected to this one. Nothing was changed. Connect a different GitHub account, or sign out and sign in with GitHub to use that one.';
 const LINK_NOT_NOW = 'Kiln could not connect your GitHub account just now. Nothing was changed. Try again in a few minutes.';
 const linkOther = (theirs, as) => (theirs
   ? `This Kiln account is connected to the GitHub account ${theirs}, and you came back from GitHub as ${as}. Nothing was changed. Sign in to GitHub as ${theirs}, then connect again.`
@@ -2361,6 +2361,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const nonce = uuid();
     await env.KILN.put(`cstate:${nonce}`, link === null ? '1' : JSON.stringify({ link }), { expirationTtl: 600 });
     const params = new URLSearchParams({ client_id: c.client_id, redirect_uri: `${selfOrigin(url, env)}/cloud/callback`, state: nonce });
+    // Connecting: GitHub shows its account picker, so the person chooses which GitHub account joins the Kiln
+    // account they are signed in to, and the one the browser happens to be signed in to is never taken unasked.
+    if (link !== null) params.set('prompt', 'select_account');
     return startSignIn(url, `https://github.com/login/oauth/authorize?${params}`, nonce);   // with the cookie that ties it to this browser
   }
 
@@ -2481,7 +2484,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     }
     if (!out.ok) {
       if (out.code === 'other') return json({ error: linkOther(out.login, back.login), code: 'other', login: out.login }, 409);
-      return out.code === 'taken' ? json({ error: LINK_TAKEN, code: 'taken' }, 409) : gone();
+      // The GitHub login is said back, so the dashboard can name the account that is taken. The person stays signed in as they are.
+      return out.code === 'taken' ? json({ error: LINK_TAKEN, code: 'taken', login: back.login }, 409) : gone();
     }
     const sid = uuid();
     await env.KILN.put(`csess:${sid}`, JSON.stringify({

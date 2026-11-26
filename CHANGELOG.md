@@ -60,6 +60,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Connecting GitHub to an account that began by email or with Google shows
+  GitHub's account picker, so the person chooses which GitHub account joins.
+  When that GitHub account already has its own Kiln account, the person stays
+  signed in as they are, the account is named, and the one button offered is
+  to connect a different GitHub account. Before, that button signed them in as
+  the other account.
 - Unpublished edits brought back to a page, with "Pick up where you left off?"
   or when coming back to a page, are compared with what the page held when they
   were made. Before, they were compared with the page as it was loaded again, so
