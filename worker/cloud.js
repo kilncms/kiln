@@ -1896,8 +1896,9 @@ export async function expireStaleTrials(env) {
  * one that is paid for is Stripe's to change. With `always` false (the
  * operator only set the status to `trialing`) it acts on a site whose days
  * are over and on nothing else, and answers null so the status is set as
- * before. The marks that stop free days from starting again (freeDayClock)
- * are left as they are.
+ * before. The marks that stop free days from starting again for a site that
+ * is removed and added once more (freeDayClock) are left as they are; the
+ * mark of the site's own domain moves with the days.
  */
 export async function moreFreeDays(env, siteId, { always = false, now = Date.now() } = {}) {
   const span = TRIAL_GRACE_DAYS * 86400 * 1000;
@@ -1913,6 +1914,18 @@ export async function moreFreeDays(env, siteId, { always = false, now = Date.now
     () => env.kiln_cloud.prepare(`UPDATE sites SET status = 'trialing', created_at = ?, access_until = NULL WHERE id = ? AND ${paidBy} IS NULL`).bind(from, s.id).run(),
     () => env.kiln_cloud.prepare(`UPDATE sites SET status = 'trialing', created_at = ? WHERE id = ? AND ${paidBy} IS NULL`).bind(from, s.id).run(),
   );
+  // A site on a domain of its own: that domain's free days are counted from a mark of its own (domainFreeDays),
+  // written when the site went live there. The days just given are the operator's word for the site wherever
+  // it answers, so the mark moves with them: left behind, it would take the days back the next time the domain
+  // is set up or goes live.
+  try {
+    const name = String((await domainRow(env, s.id))?.name || '').trim().toLowerCase();
+    if (name) {
+      const key = `firstseen:domain:${name}`;
+      const mark = Number(await env.KILN.get(key)) || null;
+      if (mark && mark < from) await env.KILN.put(key, String(from));
+    }
+  } catch { /* the mark stays where it was */ }
   // "Your free days end soon" and "your free days have ended" are sent once for a site (sendOnce): for the new end they may go again.
   for (const note of ['trial-soon', 'trial-ended']) { try { await env.KILN.delete(`mail:${note}:${s.id}`); } catch { /* the note then stays sent, and nothing else is lost */ } }
   return { status: 200, body: { ok: true, status: 'trialing', trial_ends: from + span, days: TRIAL_GRACE_DAYS } };

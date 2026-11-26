@@ -3319,7 +3319,7 @@ function emailCheckPage(place, { req, email = '', note = '', linkOnly = false },
       ? `<p>If ${esc(email)} can sign in to ${site}, a link is on its way to it. The link works once, for 15 minutes.</p>`
       : `<p>If the address you typed can sign in to ${site}, a link is on its way to it. The link works once, for 15 minutes.</p>`}
     ${linkOnly
-      ? `<p>Open the link in the email to sign in. Sign-in links were asked for this address ${EMAIL_LINKS_PER_DAY} times in the last day, so for now the emails come with the link and no code to type.</p>`
+      ? `<p>Open the link in the email to sign in. Sign-in links for this address were asked for ${EMAIL_LINKS_PER_DAY} times in the last day, so for now its emails come with the link and no code to type.</p>`
       : `<p>You can also type the code from the email here.</p>
     ${note ? `<p><strong>${esc(note)}</strong></p>` : ''}
     <form method="post" action="/email/code">${placeFields(place)}<input type="hidden" name="req" value="${esc(req)}">

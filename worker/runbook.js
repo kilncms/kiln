@@ -439,7 +439,7 @@ npx wrangler secret list --env production</pre>
       <h3 class="sub">Give a site seven more free days</h3>
       <p>On the admin page, press <strong>7 more days</strong> on the site's row, or on its line under "Needs you". A site whose days are still running gets seven days added to their end. A site whose days are over is opened again, with seven full days from that moment. Kiln's emails about the end of the days go again for the new end.</p>
       <p>It works only for a site nobody pays for. A site with a subscription has its dates in Stripe.</p>
-      <p>The marks above are left alone. If the customer removes the site and adds it again, Kiln counts from the marks and may close it at once. Clear the marks (hand job 2) if that happens.</p>
+      <p>The mark of the site's own domain moves with the days. The other marks above are left alone. If the customer removes the site and adds it again, Kiln counts from those marks and may close it at once. Clear them (hand job 2) if that happens.</p>
       <p>A site on Kiln's hosting that was already taken down stays down: its owner presses <strong>Put it back up</strong> on their dashboard.</p>
 
       <h3 class="sub">Hand job 3: reopen a site that was closed, without the admin page</h3>

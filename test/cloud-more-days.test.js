@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../worker/index.js';
-import { moreFreeDays, expireStaleTrials } from '../worker/cloud.js';
+import { moreFreeDays, expireStaleTrials, domainFreeDays } from '../worker/cloud.js';
 import { fakeKV, withFetch } from './worker-harness.js';
 import { cloudEnv, addSite, addAccount, d1Skip } from './d1-fake.js';
 
@@ -173,4 +173,26 @@ test('the operator can hide a line that carries its day, and it is that day\'s l
     assert.equal((await post(env, '/admin/cloud/needs/hide', { key: 'trial_ended:acct-uma:site-1:not-a-day' })).status, 400);
     assert.equal((await post(env, '/admin/cloud/needs/hide', { key: 'trial_ended:acct-uma:site-1:1:2' })).status, 400);
   });
+});
+
+test('a site on a domain of its own keeps the days it was given: the domain\'s own mark moves with them', { skip: d1Skip }, async () => {
+  const { env, kv } = world();
+  const added = Date.now() - 9 * DAY;
+  addSite(env, { account_id: 'acct-uma', repo: 'uma/shop', origin: 'https://www.oakbakery.test', plan: 'managed', status: 'canceled', created_at: added });
+  env.kiln_cloud.exec("INSERT INTO domains (site_id, name, zone_id, state, created_at, updated_at) VALUES ('site-1', 'oakbakery.test', 'z1', 'live', 1, 1)");
+  kv.map.set('firstseen:domain:oakbakery.test', String(added));   // written when the site went live there, in its first days
+  kv.map.set('firstseen:domain:other.test', String(added));
+  const given = await moreFreeDays(env, 'site-1', { always: true });
+  assert.equal(given.status, 200);
+  const from = row(env).created_at;
+  assert.equal(kv.map.get('firstseen:domain:oakbakery.test'), String(from), 'the domain is counted from the same moment as the site');
+  assert.equal(kv.map.get('firstseen:domain:other.test'), String(added), 'another domain is not touched');
+  // Setting the domain up again, or going live on it, no longer takes the days back.
+  assert.equal(await domainFreeDays(env, 'site-1', 'oakbakery.test'), null);
+  assert.equal(await domainFreeDays(env, 'site-1', 'oakbakery.test', { goesLive: true }), null);
+  assert.deepEqual([row(env).status, row(env).created_at], ['trialing', from]);
+  // A mark is never moved back: days given while a later mark stands leave it.
+  kv.map.set('firstseen:domain:oakbakery.test', String(from + 30 * DAY));
+  await moreFreeDays(env, 'site-1', { always: true });
+  assert.equal(kv.map.get('firstseen:domain:oakbakery.test'), String(from + 30 * DAY));
 });

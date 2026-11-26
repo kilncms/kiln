@@ -286,7 +286,7 @@ test('past eight links in a day an address is sent the link with no code, so its
   const ninth = await ask(w, 'ada@example.com');
   assert.equal(ninth.status, 200);
   assert.match(ninth.text, /Check your email/);
-  assert.match(ninth.text, /Open the link in the email to sign in\. Sign-in links were asked for this address 8 times in the last day, so for now the emails come with the link and no code to type\./);
+  assert.match(ninth.text, /Open the link in the email to sign in\. Sign-in links for this address were asked for 8 times in the last day, so for now its emails come with the link and no code to type\./);
   assert.equal(ninth.req, null, 'no code form');
   assert.doesNotMatch(ninth.text, /Code from the email/);
   assert.ok(ninth.mail, 'the email is still sent');
