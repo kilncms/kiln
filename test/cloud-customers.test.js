@@ -30,7 +30,7 @@ test('a customer is answered whole: who they are, how they sign in, their addres
     created_at: NOW - 10 * DAY, last_seen: NOW - 3600, stage: 'paying', operator: false, came_from: null,
     sites: [{
       id: 's1', label: 'Rowing Club', origin: 'https://club.example', plan: 'managed', status: 'active', kept: true,
-      trial_ends: null, paid_until: NOW + 300 * DAY, billing_period: 'year', access_until: null, set_up: 'ready to edit', last_publish: NOW - 60,
+      trial_ends: null, trial_ended: null, paid_until: NOW + 300 * DAY, billing_period: 'year', access_until: null, set_up: 'ready to edit', last_publish: NOW - 60,
     }],
   }]);
   assert.deepEqual(out.needs_you, []);
@@ -112,8 +112,31 @@ test('needs you: a trial that ends within three days for an account Kiln cannot 
   assert.deepEqual(ending(5 * DAY, { email: 'a@example.com' }), [], 'Kiln\'s own reminder reaches them');
   assert.deepEqual(ending(5 * DAY, {}, { stripe_subscription_id: 'sub_1' }), [], 'someone subscribed');
   const [row] = view([account({ github_login: 'ada' })], [site({ id: 's9', created_at: NOW - 5 * DAY, kept: 1, name: 'Rowing Club' })]).needs_you;
-  assert.deepEqual({ ...row, detail: '' }, { kind: 'trial_no_address', account_id: 'a1', site_id: 's9', key: 'trial_no_address:a1:s9', who: '@ada', label: 'Trial ending, no address', detail: '' });
-  assert.equal(row.detail, 'The free days of Rowing Club end on November 26 and Kiln\'s reminder cannot reach this person: Kiln has no address for them, so reach them on GitHub as @ada, or keep the site open yourself with its status control.');
+  assert.deepEqual({ ...row, detail: '' }, { kind: 'trial_no_address', account_id: 'a1', site_id: 's9', key: `trial_no_address:a1:s9:${NOW + 2 * DAY}`, who: '@ada', label: 'Trial ending, no address', detail: '', more_days: true });
+  assert.equal(row.detail, 'The free days of Rowing Club end on November 26 and Kiln\'s reminder cannot reach this person: Kiln has no address for them, so reach them on GitHub as @ada, or give the site seven more free days.');
+  const [bare] = view([account({ name: 'Eve Park' })], [site({ created_at: NOW - 5 * DAY, kept: 1 })]).needs_you;
+  assert.match(bare.detail, /Kiln has no address for them and they have no GitHub login, so all you can do is give the site seven more free days\.$/);
+});
+
+test('needs you: free days that ran out in the last week with nobody subscribing', () => {
+  const ended = (endedAgo, acct = {}, s = {}) => kinds(view([account(acct)], [site({ status: 'canceled', created_at: NOW - 7 * DAY - endedAgo, kept: 1, ...s })]));
+  assert.deepEqual(ended(0), ['trial_ended'], 'the moment they ended');
+  assert.deepEqual(ended(6 * DAY), ['trial_ended']);
+  assert.deepEqual(ended(7 * DAY), [], 'after a week it is no longer news');
+  assert.deepEqual(ended(DAY, { email: 'a@example.com' }), ['trial_ended'], 'with an address too: Kiln\'s own note went, and a word from a person may do more');
+  assert.deepEqual(ended(DAY, {}, { stripe_subscription_id: 'sub_1' }), [], 'a plan that ended is not free days that ran out');
+  assert.deepEqual(ended(DAY, {}, { access_until: NOW - 5 }), [], 'nor is a site that had a day from a plan');
+  assert.deepEqual(ended(DAY, {}, { status: 'trialing' }), [], 'a site still on its days has not ended');
+  const [row] = view([account({ email: 'a@example.com' })], [site({ id: 's9', status: 'canceled', created_at: NOW - 8 * DAY, kept: 1, name: 'Rowing Club' })]).needs_you;
+  assert.deepEqual({ ...row, detail: '' }, { kind: 'trial_ended', account_id: 'a1', site_id: 's9', key: `trial_ended:a1:s9:${NOW - DAY}`, who: 'a@example.com', label: 'Trial ended, not subscribed', detail: '', more_days: true });
+  assert.equal(row.detail, 'The free days of Rowing Club ended on November 23 and nobody subscribed, so editing is off: write to them at a@example.com and ask what held them back, or give the site seven more free days.');
+  // The site says when its days ended, for the page.
+  const s = view([account()], [site({ status: 'canceled', created_at: NOW - 8 * DAY })]).customers[0].sites[0];
+  assert.equal(s.trial_ended, NOW - DAY);
+  assert.equal(s.trial_ends, null);
+  // The newest ending first.
+  const two = view([account({ id: 'a1' }), account({ id: 'a2' })], [site({ id: 'older', account_id: 'a1', status: 'canceled', created_at: NOW - 12 * DAY, kept: 1 }), site({ id: 'newer', account_id: 'a2', status: 'canceled', created_at: NOW - 8 * DAY, kept: 1 })]);
+  assert.deepEqual(two.needs_you.map(x => x.site_id), ['newer', 'older']);
 });
 
 test('needs you: a payment that failed', () => {
@@ -171,7 +194,7 @@ test('the operator\'s own accounts: marked, never in needs you, not counted in t
   const out = view([op, google, stranger], [site({ id: 'mine', account_id: 'g', created_at: NOW - 9 * DAY })], { asking: 'op' });
   const by = Object.fromEntries(out.customers.map(c => [c.id, c]));
   assert.equal(by.op.operator, true, 'the account that asks');
-  assert.equal(by.g.operator, true, 'and another account Kiln writes to at the same address, whatever its case');
+  assert.equal(by.g.operator, true, 'and another account whose address, confirmed by Google, is the same, whatever its case');
   assert.equal(by.s.operator, false);
   assert.deepEqual(out.needs_you.map(n => n.account_id), ['s'], 'only the stranger: not the operator with no site, not the operator\'s stuck test site');
   assert.equal(out.funnel.signed_up, 1);
@@ -180,6 +203,15 @@ test('the operator\'s own accounts: marked, never in needs you, not counted in t
   const anyone = view([op, google, stranger], []);
   assert.deepEqual(anyone.customers.map(c => c.operator), [false, false, false]);
   assert.equal(anyone.funnel.signed_up, 3);
+  // An address typed into the dashboard is confirmed by nobody: a GitHub customer who typed the operator's
+  // address is a customer, and is not hidden from needs you or the funnel. One who signed in by an emailed link
+  // to that address has shown it is theirs.
+  const typed = account({ id: 't', github_login: 'eve', email: 'Ada@Example.com', created_at: NOW - 20 * DAY });
+  const mailed = account({ id: 'm', signin_email: 'ada@example.com', email: 'ada@example.com', created_at: NOW - 5 * DAY });
+  const mixed = view([op, typed, mailed], [site({ id: 'theirs', account_id: 't', status: 'past_due', kept: 1, stripe_subscription_id: 'sub_1' })], { asking: 'op' });
+  assert.deepEqual(mixed.customers.map(c => [c.id, c.operator]), [['op', true], ['t', false], ['m', true]]);
+  assert.deepEqual(mixed.needs_you.map(x => x.kind), ['payment_failed']);
+  assert.equal(mixed.funnel.paying, 1);
   // An operator with no address of their own makes nobody else the operator.
   const bare = view([account({ id: 'op', github_login: 'ada' }), account({ id: 'x', created_at: NOW - 5 * DAY })], [], { asking: 'op' });
   assert.deepEqual(bare.customers.map(c => c.operator), [true, false]);
@@ -190,6 +222,14 @@ test('each line of needs you has a key: its kind, the account, and the site or "
   const out = view([account({ id: 'a1', created_at: NOW - 5 * DAY }), account({ id: 'a2', created_at: NOW - 5 * DAY, email: 'b@example.com' })],
     [site({ id: 's9', account_id: 'a2', status: 'past_due', kept: 1 })]);
   assert.deepEqual(out.needs_you.map(n => n.key).sort(), ['no_site:a1:-', 'payment_failed:a2:s9']);
+});
+
+test('a line about a day carries that day in its key, so hiding it hides this occurrence and not the next', () => {
+  const failed = (until) => view([account({ email: 'b@example.com' })], [site({ id: 's9', status: 'past_due', kept: 1, stripe_subscription_id: 'sub_1', access_until: until })]).needs_you[0].key;
+  assert.equal(failed(NOW + 2 * DAY), `payment_failed:a1:s9:${NOW + 2 * DAY}`);
+  assert.notEqual(failed(NOW + 2 * DAY), failed(NOW + 32 * DAY), 'next month\'s failed charge is a new line');
+  const ending = (created) => view([account()], [site({ id: 's9', created_at: created, kept: 1 })]).needs_you[0].key;
+  assert.notEqual(ending(NOW - 5 * DAY), ending(NOW - 6 * DAY), 'free days given later end on another day');
 });
 
 // ─── the service ─────────────────────────────────────────────────────────────

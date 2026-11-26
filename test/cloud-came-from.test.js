@@ -88,3 +88,20 @@ test('on a database migration 0021 has not reached, nothing is kept and the over
     assert.ok(o.customers.every(c => c.came_from === null));
   });
 });
+
+test('when the database cannot write just now the answer is not a yes, so the dashboard keeps the tags for its next load', { skip: d1Skip }, async () => {
+  const { env } = world({ CAMPAIGN_TAGS: 'on' });
+  const real = env.kiln_cloud;
+  let fail = 'D1_ERROR: the storage operation timed out';
+  env.kiln_cloud = new Proxy(real, { get: (d, k) => (k === 'prepare' ? (sql) => { if (/SET utm_source/.test(sql)) throw new Error(fail); return d.prepare(sql); } : d[k]) });
+  await quiet(async () => {
+    const r = await post(env, TAGS);
+    assert.equal(r.status, 503);
+    assert.equal((await r.json()).code, 'try_again');
+    // A database the columns have not reached is another matter: asking again would not help, and the answer says so.
+    fail = 'D1_ERROR: no such column: utm_source';
+    assert.deepEqual(await (await post(env, TAGS)).json(), { ok: true, recorded: false, reason: 'not_ready' });
+  });
+  env.kiln_cloud = real;
+  assert.deepEqual(tagsOf(env, 'acct-new'), { utm_source: null, utm_medium: null, utm_campaign: null });
+});

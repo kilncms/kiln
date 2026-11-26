@@ -233,10 +233,13 @@ test('limit: all three environments bind the three limiters, and the guide to th
     'RL_MAIL 5 in 60s', 'RL_MAIL 5 in 60s', 'RL_MAIL 5 in 60s',
     'RL_ROOMY 120 in 60s', 'RL_ROOMY 120 in 60s', 'RL_ROOMY 120 in 60s',
   ]);
-  // Each limiter has its own number in each environment, as Cloudflare requires within one worker.
-  for (const env of [/^\[\[unsafe\.bindings\]\][\s\S]*?(?=^\[env\.staging)/m, /^\[\[env\.staging\.unsafe\.bindings\]\][\s\S]*?(?=^\[env\.staging\.version)/m]) {
-    const ids = [...(toml.match(env) || [''])[0].matchAll(/namespace_id = "(\d+)"/g)].map(m => m[1]);
-    assert.equal(new Set(ids).size, ids.length, `no number twice: ${ids}`);
+  // Each limiter has its own number in each environment, as Cloudflare requires within one worker: the three
+  // bindings of each environment are read by their own heading, so production's are checked as the others are.
+  for (const head of ['[[unsafe.bindings]]', '[[env.staging.unsafe.bindings]]', '[[env.production.unsafe.bindings]]']) {
+    const ids = toml.split(`\n${head}\n`).slice(1).map(block => (block.match(/namespace_id = "(\d+)"/) || [])[1]);
+    assert.equal(ids.length, 3, head);
+    assert.ok(ids.every(Boolean), `${head}: every limiter has a number (${ids})`);
+    assert.equal(new Set(ids).size, 3, `${head}: no number twice (${ids})`);
   }
   const guide = readFileSync(new URL('../ENVIRONMENTS.md', import.meta.url), 'utf8');
   assert.match(guide, /^\| `RL` \|/m);

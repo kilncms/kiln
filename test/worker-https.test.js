@@ -46,8 +46,31 @@ test('the service\'s own address is fixed where it is set, and https otherwise, 
 
 test('every sign-in sends its callback to the fixed https address, whatever host the request came to', async () => {
   const e = env({ HOSTING_SERVICE_URL: 'https://auth.example' });
-  const callbackOf = async (path) => new URL((await ask(e, `https://kiln-auth.someone.workers.dev${path}`)).headers.get('Location')).searchParams.get('redirect_uri');
-  assert.equal(await callbackOf('/cloud/login'), 'https://auth.example/cloud/callback');
-  assert.equal(await callbackOf('/cloud/login/google'), 'https://auth.example/google/callback');
-  assert.equal(await callbackOf(`/auth/login?origin=${encodeURIComponent(ORIGIN)}&return_to=/`), 'https://auth.example/auth/callback');
+  const callbackOf = async (base, path) => new URL((await ask(e, `${base}${path}`)).headers.get('Location')).searchParams.get('redirect_uri');
+  assert.equal(await callbackOf('https://auth.example', '/cloud/login'), 'https://auth.example/cloud/callback');
+  assert.equal(await callbackOf('https://auth.example', '/cloud/login/google'), 'https://auth.example/google/callback');
+  // The editor's sign-in at a site keeps nothing in the browser, so it may begin at any of the service's addresses.
+  assert.equal(await callbackOf('https://kiln-auth.someone.workers.dev', `/auth/login?origin=${encodeURIComponent(ORIGIN)}&return_to=/`), 'https://auth.example/auth/callback');
+});
+
+test('a dashboard sign-in begun at another of the service\'s addresses starts again at the fixed one, so it can finish', async () => {
+  // The cookie that ties a sign-in to its browser belongs to the host that set it, and the callback comes
+  // back to the fixed address: begun elsewhere, the two would never meet.
+  const e = env({ HOSTING_SERVICE_URL: 'https://auth.example' });
+  const before = e.KILN.map.size;
+  for (const path of ['/cloud/login', '/cloud/login/google', '/cloud/login?link=abc']) {
+    const res = await ask(e, `https://kiln-auth.someone.workers.dev${path}`);
+    assert.equal(res.status, 307, path);
+    assert.equal(res.headers.get('Location'), `https://auth.example${path}`, path);
+    assert.equal(res.headers.get('Set-Cookie'), null, `${path}: no cookie on the wrong host`);
+  }
+  assert.equal(e.KILN.map.size, before, 'and nothing is started there');
+  // At the fixed address the sign-in starts, with its cookie and its callback on the one host.
+  const start = await ask(e, 'https://auth.example/cloud/login');
+  assert.equal(start.status, 302);
+  assert.match(start.headers.get('Set-Cookie') || '', /__Host-/);
+  assert.equal(new URL(start.headers.get('Location')).searchParams.get('redirect_uri'), 'https://auth.example/cloud/callback');
+  // A service with no fixed address of its own (someone running Kiln themselves) starts where it is asked.
+  const own = env();
+  assert.equal((await ask(own, 'https://kiln.someone.example/cloud/login')).status, 302);
 });

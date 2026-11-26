@@ -36,7 +36,7 @@
  *   POST /cloud/account/came-from → {source, medium, campaign}: the campaign tags of the link the person
  *                                  followed, kept on a new account once (only while CAMPAIGN_TAGS is "on")
  *   POST /admin/cloud/needs/hide → (owner only) {key}: hide one line of `needs_you` for 30 days; {key, undo: true} shows it again
- *   POST /admin/cloud/grant      → (owner only) manually set a site's status
+ *   POST /admin/cloud/grant      → (owner only) manually set a site's status, or give it seven more free days
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
  * Billing (billing.js): Stripe Managed Payments once STRIPE_SECRET_KEY is set. Without it,
@@ -1887,6 +1887,38 @@ export async function expireStaleTrials(env) {
 }
 
 /**
+ * Seven more free days for one site, at the operator's word (POST
+ * /admin/cloud/grant). A site's free days are counted from its `created_at`,
+ * so that is what moves: seven days on when the days are still running, to
+ * this moment when they are over (seven full days from now). The site is
+ * `trialing` again, and Kiln's two notes about the end of the days can go
+ * once more for the new end. Only a site with no subscription has free days:
+ * one that is paid for is Stripe's to change. With `always` false (the
+ * operator only set the status to `trialing`) it acts on a site whose days
+ * are over and on nothing else, and answers null so the status is set as
+ * before. The marks that stop free days from starting again (freeDayClock)
+ * are left as they are.
+ */
+export async function moreFreeDays(env, siteId, { always = false, now = Date.now() } = {}) {
+  const span = TRIAL_GRACE_DAYS * 86400 * 1000;
+  const paidBy = await subscriptionSql(env);
+  const s = await env.kiln_cloud.prepare(`SELECT id, status, created_at, ${paidBy} AS subscription_id FROM sites WHERE id = ?`).bind(String(siteId || '')).first();
+  if (!s) return always ? { status: 404, body: { error: 'There is no such site.', code: 'no_such_site' } } : null;
+  if (subscriptionOf(s)) return always ? { status: 409, body: { error: 'That site has a subscription, so it has no free days to add to. Its dates are changed in Stripe.', code: 'subscribed' } } : null;
+  const ends = Number(s.created_at) + span;
+  const over = !(ends > now);
+  if (!always && !over) return null;
+  const from = over ? now : ends;   // the new `created_at`: the days now end seven days after it
+  await withAccessUntil(
+    () => env.kiln_cloud.prepare(`UPDATE sites SET status = 'trialing', created_at = ?, access_until = NULL WHERE id = ? AND ${paidBy} IS NULL`).bind(from, s.id).run(),
+    () => env.kiln_cloud.prepare(`UPDATE sites SET status = 'trialing', created_at = ? WHERE id = ? AND ${paidBy} IS NULL`).bind(from, s.id).run(),
+  );
+  // "Your free days end soon" and "your free days have ended" are sent once for a site (sendOnce): for the new end they may go again.
+  for (const note of ['trial-soon', 'trial-ended']) { try { await env.KILN.delete(`mail:${note}:${s.id}`); } catch { /* the note then stays sent, and nothing else is lost */ } }
+  return { status: 200, body: { ok: true, status: 'trialing', trial_ends: from + span, days: TRIAL_GRACE_DAYS } };
+}
+
+/**
  * Is this dashboard session the operator? Identity is GitHub's numeric user
  * id (CLOUD_ADMIN_ID): a login can be renamed, and the old name is then free
  * for anyone to register. The login (CLOUD_ADMIN) is compared only when no id
@@ -2296,6 +2328,14 @@ export function sweepBrings(env, { now = Date.now() } = {}) {
 export async function handleCloud(request, env, url, path, tools = {}) {
   const dash = env.CLOUD_DASHBOARD || 'https://app.kilncms.com';
 
+  // A sign-in begun at another of this service's addresses (production's workers.dev one, from an old link)
+  // starts again at its fixed address: the cookie that ties a sign-in to its browser belongs to one host,
+  // and the callback comes back to the fixed one, so a sign-in begun elsewhere could never finish.
+  if ((path === '/cloud/login' || path === '/cloud/login/google') && request.method === 'GET') {
+    const own = selfOrigin(url, env);
+    if (own !== url.origin && /^https:/.test(url.origin)) return Response.redirect(`${own}${url.pathname}${url.search}`, 307);
+  }
+
   // GitHub OAuth — identity only.
   if (path === '/cloud/login') {
     // `?link=<code>`: a signed-in person is connecting GitHub to their account
@@ -2628,7 +2668,12 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         'UPDATE accounts SET utm_source = ?, utm_medium = ?, utm_campaign = ? WHERE id = ? AND utm_source IS NULL AND utm_medium IS NULL AND utm_campaign IS NULL AND created_at > ?',
       ).bind(tags.source, tags.medium, tags.campaign, sess.account_id, Date.now() - CAME_FROM_WINDOW_MS).run();
       return json({ ok: true, recorded: !!(r && r.meta && r.meta.changes) });
-    } catch { return json({ ok: true, recorded: false, reason: 'not_ready' }); }   // migration 0021 has not reached this database
+    } catch (e) {
+      // Migration 0021 has not reached this database: there is nowhere to keep the tags, and asking again will not help.
+      if (/utm_/.test(String((e && e.message) || e))) return json({ ok: true, recorded: false, reason: 'not_ready' });
+      // Anything else is the database's trouble of the moment: the dashboard keeps the tags and sends them on its next load.
+      return json({ error: 'The tags could not be kept just now.', code: 'try_again' }, 503);
+    }
   }
 
   if (path === '/cloud/sites' && request.method === 'POST') {
@@ -3554,11 +3599,19 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         people = buildCustomers(await customerAccounts(env), rows, { asking: sess.account_id });
         people.needs_you = await withoutHidden(env, people.needs_you);
       }
-      catch (e) { console.warn(JSON.stringify({ evt: 'cloud_customers_not_read', detail: String(e?.message || e).slice(0, 160) })); people = {}; }
+      // `customers_not_read` lets the admin page say so: without it a failed read looks the same as an older service.
+      catch (e) { console.warn(JSON.stringify({ evt: 'cloud_customers_not_read', detail: String(e?.message || e).slice(0, 160) })); people = { customers_not_read: true }; }
       return json({ accounts: accounts.n, sites: rows, active: active.length, mrr: Number(mrr.toFixed(2)), store, insights, ...people });
     }
     if (path === '/admin/cloud/grant' && request.method === 'POST') {
-      const { site_id, status } = await request.json().catch(() => ({}));
+      const { site_id, status, more_days } = await request.json().catch(() => ({}));
+      // `more_days: true`: seven more free days for a site nobody pays for (moreFreeDays). Setting such a
+      // site to `trialing` when its days are over means the same, or the next run of expireStaleTrials
+      // would close it again within five minutes and the operator's word would not have held.
+      if (more_days === true || status === 'trialing') {
+        const given = await moreFreeDays(env, site_id, { always: more_days === true });
+        if (given) return json(given.body, given.status);
+      }
       if (!['active', 'trialing', 'past_due', 'canceled'].includes(status)) return json({ error: 'bad status' }, 400);
       // The operator's word is final: no leftover date keeps a site open (or shut).
       await withAccessUntil(
@@ -3931,14 +3984,20 @@ function siteSetUp(s) {
 const STAGES = ['signed up', 'added a site', 'set up', 'published', 'paying'];
 const FUNNEL_KEYS = ['signed_up', 'added_site', 'set_up', 'published', 'paying'];
 // What the operator is told needs them, most urgent first, with the few words the admin page puts on each.
-const NEEDS = [['trial_no_address', 'Trial ending, no address'], ['payment_failed', 'Payment failed'], ['stuck_setup', 'Stuck in set-up'], ['no_site', 'No site yet']];
+const NEEDS = [['trial_no_address', 'Trial ending, no address'], ['payment_failed', 'Payment failed'], ['trial_ended', 'Trial ended, not subscribed'], ['stuck_setup', 'Stuck in set-up'], ['no_site', 'No site yet']];
 const NEEDS_TRIAL_DAYS = 3;     // a trial that ends within this many days
 const NEEDS_AFTER_DAYS = 2;     // a site or an account is left alone for its first two days
 const NEEDS_UNTIL_DAYS = 30;    // an account with no site is no longer news after a month
+const NEEDS_ENDED_DAYS = 7;     // free days that ran out with nobody subscribing are news for a week
 const NEEDS_HIDE_DAYS = 30;     // a line the operator hid stays hidden this long, and comes back if it is still so then
-/** What a line of `needs_you` is known and hidden by: its kind, the account, and the site or "-". */
-const needKey = (kind, accountId, siteId) => `${kind}:${accountId}:${siteId || '-'}`;
-const NEED_KEY_RE = /^(trial_no_address|payment_failed|stuck_setup|no_site):[\w-]{1,80}:[\w-]{1,80}$/;
+/**
+ * What a line of `needs_you` is known and hidden by: its kind, the account, and the site or "-". A line
+ * about a day (free days that end or ended, the day editing stops after a failed charge) carries that day
+ * too, so hiding it hides this occurrence only: the next failed charge, or the end of days given later,
+ * is a new line.
+ */
+const needKey = (kind, accountId, siteId, when = null) => `${kind}:${accountId}:${siteId || '-'}${Number(when) > 0 ? `:${Math.floor(Number(when))}` : ''}`;
+const NEED_KEY_RE = /^(trial_no_address|trial_ended|payment_failed|stuck_setup|no_site):[\w-]{1,80}:[\w-]{1,80}(:\d{1,16})?$/;
 /**
  * `needs_you` without the lines the operator hid (KV `nhide:<key>`, written by
  * POST /admin/cloud/needs/hide). Each is read by its own key, not listed, so a
@@ -3982,7 +4041,11 @@ export function buildCustomers(accounts, rows, { now = Date.now(), asking = null
   const funnel = Object.fromEntries(FUNNEL_KEYS.map(k => [k, 0]));
   const customers = accounts.map(a => {
     const address = a.email || null;
-    const operator = a.id === asking || (!!opAddress && !!address && address.toLowerCase() === opAddress);
+    // The operator's other accounts are known by the operator's address, and only where that address was
+    // confirmed for the account (Google's, or the one an emailed link went to). An address typed into the
+    // dashboard by a person signed in with GitHub is confirmed by nobody, and marks nobody as the operator.
+    const confirmed = !!(a.google_sub || a.signin_email);
+    const operator = a.id === asking || (confirmed && !!opAddress && !!address && address.toLowerCase() === opAddress);
     const login = a.github_login || null;
     const who = login ? `@${login}` : a.name || address || 'no name';
     // How each sentence ends: what the operator can do, given how this person can be reached.
@@ -3998,6 +4061,8 @@ export function buildCustomers(accounts, rows, { now = Date.now(), asking = null
       status: s.status,
       kept: !!s.kept,
       trial_ends: s.status === 'trialing' && !subscriptionOf(s) && Number(s.created_at) ? trialEndsAt(s.created_at, TRIAL_GRACE_DAYS) : null,
+      // Free days that ran out with nobody subscribing: closed, never paid for, and no day left from a plan.
+      trial_ended: s.status === 'canceled' && !subscriptionOf(s) && !Number(s.access_until) && Number(s.created_at) ? trialEndsAt(s.created_at, TRIAL_GRACE_DAYS) : null,
       paid_until: s.paid_until ?? null,
       billing_period: s.billing_period ?? null,
       access_until: s.access_until ?? null,
@@ -4010,14 +4075,18 @@ export function buildCustomers(accounts, rows, { now = Date.now(), asking = null
     if (own.some(s => (s.status === 'active' || s.status === 'past_due') && subscriptionOf(s))) reached = 4;
     if (!operator) for (let i = 0; i <= reached; i++) funnel[FUNNEL_KEYS[i]]++;
     // The operator's own accounts are nobody the operator has to write to.
-    const need = (kind, site, at, detail) => operator ? null : needs[kind].push({ at, row: { kind, account_id: a.id, site_id: site ? site.id : null, key: needKey(kind, a.id, site ? site.id : null), who, label: labels[kind], detail } });
+    // `when`: the day the line is about, where it has one (it goes into the key). `more_days`: the operator can give this site seven more free days from the line.
+    const need = (kind, site, at, detail, { when = null, more_days = false } = {}) => operator ? null : needs[kind].push({ at, row: { kind, account_id: a.id, site_id: site ? site.id : null, key: needKey(kind, a.id, site ? site.id : null, when), who, label: labels[kind], detail, ...(more_days ? { more_days: true } : {}) } });
     sites.forEach((s, i) => {
       const added = Number(own[i].created_at) || 0;
       if (s.trial_ends && !address && s.trial_ends > now && s.trial_ends - now <= NEEDS_TRIAL_DAYS * day) {
-        need('trial_no_address', s, s.trial_ends, `The free days of ${s.label} end on ${dayOf(s.trial_ends)} and Kiln's reminder cannot reach this person: ${reach(', or keep the site open yourself with its status control', 'all you can do is keep the site open yourself with its status control')}.`);
+        need('trial_no_address', s, s.trial_ends, `The free days of ${s.label} end on ${dayOf(s.trial_ends)} and Kiln's reminder cannot reach this person: ${reach(', or give the site seven more free days', 'all you can do is give the site seven more free days')}.`, { when: s.trial_ends, more_days: true });
+      }
+      if (s.trial_ended && s.trial_ended <= now && now - s.trial_ended < NEEDS_ENDED_DAYS * day) {
+        need('trial_ended', s, -s.trial_ended, `The free days of ${s.label} ended on ${dayOf(s.trial_ended)} and nobody subscribed, so editing is off: ${reach(' and ask what held them back, or give the site seven more free days', 'all you can do is give the site seven more free days')}.`, { when: s.trial_ended, more_days: true });
       }
       if (s.status === 'past_due') {
-        need('payment_failed', s, s.access_until || Infinity, `The last charge for ${s.label} did not go through${s.access_until ? ` and editing stops on ${dayOf(s.access_until)} unless a later one does` : ''}: ${reach(', or look at the subscription in Stripe', 'look at the subscription in Stripe')}.`);
+        need('payment_failed', s, s.access_until || Infinity, `The last charge for ${s.label} did not go through${s.access_until ? ` and editing stops on ${dayOf(s.access_until)} unless a later one does` : ''}: ${reach(', or look at the subscription in Stripe', 'look at the subscription in Stripe')}.`, { when: s.access_until });
       }
       if (s.status !== 'canceled' && s.set_up !== 'ready to edit' && added && now - added > NEEDS_AFTER_DAYS * day) {
         const where = s.set_up === 'kiln added' ? 'Kiln is in its repository, but nothing is marked for editing yet' : 'Kiln is not in its repository yet';
@@ -4041,7 +4110,7 @@ export function buildCustomers(accounts, rows, { now = Date.now(), asking = null
       sites,
     };
   });
-  // Within a kind: the trial that ends soonest, the access that stops soonest, the site stuck longest, the newest sign-up.
+  // Within a kind: the trial that ends soonest, the access that stops soonest, the trial that ended last, the site stuck longest, the newest sign-up.
   const needs_you = NEEDS.flatMap(([kind]) => needs[kind].sort((x, y) => x.at - y.at).map(n => n.row));
   return { customers, needs_you, funnel };
 }
