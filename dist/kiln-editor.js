@@ -304,7 +304,7 @@ ${Object.values(o.attrs||{}).join(`
       <button class="kiln-btn-ghost" data-close type="button">Cancel</button>
       <button class="kiln-btn-ghost" id="kiln-ss-only" type="button" style="display:none">Only this page</button>
       <button class="kiln-btn-publish" id="kiln-ss-go" type="button"></button>
-    </div>`);t.classList.add("kiln-pubsheet","kiln-setsheet"),t.querySelector(".kiln-modal-card").setAttribute("aria-labelledby","kiln-ss-title");let n=t.querySelector("#kiln-ss-list"),i=t.querySelector("#kiln-ss-go"),o=t.querySelector("#kiln-ss-only"),s=t.querySelector("#kiln-ss-note"),r=t.querySelector("#kiln-ss-say");e.note&&(s.value=Do(e.note));let a=!1,l=null,c=m=>{r.textContent=m||"",r.hidden=!m},d=()=>{let m=e.groups();if(!m.length){t.querySelector("[data-close]").click();return}let h=m.reduce((A,b)=>A+Cl(b.items),0);t.querySelector("#kiln-ss-title").textContent=`${h} change${h===1?"":"s"} on ${m.length} page${m.length===1?"":"s"}`,n.textContent="";for(let A of m){let b=he("section","kiln-ss-page");b.dataset.page=A.id;let k=he("div","kiln-ss-head"),E=he("div","kiln-ss-who");E.append(he("strong",null,A.title||A.address||"A page"));let v=[A.address,A.ago].filter(Boolean).join(" \xB7 ");v&&E.append(he("span","kiln-ss-facts",v)),k.append(E);let S=he("div","kiln-ss-ctl");if(A.open){let N=he("button","kiln-ps-drop",Fd.open);N.type="button",N.addEventListener("click",()=>A.open()),S.append(N)}if(A.drop){let N=he("button","kiln-ps-drop",Fd.drop);N.type="button",N.addEventListener("click",async()=>{a||await A.drop()&&d()}),S.append(N)}k.append(S),b.append(k),A.own&&b.append(he("div","kiln-ps-note",`${A.own}. Use \u201COnly this page\u201D for it.`)),A.gone&&b.append(he("div","kiln-ps-note kiln-ps-note--remove",A.gone));for(let N of A.items)b.append($x(N,{jump:()=>{}},()=>{a||d()}));n.append(b)}let g=e.limit?.()||"";return!a&&!l&&c(g),i.textContent=l?l.label:e.label(),i.style.display=i.textContent?"":"none",o.style.display=e.only?.()?"":"none",m};if(!d()||!t.isConnected)return null;let u={step:m=>c(m),stop:(m,h=null)=>{a=!1,l=h;for(let g of[i,o])g.disabled=!1;c(m),t.isConnected&&d()}};return e.said&&u.stop(e.said.text,e.said.next||null),i.addEventListener("click",async()=>{if(a||i.disabled)return;a=!0;for(let g of[i,o])g.disabled=!0;let m=l?l.run:e.publishAll;l=null,await m(Do(s.value),u)&&t.isConnected&&t.querySelector("[data-close]").click()}),o.addEventListener("click",()=>{if(a)return;let m=Do(s.value);t.querySelector("[data-close]").click(),e.onlyThis(m)}),i.focus({preventScroll:!0}),t}function Ux(e){return`
+    </div>`);t.classList.add("kiln-pubsheet","kiln-setsheet"),t.querySelector(".kiln-modal-card").setAttribute("aria-labelledby","kiln-ss-title");let n=t.querySelector("#kiln-ss-list"),i=t.querySelector("#kiln-ss-go"),o=t.querySelector("#kiln-ss-only"),s=t.querySelector("#kiln-ss-note"),r=t.querySelector("#kiln-ss-say");e.note&&(s.value=Do(e.note));let a=!1,l=null,c=m=>{r.textContent=m||"",r.hidden=!m},d=()=>{let m=e.groups();if(!m.length){t.querySelector("[data-close]").click();return}let h=m.reduce((A,b)=>A+Cl(b.items),0);t.querySelector("#kiln-ss-title").textContent=`${h} change${h===1?"":"s"} on ${m.length} page${m.length===1?"":"s"}`,n.textContent="";for(let A of m){let b=he("section","kiln-ss-page");b.dataset.page=A.id;let k=he("div","kiln-ss-head"),E=he("div","kiln-ss-who"),v=he("strong",null,A.title||A.address||"A page");v.setAttribute("role","heading"),v.setAttribute("aria-level","4"),E.append(v);let S=[A.address,A.ago].filter(Boolean).join(" \xB7 ");S&&E.append(he("span","kiln-ss-facts",S)),k.append(E);let N=he("div","kiln-ss-ctl");if(A.open){let _=he("button","kiln-ps-drop",Fd.open);_.type="button",_.addEventListener("click",()=>A.open()),N.append(_)}if(A.drop){let _=he("button","kiln-ps-drop",Fd.drop);_.type="button",_.addEventListener("click",async()=>{a||await A.drop()&&d()}),N.append(_)}k.append(N),b.append(k),A.own&&b.append(he("div","kiln-ps-note",`${A.own}. Use \u201COnly this page\u201D for it.`)),A.gone&&b.append(he("div","kiln-ps-note kiln-ps-note--remove",A.gone));for(let _ of A.items)b.append($x(_,{jump:()=>{}},()=>{a||d()}));n.append(b)}let g=e.limit?.()||"";return!a&&!l&&c(g),i.textContent=l?l.label:e.label(),i.style.display=i.textContent?"":"none",o.style.display=e.only?.()?"":"none",m};if(!d()||!t.isConnected)return null;let u={step:m=>c(m),stop:(m,h=null)=>{a=!1,l=h;for(let g of[i,o])g.disabled=!1;c(m),t.isConnected&&d()}};return e.said&&u.stop(e.said.text,e.said.next||null),i.addEventListener("click",async()=>{if(a||i.disabled)return;a=!0;for(let g of[i,o])g.disabled=!0;let m=l?l.run:e.publishAll;l=null,await m(Do(s.value),u)&&t.isConnected&&t.querySelector("[data-close]").click()}),o.addEventListener("click",()=>{if(a)return;let m=Do(s.value);t.querySelector("[data-close]").click(),e.onlyThis(m)}),i.focus({preventScroll:!0}),t}function Ux(e){return`
 .kiln-pubsheet .kiln-modal-card{max-width:560px}
 .kiln-pubsheet .kiln-modal-body{display:flex;flex-direction:column;padding:22px 22px 0}
 .kiln-pubsheet h3{margin-bottom:12px}
@@ -344,14 +344,16 @@ ${Object.values(o.attrs||{}).join(`
 .kiln-pubsheet .kiln-ps-notefield input{font-weight:400}
 .kiln-pubsheet .kiln-ps-actions{margin:14px -22px 0;padding:12px 22px;border-top:1px solid #eef0f3;background:#fafafb}
 .kiln-pubsheet #kiln-pubsheet-go{min-width:150px;padding:9px 18px;font-size:14px}
-.kiln-ss-page{display:flex;flex-direction:column;gap:8px;padding:0 0 10px;border-bottom:1px solid #eef0f3}
+#kiln-ss-list{display:flex;flex-direction:column;gap:14px;overflow-y:auto;min-height:0;flex:1 1 auto;margin:0 -6px;padding:0 6px 2px}
+.kiln-ss-page{display:flex;flex-direction:column;gap:8px;padding:0 0 14px;border-bottom:1px solid #eef0f3}
 .kiln-ss-page:last-child{border-bottom:0}
 .kiln-ss-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .kiln-ss-who{display:flex;flex-direction:column;gap:2px;min-width:0}
-.kiln-ss-who strong{font:600 14px/1.3 var(--kiln-font);color:#1c1c28;overflow-wrap:anywhere}
+.kiln-ss-who strong{font:600 15px/1.35 var(--kiln-font);color:#1c1c28;overflow-wrap:anywhere}
 .kiln-ss-facts{font:12px var(--kiln-font);color:#6b7280;overflow-wrap:anywhere}
 .kiln-ss-ctl{display:flex;gap:6px;flex:none}
 .kiln-setsheet #kiln-ss-go{min-width:150px;padding:9px 18px;font-size:14px}
+.kiln-setsheet #kiln-ss-only:disabled{opacity:.5;cursor:default}
 /* The first-visit guide points at the button from above: leave it a strip of its own. */
 .kiln-pubsheet.kiln-guided .kiln-ps-notefield{margin-bottom:56px}
 @media ${e}{
@@ -362,7 +364,10 @@ ${Object.values(o.attrs||{}).join(`
 .kiln-pubsheet .kiln-ps-actions button{min-height:46px;font-size:15px}
 .kiln-pubsheet .kiln-ps-actions .kiln-btn-ghost{flex:0 0 auto;padding:0 18px}
 .kiln-pubsheet #kiln-pubsheet-go{flex:1 1 auto}
-.kiln-setsheet #kiln-ss-go{flex:1 1 auto;min-width:0}
+/* Three buttons do not fit one row on a phone: the main one takes a row of its own, under the other two. */
+.kiln-setsheet .kiln-ps-actions{flex-wrap:wrap}
+.kiln-setsheet .kiln-ps-actions .kiln-btn-ghost{flex:1 1 0}
+.kiln-setsheet #kiln-ss-go{flex:1 1 100%;min-width:0}
 .kiln-ss-head{flex-wrap:wrap}
 .kiln-pubsheet .kiln-ps-notefield input{font-size:16px}
 .kiln-ps-drop{min-height:34px;padding:4px 14px;font-size:12.5px}
