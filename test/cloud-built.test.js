@@ -271,7 +271,7 @@ test('built site: a site that runs on a server, one with an installer Kiln does 
   const { 'package-lock.json': left, ...noLock } = withFile();
   await refused({ ...noLock, 'yarn.lock': '# yarn' }, BUILD_REFUSALS.build_tool);
   assert.equal(BUILD_REFUSALS.build_server, 'This site runs a program for each visit. Kiln\'s hosting serves ready-made pages only, so it cannot host this site. You can still use Kiln with the host you have now.');
-  assert.equal(BUILD_REFUSALS.build_tool, 'This site installs its parts with a tool Kiln\'s build file does not know yet. Write to info@kilncms.com and we will add it.');
+  assert.equal(BUILD_REFUSALS.build_tool, 'This site installs its parts with a tool Kiln\'s build file does not know yet. Write to hello@kilncms.com and we will add it.');
 
   // A setting that is only talked about in a comment refuses nothing.
   const w = await liveWorld(withFile({ 'astro.config.mjs': "// adapter: node(), output: 'server'\nexport default {};\n" }));

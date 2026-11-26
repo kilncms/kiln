@@ -123,16 +123,16 @@ export const DASHBOARD_SIGN_IN_STOPPED = { code: 'stopped', status: 400, heading
   words: 'Google sent you back without signing you in. Nothing is wrong with your account. Go back to the Kiln dashboard and sign in again.' };
 /** Google signed the person in, and Kiln could not find or make their account. */
 export const ACCOUNT_NOT_READY = { code: 'account', status: 503, heading: 'Kiln could not open your account just now',
-  words: 'Google signed you in, but Kiln could not open your account this time. Nothing is wrong with your Google account. Go back to the Kiln dashboard and sign in again in a few minutes. If it keeps happening, write to info@kilncms.com.' };
+  words: 'Google signed you in, but Kiln could not open your account this time. Nothing is wrong with your Google account. Go back to the Kiln dashboard and sign in again in a few minutes. If it keeps happening, write to hello@kilncms.com.' };
 /** An email sign-in to the dashboard showed that the address is the person's, and Kiln could not find or make their account. */
 export const EMAIL_ACCOUNT_NOT_READY = { code: 'account', status: 503, heading: 'Kiln could not open your account just now',
-  words: 'Your sign-in worked, but Kiln could not open your account this time. Go back to the Kiln dashboard and sign in again in a few minutes. If it keeps happening, write to info@kilncms.com.' };
+  words: 'Your sign-in worked, but Kiln could not open your account this time. Go back to the Kiln dashboard and sign in again in a few minutes. If it keeps happening, write to hello@kilncms.com.' };
 /** More than one account has the address an email sign-in confirmed, so Kiln cannot tell which of them is the person's. */
 export const TWO_ACCOUNTS = { code: 'two_accounts', status: 409, heading: 'More than one Kiln account has this address',
-  words: 'More than one Kiln account has this email address, so Kiln cannot tell which one is yours, and nobody was signed in. Go back to the Kiln dashboard and use Continue with Google. If that does not open the right account, write to info@kilncms.com.' };
+  words: 'More than one Kiln account has this email address, so Kiln cannot tell which one is yours, and nobody was signed in. Go back to the Kiln dashboard and use Continue with Google. If that does not open the right account, write to hello@kilncms.com.' };
 /** This service has no Google sign-in. */
 export const NO_GOOGLE_SIGN_IN = { code: 'no_google', status: 503, heading: 'Google sign-in is not set up here yet',
-  words: 'This Kiln service cannot sign anybody in with Google yet. That is for whoever runs the service to put right. Go back to the Kiln dashboard and sign in with GitHub, or write to info@kilncms.com.' };
+  words: 'This Kiln service cannot sign anybody in with Google yet. That is for whoever runs the service to put right. Go back to the Kiln dashboard and sign in with GitHub, or write to hello@kilncms.com.' };
 
 /** The dashboard's address, when it is a real web address a person can be sent back to. */
 function dashboardLink(address) {

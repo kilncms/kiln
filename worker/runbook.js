@@ -318,7 +318,7 @@ npx wrangler secret list --env production</pre>
 
     <section id="s5">
       <h2><span class="sn">05</span> When Kiln tells a customer to write to you</h2>
-      <p>In these cases Kiln cannot help by itself, and its sentence ends "write to info@kilncms.com". Find the sentence the customer read, then follow the steps. Before you change anything for a person, make sure they are who they say: ask them to write from the address they signed up with.</p>
+      <p>In these cases Kiln cannot help by itself, and its sentence ends "write to hello@kilncms.com". Find the sentence the customer read, then follow the steps. Before you change anything for a person, make sure they are who they say: ask them to write from the address they signed up with.</p>
       <div class="tw"><table>
         <thead><tr><th>What they read</th><th>What they were doing</th><th>Your steps</th></tr></thead>
         <tbody>
@@ -330,7 +330,7 @@ npx wrangler secret list --env production</pre>
           <tr><td>"To take them to a GitHub account of your own, write to ..."</td><td>They want their kept site's repository</td><td>Below: "Handing a kept site's repository over".</td></tr>
           <tr><td>"For a file of the domain's records, write to ..."</td><td>They removed a site that had its own domain</td><td>Below: "A file of a domain's records".</td></tr>
           <tr><td>"... is not switched on for this service yet." (starting a site, bringing one in, the members area)</td><td>Using a piece that is off</td><td>Section 02: find the piece's switch and see why it is off. For the members area, set <code>HOSTING_MEMBER_KEY</code>, then ask the customer to press "Publish again".</td></tr>
-          <tr><td>"Your own domain: write to info@kilncms.com and Kiln connects it."</td><td>The dashboard shows this while own domains are off</td><td>Section 02: see why <code>domains</code> is false.</td></tr>
+          <tr><td>"Your own domain: write to hello@kilncms.com and Kiln connects it."</td><td>The dashboard shows this while own domains are off</td><td>Section 02: see why <code>domains</code> is false.</td></tr>
           <tr><td>"Kiln's hosting already has DOMAIN set up." or "Another site on Kiln already has DOMAIN."</td><td>Setting up a domain that is already known</td><td>Below: "A domain somebody else holds".</td></tr>
           <tr><td>"Cloudflare ... will not take DOMAIN."</td><td>Setting up a domain</td><td>Cloudflare refuses some domains and Kiln cannot change that. Tell the customer so. Their site stays at its Kiln address.</td></tr>
           <tr><td>"Kiln has too many domains waiting for their name servers to change."</td><td>Setting up a domain</td><td>Run the list of waiting domains (section 09). Old ones are put away after 25 days by themselves. Ask the customer to try again the next day.</td></tr>
@@ -759,7 +759,7 @@ npx wrangler tail --env production</pre>
       <ol class="steps">
         <li><strong>The health answer.</strong> <code>curl "https://auth.kilncms.com/healthz?deep=1"</code> says <code>"ok":true</code>. If not, section 13.</li>
         <li><strong>Your notes.</strong> Read what Kiln sent since yesterday. Act on the ones marked Hand in section 04.</li>
-        <li><strong>The support inbox,</strong> info@kilncms.com. Section 05 has the cases.</li>
+        <li><strong>The support inbox,</strong> hello@kilncms.com. Section 05 has the cases.</li>
         <li><strong>Failed copies.</strong> Any note that begins "Kiln's copy of" or "Kiln could not start copying": see whether the customer got through on a later try.</li>
         <li><strong>Sites that are down.</strong> For each "Kiln took REPOSITORY down" note, ask whether you expected it. A paying customer's site should never be in one.</li>
         <li><strong>The admin page.</strong> New sites, free days about to end, and the store line.</li>

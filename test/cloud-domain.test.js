@@ -161,7 +161,7 @@ test('own domain: a look says in a sentence what stands in the way, and asks nob
   await withFetch(w.handler, async () => {
     const { stop: s } = await stopOf(w);
     assert.equal(s.code, 'at_cloudflare');
-    assert.match(s.sentence, /info@kilncms\.com/);
+    assert.match(s.sentence, /hello@kilncms\.com/);
   });
   w = world({ domains: {} });
   await withFetch(w.handler, async () => { assert.deepEqual((await stopOf(w)).stop, { code: 'not_registered', sentence: domainSentence('not_registered', { name: N }) }); });
@@ -1175,7 +1175,7 @@ test('removing a site: a domain that still waits goes with it, and a live domain
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.deepEqual(body.domain, { name: N, note: domainSentence('site_removed', { name: N, seller }) });
-    assert.equal(body.domain.note, `Your site no longer answers at ${N}. The other records of ${N}, such as its email, keep working. To move the domain away, change its name servers at ${seller}. For a file of the domain's records, write to info@kilncms.com.`);
+    assert.equal(body.domain.note, `Your site no longer answers at ${N}. The other records of ${N}, such as its email, keep working. To move the domain away, change its name servers at ${seller}. For a file of the domain's records, write to hello@kilncms.com.`);
     assert.doesNotMatch(body.domain.note, /[—–]|undefined|null/);
     assert.equal(w.cf.scripts.size, 0);
     assert.equal(w.cf.workerDomains.size, 0);

@@ -135,10 +135,10 @@ export function registerSentence(code, { name = 'this name', time = '' } = {}) {
     case 'search_failed': return 'Kiln could not search just now. Nothing was changed. Try again in a minute.';
     // Why a site is not offered a name.
     case 'has_name': return `Your plan already has its domain, ${name}. A yearly plan includes one.`;
-    case 'account_had': return 'Your account already got a domain through Kiln in the last 12 months. Email info@kilncms.com if you need another.';
+    case 'account_had': return 'Your account already got a domain through Kiln in the last 12 months. Email hello@kilncms.com if you need another.';
     case 'not_paid': return 'A domain is included once a year of Kiln Cloud + hosting is paid. Pay for the year from this site\'s row, then choose your name.';
     case 'not_hosted': return 'A new domain can be put only on a site that is up on Kiln\'s hosting. Put the site up first, and then come back here.';
-    case 'has_own': return `This site already has its own domain, ${name}. The domain your plan includes is for a site without one. Email info@kilncms.com if you want to change it.`;
+    case 'has_own': return `This site already has its own domain, ${name}. The domain your plan includes is for a site without one. Email hello@kilncms.com if you want to change it.`;
     // The press that registers a name, and how a registration stands.
     case 'tick_first': return 'Tick the box to say you checked the spelling, then press Register again.';
     case 'taken_since': return `Someone registered ${name} a moment ago. Nothing was registered for you. Choose another name.`;
@@ -147,13 +147,13 @@ export function registerSentence(code, { name = 'this name', time = '' } = {}) {
     case 'stuck': return `Registering ${name} stopped part way and a person at Kiln has been told. You do not need to do anything. We will email you within one working day.`;
     case 'being_registered': return `${name} is being registered for this site right now. Wait for it to finish.`;
     case 'daily_limit': return 'Kiln has registered as many names as it can today. Nothing was registered for you. Come back tomorrow and choose the name again.';
-    case 'off': return 'Kiln is not registering new domains right now. Nothing was changed. Try again later, or email info@kilncms.com.';
+    case 'off': return 'Kiln is not registering new domains right now. Nothing was changed. Try again later, or email hello@kilncms.com.';
     case 'busy': return 'Kiln is already working on this site. Wait a moment and look again.';
     case 'check_failed': return 'Kiln could not check this name just now. Nothing was registered for you. Try again in a minute.';
     // Taking a name away, and a site that is removed. `time` is a day in words.
     case 'leave_early': return `A new name cannot be moved in its first 60 days. That is a rule for all domain names. We have noted your request and will email you on ${time} with what to do next. Your site stays on the name until then.`;
     case 'leave_now': return `We have your request. A person at Kiln will email you within three working days with a code to move ${name}. Kiln charges nothing. The company you move it to charges its own price, which usually adds a year to the name.`;
-    case 'no_name': return 'There is no name registered through Kiln on this account to take with you. Email info@kilncms.com if you expected one.';
+    case 'no_name': return 'There is no name registered through Kiln on this account to take with you. Email hello@kilncms.com if you expected one.';
     case 'site_removed': return `This site's domain, ${name}, was registered through Kiln. Removing the site does not hand the name over. Ask us for it before ${time}.`;
     default: return 'Kiln could not search just now. Nothing was changed. Try again in a minute.';
   }

@@ -345,7 +345,7 @@ test('check: an address that is not https, is a number, or only works on a priva
     assert.equal(r.res.status, 200, origin);
     assert.equal(r.by.address.ok, false, origin);
     assert.match(r.by.address.detail, says, origin);
-    assert.match(r.by.address.detail, /[Ww]rite to info@kilncms\.com and we will change it/, origin);
+    assert.match(r.by.address.detail, /[Ww]rite to hello@kilncms\.com and we will change it/, origin);
     assert.equal(r.by.address.fix, undefined, `${origin}: no link to an address nobody should open`);
     assert.equal(r.by.live.ok, null, origin);
     assert.equal(r.by.signin.ok, null, origin);
@@ -550,7 +550,7 @@ test('check, hosted: an address that does not answer is Kiln\'s to put right, an
   const w = hostedWorld(withKiln(), { over: { [`${HOSTED}/`]: answer(503) } });
   const { body, by } = await check(w);
   assert.equal(by.address.ok, false);
-  assert.match(by.address.detail, /That is the address Kiln's hosting gave this site, so there is nothing for you to change at a host\. Press Publish again on the site's row and check again in a minute\. If it still does not answer, write to info@kilncms\.com\.$/);
+  assert.match(by.address.detail, /That is the address Kiln's hosting gave this site, so there is nothing for you to change at a host\. Press Publish again on the site's row and check again in a minute\. If it still does not answer, write to hello@kilncms\.com\.$/);
   assert.deepEqual(by.address.fix, { url: HOSTED, label: 'Open your site' });
   assert.equal(by.live.ok, null);
   assert.equal(by.signin.ok, null);
@@ -745,7 +745,7 @@ test('check: what a kept site\'s owner reads when something is wrong never sends
   // The settings file names something else: only Kiln can change it, so there is no link to GitHub.
   const other = await lines(world(withKiln({ 'assets/kiln-config.js': kilnConfigFile({ repo: 'someone/else', branch: 'main', worker: SERVICE }) })), { kept: true });
   assert.equal(other.by.settings.ok, false);
-  assert.equal(other.by.settings.detail, 'The settings file (assets/kiln-config.js) needs a change that only Kiln can make. Write to info@kilncms.com and say which site it is, and a person will put it right.');
+  assert.equal(other.by.settings.detail, 'The settings file (assets/kiln-config.js) needs a change that only Kiln can make. Write to hello@kilncms.com and say which site it is, and a person will put it right.');
   assert.equal('fix' in other.by.settings, false);
   noRepository(other.checks);
 

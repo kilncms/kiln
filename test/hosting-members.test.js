@@ -412,7 +412,7 @@ test('members on hosting: "Check this site" says of a hosted site with members p
 
   const off = await look(club, { membersOn: false });
   assert.equal(off.line.ok, false);
-  assert.equal(off.line.detail, 'This site has pages under members/, but the members area is not switched on for Kiln\'s hosting yet, so Kiln left those pages out of the site rather than show them to everybody. Write to info@kilncms.com and we will switch it on.');
+  assert.equal(off.line.detail, 'This site has pages under members/, but the members area is not switched on for Kiln\'s hosting yet, so Kiln left those pages out of the site rather than show them to everybody. Write to hello@kilncms.com and we will switch it on.');
 
   // The gate sends people to the sign-in page at the top of the site: a site without it is told so.
   const { 'members-login.html': _signIn, ...noSignIn } = club;

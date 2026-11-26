@@ -425,7 +425,7 @@ editor must. Run it yourself and only you hold it.
 
 To report a security problem, please do not open a public issue: use **Report a
 vulnerability** on this repository's [Security tab](https://github.com/kilncms/kiln/security),
-or write to info@kilncms.com. [SECURITY.md](SECURITY.md) lists what matters most.
+or write to hello@kilncms.com. [SECURITY.md](SECURITY.md) lists what matters most.
 
 ## Documentation
 
@@ -516,4 +516,4 @@ and build on, including for commercial and client work. If you run a changed ver
 Kiln as a public network service, the AGPL asks you to make your changes available to its
 users.
 
-Kiln is built and run by Wilder Idea LLC. Questions: info@kilncms.com.
+Kiln is built and run by Wilder Idea LLC. Questions: hello@kilncms.com.

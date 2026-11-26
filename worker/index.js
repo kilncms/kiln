@@ -362,7 +362,7 @@ async function routeRequest(request, env, ctx) {
   } catch (err) {
     console.error('[kiln-auth]', err.stack || err);
     // The detail stays in the log: an error's text can name internals.
-    return await cors(env, request, json({ error: 'internal', message: 'Something went wrong on the Kiln service. Try again; if it keeps happening, write to info@kilncms.com.' }, 500));
+    return await cors(env, request, json({ error: 'internal', message: 'Something went wrong on the Kiln service. Try again; if it keeps happening, write to hello@kilncms.com.' }, 500));
   }
 }
 

@@ -175,7 +175,7 @@ test('Google sign-in to the dashboard: every other way it can stop is a plain pa
   out = await page(await get(env, '/cloud/login/google'));
   assert.equal(out.status, 503);
   assert.match(out.body, /<h1>Google sign-in is not set up here yet<\/h1>/);
-  assert.match(out.body, /Go back to the Kiln dashboard and sign in with GitHub, or write to info@kilncms\.com\.<\/p>/);
+  assert.match(out.body, /Go back to the Kiln dashboard and sign in with GitHub, or write to hello@kilncms\.com\.<\/p>/);
   assert.ok(out.body.includes(BACK));
   assert.equal([...env.KILN.map.keys()].some(k => k.startsWith('gstate:')), false, 'nothing was kept');
 

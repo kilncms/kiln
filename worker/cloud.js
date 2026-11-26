@@ -2023,7 +2023,7 @@ export async function markFirstPass(env, siteId, commit) {
 }
 
 /** Said to the owner of a site whose files Kiln keeps when the service cannot reach those files: nothing of theirs to install or to fix. */
-const KEPT_NOT_REACHED = "Kiln could not reach your site's files just now. Wait a minute and try again. If it keeps happening, write to info@kilncms.com.";
+const KEPT_NOT_REACHED = "Kiln could not reach your site's files just now. Wait a minute and try again. If it keeps happening, write to hello@kilncms.com.";
 const keptNotReached = () => json({ error: KEPT_NOT_REACHED, code: 'not_reached' }, 502);
 
 /**
@@ -2714,7 +2714,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       return json({ error: 'The Kiln app is not installed on that repository yet.', install_url: await installUrlFor(env) }, 409);
     }
     const dupe = await env.kiln_cloud.prepare('SELECT id FROM sites WHERE origin = ?').bind(o).first();
-    if (dupe) return json({ error: 'That site address is already on Kiln Cloud. If it is yours and you cannot see it here, write to info@kilncms.com.' }, 409);
+    if (dupe) return json({ error: 'That site address is already on Kiln Cloud. If it is yours and you cannot see it here, write to hello@kilncms.com.' }, 409);
     // Fair use of the free days: counted from the first time this address, this repository or this GitHub account
     // was seen here (freeDayClock). When GitHub does not give the repository's number the site is added all the same.
     const days = await freeDayClock(env, { accountId: sess.account_id, origin: o, repoId: await repoNumber(env, tools, sess, repo), ghId: githubNumber(sess) });
@@ -3570,7 +3570,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // `period=year` asks for the yearly form of the site's plan, where this service sells one.
     const period = url.searchParams.get('period') === 'year' ? 'year' : 'month';
     const checkout = await startCheckout(env, site, { email: await accountEmail(env, sess.account_id), period, accountId: sess.account_id });
-    return checkout ? json({ url: checkout }) : json({ error: 'The payment page could not be opened just now. Nothing was charged. Try again in a minute, and write to info@kilncms.com if it keeps happening.', code: 'billing_not_configured' }, 503);
+    return checkout ? json({ url: checkout }) : json({ error: 'The payment page could not be opened just now. Nothing was charged. Try again in a minute, and write to hello@kilncms.com if it keeps happening.', code: 'billing_not_configured' }, 503);
   }
 
   // Stripe's webhook: the ONLY thing that flips a site to active.

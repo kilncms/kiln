@@ -668,7 +668,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   site in" already let one account copy a site once in 30 days. Accounts
   that pay for nothing can now have the same old address copied three times
   in 30 days between them, and the next one is asked to write to
-  info@kilncms.com. An account that pays for a site is not held back.
+  hello@kilncms.com. An account that pays for a site is not held back.
 - **A domain has its free days once.** When a site on Kiln's hosting that is
   not paid for goes live on its own domain, Kiln remembers when that site's
   free days began. A later site that is set up on the same domain has its
@@ -703,7 +703,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   goes on forwarding untouched. It needs migration `0011_forward_account.sql`.
   Until that has run, everything works as it did before this fix. An address
   whose site was removed before the migration ran has no account on record,
-  so for that one the old answer stands and info@kilncms.com sets it up.
+  so for that one the old answer stands and hello@kilncms.com sets it up.
 
 ### Security
 
@@ -811,7 +811,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (both are in ENVIRONMENTS.md). Until the secret is set, a hosted site's pages
   under `members/` are left out of what is published, so they are never served
   to everybody, and "Check this site" says so and asks the owner to write to
-  info@kilncms.com. (Before this release such pages went up as plain files
+  hello@kilncms.com. (Before this release such pages went up as plain files
   that anyone could open.)
 
 - **"Check this site" says when the members sign-in page is missing.** A site
@@ -867,7 +867,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   button in an email that this account had Cloudflare send. An inbox that
   another customer forwards to or waits for is refused as before, and the
   sentence now reads: "Kiln cannot confirm that inbox by itself. Write to
-  info@kilncms.com and we will set it up with you."
+  hello@kilncms.com and we will set it up with you."
 
 ## [0.6.7] - 2026-11-13
 
@@ -1077,7 +1077,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Kiln keeps the files of in 7 days, and 10 if it pays for a site. Sites it
   removed are counted too, and bringing a site in counts the same as starting
   one. A person over the number reads one sentence that says when they can
-  start the next one and to write to info@kilncms.com if they need more.
+  start the next one and to write to hello@kilncms.com if they need more.
   Nothing is made for a start that is refused, and it takes nothing from the
   30 an hour the whole service starts. An account that pays for nothing has
   its free days once: a second site gets what is left of the days that began
@@ -1178,7 +1178,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that confirmed for one customer counts as confirmed for all of them, so an
   inbox that confirmed at somebody else's asking is refused (`inbox_elsewhere`)
   with one sentence that says to use the address on the account or to write to
-  info@kilncms.com, and nothing is made at Cloudflare. "Check now", "Send it
+  hello@kilncms.com, and nothing is made at Cloudflare. "Check now", "Send it
   again" and the five-minute job hold to the same rule before a rule is made
   or an email is sent. When
   an inbox has not confirmed after 7 days its owner gets one reminder, and

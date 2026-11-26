@@ -718,12 +718,12 @@ export function domainSentence(code, { name = null, seller = null } = {}) {
   switch (code) {
     case 'not_a_domain': return 'That does not look like a domain Kiln can use. Type the name you bought, like yourname.com, with nothing before or after it.';
     case 'not_registered': return `As far as Kiln can tell, nobody owns ${domain} yet, so there is nothing to connect. Check the spelling, or buy the domain first and then try again.`;
-    case 'already_here': return `Kiln's hosting already has ${domain} set up. If you did not set it up, write to info@kilncms.com and we will sort it out with you.`;
-    case 'taken': return `Another site on Kiln already has ${domain} as its address. Stop using it on that site first, or write to info@kilncms.com if that site is not yours.`;
-    case 'refused': return `Cloudflare, which runs Kiln's hosting, will not take ${domain}, and Kiln cannot change that. Nothing was changed. Write to info@kilncms.com and we will look at it with you.`;
-    case 'too_many': return 'Kiln has too many domains waiting for their name servers to change just now, so it cannot start another one. Nothing was changed. Try again tomorrow, or write to info@kilncms.com.';
+    case 'already_here': return `Kiln's hosting already has ${domain} set up. If you did not set it up, write to hello@kilncms.com and we will sort it out with you.`;
+    case 'taken': return `Another site on Kiln already has ${domain} as its address. Stop using it on that site first, or write to hello@kilncms.com if that site is not yours.`;
+    case 'refused': return `Cloudflare, which runs Kiln's hosting, will not take ${domain}, and Kiln cannot change that. Nothing was changed. Write to hello@kilncms.com and we will look at it with you.`;
+    case 'too_many': return 'Kiln has too many domains waiting for their name servers to change just now, so it cannot start another one. Nothing was changed. Try again tomorrow, or write to hello@kilncms.com.';
     case 'dnssec_on': return `DNSSEC is switched on for ${domain}, and a domain with DNSSEC on stops answering when its name servers change. Switch DNSSEC off at ${who}, wait a day, and then set the domain up here again. Nothing was changed.`;
-    case 'at_cloudflare': return `Because ${domain} was bought at Cloudflare, its name servers cannot be changed, so Kiln cannot set it up by itself. Write to info@kilncms.com and we will connect it with you.`;
+    case 'at_cloudflare': return `Because ${domain} was bought at Cloudflare, its name servers cannot be changed, so Kiln cannot set it up by itself. Write to hello@kilncms.com and we will connect it with you.`;
     case 'not_hosted': return 'Your own domain can be used only for a site that is up on Kiln\'s hosting. Put the site up first, and then come back here.';
     case 'not_set_up': return 'Using your own domain is not switched on for this service yet.';
     case 'not_changed': return `Kiln put this set-up away because the name servers of ${domain} were not changed within ${LIMITS.waitDays} days. Nothing of yours was changed. You can start again any time.`;
@@ -731,7 +731,7 @@ export function domainSentence(code, { name = null, seller = null } = {}) {
     case 'gone': return `Kiln put this set-up away because Cloudflare, which runs Kiln's hosting, no longer holds ${domain}. Nothing of yours was changed. You can start again any time.`;
     case 'ran_out': return `Kiln put this set-up away because ${domain} was not renewed and its year ended. To have a domain again, pay for a yearly plan and choose a name.`;
     case 'hosting_ended': return `Kiln took this site down from its hosting, so it no longer answers at ${domain}. The other records of ${domain}, such as its email, keep working. To move the domain away, download its records from this page first, and then change its name servers at ${who}.`;
-    case 'site_removed': return `Your site no longer answers at ${domain}. The other records of ${domain}, such as its email, keep working. To move the domain away, change its name servers at ${who}. For a file of the domain's records, write to info@kilncms.com.`;
+    case 'site_removed': return `Your site no longer answers at ${domain}. The other records of ${domain}, such as its email, keep working. To move the domain away, change its name servers at ${who}. For a file of the domain's records, write to hello@kilncms.com.`;
     case 'has_one': return 'This site already has a domain. Stop using that one first, and then set up another.';
     case 'no_domain': return 'This site has no domain set up yet. Type the domain you want to use, and set it up first.';
     case 'busy': return 'Kiln is already setting up a domain for this site. Give it a minute, then reload this page.';

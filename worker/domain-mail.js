@@ -434,7 +434,7 @@ export function mailSentence(code, { address = null, inbox = null, name = null }
     case 'no_forward': return 'No address is forwarded for this site yet. To set one up, press "Forward an address" on the site\'s row.';
     case 'bad_action': return 'Kiln did not understand that request. Reload the dashboard and try again.';
     case 'never_confirmed': return `${theInbox} did not confirm within ${MAIL_LIMITS.giveUpDays} days, so Kiln stopped waiting. Nothing of yours was changed. To try again, press "Forward an address" on the site's row.`;
-    case 'inbox_elsewhere': return 'Kiln cannot confirm that inbox by itself. Write to info@kilncms.com and we will set it up with you.';
+    case 'inbox_elsewhere': return 'Kiln cannot confirm that inbox by itself. Write to hello@kilncms.com and we will set it up with you.';
     default: return `Kiln could not finish this with Cloudflare just now. Your site and any email you already have are as they were. Try again in a few minutes.`;
   }
 }

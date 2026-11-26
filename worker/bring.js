@@ -61,7 +61,7 @@ export function bringOn(env) { return keepsReady(env) && !!convertSecret(env); }
 // ─── What a person reads ──────────────────────────────────────────────────────
 
 const SENTENCES = {
-  not_set_up: 'Bringing a site in is not switched on for this service yet. Write to info@kilncms.com and we will tell you when it is.',
+  not_set_up: 'Bringing a site in is not switched on for this service yet. Write to hello@kilncms.com and we will tell you when it is.',
   not_mine: "Tick the box that says this is your site, or that you have its owner's permission to copy it.",
   no_address: 'Type the address of the site to copy, such as www.example.com.',
   bad_address: 'That does not look like the address of a site. Type the address the site opens at, such as www.example.com.',
@@ -71,14 +71,14 @@ const SENTENCES = {
   bad_port: 'Take the port number out of the address, then type it again, such as www.example.com.',
   kiln_own: "That address is one of Kiln's own, so there is nothing to bring in. Type the address of the site you have somewhere else.",
   bad_name: 'Give your site a name of 2 to 60 characters, such as Oak Bakery, or leave the name empty, then try again.',
-  not_now: 'Kiln cannot copy that site during the free days just now. Write to info@kilncms.com and we will help you bring it in.',
-  copied_often: 'This site has been copied to Kiln several times in the last 30 days. If it is yours, write to info@kilncms.com and we will set it up with you.',
+  not_now: 'Kiln cannot copy that site during the free days just now. Write to hello@kilncms.com and we will help you bring it in.',
+  copied_often: 'This site has been copied to Kiln several times in the last 30 days. If it is yours, write to hello@kilncms.com and we will set it up with you.',
   no_job: "Kiln could not start copying the site just now. Wait a few minutes, then press Try again on the site's row.",
   no_such_site: 'That site is not on this account. Reload this page to see your sites.',
   no_copy: 'This site was not brought in from another address, so there is no copy to try again. Reload this page.',
   copied: 'This site is already copied. Press Open the editor on its row to change it.',
   still_copying: 'Kiln is still copying this site. Give it a few minutes, then reload this page.',
-  no_more_tries: `Kiln has tried to copy this site ${MOST_TRIES} times. Write to info@kilncms.com and we will look at it with you.`,
+  no_more_tries: `Kiln has tried to copy this site ${MOST_TRIES} times. Write to hello@kilncms.com and we will look at it with you.`,
   busy: 'Kiln is already starting the copy. Give it a minute, then reload this page.',
 };
 const STATUS = { not_set_up: 409, not_mine: 400, no_address: 400, bad_address: 400, not_web: 400, has_login: 400, not_public: 400, bad_port: 400, kiln_own: 400, bad_name: 400,
@@ -93,12 +93,12 @@ const COPY_FAILED = {
   unreachable: ['The site at that address did not answer, or it refused to be read.', 'Check that the address is right and that the site opens in a browser, then press Try again.'],
   blank: ['The pages came out blank, even when Kiln opened them in a browser.', 'If the site asks for a password or shows a coming soon page, switch that off, then press Try again.'],
   nothing: ['Kiln found no pages to copy at that address.', "Check that the address is the site's home page, then press Try again."],
-  tool: ['The copy stopped before it was finished.', 'Press Try again, and write to info@kilncms.com if it stops a second time.'],
-  no_answer: [`The copy did not finish in ${COPY_MINUTES} minutes.`, 'Press Try again, and write to info@kilncms.com if it happens a second time.'],
+  tool: ['The copy stopped before it was finished.', 'Press Try again, and write to hello@kilncms.com if it stops a second time.'],
+  no_answer: [`The copy did not finish in ${COPY_MINUTES} minutes.`, 'Press Try again, and write to hello@kilncms.com if it happens a second time.'],
   no_job: ['Kiln could not start copying the site just now.', 'Wait a few minutes, then press Try again.'],
   removed: ['The site was removed before the copy was finished.', 'Start again from Bring my site in.'],
 };
-const NO_TRY_LEFT = `Kiln has tried ${MOST_TRIES} times. Write to info@kilncms.com and we will look at it with you.`;
+const NO_TRY_LEFT = `Kiln has tried ${MOST_TRIES} times. Write to hello@kilncms.com and we will look at it with you.`;
 
 /** { why, next }: why a copy failed, and what its owner does now. `again`: a try is left. */
 export function copyTrouble(reason, { again = true } = {}) {

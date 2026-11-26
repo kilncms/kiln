@@ -469,7 +469,7 @@ export async function memberSecret(env, siteId) {
 }
 
 /** What a person reads when a hosted site has members pages and the gate cannot be switched on. */
-export const MEMBERS_OFF_SENTENCE = 'This site has pages under members/, but the members area is not switched on for Kiln\'s hosting yet, so Kiln left those pages out of the site rather than show them to everybody. Write to info@kilncms.com and we will switch it on.';
+export const MEMBERS_OFF_SENTENCE = 'This site has pages under members/, but the members area is not switched on for Kiln\'s hosting yet, so Kiln left those pages out of the site rather than show them to everybody. Write to hello@kilncms.com and we will switch it on.';
 
 /** Take a site's Worker away. True when it is gone (or was never there). */
 export async function removeSite(env, name) {
@@ -490,7 +490,7 @@ export function hostingSentence(code, { repo = 'the repository', planEnded = nul
   switch (code) {
     case 'no_home': return `Kiln found no home page (a file named index.html) at the top of ${repo}, so there is nothing to show at the site's address yet. Add one, and Kiln puts the site up by itself.`;
     case 'empty': return `${repo} has no files yet. Put the site's pages in it, and Kiln puts the site up by itself.`;
-    case 'too_big': return `This site has more files than Kiln's hosting takes on by itself. Write to info@kilncms.com and we will look at it with you.`;
+    case 'too_big': return `This site has more files than Kiln's hosting takes on by itself. Write to hello@kilncms.com and we will look at it with you.`;
     case 'no_access': return 'The Kiln app is not installed on that repository yet, or it was removed, so Kiln cannot read the site\'s files.';
     case 'not_set_up': return 'Hosting is not switched on for this service yet.';
     case 'trial_ended': return `Kiln took this site down from its hosting because the free days ran out. ${kept ? "Kiln keeps your site's files." : 'Your repository is untouched.'} ${paid ? 'Now that the site is subscribed, press the button to put it up again.' : 'To put the site back, subscribe and then press the button to put it up.'}`;
@@ -543,7 +543,7 @@ export const BUILD_SENTENCES = {
 /** What the owner reads when Kiln's hosting cannot take a site Astro builds. */
 export const BUILD_REFUSALS = {
   build_server: 'This site runs a program for each visit. Kiln\'s hosting serves ready-made pages only, so it cannot host this site. You can still use Kiln with the host you have now.',
-  build_tool: 'This site installs its parts with a tool Kiln\'s build file does not know yet. Write to info@kilncms.com and we will add it.',
+  build_tool: 'This site installs its parts with a tool Kiln\'s build file does not know yet. Write to hello@kilncms.com and we will add it.',
 };
 
 // The build file for a site that installs with npm and whose default branch

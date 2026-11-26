@@ -37,7 +37,7 @@ const UA = 'kiln-cloud';
 const INSTALL_URL = 'https://github.com/apps/kiln-cms/installations/new';
 const CONFIG_FILE = 'assets/kiln-config.js';
 const SIGN_IN_PAGE = 'kiln.html';
-const HELP = 'info@kilncms.com';
+const HELP = 'hello@kilncms.com';
 
 /** How far a request to a customer's own address may go. */
 export const LIMITS = { timeoutMs: 8000, redirects: 3, bodyBytes: 512 * 1024 };
@@ -393,7 +393,7 @@ async function liveLines(home, base, plan, timeoutMs, hosted = false) {
 
 const KEPT_FILES = "your site's files";
 const KEPT_UNREAD = `Not checked, because Kiln could not read ${KEPT_FILES} just now. Please check again in a minute.`;
-const KEPT_WRITE_IN = 'Write to info@kilncms.com and say which site it is, and a person will put it right.';
+const KEPT_WRITE_IN = 'Write to hello@kilncms.com and say which site it is, and a person will put it right.';
 
 /**
  * The list for a site whose files Kiln keeps (keeps.js). Its owner has never

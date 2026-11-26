@@ -607,7 +607,7 @@ test('domain: every sentence is plain, has no em dash, names the domain and says
   for (const c of ['is_live', 'changed']) assert.match(domainSentence(c, { name: N, seller: 'GoDaddy' }), /download its records from this page first, and then change its name servers at GoDaddy/, c);
   assert.match(domainSentence('dnssec_on', { name: N, seller: 'GoDaddy' }), /Switch DNSSEC off at GoDaddy/);
   assert.match(domainSentence('dnssec_on', { name: N }), /Switch DNSSEC off at the company you bought the domain from/);
-  assert.match(domainSentence('at_cloudflare', { name: N }), /info@kilncms\.com/);
+  assert.match(domainSentence('at_cloudflare', { name: N }), /hello@kilncms\.com/);
   assert.match(domainSentence('not_changed', { name: N }), new RegExp(`${LIMITS.waitDays} days`));
   assert.equal(domainSentence('something_new', { name: N }), domainSentence('cloudflare', { name: N }));
   for (const words of Object.values(kindWords)) assert.doesNotMatch(words, /[—–]/);

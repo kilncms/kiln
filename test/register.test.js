@@ -225,7 +225,7 @@ test('an account that got a name in the last 12 months is not offered another', 
   had(w.env, { site_id: 'gone', subscription_id: 'sub-0', state: 'handed_over', registered_at: Date.now() - 100 * DAY });
   assert.equal(await offered(w), null);
   const r = await search(w, J);
-  assert.deepEqual(r.json, { error: 'Your account already got a domain through Kiln in the last 12 months. Email info@kilncms.com if you need another.', code: 'account_had' });
+  assert.deepEqual(r.json, { error: 'Your account already got a domain through Kiln in the last 12 months. Email hello@kilncms.com if you need another.', code: 'account_had' });
   const later = world();
   had(later.env, { site_id: 'gone', subscription_id: 'sub-0', state: 'handed_over', registered_at: Date.now() - 400 * DAY, created_at: Date.now() - 400 * DAY });
   assert.deepEqual(await offered(later), { offered: true });

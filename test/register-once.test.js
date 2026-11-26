@@ -45,7 +45,7 @@ const SAYS = {
   price: 'The price of this name just went up and your plan no longer covers it. Nothing was registered for you. Choose another name.',
   notPaid: 'A domain is included once a year of Kiln Cloud + hosting is paid. Pay for the year from this site\'s row, then choose your name.',
   daily: 'Kiln has registered as many names as it can today. Nothing was registered for you. Come back tomorrow and choose the name again.',
-  account: 'Your account already got a domain through Kiln in the last 12 months. Email info@kilncms.com if you need another.',
+  account: 'Your account already got a domain through Kiln in the last 12 months. Email hello@kilncms.com if you need another.',
   has: (n) => `Your plan already has its domain, ${n}. A yearly plan includes one.`,
 };
 

@@ -10,7 +10,7 @@ security reports seriously and appreciate responsible disclosure.
 Report privately using GitHub Security Advisories: go to the repository's
 **Security** tab and click **Report a vulnerability** (Private Vulnerability
 Reporting). If you cannot use that flow, contact the maintainer directly at
-**info@kilncms.com**.
+**hello@kilncms.com**.
 
 Please include enough detail to reproduce — affected component, steps, and
 impact. We aim to acknowledge reports within a few days and will keep you

@@ -254,7 +254,7 @@ test('forwarding: an inbox that confirmed for another customer is refused in one
     const res = await setup(w.env, 'hello', OTHER);
     const body = await res.json();
     assert.deepEqual([res.status, body.code, body.forward], [409, 'inbox_elsewhere', null]);
-    assert.equal(body.error, 'Kiln cannot confirm that inbox by itself. Write to info@kilncms.com and we will set it up with you.');
+    assert.equal(body.error, 'Kiln cannot confirm that inbox by itself. Write to hello@kilncms.com and we will set it up with you.');
     assert.equal(body.error, mailSentence('inbox_elsewhere', { address: HELLO, inbox: OTHER, name: N }), 'the sentence names nobody and nothing');
     for (const s of sentences(body.error)) plain(s);
     assert.equal(await rowOf(w.env), null);
@@ -340,7 +340,7 @@ test('forwarding: after a site is removed, another customer who asks for its inb
     const res = await askAs(w.env, 'tok2', '/cloud/sites/mail', { id: 'site2', action: 'setup', local: 'hello', inbox: INBOX });
     const body = await res.json();
     assert.deepEqual([res.status, body.code, body.forward], [409, 'inbox_elsewhere', null]);
-    assert.equal(body.error, 'Kiln cannot confirm that inbox by itself. Write to info@kilncms.com and we will set it up with you.');
+    assert.equal(body.error, 'Kiln cannot confirm that inbox by itself. Write to hello@kilncms.com and we will set it up with you.');
     assert.deepEqual(w.cf.calls.slice(before.calls).filter(c => c.method !== 'GET').map(c => `${c.method} ${c.path}`), [], 'Cloudflare was only read');
     assert.deepEqual([await forwardRow(w.env, 'site2'), rulesAt(w, N2), w.cf.confirmations, w.mails().length], [null, [], before.confirmations, before.mails], 'no row, no rule and no email');
     assert.deepEqual([await owns(w.env, 'acct-1', INBOX), await owns(w.env, 'acct-2', INBOX)], [true, false]);

@@ -307,7 +307,7 @@ test('a failure after the repository was made: one sentence, no row, the reposit
     const w = world({ fail });
     const { status, json } = await start(w);
     assert.equal(status, 502, fail);
-    assert.deepEqual(json, { error: 'Kiln could not finish starting your site, so it is not in your list. Please try again in a few minutes, and write to info@kilncms.com if it happens again.', code: 'half_made' });
+    assert.deepEqual(json, { error: 'Kiln could not finish starting your site, so it is not in your list. Please try again in a few minutes, and write to hello@kilncms.com if it happens again.', code: 'half_made' });
     assert.equal(rows(w.env).length, 0, 'no row is left behind');
     assert.equal(w.hub.made.length, 1);
     assert.equal(w.hub.repos.has(w.hub.made[0]), true);
@@ -342,7 +342,7 @@ test('a name that will not do, a service that keeps no sites, and nobody signed 
     const o = world({ env: off });
     const r = await start(o);
     assert.equal(r.status, 409);
-    assert.deepEqual(r.json, { error: 'Starting a site is not switched on for this service yet. Write to info@kilncms.com and we will tell you when it is.', code: 'not_set_up' });
+    assert.deepEqual(r.json, { error: 'Starting a site is not switched on for this service yet. Write to hello@kilncms.com and we will tell you when it is.', code: 'not_set_up' });
     assert.equal(github(r.calls).length, 0);
     assert.equal(rows(o.env).length, 0);
     assert.equal((await ask(o, 'GET', '/cloud/me')).json.keeps, false);
@@ -363,7 +363,7 @@ test('who owns a kept site: the account on its row and nobody else, with GitHub 
   // their files and what to do, and are not sent to install an app (found on the test service, 0.6.7).
   assert.equal(r.status, 502);
   assert.equal(r.json.code, 'not_reached');
-  assert.equal(r.json.error, "Kiln could not reach your site's files just now. Wait a minute and try again. If it keeps happening, write to info@kilncms.com.");
+  assert.equal(r.json.error, "Kiln could not reach your site's files just now. Wait a minute and try again. If it keeps happening, write to hello@kilncms.com.");
   assert.equal('install_url' in r.json, false);
   assert.equal(github(r.calls).length, 0, 'GitHub was not asked who owns it');
   // another Google account, and a GitHub account
@@ -533,7 +533,7 @@ const hourCount = (env) => { const h = Math.floor(Date.now() / 3600000); return 
 
 test('the sentences about an account\'s own count and its free days are plain ones that say what to do', () => {
   assert.equal([STARTS_A_WEEK, STARTS_A_WEEK_PAYING].join(), '3,10');
-  assert.equal(ownLimitSentence(3, 7 * DAY), 'You have started 3 sites in the last 7 days, so you can start the next one in 7 days, and you can write to info@kilncms.com if you need more.');
+  assert.equal(ownLimitSentence(3, 7 * DAY), 'You have started 3 sites in the last 7 days, so you can start the next one in 7 days, and you can write to hello@kilncms.com if you need more.');
   assert.match(ownLimitSentence(3, 25 * 3600000), /in 2 days,/);
   assert.match(ownLimitSentence(10, 5 * 3600000 - 1), /^You have started 10 sites .* in 5 hours,/);
   assert.match(ownLimitSentence(3, 1), /in 1 hour,/);
@@ -558,7 +558,7 @@ test('an account that starts sites and removes them is stopped at 3 in 7 days, i
   assert.equal(hourCount(w.env), '3');
   let r = await start(w, 'Ash Diner');
   assert.equal(r.status, 429);
-  assert.deepEqual(r.json, { error: 'You have started 3 sites in the last 7 days, so you can start the next one in 7 days, and you can write to info@kilncms.com if you need more.', code: 'your_limit' });
+  assert.deepEqual(r.json, { error: 'You have started 3 sites in the last 7 days, so you can start the next one in 7 days, and you can write to hello@kilncms.com if you need more.', code: 'your_limit' });
   plain(r.json.error);
   assert.equal(github(r.calls).length, 0, 'GitHub was not asked for anything');
   assert.deepEqual([w.hub.made.length, starts(w.env).length, hourCount(w.env)], [3, 3, '3'], 'nothing was made, and the whole service\'s count did not move');

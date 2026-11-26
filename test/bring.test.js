@@ -222,7 +222,7 @@ test('every sentence a person can read is a plain one that says what to do', () 
     plain(copySentence(reason));
     assert.match(copySentence(reason), /Try again/);
     plain(copySentence(reason, { again: false }));
-    assert.match(copySentence(reason, { again: false }), /Write to info@kilncms\.com/);
+    assert.match(copySentence(reason, { again: false }), /Write to hello@kilncms\.com/);
     assert.equal(/Try again/.test(copySentence(reason, { again: false })), false, 'no button is named that is not there');
   }
   assert.equal(copySentence('something new'), copySentence('tool'));
@@ -327,7 +327,7 @@ test('fair use: the limits of starting a site, and one free copy of a site in 30
   const hers = sites(w.env).find(x => x.account_id === 'acct-g');
   assert.equal((await ask(w, 'POST', '/cloud/sites/remove', { id: hers.id })).status, 200);
   const again = await bring(w, { address: 'https://www.oakbakery.com/', mine: true });
-  assert.deepEqual([again.status, again.json], [429, { error: 'Kiln cannot copy that site during the free days just now. Write to info@kilncms.com and we will help you bring it in.', code: 'not_now' }]);
+  assert.deepEqual([again.status, again.json], [429, { error: 'Kiln cannot copy that site during the free days just now. Write to hello@kilncms.com and we will help you bring it in.', code: 'not_now' }]);
   assert.deepEqual([w.hub.made.length, w.hub.jobs.length, sites(w.env).length, again.calls.length], [2, 2, 1, 0], 'refused before anything was made or asked');
   assert.equal(w.env.kiln_cloud.row("SELECT COUNT(*) n FROM kept_starts WHERE account_id = 'acct-g'").n, 1);
   // Rosa pays for a site: the mark does not hold her, and her copy leaves the mark as it was
@@ -780,7 +780,7 @@ test('the mail for a copy that did not work: the reason, what to try, that nothi
   assert.equal(last.subject, 'The copy of www.oakbakery.com/shop did not work');
   assert.deepEqual(last.text.split('\n\n').slice(1, 4), [
     'Kiln tried to copy www.oakbakery.com/shop and it did not work. The pages came out blank, even when Kiln opened them in a browser.',
-    'Kiln has tried 3 times. Write to info@kilncms.com and we will look at it with you.',
+    'Kiln has tried 3 times. Write to hello@kilncms.com and we will look at it with you.',
     'Nothing was charged for this, and your old site was not changed.',
   ]);
   for (const m of [mail, last]) assert.equal(/GitHub|repositor|—|–|undefined/.test(m.text + m.html), false);
@@ -868,7 +868,7 @@ test('bring my site in, fair use: the same old site is copied three times in 30 
   assert.equal(JSON.parse(w.env.KILN.map.get('copied:oakbakery.com')).length, 3, 'one key for the address, without www.');
   // a fourth account is told why, before anything is made or asked
   const fourth = await bring(w, { address: 'oakbakery.com', mine: true }, 'p4');
-  assert.deepEqual([fourth.status, fourth.json], [429, { error: 'This site has been copied to Kiln several times in the last 30 days. If it is yours, write to info@kilncms.com and we will set it up with you.', code: 'copied_often' }]);
+  assert.deepEqual([fourth.status, fourth.json], [429, { error: 'This site has been copied to Kiln several times in the last 30 days. If it is yours, write to hello@kilncms.com and we will set it up with you.', code: 'copied_often' }]);
   assert.deepEqual([w.hub.made.length, w.hub.jobs.length, sites(w.env).length, fourth.calls.length], [3, 3, 3, 0]);
   // an account that pays for a site is not held back, and its copy is not counted
   w.env.kiln_cloud.exec("INSERT INTO sites (id, account_id, repo, origin, plan, status, stripe_subscription_id, created_at, kept, name) VALUES ('paid-5', 'acct-p5', 'kiln-sites/paid-5', 'https://paid5.example', 'managed', 'active', 'sub-5', 1, 1, 'Paid')");

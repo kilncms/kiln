@@ -20,7 +20,7 @@ import { cloudEnv, addSite, d1Skip } from './d1-fake.js';
 const DAY = 86400e3;
 const DASH = 'https://app.example';
 const box = () => { const out = []; return { out, binding: { send: async (m) => { out.push(m); return { messageId: `<${out.length}@kilncms.com>` }; } } }; };
-const cloud = (mail, extra = {}) => cloudEnv(fakeKV(), { CLOUD_DASHBOARD: DASH, NOTIFY: mail.binding, CUSTOMER_MAIL_FROM: 'hello@kilncms.com', CUSTOMER_MAIL_REPLY_TO: 'info@kilncms.com', STRIPE_SECRET_KEY: '', ...extra });
+const cloud = (mail, extra = {}) => cloudEnv(fakeKV(), { CLOUD_DASHBOARD: DASH, NOTIFY: mail.binding, CUSTOMER_MAIL_FROM: 'hello@kilncms.com', CUSTOMER_MAIL_REPLY_TO: 'hello@kilncms.com', STRIPE_SECRET_KEY: '', ...extra });
 // A GitHub App key of this test's own, so the real "is the app installed?" check can sign its question.
 const APP_KEY = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64');
 const post = (env, path, body) => worker.fetch(new Request(`https://worker.example${path}`, { method: 'POST', headers: { Authorization: 'Bearer tok', 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), env);
@@ -84,7 +84,7 @@ test('adding a site writes to the owner once, from the Kiln address, with replie
     const toOwner = mail.out.filter(m => m && m.to === 'ada.new@example.com');
     assert.equal(toOwner.length, 1);
     assert.deepEqual(toOwner[0].from, { email: 'hello@kilncms.com', name: 'Kiln' });
-    assert.equal(toOwner[0].replyTo, 'info@kilncms.com');
+    assert.equal(toOwner[0].replyTo, 'hello@kilncms.com');
     assert.match(toOwner[0].subject, /^club\.example is on Kiln/);
     assert.match(toOwner[0].text, /free trial runs until /);
   });

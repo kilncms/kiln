@@ -64,13 +64,13 @@ export function inKeepOrg(env, repo) {
 // ─── What a person reads ──────────────────────────────────────────────────────
 
 const SENTENCES = {
-  not_set_up: 'Starting a site is not switched on for this service yet. Write to info@kilncms.com and we will tell you when it is.',
+  not_set_up: 'Starting a site is not switched on for this service yet. Write to hello@kilncms.com and we will tell you when it is.',
   bad_name: 'Give your site a name of 2 to 60 characters, such as Oak Bakery, then press Start again.',
   busy: 'Kiln is already starting a site for you. Wait a minute, then reload this page to see it.',
   one_unpaid: 'You already have a site here that is not paid for. Subscribe for that site or remove it, then start a new one.',
   too_many: 'Kiln has started a lot of new sites in the last hour. Please try again in an hour.',
   not_started: 'Kiln could not start your site just now. Please try again in a few minutes.',
-  half_made: 'Kiln could not finish starting your site, so it is not in your list. Please try again in a few minutes, and write to info@kilncms.com if it happens again.',
+  half_made: 'Kiln could not finish starting your site, so it is not in your list. Please try again in a few minutes, and write to hello@kilncms.com if it happens again.',
   in_keep_org: 'That repository is one Kiln keeps for a site, so it cannot be added here. Enter a repository of your own.',
 };
 const STATUS = { your_limit: 429, not_set_up: 409, bad_name: 400, busy: 409, one_unpaid: 409, too_many: 429, not_started: 502, half_made: 502, in_keep_org: 403 };
@@ -87,7 +87,7 @@ function howLong(ms) {
 
 /** What an account reads when it has started as many sites in 7 days as one account may. `wait` is how long until the oldest of them is 7 days old. */
 export const ownLimitSentence = (most, wait) =>
-  `You have started ${most} sites in the last 7 days, so you can start the next one in ${howLong(wait)}, and you can write to info@kilncms.com if you need more.`;
+  `You have started ${most} sites in the last 7 days, so you can start the next one in ${howLong(wait)}, and you can write to hello@kilncms.com if you need more.`;
 
 /**
  * What is true about the free days of a site that got no days of its own: an
