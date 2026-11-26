@@ -393,3 +393,95 @@ export function duplicateCandidates(file, max = 10) {
   for (let i = 2; out.length < max; i++) out.push(`${stem}-copy-${i}${ext}`);
   return out;
 }
+
+// ─── Several content files as one commit (a "set") ───────────────────────────
+// POST /source/commit and /source/revert take { files: [...] } as a second
+// form, written as ONE commit. Every rule of the one-file form holds file by
+// file. Two differences, both for the set as a whole: a field somebody else
+// changed since the editor read it stops the whole set before anything is
+// written (the editor asks about each, then sends the set again), and a set
+// is refused whole when any file in it is refused. A value that is simply not
+// acceptable is still left out with its reason while the rest go.
+
+/** Most files one set may change: the number the Site menu already uses. */
+export const SOURCE_SET_MAX = 100;
+
+export const SET_TOO_LARGE = `One set can change at most ${SOURCE_SET_MAX} files. Publish the rest in a second go.`;
+export const SET_CHANGED_SINCE_READ = 'Someone else changed some of these fields since they were read, so nothing was saved.';
+export const SET_HEAD_MOVED = 'conflict: the site changed while saving — try again';
+export const SET_NOTHING_APPLIED = 'no edits could be applied';
+export const SET_NOT_A_FILE = 'not an ordinary file';
+
+const modeCode = (refuse, actor) => (refuse.status === 401 ? 'unauthorized' : actor && actor.mode === 'review' ? 'review_mode' : 'suggest_mode');
+
+/**
+ * Rules 1 to 3 of /source/commit for a set: { files: [{ file, edits }], adapter }.
+ * Returns { status, error, code, file?, detail? } to refuse the whole set, or
+ * { adapter, files: [{ adapter, file, cleanEdits }] } to go on.
+ */
+export function validateSourceSet({ files, adapter, actor } = {}, deps) {
+  const refuse = sourceModeRefusal(actor);
+  if (refuse) return { ...refuse, code: modeCode(refuse, actor) };
+  if (!Array.isArray(files) || !files.length) return { status: 400, error: 'bad files', code: 'bad_files' };
+  if (files.length > SOURCE_SET_MAX) return { status: 400, error: SET_TOO_LARGE, code: 'too_many_files', detail: files.length };
+  const out = [];
+  const seen = new Set();
+  for (const f of files) {
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return { status: 400, error: 'bad files', code: 'bad_files' };
+    const v = validateSourceRequest({ file: f.file, edits: f.edits, adapter, actor }, deps);
+    if (v.error) return { status: v.status, error: v.error, code: 'file_refused', file: typeof f.file === 'string' ? f.file : '', ...(v.detail !== undefined && { detail: v.detail }) };
+    if (seen.has(v.file)) return { status: 400, error: 'the same file twice in one set', code: 'same_file_twice', file: v.file };
+    seen.add(v.file);
+    out.push(v);
+  }
+  return { adapter: out[0].adapter, files: out };
+}
+
+/**
+ * /source/revert for a set: { files: [path, ...], toSha }. The same path rules
+ * as the one-file revert, file by file. Returns a refusal as validateSourceSet
+ * does, or { files: [cleanPath, ...] }.
+ */
+export function validateRevertSet({ files, toSha, actor } = {}, deps) {
+  if (!/^[a-f0-9]{40}$/.test(String(toSha || ''))) return { status: 400, error: 'bad toSha', code: 'bad_to_sha' };
+  const refuse = sourceModeRefusal(actor);
+  if (refuse) return { ...refuse, code: modeCode(refuse, actor) };
+  if (!Array.isArray(files) || !files.length) return { status: 400, error: 'bad files', code: 'bad_files' };
+  if (files.length > SOURCE_SET_MAX) return { status: 400, error: SET_TOO_LARGE, code: 'too_many_files', detail: files.length };
+  const out = [];
+  for (const f of files) {
+    const p = refuseSourcePath(f, actor, deps, { anyEditable: true });
+    if (p.error) return { status: p.status, error: p.error, code: 'file_refused', file: typeof f === 'string' ? f : '' };
+    if (out.includes(p.file)) return { status: 400, error: 'the same file twice in one set', code: 'same_file_twice', file: p.file };
+    out.push(p.file);
+  }
+  return { files: out };
+}
+
+/**
+ * What a set comes to, from each file's checked edits (read at the same head):
+ * [{ file, gone } | { file, path, moved, applied, allSkipped, invalid, content, source }].
+ * Any field changed by somebody else stops the set: { stop: { status, body } }.
+ * Otherwise { writes: [{ file, content }], files: [{ file, applied, skipped, unchanged? }],
+ * leftOut: [{ file, error, code, skipped? }] }: a file that is gone, or not an
+ * ordinary file, or where no edit could be applied, or that would not parse,
+ * is left out with its reason and the rest go.
+ */
+export function planSourceSet(results) {
+  const changed = [];
+  for (const r of results) for (const m of r.moved || []) changed.push({ file: r.file, ...m });
+  if (changed.length) return { stop: { status: 409, body: { error: SET_CHANGED_SINCE_READ, code: 'changed_since_read', changed } } };
+  const writes = [];
+  const files = [];
+  const leftOut = [];
+  for (const r of results) {
+    if (r.gone) { leftOut.push({ file: r.file, error: SOURCE_FILE_GONE, code: 'file_gone' }); continue; }
+    if (r.path && r.path !== r.file) { leftOut.push({ file: r.file, error: SET_NOT_A_FILE, code: 'not_a_file' }); continue; }
+    if (!r.applied.length) { leftOut.push({ file: r.file, error: SET_NOTHING_APPLIED, code: 'nothing_applied', skipped: r.allSkipped }); continue; }
+    if (r.invalid) { leftOut.push({ file: r.file, error: r.invalid, code: 'invalid' }); continue; }
+    if (r.content === r.source) { files.push({ file: r.file, applied: r.applied, skipped: r.allSkipped, unchanged: true }); continue; }
+    writes.push({ file: r.file, content: r.content });
+    files.push({ file: r.file, applied: r.applied, skipped: r.allSkipped });
+  }
+  return { writes, files, leftOut };
+}

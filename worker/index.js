@@ -2482,6 +2482,43 @@ async function sourceCommit(request, env) {
 }
 
 /**
+ * One content file's edits checked against the file as it is at `ref` (rules
+ * 4 and 5), without writing anything: a field someone else changed since it
+ * was read (`moved`), Markdown that would add markup, a picture that is not in
+ * the repository, and what the adapter could not apply are each left out with
+ * the reason. Shared by the one-file form and a set, so both judge alike.
+ * Returns { gone: true } when the file is not there, or
+ * { cur, source, moved, content, applied, allSkipped, invalid }.
+ */
+async function checkSourceFile(h, repo, ref, v, runnable, typedSkips) {
+  const cur = await sourceRead(h, repo, v.file, ref);
+  if (!cur) return { gone: true };
+  const source = utf8FromB64(cur.content);
+  // A field that no longer says what the editor read was changed by
+  // someone else: that edit is left out, with what the file says now, and
+  // the rest go through. Looked at again on the retry, against the file
+  // as it is then.
+  const moved = changedSinceRead(v.adapter, source, v.file, runnable);
+  // Markdown may keep the markup it holds and add none (rule 4, second half).
+  let parsed = null;
+  const currentOf = (e) => { parsed = parsed || v.adapter.parse(source, v.file); return v.adapter.read(parsed, e.pointer); };
+  const marked = markdownProblems(runnable.filter(e => !moved.some(m => m.key === e.key)), currentOf, { checkFragmentWrite, mdx: /\.mdx$/i.test(v.file) });
+  // A picture is named only once it is in the repository (rule 4, third part).
+  const pics = picturesToCheck(runnable.filter(e => !moved.some(m => m.key === e.key)), v.file, { currentOf, mdx: /\.mdx$/i.test(v.file) });
+  const missing = [];
+  for (const c of pics.check) {
+    if (missing.some(m => m.key === c.key)) continue;
+    if (!(await repoHas(h, repo, c.path, ref))) missing.push({ key: c.key, reason: `picture not found: ${c.path}` });
+  }
+  const leftOut = new Set([...moved, ...marked, ...pics.skips, ...missing].map(s => s.key));
+  const { content, applied, skipped } = v.adapter.applyEdits(source, runnable.filter(e => !leftOut.has(e.key)), v.file);
+  const allSkipped = [...typedSkips, ...moved, ...marked, ...pics.skips, ...missing, ...skipped];
+  // Cheap pre-commit parse check (§9) — the build is the real judge (§12).
+  const invalid = applied.length ? v.adapter.validate(content, v.file) : null;
+  return { cur, source, moved, content, applied, allSkipped, invalid };
+}
+
+/**
  * The edits of one content file, checked and committed (rules 4 to 6): a
  * typed value of the wrong kind, a field someone else changed since it was
  * read, Markdown that would add markup, a picture that is not in the
@@ -2498,33 +2535,12 @@ async function commitSourceEdits(h, repo, branch, v, { message, author, email = 
   const runnable = v.cleanEdits.filter(e => !badKeys.has(e.key));
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const cur = await sourceRead(h, repo, v.file, branch);
-      if (!cur) return { status: 404, body: { error: SOURCE_FILE_GONE } };
-      const source = utf8FromB64(cur.content);
-      // A field that no longer says what the editor read was changed by
-      // someone else: that edit is left out, with what the file says now, and
-      // the rest go through. Looked at again on the retry, against the file
-      // as it is then.
-      const moved = changedSinceRead(v.adapter, source, v.file, runnable);
-      // Markdown may keep the markup it holds and add none (rule 4, second half).
-      let parsed = null;
-      const currentOf = (e) => { parsed = parsed || v.adapter.parse(source, v.file); return v.adapter.read(parsed, e.pointer); };
-      const marked = markdownProblems(runnable.filter(e => !moved.some(m => m.key === e.key)), currentOf, { checkFragmentWrite, mdx: /\.mdx$/i.test(v.file) });
-      // A picture is named only once it is in the repository (rule 4, third part).
-      const pics = picturesToCheck(runnable.filter(e => !moved.some(m => m.key === e.key)), v.file, { currentOf, mdx: /\.mdx$/i.test(v.file) });
-      const missing = [];
-      for (const c of pics.check) {
-        if (missing.some(m => m.key === c.key)) continue;
-        if (!(await repoHas(h, repo, c.path, branch))) missing.push({ key: c.key, reason: `picture not found: ${c.path}` });
-      }
-      const leftOut = new Set([...moved, ...marked, ...pics.skips, ...missing].map(s => s.key));
-      const { content, applied, skipped } = v.adapter.applyEdits(source, runnable.filter(e => !leftOut.has(e.key)), v.file);
-      const allSkipped = [...typedSkips, ...moved, ...marked, ...pics.skips, ...missing, ...skipped];
+      const c = await checkSourceFile(h, repo, branch, v, runnable, typedSkips);
+      if (c.gone) return { status: 404, body: { error: SOURCE_FILE_GONE } };
+      const { cur, content, applied, allSkipped } = c;
       if (!applied.length) return { status: 422, body: { error: 'no edits could be applied', skipped: allSkipped } };
-      // Cheap pre-commit parse check (§9) — the build is the real judge (§12).
-      const invalid = v.adapter.validate(content, v.file);
-      if (invalid) return { status: 422, body: { error: invalid } };
-      if (content === source) return { status: 200, body: { ok: true, unchanged: true, applied, skipped: allSkipped } };
+      if (c.invalid) return { status: 422, body: { error: c.invalid } };
+      if (content === c.source) return { status: 200, body: { ok: true, unchanged: true, applied, skipped: allSkipped } };
       const put = await fetch(`${GH}/repos/${repo}/contents/${encodeURIComponent(v.file)}`, {
         method: 'PUT', headers: h,
         body: JSON.stringify({
