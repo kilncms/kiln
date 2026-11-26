@@ -6,6 +6,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-11-26
+
+### Fixed
+
+- **Free days the operator gives a site on a domain of its own hold.** The
+  domain keeps a mark of when its free days began, and setting the domain up
+  again or going live on it brought the site back in line with that mark,
+  which took the given days away. The mark now moves with the days.
+- The page a person reads when an address has asked for more than eight
+  sign-in links in a day says so in plainer words.
+
+
 ## [0.10.5] - 2026-11-26
 
 ### Added
