@@ -49,6 +49,7 @@
  *   POST /source/commit    source mode: typed edits → one commit on a content file
  *   POST /source/read      source mode: what one field of a content file holds now (a Markdown body, before it is edited)
  *   POST /source/revert    source mode: restore a file to its content at a given sha
+ *                          (both also take { files: [...] }: several content files as one commit)
  *   POST /source/duplicate source mode: copy a content file to a free -copy sibling
  *   POST /source/create    source mode: a new entry from its fields, or a copy of one; never over a file that is there
  *   POST /source/remove    source mode: an entry's file deleted in one commit (revert to its parent brings it back)
@@ -100,7 +101,7 @@ import { applyEdits, indexHtml, readValues, pageFileCandidates, safeUrl } from '
 import { checkDocumentWrite, checkNewPageWrite, templatePathsFor, checkFragment, checkFragmentWrite, isHtmlPath } from './sanitize-guard.js';
 import { keyInScope, hasSectionLimit, checkSectionWrite, strictUtf8FromB64, scheduledKeyRefusal, SECTION_REFUSALS } from './section-scope.js';
 import { adapterIds, getAdapter } from '../src/adapters/index.js';
-import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, changedSinceRead, markdownProblems, picturesToCheck, duplicateCandidates, entryRequest, ENTRY_EXISTS, SOURCE_FILE_GONE } from './source.js';
+import { sourceModeRefusal, validateSourceRequest, refuseSourcePath, typedEditProblems, changedSinceRead, markdownProblems, picturesToCheck, duplicateCandidates, entryRequest, ENTRY_EXISTS, SOURCE_FILE_GONE, validateSourceSet, validateRevertSet, planSourceSet, SET_HEAD_MOVED, SET_NOTHING_APPLIED } from './source.js';
 import { uploadProblem, editorFileKind, isUploadKind, base64Bytes, base64Head, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../src/file-policy.js';
 
 // UTF-8-safe base64 (GitHub content is base64; edits re-applied at cron time).
@@ -249,12 +250,14 @@ async function routeRequest(request, env, ctx) {
       // `sourceEntries`: entries are added, copied and removed (/source/create,
       // /source/remove), read whole (/source/fields), listed by version
       // (/source/history), and content-file edits can be scheduled.
+      // `sourceSets`: /source/commit and /source/revert also take { files: [...] }
+      // and write every file of the set as one commit (commitSourceSet).
       // `ownerSessions`: an owner's GitHub sign-in can stay on this worker
       // (/auth/login keep=server, /auth/session, /auth/adopt), and the owner's
       // calls then go through /gh/* with a session, as an invited editor's do.
       // `emailSignIn`: this worker can send sign-in links (/email/*), so the
       // dashboard may offer them beside Continue with Google.
-      const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, aiConfigured: !!env.AI_API_KEY, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, ownerSessions: true, emailSignIn: customerMailOn(env), keeps: keepsReady(env), brings: bringOn(env), ...deployedBuild(env) };
+      const basic = { ok: true, modes: ['html', 'source'], adapters: adapterIds(), version: WORKER_VERSION, aiConfigured: !!env.AI_API_KEY, memberSessions: true, renameMovesAll: true, sourceWas: true, sourceMarkdown: true, sourceMedia: true, sourceEntries: true, sourceSets: true, ownerSessions: true, emailSignIn: customerMailOn(env), keeps: keepsReady(env), brings: bringOn(env), ...deployedBuild(env) };
       // ?deep=1 asks the things publishing depends on. A plain GET stays a
       // constant 200 that touches nothing, as every editor and monitor expects.
       if (url.searchParams.get('deep') === '1') {
@@ -2461,7 +2464,10 @@ async function repoHas(h, repo, path, ref) {
 }
 
 async function sourceCommit(request, env) {
-  const { repo, branch = 'main', adapter, file, edits, message } = await request.json().catch(() => ({}));
+  const body = await request.json().catch(() => ({}));
+  // The form for several files. An editor from before it never sends `files`.
+  if (body && Array.isArray(body.files)) return sourceCommitSet(request, env, body);
+  const { repo, branch = 'main', adapter, file, edits, message } = body;
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
   if (!/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
   const actor = await authActor(request, env, repo);
@@ -2560,6 +2566,177 @@ async function commitSourceEdits(h, repo, branch, v, { message, author, email = 
     return { status: 409, body: { error: 'conflict: the file changed while saving — try again' } };
   } catch {
     return { status: 502, body: { error: 'could not apply edits safely' } };
+  }
+}
+
+// ─── Several content files as one commit (a "set") ───────────────────────────
+// POST /source/commit { repo, branch?, adapter, files: [{ file, edits }], message? }
+// POST /source/revert { repo, branch?, toSha, files: [path, ...] }
+// One tree built on the head commit that was read, one commit with that one
+// parent, and a branch move that is never forced; when the branch moved on in
+// between, everything is read and judged again from the new head, once. The
+// one-file forms above are untouched. Pure rules: worker/source.js.
+
+const setRefused = (v) => json({ error: v.error, code: v.code, ...(v.file !== undefined && { file: v.file }), ...(v.detail !== undefined && { detail: v.detail }) }, v.status);
+const refPath = (branch) => branch.split('/').map(encodeURIComponent).join('/');
+
+/** The commit a branch points at now, or null when there is no such branch. */
+async function branchHead(h, repo, branch) {
+  const res = await fetch(`${GH}/repos/${repo}/git/ref/heads/${refPath(branch)}`, { headers: h });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`ref ${res.status}`);
+  const out = await res.json();
+  if (!/^[a-f0-9]{40}$/.test(out?.object?.sha || '')) throw new Error('unreadable ref');
+  return out.object.sha;
+}
+
+/**
+ * `entries` (tree entries) as one commit on `head`, and the branch moved to it
+ * without force. Returns { sha } on success, { moved: true } when the branch is
+ * no longer at `head`, or { failed } with what GitHub said.
+ */
+async function commitTreeOnHead(h, repo, branch, head, entries, { message, author, email }) {
+  const base = await fetch(`${GH}/repos/${repo}/git/commits/${head}`, { headers: h });
+  if (!base.ok) return { failed: `base ${base.status}` };
+  const baseTree = (await base.json())?.tree?.sha;
+  const tree = await fetch(`${GH}/repos/${repo}/git/trees`, { method: 'POST', headers: h, body: JSON.stringify({ base_tree: baseTree, tree: entries }) });
+  if (!tree.ok) return { failed: (await tree.json().catch(() => ({}))).message || `tree ${tree.status}` };
+  const treeSha = (await tree.json()).sha;
+  const commit = await fetch(`${GH}/repos/${repo}/git/commits`, { method: 'POST', headers: h, body: JSON.stringify({ message, tree: treeSha, parents: [head], author: { name: author, email } }) });
+  if (!commit.ok) return { failed: (await commit.json().catch(() => ({}))).message || `commit ${commit.status}` };
+  const sha = (await commit.json()).sha;
+  const move = await fetch(`${GH}/repos/${repo}/git/refs/heads/${refPath(branch)}`, { method: 'PATCH', headers: h, body: JSON.stringify({ sha, force: false }) });
+  if (move.ok) return { sha };
+  // Not a fast-forward: somebody else's commit is on the branch now. Theirs is kept.
+  if (move.status === 422 || move.status === 409) return { moved: true };
+  return { failed: (await move.json().catch(() => ({}))).message || `move ${move.status}` };
+}
+
+async function sourceCommitSet(request, env, body) {
+  const { repo, branch = 'main', adapter, files, message } = body;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo', code: 'bad_repo' }, 400);
+  if (typeof branch !== 'string' || !/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref', code: 'bad_ref' }, 400);
+  if (body.file !== undefined) return json({ error: 'a set names its files in files, not file', code: 'bad_files' }, 400);
+  const actor = await authActor(request, env, repo);
+  // A kept site's owner is held to the files Kiln changes for them, file by file, before anything else.
+  if (Array.isArray(files) && files.length <= 100) {
+    for (const f of files) {
+      if (actor && actor.kept && !keptFileWriteAllowed(f && f.file)) return json({ error: KEPT_FILE_NOT_CHANGED, code: 'kept_file', file: typeof f?.file === 'string' ? f.file : '' }, 403);
+    }
+  }
+  const set = validateSourceSet({ files, adapter, actor }, { isSensitivePath, pathInScope });
+  if (set.error) return setRefused(set);
+  const h = await installationHeaders(env, repo);
+  if (!h) return json({ error: 'app not installed on repo', repo }, 503);
+  const r = await commitSourceSet(h, repo, branch, set, {
+    message: (typeof message === 'string' && message.trim()) ? message : `Kiln: update ${set.files.length} files`,
+    author: `${actor.name}${VIA_KILN}`,
+  });
+  if (r.status === 200 && r.body.commit && !KILN_BRANCH_RE.test(branch)) await notePublish(env, repo);
+  return json(r.body, r.status);
+}
+
+/**
+ * The checked edits of several content files written as one commit. Every
+ * file is read at the same head commit and judged as the one-file form judges
+ * it (checkSourceFile); a field somebody else changed stops the whole set
+ * before anything is written (planSourceSet). Returns { status, body }.
+ */
+async function commitSourceSet(h, repo, branch, set, { message, author, email = EDITOR_COMMIT_EMAIL }) {
+  const prepared = set.files.map((v) => {
+    const typedSkips = typedEditProblems(v.cleanEdits, { safeUrl, checkFragment });
+    const bad = new Set(typedSkips.map(s => s.key));
+    return { v, typedSkips, runnable: v.cleanEdits.filter(e => !bad.has(e.key)) };
+  });
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const head = await branchHead(h, repo, branch);
+      if (!head) return { status: 404, body: { error: 'branch not found', code: 'no_branch' } };
+      const results = [];
+      for (const p of prepared) {
+        const c = await checkSourceFile(h, repo, head, p.v, p.runnable, p.typedSkips);
+        results.push(c.gone ? { file: p.v.file, gone: true } : { file: p.v.file, path: c.cur.path, ...c });
+      }
+      const plan = planSourceSet(results);
+      if (plan.stop) return plan.stop;
+      if (!plan.files.length) return { status: 422, body: { error: SET_NOTHING_APPLIED, code: 'nothing_applied', leftOut: plan.leftOut } };
+      if (!plan.writes.length) return { status: 200, body: { ok: true, set: true, unchanged: true, commit: null, files: plan.files, leftOut: plan.leftOut } };
+      const entries = plan.writes.map(w => ({ path: w.file, mode: '100644', type: 'blob', content: w.content }));
+      const out = await commitTreeOnHead(h, repo, branch, head, entries, { message, author, email });
+      // `parent` is what /source/revert restores the whole set to after a failed build (§12).
+      if (out.sha) return { status: 200, body: { ok: true, set: true, commit: { sha: out.sha, parent: head }, files: plan.files, leftOut: plan.leftOut } };
+      if (out.failed) return { status: 502, body: { error: 'commit failed', code: 'commit_failed', detail: out.failed } };
+    }
+    return { status: 409, body: { error: SET_HEAD_MOVED, code: 'head_moved' } };
+  } catch {
+    return { status: 502, body: { error: 'could not apply edits safely', code: 'unsafe' } };
+  }
+}
+
+/**
+ * Every file of a set put back as it was at `toSha`, in one commit: the Undo
+ * after a set's build failed. The same checks as the one-file revert, file by
+ * file, and a kept site's owner held to the files Kiln changes for them.
+ */
+async function sourceRevertSet(request, env, body) {
+  const { repo, branch = 'main', files, toSha } = body;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo', code: 'bad_repo' }, 400);
+  if (typeof branch !== 'string' || !/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref', code: 'bad_ref' }, 400);
+  if (body.file !== undefined) return json({ error: 'a set names its files in files, not file', code: 'bad_files' }, 400);
+  const actor = await authActor(request, env, repo);
+  if (Array.isArray(files) && files.length <= 100) {
+    for (const f of files) {
+      if (actor && actor.kept && !keptFileWriteAllowed(f)) return json({ error: KEPT_FILE_NOT_CHANGED, code: 'kept_file', file: typeof f === 'string' ? f : '' }, 403);
+    }
+  }
+  const set = validateRevertSet({ files, toSha, actor }, { isSensitivePath, pathInScope });
+  if (set.error) return setRefused(set);
+  const h = await installationHeaders(env, repo);
+  if (!h) return json({ error: 'app not installed on repo', repo }, 503);
+  try {
+    const olds = [];
+    for (const file of set.files) {
+      const old = await sourceRead(h, repo, file, toSha);
+      if (!old) return json({ error: 'that file does not exist at that commit — nothing to revert to', code: 'not_at_commit', file }, 404);
+      olds.push({ file, old, restore: old.content.replace(/\s/g, '') });
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const head = await branchHead(h, repo, branch);
+      if (!head) return json({ error: 'branch not found', code: 'no_branch' }, 404);
+      const back = [];
+      const same = [];
+      for (const o of olds) {
+        const cur = await sourceRead(h, repo, o.file, head);
+        if (cur && cur.content.replace(/\s/g, '') === o.restore) { same.push(o.file); continue; }
+        // The same content guard as the one-file revert: nothing that runs which the file does not have now. Fails closed.
+        if (!actor.admin) {
+          const bad = checkDocumentWrite(cur ? utf8FromB64(cur.content) : null, utf8FromB64(o.old.content));
+          if (bad) return json({ error: 'That version would add scripts to the page, so only the site owner can restore it.', detail: bad, code: 'adds_scripts', file: o.file }, 403);
+          if (hasSectionLimit(actor.keys) && isHtmlPath(o.file) && !KILN_BRANCH_RE.test(branch)) {
+            const r = sectionWriteRefusal(actor, o.file, { isNew: !cur, oldB64: cur?.content, newB64: o.old.content });
+            if (r) return sectionRefused(r, o.file);
+          }
+        }
+        back.push(o);
+      }
+      if (!back.length) return json({ ok: true, set: true, unchanged: true, commit: null, files: [], same });
+      // Each file's bytes exactly as they were: posted as a blob, never re-encoded.
+      const entries = [];
+      for (const o of back) {
+        const blob = await fetch(`${GH}/repos/${repo}/git/blobs`, { method: 'POST', headers: h, body: JSON.stringify({ content: o.restore, encoding: 'base64' }) });
+        if (!blob.ok) return json({ error: 'commit failed', code: 'commit_failed', detail: `blob ${blob.status}` }, 502);
+        entries.push({ path: o.file, mode: '100644', type: 'blob', sha: (await blob.json()).sha });
+      }
+      const out = await commitTreeOnHead(h, repo, branch, head, entries, {
+        message: `Kiln: revert ${back.length} files to ${toSha.slice(0, 7)}`,
+        author: `${actor.name} (via Kiln)`, email: 'kiln-editor@users.noreply.github.com',
+      });
+      if (out.sha) return json({ ok: true, set: true, commit: { sha: out.sha, parent: head }, files: back.map(o => o.file), same });
+      if (out.failed) return json({ error: 'commit failed', code: 'commit_failed', detail: out.failed }, 502);
+    }
+    return json({ error: 'conflict: the site changed while reverting — try again', code: 'head_moved' }, 409);
+  } catch {
+    return json({ error: 'could not revert safely', code: 'unsafe' }, 502);
   }
 }
 
@@ -2765,7 +2942,9 @@ async function sourceReadField(request, env) {
 }
 
 async function sourceRevert(request, env) {
-  const { repo, branch = 'main', file, toSha } = await request.json().catch(() => ({}));
+  const body = await request.json().catch(() => ({}));
+  if (body && Array.isArray(body.files)) return sourceRevertSet(request, env, body);
+  const { repo, branch = 'main', file, toSha } = body;
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) return json({ error: 'bad repo' }, 400);
   if (!/^[\w./-]{1,100}$/.test(branch)) return json({ error: 'bad ref' }, 400);
   if (!/^[a-f0-9]{40}$/.test(String(toSha || ''))) return json({ error: 'bad toSha' }, 400);
