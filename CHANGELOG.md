@@ -6,6 +6,33 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-26
+
+### Added
+
+- **An activity record.** The service can keep one dated line for each thing
+  that happens to an account or a site: signed up, a site added (and which
+  way), a set-up step done, each change published (the time, the site, and
+  whether the owner or an invited editor published it, never what changed),
+  a subscription started, renewed, set to end, failed or ended, free days
+  ended or given, each email Kiln sends about a site, a site removed, hosting
+  taken down or put back up, a domain going live, and the operator's own
+  actions. A line holds a few named words or numbers and never page content,
+  writing, a token or an address. The operator reads it at
+  `GET /admin/cloud/activity`. Lines are kept with the account and removed with
+  it. Switch: `ACTIVITY_RECORD`.
+- **A daily site check.** Once a day the service asks each site's public
+  address, the editor file its home page loads, and its `/kiln` page whether
+  they answer, and keeps the result and the editor version for 30 days. It
+  uses no one's GitHub token and asks a few sites each five minutes. The
+  operator reads the latest at `GET /admin/cloud/checks`. Switch:
+  `SITE_CHECK_DAILY`.
+- Both are off unless the service's settings say `"on"`. On Kiln's own service
+  they are switched on in staging with this release and in production once
+  the privacy page says so. A self-hosted service keeps both off; whoever runs
+  one and switches them on should say so on their own privacy page.
+
+
 ## [0.11.0] - 2026-11-26
 
 ### Added
