@@ -629,3 +629,18 @@ test('a kept owner cannot write a file under .github through the content-file ro
     assert.equal(beyondIdentity(r.calls).length, 0, `${file} never reached GitHub`);
   }
 });
+
+test('a kept owner sending several files as one set is held to the same files: one file under .github refuses the whole set, by name, and GitHub is not asked', { skip: d1Skip }, async () => {
+  const w = world();
+  const { session } = await open(w);
+  const NOT_CHANGED = 'Kiln does not change this file. It changes the pages and files of your site, and never anything in the .github folder. Choose another page or file.';
+  for (const bad of ['.github/notes.md', '.GitHub/workflows/build.md', 'docs/../.github/notes.md']) {
+    const files = [{ file: 'docs/a.md', edits: [{ pointer: '/body', value: 'Hello' }] }, { file: bad, edits: [{ pointer: '/body', value: 'Hello' }] }];
+    const r = await site(w, 'POST', '/source/commit', { session, body: { repo: REPO, branch: 'main', adapter: 'markdown', files } });
+    assert.deepEqual([r.status, r.json.code, r.json.error, r.json.file], [403, 'kept_file', NOT_CHANGED, bad], bad);
+    assert.equal(beyondIdentity(r.calls).length, 0, `${bad} never reached GitHub`);
+    const back = await site(w, 'POST', '/source/revert', { session, body: { repo: REPO, branch: 'main', toSha: 'a'.repeat(40), files: ['docs/a.md', bad] } });
+    assert.deepEqual([back.status, back.json.code, back.json.file], [403, 'kept_file', bad], bad);
+    assert.equal(beyondIdentity(back.calls).length, 0, `${bad} never reached GitHub`);
+  }
+});
