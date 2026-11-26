@@ -4988,9 +4988,9 @@ async function runWholePage(browser, size) {
  * value holding a script is held back and not sent; and someone with nothing
  * waiting elsewhere sees no menu item. A is the site's about page, B its home.
  */
-async function runWaiting(browser, size) {
+async function runWaiting(browser, size, which = 'waiting') {
   const phone = size.width < 600;
-  const scope = `${size.width}x${size.height} waiting on other pages`;
+  const scope = `${size.width}x${size.height} ${which === 'together' ? 'several pages together' : 'waiting on other pages'}`;
   const WORKER = 'https://worker.invalid';
   const REPO = 'acme/site';
   const B_URL = URL_ARG, A_URL = new URL('about.html', URL_ARG).href;
@@ -5002,16 +5002,34 @@ async function runWaiting(browser, size) {
   const press = (locator) => (phone ? locator.tap() : locator.click());
 
   /** A fresh browser, signed in as an invited editor, on page A, with the stand-in for the worker and GitHub. */
-  async function start(name) {
+  async function start(name, opts = {}) {
     const files = await fresh();
     const w = { files, trees: [], commits: [], moves: [], blobs: 0, blocked: [], errors: [], leaves: 0, slow: 0 };
     const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
-    await context.addInitScript((repo) => {
+    await context.addInitScript(({ repo, way, full }) => {
       try {
-        localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' }));
-        localStorage.setItem('kiln_guide', '1');
+        if (!sessionStorage.getItem('uicheck_set')) {
+          sessionStorage.setItem('uicheck_set', '1');
+          localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' }));
+          localStorage.setItem('kiln_guide', '1');
+          if (way) localStorage.setItem('kiln_way', way);
+        }
       } catch { /* ignore */ }
-    }, REPO);
+      // A browser with no room left: every saved copy of a page is refused.
+      if (full) {
+        const set = Storage.prototype.setItem;
+        Storage.prototype.setItem = function (k, v) {
+          if (String(k).startsWith('kiln_pending:')) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+          return set.call(this, k, v);
+        };
+      }
+      // Every line the status bar shows, from the first.
+      window.__statusSeen = [];
+      setInterval(() => {
+        const t = document.getElementById('kiln-status')?.innerText.trim();
+        if (t && window.__statusSeen.at(-1) !== t) window.__statusSeen.push(t);
+      }, 100);
+    }, { repo: REPO, way: opts.way || '', full: !!opts.full });
     await context.route('**/*', async (route) => {
       const req = route.request();
       const u = new URL(req.url());
@@ -5120,8 +5138,10 @@ async function runWaiting(browser, size) {
       check(scope, `${name}: nothing outside the local server was needed`, w.blocked.length === 0, w.blocked.slice(0, 3).join(', '));
       await context.close();
     };
-    return { w, page, shot, edit, goTo, copies, menuItem, closeMenu, sheet, openSheet, sections, fits, status, end };
+    return { w, page, context, ready, shot, edit, goTo, copies, menuItem, closeMenu, sheet, openSheet, sections, fits, status, end };
   }
+
+  if (which === 'together') return together();
 
   // ── a, b, c: two pages, one change ─────────────────────────────────────────
   {
@@ -5159,10 +5179,18 @@ async function runWaiting(browser, size) {
     await page.waitForTimeout(700);
     const step = ((await s.sheet.locator('#kiln-ss-say').innerText().catch(() => '')) || '').trim();
     check(scope, 'while it is sent, the sheet says where it is', !!step, step || 'no line');
+    const shut = await s.sheet.evaluate((m) => [m.querySelector('.kiln-modal-actions [data-close]'), m.querySelector('.kiln-modal-x')].map(b => !!b && b.disabled && getComputedStyle(b).opacity < 1));
+    check(scope, 'while it is sent, Cancel and the close button are dimmed and cannot be pressed', shut.every(Boolean), JSON.stringify(shut));
+    await page.keyboard.press('Escape');
+    await page.mouse.click(4, 4);
+    await page.waitForTimeout(150);
+    check(scope, 'while it is sent, Escape and a click outside leave the sheet open', (await s.sheet.count()) === 1);
     await s.shot('set-sheet-progress');
     await page.waitForFunction(() => /^Published 2 pages as one change\./.test(document.getElementById('kiln-status')?.innerText.trim() || ''), null, { timeout: 6000 }).catch(() => {});
+    await page.waitForTimeout(2000);
+    const still = (await s.status.innerText().catch(() => '')).trim();
+    check(scope, 'two seconds after the publish the done line is still shown', /^Published 2 pages as one change\./.test(still), still);
     await s.shot('set-done-line');
-    await page.waitForTimeout(1500);
     const paths = (w.trees[0]?.tree || []).map(t => t.path).sort();
     check(scope, 'GitHub receives ONE tree holding both pages\' files', w.trees.length === 1 && JSON.stringify(paths) === JSON.stringify(['about.html', 'index.html']), `${w.trees.length} tree(s): ${paths.join(', ')}`);
     check(scope, 'ONE commit and ONE branch move', w.commits.length === 1 && w.moves.length === 1, `${w.commits.length} commit(s), ${w.moves.length} move(s)`);
@@ -5170,6 +5198,10 @@ async function runWaiting(browser, size) {
     check(scope, 'each file holds its own page\'s edit', /and more/.test(sent['about.html'] || '') && /Hello/.test(sent['index.html'] || ''));
     const seen = await page.evaluate(() => window.__statusSeen || []);
     check(scope, 'the status line says the pages were published as one change', seen.some(t => /^Published 2 pages as one change\./.test(t)), seen.join(' → ').slice(0, 300));
+    await page.waitForFunction(() => /going live/.test(document.getElementById('kiln-status')?.innerText || ''), null, { timeout: 12000 }).catch(() => {});
+    const going = (await page.evaluate(() => window.__statusSeen || [])).filter(t => /going live/.test(t));
+    check(scope, 'the going-live line names the pages: "Your 2 pages are going live…"', going.length > 0 && going.every(t => /^Your 2 pages are going live…/.test(t)), going.join(' | ') || 'none seen');
+    await s.shot('set-going-live');
     check(scope, 'the sheet has closed', (await s.sheet.count()) === 0);
     check(scope, 'this page\'s published part is no longer marked as changed', (await page.locator('.kiln-modified').count()) === 0, `${await page.locator('.kiln-modified').count()} marked`);
     const after = await s.menuItem();
@@ -5229,6 +5261,8 @@ async function runWaiting(browser, size) {
     await which.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
     const dialog = ((await page.locator('#kiln-modal.kiln-ask-which').innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
     check(scope, 'the "Keep theirs / Use mine" question shows, with both texts', (await which.count()) === 1 && (await page.locator('#kiln-which-mine').count()) === 1 && /Their own heading/.test(dialog) && /and more/.test(dialog), dialog.slice(0, 200));
+    check(scope, 'the question says someone else changed it since you edited it', /on “Our story[^”]*” was changed by someone else since you edited it\./.test(dialog) && !/after this page was made/.test(dialog), dialog.slice(0, 200));
+    check(scope, 'its small line says "discards", never "drops"', /Keep theirs discards your edit\. Use mine publishes yours in its place\./.test(dialog) && !/drops/.test(dialog) && /Theirs/.test(dialog) && /Yours/.test(dialog));
     check(scope, 'NO tree and NO branch move was sent before an answer', w.trees.length === 0 && w.moves.length === 0 && w.commits.length === 0, `${w.trees.length} tree(s), ${w.moves.length} move(s)`);
     await s.shot('set-conflict');
     await press(page.locator('#kiln-which-mine'));
@@ -5263,6 +5297,10 @@ async function runWaiting(browser, size) {
     check(scope, 'that change\'s row says it holds code Kiln does not publish from here', !!held && held.text.includes('This change holds code Kiln does not publish from here.'), (held?.text || 'no such page').slice(0, 200));
     const goWords = ((await s.sheet.locator('#kiln-ss-go').innerText().catch(() => '')) || '').trim();
     check(scope, 'the held change is not counted on the button', goWords === 'Publish 1 edit', goWords);
+    const title = ((await s.sheet.locator('#kiln-ss-title').innerText().catch(() => '')) || '').trim();
+    check(scope, 'the title counts each waiting change once: "2 changes on 2 pages"', title === '2 changes on 2 pages', title);
+    const heldRow = await s.sheet.locator('.kiln-ss-page:not([data-page="here"]) .kiln-ps-item').evaluateAll((els) => els.map(r => ({ ba: !!(r.querySelector('.kiln-ps-before') || r.querySelector('.kiln-ps-after')), text: r.innerText })));
+    check(scope, 'the held row has no before or after, and shows none of the code', heldRow.length === 1 && !heldRow[0].ba && !/alert/.test(heldRow[0].text), JSON.stringify(heldRow).slice(0, 200));
     const lay = await s.fits();
     check(scope, 'a long page title wraps inside the card', !lay.out.length && !lay.overlap && !lay.wide, JSON.stringify(lay));
     await s.shot('set-held-back');
@@ -5275,6 +5313,40 @@ async function runWaiting(browser, size) {
     await s.end();
   }
 
+  // ── h: two tabs: the set is published from the second, the first is told ───
+  {
+    const s = await start('two tabs');
+    const { w, page, context } = s;
+    await s.edit(' and more');
+    const tab = await context.newPage();
+    tab.on('pageerror', (e) => w.errors.push(String(e)));
+    tab.on('dialog', (d) => d.accept().catch(() => {}));
+    await tab.goto(B_URL, { waitUntil: 'load' });
+    await tab.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+    await tab.waitForTimeout(700);
+    const heading = tab.locator('h1.kiln-field, h2.kiln-field, h3.kiln-field').first();
+    await heading.scrollIntoViewIfNeeded();
+    await (phone ? heading.tap() : heading.click());
+    await tab.keyboard.type(' Hello');
+    await (phone ? tab.locator('#kiln-toolbar .kiln-tb-save').tap() : tab.locator('#kiln-toolbar .kiln-tb-save').click());
+    await tab.waitForTimeout(400);
+    await (phone ? tab.locator('#kiln-fab').tap() : tab.locator('#kiln-fab').click());
+    await tab.waitForTimeout(350);
+    await (phone ? tab.locator('#kiln-waiting').tap() : tab.locator('#kiln-waiting').click());
+    await tab.waitForTimeout(500);
+    await (phone ? tab.locator('#kiln-ss-go').tap() : tab.locator('#kiln-ss-go').click());
+    await tab.waitForFunction(() => !document.querySelector('.kiln-setsheet'), null, { timeout: 8000 }).catch(() => {});
+    check(scope, 'the second tab publishes both pages as one tree', w.trees.length === 1 && (w.trees[0].tree || []).some(t => t.path === 'about.html'), `${w.trees.length} tree(s)`);
+    await page.bringToFront();
+    await page.waitForFunction(() => (window.__statusSeen || []).some(t => t === 'These were published from another tab.'), null, { timeout: 6000 }).catch(() => {});
+    const seen = await page.evaluate(() => window.__statusSeen || []);
+    check(scope, 'the first tab says "These were published from another tab."', seen.includes('These were published from another tab.'), seen.slice(-4).join(' → ').slice(0, 200));
+    check(scope, 'and its edit no longer waits there', (await page.locator('.kiln-modified').count()) === 0, `${await page.locator('.kiln-modified').count()} marked`);
+    await s.shot('set-other-tab');
+    await tab.close();
+    await s.end();
+  }
+
   // ── g: nothing waiting elsewhere ───────────────────────────────────────────
   {
     const s = await start('nothing elsewhere');
@@ -5283,6 +5355,151 @@ async function runWaiting(browser, size) {
     check(scope, 'someone with edits on this page only sees no "Waiting on other pages"', !m.shown && (await s.page.locator('#kiln-waiting').count()) <= 1, m.words);
     await s.closeMenu();
     await s.end();
+  }
+
+  // ── "Several pages together" (Settings): its own pass ──────────────────────
+  async function together() {
+    const BACK = /^Your (1 )?waiting edit on this page is back\. Not published yet\./;
+    const NO_ROOM = 'This browser has no room to keep these edits. Publish this page before you leave it.';
+    /** Settings, from the menu. Returns the dialog. */
+    const settings = async (s) => {
+      await s.menuItem();
+      const item = s.page.locator('#kiln-settings');
+      if (!(await item.isVisible().catch(() => false))) { await s.closeMenu(); return null; }
+      await press(item);
+      await s.page.waitForTimeout(400);
+      return s.page.locator('#kiln-modal');
+    };
+    /** Choose a way of working (and the preview box) in Settings, Save, and close. */
+    const choose = async (s, value, noPreview = null) => {
+      const m = await settings(s);
+      await press(m.locator(`input[name="kiln-way"][value="${value}"]`));
+      if (noPreview !== null && (await m.locator('#kiln-set-nopreview').isChecked()) !== noPreview) await press(m.locator('#kiln-set-nopreview'));
+      await press(m.locator('#kiln-set-save'));
+      await s.page.waitForTimeout(300);
+      await press(m.getByRole('button', { name: 'Close' }).last());
+      await s.page.waitForTimeout(300);
+    };
+    const quick = async (s) => {
+      const q = s.page.locator('#kiln-publish-quick');
+      const shown = await q.isVisible().catch(() => false);
+      const fit = shown ? await q.evaluate((b) => { const r = b.getBoundingClientRect(); return b.scrollWidth <= b.clientWidth + 1 && b.scrollHeight <= b.clientHeight + 1 && r.left >= 0 && r.right <= innerWidth + 1; }) : false;
+      return { q, shown, fit, words: shown ? (await q.innerText()).trim() : '' };
+    };
+    const seen = (s) => s.page.evaluate(() => window.__statusSeen || []);
+
+    // 1. In the demo the choice is not offered.
+    {
+      const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+      await context.addInitScript(() => { try { localStorage.setItem('kiln_guide', '1'); } catch { /* ignore */ } });
+      const page = await context.newPage();
+      await page.goto(A_URL, { waitUntil: 'load' });
+      await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 });
+      await page.waitForTimeout(700);
+      await press(page.locator('#kiln-fab'));
+      await page.waitForTimeout(350);
+      const item = page.locator('#kiln-settings');
+      if (await item.isVisible().catch(() => false)) { await press(item); await page.waitForTimeout(400); }
+      check(scope, 'in the demo Settings offers no way of working', (await page.locator('input[name="kiln-way"]').count()) === 0);
+      await context.close();
+    }
+
+    // 2. The choice is off: leaving an edited page still asks.
+    {
+      const s = await start('choice off');
+      await s.edit(' and more');
+      await s.goTo(B_URL);
+      check(scope, 'with "One page at a time", going from an edited page asks "Leave site?"', s.w.leaves === 1, `${s.w.leaves} leave question(s)`);
+      await s.end();
+    }
+
+    // 3 to 8. The choice in Settings, then a set made across pages.
+    {
+      const s = await start('choice on');
+      const { w, page } = s;
+      const m = await settings(s);
+      const opts = m ? await m.locator('input[name="kiln-way"]').evaluateAll((els) => els.map(i => ({ value: i.value, checked: i.checked, text: i.closest('label').innerText.replace(/\s+/g, ' ').trim() }))) : [];
+      check(scope, 'Settings offers two ways of working, "One page at a time" chosen', opts.length === 2 && opts[0].checked && /^One page at a time/.test(opts[0].text) && /^Several pages together/.test(opts[1].text), JSON.stringify(opts).slice(0, 200));
+      const lay = m ? await m.evaluate((el) => {
+        const card = el.querySelector('.kiln-modal-card').getBoundingClientRect();
+        const roles = [...el.querySelectorAll('.kiln-role')].map(r => r.getBoundingClientRect());
+        return { out: roles.filter(r => r.right > card.right + 1 || r.left < card.left - 1).length, wide: document.documentElement.scrollWidth > innerWidth + 1 };
+      }) : { out: -1 };
+      check(scope, 'the two options fit the card as the other options do', lay.out === 0 && !lay.wide, JSON.stringify(lay));
+      if (m) await m.locator('input[name="kiln-way"]').last().scrollIntoViewIfNeeded();
+      await s.shot('together-settings');
+      if (m) { await press(m.getByRole('button', { name: 'Close' }).last()); await page.waitForTimeout(300); }
+      await choose(s, 'together');
+      check(scope, 'the choice is kept in this browser', (await page.evaluate(() => localStorage.getItem('kiln_way'))) === 'together');
+      await s.edit(' and more');
+      await s.goTo(B_URL);
+      check(scope, 'with "Several pages together", going from an edited page asks nothing', w.leaves === 0, `${w.leaves} leave question(s)`);
+      const one = await quick(s);
+      check(scope, 'on B the Publish button reads "Publish 1 edit on 1 other page"', one.words === 'Publish 1 edit on 1 other page' && one.fit, `${one.words || 'not shown'}${one.fit ? '' : ' (cut off)'}`);
+      await s.shot('together-button-other');
+      await s.edit(' Hello');
+      const two = await quick(s);
+      check(scope, 'after an edit on B it reads "Publish 2 edits on 2 pages"', two.words === 'Publish 2 edits on 2 pages' && two.fit, `${two.words || 'not shown'}${two.fit ? '' : ' (cut off)'}`);
+      await s.shot('together-button-two');
+      await s.goTo(A_URL);
+      check(scope, 'going back to A asks nothing either', w.leaves === 0, `${w.leaves} leave question(s)`);
+      check(scope, 'on A "Pick up where you left off?" is not asked', (await page.getByText('Pick up where you left off?').count()) === 0);
+      check(scope, 'A\'s edit is back on the page', (await page.locator('.kiln-modified').count()) >= 1 && /and more/.test(await page.locator('h1.kiln-field, h2.kiln-field, h3.kiln-field').first().innerText()));
+      const back = await seen(s);
+      check(scope, 'the status line says the waiting edit is back, not published yet', back.some(t => BACK.test(t)), back.join(' → ').slice(0, 240));
+      const onA = await quick(s);
+      await press(onA.q);
+      await page.waitForTimeout(600);
+      const goWords = ((await s.sheet.locator('#kiln-ss-go').innerText().catch(() => '')) || '').trim();
+      check(scope, 'Publish opens the set sheet with "Publish 2 edits on 2 pages"', (await s.sheet.count()) === 1 && goWords === 'Publish 2 edits on 2 pages', goWords || 'no sheet');
+      await press(s.sheet.locator('#kiln-ss-go'));
+      await page.waitForFunction(() => !document.querySelector('.kiln-setsheet'), null, { timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(500);
+      const paths = (w.trees[0]?.tree || []).map(t => t.path).sort();
+      check(scope, '"Publish all" sends ONE tree with both files, ONE commit, ONE branch move', w.trees.length === 1 && w.commits.length === 1 && w.moves.length === 1 && JSON.stringify(paths) === JSON.stringify(['about.html', 'index.html']), `${w.trees.length} tree(s): ${paths.join(', ')}; ${w.commits.length} commit(s), ${w.moves.length} move(s)`);
+
+      // Without the preview: the set goes at once.
+      await choose(s, 'together', true);
+      await s.edit(' again');
+      await s.goTo(B_URL);
+      await s.edit(' there');
+      const pre = await quick(s);
+      await press(pre.q);
+      await page.waitForTimeout(400);
+      check(scope, 'with "Publish without the preview" ticked no sheet opens', (await s.sheet.count()) === 0);
+      await page.waitForFunction(() => (window.__statusSeen || []).some(t => /^Published 2 pages as one change\./.test(t)), null, { timeout: 8000 }).catch(() => {});
+      const paths2 = (w.trees[1]?.tree || []).map(t => t.path).sort();
+      check(scope, 'and the set is sent as one tree and one branch move', w.trees.length === 2 && w.moves.length === 2 && JSON.stringify(paths2) === JSON.stringify(['about.html', 'index.html']), `${w.trees.length} tree(s): ${paths2.join(', ')}`);
+      check(scope, 'the status line says "Published 2 pages as one change."', (await seen(s)).some(t => /^Published 2 pages as one change\./.test(t)));
+
+      // Back to one page at a time: the button reads as before, at once.
+      await choose(s, 'together', false);
+      await s.goTo(A_URL);
+      await s.edit(' once more');
+      await s.goTo(B_URL);
+      await s.edit(' too');
+      const before = await quick(s);
+      await choose(s, 'one');
+      const after = await quick(s);
+      check(scope, 'switched back to "One page at a time", the button reads as before at once', /on 2 pages/.test(before.words) && after.shown && after.words === 'Publish 1 edit', `"${before.words}" → "${after.words}"`);
+      await s.shot('together-switched-back');
+      await s.end();
+    }
+
+    // 9. No room left in this browser.
+    {
+      const s = await start('no room', { way: 'together', full: true });
+      await s.edit(' and more');
+      await s.page.waitForTimeout(500);
+      await s.edit(' more');
+      await s.edit(' and more');
+      await s.page.waitForTimeout(500);
+      const said = (await seen(s)).filter(t => t === NO_ROOM).length;
+      check(scope, 'with no room to keep the edits the status line says so, once', said === 1, `${said} time(s): ${(await seen(s)).join(' → ').slice(0, 240)}`);
+      await s.goTo(B_URL);
+      check(scope, 'and leaving the page asks "Leave site?"', s.w.leaves === 1, `${s.w.leaves} leave question(s)`);
+      await s.end();
+    }
   }
 }
 
@@ -5317,6 +5534,8 @@ try {
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
   // edits waiting on other pages, published together as one change
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} waiting on other pages`, () => runWaiting(browser, size));
+  // "Several pages together" chosen in Settings: no "Leave site?", the button counts every page, the edits come back, one change
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} several pages together`, () => runWaiting(browser, size, 'together'));
   // an invited editor granted "Make things editable" on top of the defaults
   await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
   // "Make this whole page editable": offered with the grant, asked about, one write of only marks, and where it is not offered

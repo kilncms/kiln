@@ -10349,7 +10349,8 @@ function refreshPublishButton() {
   const others = closed ? [] : otherWaiting();
   const waitingBtn = document.getElementById('kiln-waiting');
   if (waitingBtn) { waitingBtn.style.display = others.length ? '' : 'none'; waitingBtn.textContent = waitingItemLabel(others.length); }
-  if (others.length) hearOtherTabs();
+  // A tab with edits of its own listens too: another tab's set can publish them (onOtherTabStorage).
+  if (others.length || (anything && mayPublishSet())) hearOtherTabs();
   if (grp) grp.hidden = !anything && !others.length;
   const discard = document.getElementById('kiln-discard');
   if (discard) discard.textContent = discardLabel(n);
@@ -11357,7 +11358,8 @@ body:has(#kiln-topbar){padding-top:46px!important}
 #kiln-fab-wrap #kiln-undo-wrap button{height:44px;width:44px;padding:0;justify-content:center}
 #kiln-fab-wrap #kiln-undo-wrap button svg{width:17px;height:17px}
 #kiln-fab-wrap .kiln-q-label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-#kiln-publish-quick{height:44px;padding:0 18px;font-size:15px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+/* A longer label ("Publish 2 edits on 2 pages") takes two lines rather than losing its end. */
+#kiln-publish-quick{height:auto;min-height:44px;max-height:44px;padding:3px 16px;font-size:15px;line-height:1.15;min-width:0;overflow:hidden;white-space:normal;text-align:center}
 /* A field's toolbar is docked across the bottom while you type: the pencil and
    its row step aside until it closes, so nothing sits on the toolbar. */
 .kiln-tb-open #kiln-fab,.kiln-tb-open #kiln-quick{display:none}

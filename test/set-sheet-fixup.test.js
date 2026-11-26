@@ -64,3 +64,7 @@ test('while a set is being sent Cancel and the close button do nothing', () => {
   assert.match(main, /if \(wrap\.dataset\.busy\) return;/);
   assert.match(main, /if \(e\.key === 'Escape'\) \{ e\.stopPropagation\(\); if \(!wrap\.dataset\.busy\) close\(\); return; \}/);
 });
+
+test('a tab with edits of its own hears that another tab published them, even with nothing waiting elsewhere', () => {
+  assert.match(main, /if \(others\.length \|\| \(anything && mayPublishSet\(\)\)\) hearOtherTabs\(\);/);
+});
