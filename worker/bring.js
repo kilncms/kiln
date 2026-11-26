@@ -430,10 +430,10 @@ async function tellOwner(env, row, { site, state, reason, pages = 0, dashboard, 
     const to = await ownerEmail(env, row.account_id);
     if (state === 'done') {
       // `up`: the site is on Kiln's hosting already, at `address`. Otherwise the mail says which button puts it up.
-      await sendOnce(env, `copied:${row.id}`, to, siteCopiedMail({ name: site.name, address: (up && address) || site.origin, up, from: row.address, pages, endsAt: trialEndsAt(site.created_at, trialDays), dashboard }));
+      await sendOnce(env, `copied:${row.id}`, to, siteCopiedMail({ name: site.name, address: (up && address) || site.origin, up, from: row.address, pages, endsAt: trialEndsAt(site.created_at, trialDays), dashboard }), { site_id: site?.id });
     } else {
       const again = Number(row.tries) < MOST_TRIES;
-      await sendOnce(env, `copyfailed:${row.id}`, to, copyFailedMail({ address: row.address, ...copyTrouble(reason, { again }), again, dashboard }));
+      await sendOnce(env, `copyfailed:${row.id}`, to, copyFailedMail({ address: row.address, ...copyTrouble(reason, { again }), again, dashboard }), { site_id: site?.id });
     }
   } catch { /* a mail that could not go changes nothing about the copy */ }
 }

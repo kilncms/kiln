@@ -28,6 +28,8 @@
  * only part that touches the binding.
  */
 
+import { noteEmailSent } from './activity.js';
+
 const DAY = 86400 * 1000;
 export const TRIAL_NOTICE_DAYS = 2;   // "ends soon" goes out this many days before the end
 
@@ -550,12 +552,14 @@ export async function sendMail(env, to, mail) {
  * failure is tried again on a later run; it is kept for 60 days, which is
  * longer than anything here could come round again.
  */
-export async function sendOnce(env, key, to, mail) {
+export async function sendOnce(env, key, to, mail, about = null) {
   if (!customerMailOn(env) || !mailAddress(to)) return { ok: false, reason: 'not sent' };
   const marker = `mail:${key}`;
   try { if (await env.KILN.get(marker)) return { ok: false, reason: 'already sent' }; } catch { /* a read that fails is not a reason to stay silent */ }
   const sent = await sendMail(env, to, mail);
   if (sent.ok) { try { await env.KILN.put(marker, String(Date.now()), { expirationTtl: 60 * 86400 }); } catch { /* the mail went: at worst it goes once more */ } }
+  // The activity record (activity.js): the kind of email and the site it was about, nothing else.
+  if (sent.ok) await noteEmailSent(env, key, about || {});
   return sent;
 }
 

@@ -159,7 +159,7 @@ export default {
       await sweepBrings(env);
       return sweepHosting(env, { installationToken, hasAccess: siteHasAccess, endReason: hostingEndReason,
         endsAt: (site) => hostingDownAt(env, site, { deployed: !!site.deployed_at }), ended: (site, reason, domain) => hostingEndedNote(env, site, reason, domain),
-        care: { prepared: (id, sha) => markPrepared(env, id, sha), firstPass: (id, sha) => markFirstPass(env, id, sha) } });
+        care: { prepared: (id, sha) => markPrepared(env, id, sha, 'kiln'), firstPass: (id, sha) => markFirstPass(env, id, sha, 'kiln') } });
     });
   },
   async fetch(request, env, ctx) {
@@ -1500,7 +1500,7 @@ async function runDueSchedules(env) {
           if (vs.error) { console.log(`[kiln-cron] ${k.name} not published: ${vs.error}`); await env.KILN.delete(k.name); continue; }
           const r = await commitSourceEdits(h, target, v.branch, vs, { message: v.message, author: `${v.by} (via Kiln, scheduled)`, email: schedEmail(v) });
           if (r.status === 200 || r.status === 422 || r.status === 404) await env.KILN.delete(k.name);
-          if (r.status === 200 && !r.body.unchanged && !KILN_BRANCH_RE.test(String(v.branch))) await notePublish(env, target);
+          if (r.status === 200 && !r.body.unchanged && !KILN_BRANCH_RE.test(String(v.branch))) await notePublish(env, target, { by: v.admin === false ? 'editor' : 'person', scheduled: true });
           if (r.status !== 200) console.log(`[kiln-cron] ${k.name}: ${r.body.error}`);
         } catch (err) {
           console.error('[kiln-cron]', k.name, err);
@@ -1536,7 +1536,7 @@ async function runDueSchedules(env) {
             author: { name: `${v.by} (via Kiln, scheduled)`, email: schedEmail(v) } }),
         });
         if (res.ok || res.status === 409) await env.KILN.delete(k.name);
-        if (res.ok && !KILN_BRANCH_RE.test(String(v.branch))) await notePublish(env, target);
+        if (res.ok && !KILN_BRANCH_RE.test(String(v.branch))) await notePublish(env, target, { by: v.admin === false ? 'editor' : 'person', scheduled: true });
       } catch (err) {
         console.error('[kiln-cron]', k.name, err);
       }
@@ -2048,7 +2048,7 @@ async function suggestionDecide(request, env) {
         }),
       });
       if (put.ok) {
-        await notePublish(env, repo);   // a suggestion that is accepted goes onto the site
+        await notePublish(env, repo, { by: actor?.admin ? 'person' : 'editor' });   // a suggestion that is accepted goes onto the site
         const out = await put.json();
         sug.status = 'approved';
         sug.decided = decided;
@@ -2483,7 +2483,7 @@ async function sourceCommit(request, env) {
     message: (typeof message === 'string' && message.trim()) ? message : `Kiln: update ${v.file}`,
     author: `${actor.name}${VIA_KILN}`,
   });
-  if (r.status === 200 && !r.body.unchanged && !KILN_BRANCH_RE.test(branch)) await notePublish(env, repo);
+  if (r.status === 200 && !r.body.unchanged && !KILN_BRANCH_RE.test(branch)) await notePublish(env, repo, { by: actor?.admin ? 'person' : 'editor' });
   return json(r.body, r.status);
 }
 
@@ -2632,7 +2632,7 @@ async function sourceCommitSet(request, env, body) {
     message: (typeof message === 'string' && message.trim()) ? message : `Kiln: update ${set.files.length} files`,
     author: `${actor.name}${VIA_KILN}`,
   });
-  if (r.status === 200 && r.body.commit && !KILN_BRANCH_RE.test(branch)) await notePublish(env, repo);
+  if (r.status === 200 && r.body.commit && !KILN_BRANCH_RE.test(branch)) await notePublish(env, repo, { by: actor?.admin ? 'person' : 'editor' });
   return json(r.body, r.status);
 }
 
@@ -2792,7 +2792,7 @@ async function sourceCreate(request, env) {
         author: { name: `${d.actor.name}${VIA_KILN}`, email: 'kiln-editor@users.noreply.github.com' } }),
     });
     if (put.ok) {
-      if (!KILN_BRANCH_RE.test(String(d.branch))) await notePublish(env, d.repo);
+      if (!KILN_BRANCH_RE.test(String(d.branch))) await notePublish(env, d.repo, { by: d.actor?.admin ? 'person' : 'editor' });
       const out = await put.json();
       return json({ ok: true, file: plan.file, commit: { sha: out.commit?.sha, parent: out.commit?.parents?.[0]?.sha || null } });
     }
@@ -2833,7 +2833,7 @@ async function sourceRemove(request, env) {
         author: { name: `${d.actor.name}${VIA_KILN}`, email: 'kiln-editor@users.noreply.github.com' } }),
     });
     if (del.ok) {
-      if (!KILN_BRANCH_RE.test(String(d.branch))) await notePublish(env, d.repo);
+      if (!KILN_BRANCH_RE.test(String(d.branch))) await notePublish(env, d.repo, { by: d.actor?.admin ? 'person' : 'editor' });
       const out = await del.json();
       return json({ ok: true, file: p.file, commit: { sha: out.commit?.sha, parent: out.commit?.parents?.[0]?.sha || null } });
     }
@@ -4339,7 +4339,7 @@ async function ownerProxy(request, env, owner, ghPath) {
   try { res = await fetch(`${GH}${forward}`, { method: request.method, headers, body }); }
   catch { return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502); }
   if (res.status === 401) { await endOwnerSession(env, request, owner); return signinEnded(); }
-  if (res.ok && body !== undefined && savesToSite(request.method, forward, body)) await notePublish(env, sess.repo);
+  if (res.ok && body !== undefined && savesToSite(request.method, forward, body)) await notePublish(env, sess.repo, { by: 'person' });
   return ownerAnswer(res);
 }
 
@@ -4459,7 +4459,7 @@ async function keptProxy(request, env, owner, ghPath) {
     try { res = await fetch(`${GH}/repos/${sess.repo}${rest}`, { method: request.method, headers: { ...headers, Authorization: `Bearer ${token}` }, body }); }
     catch { return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502); }
     if (res.status !== 401) {
-      if (write && res.ok && savesToSite(request.method, rest, body)) await notePublish(env, sess.repo);
+      if (write && res.ok && savesToSite(request.method, rest, body)) await notePublish(env, sess.repo, { by: 'person' });
       return ownerAnswer(res);
     }
     await env.KILN.delete(`itok:${sess.repo}`);   // the service's own token went stale: ask for a new one
@@ -4694,7 +4694,7 @@ async function ghProxy(request, env, ghPath) {
     body = stampedBody(rawBody, parsedBody, ghPath, editorStamp(sess));
   }
   const res = await fetch(`${GH}${ghPath}`, { method: request.method, headers, body });
-  if (isWrite && res.ok && savesToSite(request.method, ghPath, parsedBody)) await notePublish(env, sess.repo);
+  if (isWrite && res.ok && savesToSite(request.method, ghPath, parsedBody)) await notePublish(env, sess.repo, { by: 'editor' });
   return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'application/json', 'Cache-Control': GH_ANSWER_CACHE } });
 }
 

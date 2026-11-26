@@ -36,6 +36,7 @@
  *   POST /cloud/account/came-from → {source, medium, campaign}: the campaign tags of the link the person
  *                                  followed, kept on a new account once (only while CAMPAIGN_TAGS is "on")
  *   POST /admin/cloud/needs/hide → (owner only) {key}: hide one line of `needs_you` for 30 days; {key, undo: true} shows it again
+ *   GET  /admin/cloud/activity   → (owner only) the activity record, newest first (activity.js): ?account= or ?site=, limit, before
  *   POST /admin/cloud/grant      → (owner only) manually set a site's status, or give it seven more free days
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
@@ -53,6 +54,7 @@ import { planPrepare, applyPrepare, publicPlan, prepareSentence, PrepareError, S
 import { planFirstPass, applyFirstPass, publicFirstPass, firstPassSentence, astroAfterSentences } from './firstpass.js';
 import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, rememberLatest, noteRepoBuild, UPDATE_COMMAND } from './update.js';
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
+import { noteActivity, notePublished, noteSiteRemoved, forgetActivity, activityOn, activityPage } from './activity.js';
 import { hostingOn, hostingSentence, membersGateOn, previewPattern, serviceAddress } from './hosting.js';
 import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence, keptFilesLink, keptFilesName } from './keeps.js';
 import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies, MOST_ANSWER } from './bring.js';
@@ -402,6 +404,7 @@ async function upsertAccount(env, login, email, number) {
     const id = uuid();
     await db.prepare('INSERT INTO accounts (id, github_login, email, created_at) VALUES (?,?,?,?)')
       .bind(id, login, email || null, Date.now()).run();
+    await noteActivity(env, { account_id: id, kind: 'signed_up', by: 'person', detail: { way: 'github' } });
     return { id, github_login: login, email };
   };
 
@@ -463,6 +466,7 @@ async function upsertAccount(env, login, email, number) {
     if (other) return other;
     throw e;
   }
+  await noteActivity(env, { account_id: id, kind: 'signed_up', by: 'person', detail: { way: 'github' } });
   return { id, github_login: login, email, github_id: n };
 }
 
@@ -498,6 +502,7 @@ async function googleAccount(env, { sub, email, name }) {
   try {
     await env.kiln_cloud.prepare('INSERT INTO accounts (id, github_login, email, name, google_sub, created_at) VALUES (?,?,?,?,?,?)')
       .bind(id, null, email || null, name || null, sub, Date.now()).run();
+    await noteActivity(env, { account_id: id, kind: 'signed_up', by: 'person', detail: { way: 'google' } });
   } catch (e) {
     const other = await find();   // two sign-ins at the same moment: the other one made the account
     if (other) { await confirmed(other.id); return other; }
@@ -571,6 +576,7 @@ async function emailAccount(env, email) {
   const id = uuid();
   try {
     await env.kiln_cloud.prepare('INSERT INTO accounts (id, github_login, email, created_at, signin_email) VALUES (?,?,?,?,?)').bind(id, null, want, Date.now(), want).run();
+    await noteActivity(env, { account_id: id, kind: 'signed_up', by: 'person', detail: { way: 'email' } });
   } catch (e) {
     found = await confirmedAccounts(env, want);   // two sign-ins at the same moment: the other one made the account
     if (found.length === 1) return { account: found[0] };
@@ -886,7 +892,7 @@ export async function domainFreeDays(env, siteId, name, { now = Date.now(), goes
  * it. `kept` marks a site whose files Kiln keeps (keeps.js), which is the only
  * caller that names an `id`.
  */
-async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, kept = false, name = null, since = null, days = null }) {
+async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, kept = false, name = null, since = null, days = null, way = null }) {
   // Fair use: the free days are counted from the first time this address was
   // added, so removing a site and adding it again cannot start them again.
   // `days` is the clock of a site in a person's own repository, which counts
@@ -910,6 +916,8 @@ async function registerSite(env, { id = uuid(), accountId, repo, origin, plan, k
       .bind(site.id, site.account_id, site.repo, site.origin, site.plan, site.status, site.created_at).run();
   }
   await env.KILN.delete(`cloudgone:${String(site.repo).toLowerCase()}`);
+  // The activity record (activity.js): which way the site came to Kiln.
+  await noteActivity(env, { account_id: site.account_id, site_id: site.id, kind: 'site_added', by: 'person', detail: { way: way || (kept ? 'starter' : 'github') } });
   return site;
 }
 
@@ -1414,6 +1422,7 @@ export async function domainTookHold(env, { site, row, now = Date.now() } = {}) 
     }
     await tellAboutDomain(env, 'live', s, row, domainLiveMail({ name, address, tempUrl: s.temp_url, oneAddress, dashboard: env.CLOUD_DASHBOARD || 'https://app.kilncms.com' }));
     console.log(JSON.stringify({ evt: 'domain_live', repo: s.repo, name, address }));
+    await noteActivity(env, { site_id: s.id, kind: 'domain_live', by: 'kiln' });
   } catch (e) {
     console.warn(JSON.stringify({ evt: 'domain_took_hold_failed', site: site?.id, name: row?.name, detail: why(e) }));
   }
@@ -1877,6 +1886,8 @@ export async function expireStaleTrials(env) {
     `UPDATE sites SET status = 'canceled' WHERE status = 'trialing' AND ${await subscriptionSql(env)} IS NULL AND created_at < ?`
   ).bind(cutoff).run();
   const rows = expiring?.results || [];
+  // The activity record (activity.js): one line for each site whose free days just ended.
+  if (activityOn(env)) for (const r of rows) if (r.id) await noteActivity(env, { site_id: r.id, kind: 'free_days_ended', by: 'kiln' });
   if (rows.length) {
     await notifyOwner(env, `Kiln: ${rows.length} trial${rows.length === 1 ? '' : 's'} expired unpaid`, rows.map(r => `${r.repo} (${r.origin})`));
     // The owner of each is told too, once: the trial used to end in silence.
@@ -1928,6 +1939,7 @@ export async function moreFreeDays(env, siteId, { always = false, now = Date.now
   } catch { /* the mark stays where it was */ }
   // "Your free days end soon" and "your free days have ended" are sent once for a site (sendOnce): for the new end they may go again.
   for (const note of ['trial-soon', 'trial-ended']) { try { await env.KILN.delete(`mail:${note}:${s.id}`); } catch { /* the note then stays sent, and nothing else is lost */ } }
+  await noteActivity(env, { site_id: s.id, kind: 'free_days_given', by: 'operator', detail: { days: TRIAL_GRACE_DAYS } });
   return { status: 200, body: { ok: true, status: 'trialing', trial_ends: from + span, days: TRIAL_GRACE_DAYS } };
 }
 
@@ -1994,11 +2006,14 @@ export async function noteSeen(env, accountId, { now = Date.now(), olderThan = 0
  * site matches no row. Never throws, so it cannot fail the save it follows.
  */
 const PUBLISH_EVERY = 60 * 1000;
-export async function notePublish(env, repo, { now = Date.now() } = {}) {
+export async function notePublish(env, repo, { now = Date.now(), by = null, scheduled = false } = {}) {
   try {
     if (!env.kiln_cloud || typeof repo !== 'string' || !repo) return;
     await env.kiln_cloud.prepare('UPDATE sites SET last_publish = ? WHERE lower(repo) = lower(?) AND (last_publish IS NULL OR last_publish <= ?)').bind(now, repo, now - PUBLISH_EVERY).run();
   } catch { /* the save went through all the same */ }
+  // The activity record (activity.js): every publish, the site and who published it (`by`: person for the
+  // owner, editor for an invited editor), never what changed. It writes nothing while it is off.
+  await notePublished(env, repo, { by, scheduled, at: now });
 }
 
 async function preparedTimes(env, accountId) {
@@ -2011,14 +2026,16 @@ async function preparedTimes(env, accountId) {
   try { return await read('prepared_at, firstpass_at'); } catch { /* 0004 has not reached this database */ }
   try { return await read('prepared_at'); } catch { return {}; }
 }
-export async function markPrepared(env, siteId, commit) {
+export async function markPrepared(env, siteId, commit, by = 'person') {
   try {
     await env.kiln_cloud.prepare('UPDATE sites SET prepared_at = COALESCE(prepared_at, ?), prepared_commit = COALESCE(?, prepared_commit) WHERE id = ?').bind(Date.now(), commit || null, siteId).run();
+    await noteActivity(env, { site_id: siteId, kind: 'setup_step', by, detail: { step: 'kiln_added' } });
   } catch { /* the repository is prepared all the same; the dashboard offers the button again and is told so */ }
 }
-export async function markFirstPass(env, siteId, commit) {
+export async function markFirstPass(env, siteId, commit, by = 'person') {
   try {
     await env.kiln_cloud.prepare('UPDATE sites SET firstpass_at = COALESCE(firstpass_at, ?), firstpass_commit = COALESCE(?, firstpass_commit) WHERE id = ?').bind(Date.now(), commit || null, siteId).run();
+    await noteActivity(env, { site_id: siteId, kind: 'setup_step', by, detail: { step: 'marked_for_editing' } });
   } catch { /* the pages are marked all the same; the dashboard offers the button again and is told there is nothing left */ }
 }
 
@@ -2124,7 +2141,7 @@ export async function putOnHosting(env, { site, token, accountId, author, by, wo
       site, token, worker,
       author: who,
       firstpassAt: (await preparedTimes(env, accountId))[site.id]?.firstpass_at || null,
-      record: { prepared: (sha) => markPrepared(env, site.id, sha), firstPass: (sha) => markFirstPass(env, site.id, sha) },
+      record: { prepared: (sha) => markPrepared(env, site.id, sha, 'kiln'), firstPass: (sha) => markFirstPass(env, site.id, sha, 'kiln') },
     });
     if (!care) return { status: 409, body: { error: BUSY, code: 'busy' } };
   }
@@ -2722,7 +2739,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // Fair use of the free days: counted from the first time this address, this repository or this GitHub account
     // was seen here (freeDayClock). When GitHub does not give the repository's number the site is added all the same.
     const days = await freeDayClock(env, { accountId: sess.account_id, origin: o, repoId: await repoNumber(env, tools, sess, repo), ghId: githubNumber(sess) });
-    const site = await registerSite(env, { accountId: sess.account_id, repo, origin: o, plan, days });
+    const site = await registerSite(env, { accountId: sess.account_id, repo, origin: o, plan, days, way: 'github' });
     // An address given with the form becomes the account's address for notices.
     if (mailAddress(email)) { try { await env.kiln_cloud.prepare('UPDATE accounts SET email = ? WHERE id = ?').bind(mailAddress(email), sess.account_id).run(); } catch { /* the site is added either way */ } }
     const to = await accountEmail(env, sess.account_id);
@@ -2750,8 +2767,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     let since = null;   // when this site's free days began, if they began with an earlier site of the account
     const out = await startKept(env, {
       accountId: sess.account_id, name, worker: selfOrigin(url, env), by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
-      register: ({ id, repo, origin, name, since: began }) => { typed = name; since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began }); },
-      forget: (id) => env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(),
+      register: ({ id, repo, origin, name, since: began }) => { typed = name; since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began, way: 'starter' }); },
+      forget: async (id) => { const out = await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(); await forgetActivity(env, { site_id: id }); return out; },
       note: (subject, lines) => notifyOwner(env, subject, lines),
     });
     if (!out.ok) return json({ error: out.error, code: out.code }, out.status);
@@ -2777,8 +2794,8 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     let since = null;   // as for a site that is started: when its free days began, if with an earlier site
     const out = await bringIn(env, {
       accountId: sess.account_id, address, name, mine, worker: selfOrigin(url, env), dashboard: dash, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
-      register: ({ id, repo, origin, name, since: began }) => { since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began }); },
-      forget: (id) => env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(),
+      register: ({ id, repo, origin, name, since: began }) => { since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began, way: 'copied' }); },
+      forget: async (id) => { const out = await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(); await forgetActivity(env, { site_id: id }); return out; },
       note: (subject, lines) => notifyOwner(env, subject, lines),
     });
     if (!out.site) return json({ error: out.error, code: out.code }, out.status);
@@ -3446,6 +3463,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const kept = await keptSite(env, site.id);   // asked before the row goes
     const gone = await forgetHosting(env, site.id);   // a hosted site comes down with it, and so does its own domain
     await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).run();
+    await noteSiteRemoved(env, { account_id: sess.account_id, site_id: site.id, by: 'person' });
     // Its owner's editing session ends with it, at once and not a minute later (keptStands).
     if (kept && site.repo) { try { await env.KILN.delete(keptStandsKey(sess.account_id, site.repo)); } catch { /* it is forgotten within the minute anyway */ } }
     if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
@@ -3620,6 +3638,14 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       catch (e) { console.warn(JSON.stringify({ evt: 'cloud_customers_not_read', detail: String(e?.message || e).slice(0, 160) })); people = { customers_not_read: true }; }
       return json({ accounts: accounts.n, sites: rows, active: active.length, mrr: Number(mrr.toFixed(2)), store, insights, ...people });
     }
+    // The activity record (activity.js), newest first, for the admin pages: ?account=<id> or ?site=<id> or
+    // neither; `limit` up to 200; `before` is the `next` of the page before. Nothing is read while it is off.
+    if (path === '/admin/cloud/activity' && request.method === 'GET') {
+      if (!activityOn(env)) return json({ ok: true, recording: false, activity: [], next: null });
+      const q = url.searchParams;
+      try { return json({ ok: true, recording: true, ...(await activityPage(env, { account: q.get('account'), site: q.get('site'), limit: q.get('limit'), before: q.get('before') })) }); }
+      catch (e) { console.warn(JSON.stringify({ evt: 'activity_not_read', detail: String(e?.message || e).slice(0, 160) })); return json({ ok: true, recording: true, activity: [], next: null, not_read: true }); }
+    }
     if (path === '/admin/cloud/grant' && request.method === 'POST') {
       const { site_id, status, more_days } = await request.json().catch(() => ({}));
       // `more_days: true`: seven more free days for a site nobody pays for (moreFreeDays). Setting such a
@@ -3635,6 +3661,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         () => env.kiln_cloud.prepare('UPDATE sites SET status = ?, access_until = NULL WHERE id = ?').bind(status, site_id).run(),
         () => env.kiln_cloud.prepare('UPDATE sites SET status = ? WHERE id = ?').bind(status, site_id).run(),
       );
+      await noteActivity(env, { site_id, kind: 'operator_status_set', by: 'operator', detail: { status } });
       return json({ ok: true });
     }
     // One line of "Needs you" hidden for NEEDS_HIDE_DAYS: someone the operator has already written to, or
@@ -3643,9 +3670,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     if (path === '/admin/cloud/needs/hide' && request.method === 'POST') {
       const { key, undo } = await request.json().catch(() => ({}));
       if (typeof key !== 'string' || !NEED_KEY_RE.test(key)) return json({ error: 'That is not a line of Needs you.' }, 400);
-      if (undo === true) { await env.KILN.delete(`nhide:${key}`); return json({ ok: true, hidden: false }); }
+      if (undo === true) { await env.KILN.delete(`nhide:${key}`); await noteLineHidden(env, key, true); return json({ ok: true, hidden: false }); }
       const until = Date.now() + NEEDS_HIDE_DAYS * 86400 * 1000;
       await env.KILN.put(`nhide:${key}`, JSON.stringify({ at: Date.now(), until }), { expirationTtl: NEEDS_HIDE_DAYS * 86400 });
+      await noteLineHidden(env, key, false);
       return json({ ok: true, until });
     }
     if (path === '/admin/cloud/remove' && request.method === 'POST') {
@@ -3661,6 +3689,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const kept = await keptSite(env, site.id);   // asked before the row goes
       const gone = await forgetHosting(env, site.id);
       await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ?').bind(site.id).run();
+      await noteSiteRemoved(env, { account_id: site.account_id, site_id: site.id, by: 'operator' });
       // What the owner's own Remove does after the row is gone: their editing session ends, the site is marked as gone,
       // and for a site Kiln kept the files of, the operator gets the note that names the day its repository may be deleted.
       if (kept && site.repo) { try { await env.KILN.delete(keptStandsKey(site.account_id, site.repo)); } catch { /* it is forgotten within the minute anyway */ } }
@@ -3849,6 +3878,15 @@ async function applyStripeState(env, { site, subId, state, at, end = null }) {
 }
 
 // A Checkout Session was paid: the site, its customer and its subscription are tied together, and the site is active.
+// The activity record (activity.js): how a site's payment stood before a notice from Stripe changes it,
+// read only while the record is on. `paid_until` arrives with migration 0016; without it a renewal is
+// told only by a charge that went through after one failed.
+async function paidBefore(env, siteId) {
+  if (!activityOn(env)) return null;
+  try { return await env.kiln_cloud.prepare('SELECT status, stripe_subscription_id AS sub, paid_until FROM sites WHERE id = ?').bind(siteId).first(); }
+  catch { try { return await env.kiln_cloud.prepare('SELECT status, stripe_subscription_id AS sub FROM sites WHERE id = ?').bind(siteId).first(); } catch { return null; } }
+}
+
 async function stripeCheckoutDone(env, s, at) {
   if (s.mode !== 'subscription') return { ignored: 'not a subscription checkout' };
   const subId = idOf(s.subscription), customer = idOf(s.customer);
@@ -3862,7 +3900,10 @@ async function stripeCheckoutDone(env, s, at) {
     await env.kiln_cloud.prepare('UPDATE sites SET stripe_subscription_id = ? WHERE id = ?').bind(subId, site.id).run();
     return { waiting: 'payment not complete yet' };
   }
+  const was = await paidBefore(env, site.id);   // for the activity record, below
   const applied = await applyStripeState(env, { site, subId, state: STRIPE_STATE.active, at });
+  // The activity record (activity.js): a subscription that started, unless this site was already paid by it.
+  if (applied && was && !(was.status === 'active' && was.sub === subId)) await noteActivity(env, { account_id: site.account_id, site_id: site.id, kind: 'subscription_started', by: 'stripe', detail: { plan: site.plan } });
   return applied ? {} : { ignored: 'older than the last change' };
 }
 
@@ -3875,6 +3916,7 @@ async function stripeSubscriptionChanged(env, type, sub, at) {
   if (!state) return { ignored: `status ${sub.status || 'unknown'}` };
   // A subscription the site has left behind (it was paid again later by another one) cannot end or hold up the one that pays now.
   if (site.stripe_subscription_id && site.stripe_subscription_id !== subId && state.access !== 'yes') return { ignored: 'not the subscription this site is paid by now' };
+  const was = await paidBefore(env, site.id);   // as it stood, for the activity record below (read only while it is on)
   await keepStripeCustomer(env, site, idOf(sub.customer));
   const end = state.access === 'until' ? (secondsToMs(sub.cancel_at) ?? periodEndOf(sub))
     : state.access === 'no' ? secondsToMs(sub.ended_at) : null;
@@ -3899,6 +3941,13 @@ async function stripeSubscriptionChanged(env, type, sub, at) {
       planNote = `Plan: the subscription pays for ${paidPlan} but the site says ${site.plan || 'nothing'}, and the record could not be changed (${String(e?.message || e).slice(0, 120)}).`;
     }
   }
+  // The activity record (activity.js): a subscription that started, was paid again (a renewal, or a charge
+  // that went through after one failed) or ended. Nothing about the card or the amount.
+  const paidKind = !was ? null : type === 'customer.subscription.deleted' ? 'subscription_ended'
+    : state.access !== 'yes' || state.status !== 'active' ? null
+    : was.sub !== subId || !['active', 'past_due'].includes(was.status) ? 'subscription_started'
+    : was.status === 'past_due' || (Number(was.paid_until) > 0 && Number(periodEndOf(sub)) > Number(was.paid_until)) ? 'subscription_renewed' : null;
+  if (paidKind) await noteActivity(env, { account_id: site.account_id, site_id: site.id, kind: paidKind, by: 'stripe', detail: { plan: paidPlan || site.plan, period } });
   await notifyOwner(env, `Kiln billing: ${type} → ${state.status}`, [
     `Site: ${site.repo || site.id} (${site.origin || 'origin unknown'})`,
     `Status: ${state.status}${applied.until ? `, access until ${new Date(applied.until).toISOString()}` : ''}`,
@@ -3916,6 +3965,7 @@ async function stripePaymentFailed(env, inv, at) {
   if (!site) return { ignored: 'no subscription this service knows' };
   const applied = await applyStripeState(env, { site, subId, state: STRIPE_STATE.past_due, at });
   if (!applied) return { ignored: 'older than the last change' };
+  await noteActivity(env, { account_id: site.account_id, site_id: site.id, kind: 'payment_failed', by: 'stripe' });
   await notifyOwner(env, 'Kiln billing: invoice.payment_failed → past_due', [
     `Site: ${site.repo || site.id} (${site.origin || 'origin unknown'})`,
     `Status: past_due, access until ${new Date(applied.until).toISOString()} unless a later charge goes through`,
@@ -4014,6 +4064,8 @@ const NEEDS_HIDE_DAYS = 30;     // a line the operator hid stays hidden this lon
  * is a new line.
  */
 const needKey = (kind, accountId, siteId, when = null) => `${kind}:${accountId}:${siteId || '-'}${Number(when) > 0 ? `:${Math.floor(Number(when))}` : ''}`;
+// The activity record (activity.js): the operator hid a line of Needs you, or showed it again. Its key names the kind of line, the account and the site.
+const noteLineHidden = (env, key, undo) => { const [line, account, site] = String(key).split(':'); return noteActivity(env, { account_id: account, site_id: site && site !== '-' ? site : null, kind: 'operator_line_hidden', by: 'operator', detail: { line, ...(undo ? { undo: true } : {}) } }); };
 const NEED_KEY_RE = /^(trial_no_address|trial_ended|payment_failed|stuck_setup|no_site):[\w-]{1,80}:[\w-]{1,80}(:\d{1,16})?$/;
 /**
  * `needs_you` without the lines the operator hid (KV `nhide:<key>`, written by

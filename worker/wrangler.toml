@@ -33,6 +33,10 @@ enabled = true
 [vars]
 ALLOWED_ORIGINS = "http://localhost:8788,http://127.0.0.1:8788,http://localhost:8787"
 CLOUD_DASHBOARD = "http://localhost:8788"
+# The activity record (worker/activity.js, migration 0022): one dated line for
+# each thing that happens to an account or a site. Off until the privacy page
+# says so. While it is anything but "on", nothing is written or read.
+ACTIVITY_RECORD = "off"
 
 # AI assist (optional, bring-your-own-key): store your Anthropic API key as a
 # SECRET — never a [vars] entry — with `npx wrangler secret put AI_API_KEY`.
@@ -135,6 +139,10 @@ HOSTING_PREFIX = "stg-"
 # members/ are left out when a hosted site goes up and answer "not found".
 # They are never served openly.
 HOSTING_SERVICE_URL = "https://kiln-auth-staging.erikkwilder.workers.dev"
+# The activity record (worker/activity.js, migration 0022): one dated line for
+# each thing that happens to an account or a site. Off until the privacy page
+# says so. While it is anything but "on", nothing is written or read.
+ACTIVITY_RECORD = "off"
 
 [[env.staging.kv_namespaces]]
 binding = "KILN"
@@ -211,6 +219,10 @@ HOSTING_SUBDOMAIN = "kiln-sites"
 # This service's own address, for the members gate of a hosted site (see
 # staging above). The secret HOSTING_MEMBER_KEY goes with it.
 HOSTING_SERVICE_URL = "https://auth.kilncms.com"
+# The activity record (worker/activity.js, migration 0022): one dated line for
+# each thing that happens to an account or a site. Off until the privacy page
+# says so. While it is anything but "on", nothing is written or read.
+ACTIVITY_RECORD = "off"
 
 [[env.production.kv_namespaces]]
 binding = "KILN"

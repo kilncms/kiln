@@ -34,6 +34,7 @@ import { gh, refPath, VIA_KILN } from './prepare.js';
 import { keepEditorsCurrent, finishCare, setPreviews } from './lookafter.js';
 import { domainRow, saveDomain, forgetDomain, detachDomain, removeWaitingDomain } from './domain.js';
 import { subscriptionSql } from './billing.js';
+import { noteActivity } from './activity.js';
 
 const LOCK_S = 300;
 const RETRY_AFTER_MS = 2 * 60 * 1000;        // a failed copy is tried again this long after it failed
@@ -147,6 +148,7 @@ function buildFields(row, out, now) {
 export async function publishSite(env, { site, token, wanted = null, onlyNew = false }) {
   if (!hostingOn(env)) return { state: 'failed', reason: 'not_set_up', error: hostingSentence('not_set_up') };
   let row = await hostingRow(env, site.id);
+  let backUp = row?.state === 'ended';   // its hosting came down, and this puts it up again (the activity record)
   if (await env.KILN.get(lockKey(site.id))) {
     if (row && wanted && wanted !== row.commit_sha) await save(env, site.id, { wanted_sha: wanted });
     return { state: 'busy' };
@@ -187,6 +189,7 @@ export async function publishSite(env, { site, token, wanted = null, onlyNew = f
       // (hosting.js: membersGateOn). The owner reads it in "Check this site".
       if (out.members === 'left_out') console.warn(JSON.stringify({ evt: 'hosting_members_left_out', repo: site.repo, name: row.name }));
       await saveBuilt(env, site.id, { state: 'live', reason: null, branch: out.branch, commit_sha: out.commit, files: out.files, deployed_at: Math.max(Date.now(), Number(row.deployed_at || 0) + 1), checked_at: Date.now() }, build);   // never the moment of the copy before: a caller tells a new copy by it
+      if (backUp) { backUp = false; await noteActivity(env, { site_id: site.id, kind: 'hosting_up', by: 'kiln' }); }
       row = await hostingRow(env, site.id);
       // A built site's own branch is not what was copied, so a commit of it that a notice named is not owed a copy.
       if (out.built) { if (row.wanted_sha) await save(env, site.id, { wanted_sha: null }); break; }
@@ -601,6 +604,7 @@ export async function sweepHosting(env, { installationToken, hasAccess, endsAt =
       await save(env, r.id, { state: 'ended', reason, deployed_at: null, wanted_sha: null });
       await forgetPreviews(env, r.id, 'hosting_ended');   // its previews come down with it
       console.log(JSON.stringify({ evt: 'hosting_ended', repo: r.repo, name: r.name, reason, ...(domain ? { domain: domain.name } : {}) }));
+      await noteActivity(env, { site_id: r.id, kind: 'hosting_down', by: 'kiln', detail: { reason } });
       if (typeof ended === 'function') { try { await ended(r, reason, domain); } catch { /* the operator's note is not what takes a site down */ } }
     } catch (e) { console.warn(JSON.stringify({ evt: 'hosting_end_failed', name: r.name, detail: String(e?.detail || e?.message || e).slice(0, 200) })); }
   }
