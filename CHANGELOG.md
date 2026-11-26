@@ -6,6 +6,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-26
+
+### Changed
+
+- The activity record and the daily site check are switched on in Kiln's own
+  production service, now that the privacy page says what they keep.
+
 ## [0.12.0] - 2026-11-26
 
 ### Added

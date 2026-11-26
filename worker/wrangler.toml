@@ -230,11 +230,11 @@ HOSTING_SERVICE_URL = "https://auth.kilncms.com"
 # The activity record (worker/activity.js, migration 0022): one dated line for
 # each thing that happens to an account or a site. Off until the privacy page
 # says so. While it is anything but "on", nothing is written or read.
-ACTIVITY_RECORD = "off"
+ACTIVITY_RECORD = "on"
 # The daily site check (worker/daily-check.js, migration 0023): once a day each
 # site's public address and its Kiln page are asked whether they answer. Off
 # until the privacy page says so. While it is anything but "on", nothing runs.
-SITE_CHECK_DAILY = "off"
+SITE_CHECK_DAILY = "on"
 
 [[env.production.kv_namespaces]]
 binding = "KILN"
