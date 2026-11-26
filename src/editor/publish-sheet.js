@@ -456,7 +456,10 @@ export function openSetSheet(deps) {
       box.dataset.page = g.id;
       const head = el('div', 'kiln-ss-head');
       const who = el('div', 'kiln-ss-who');
-      who.append(el('strong', null, g.title || g.address || 'A page'));
+      const name = el('strong', null, g.title || g.address || 'A page');
+      name.setAttribute('role', 'heading');
+      name.setAttribute('aria-level', '4');
+      who.append(name);
       const facts = [g.address, g.ago].filter(Boolean).join(' · ');
       if (facts) who.append(el('span', 'kiln-ss-facts', facts));
       head.append(who);
@@ -553,14 +556,16 @@ export function publishSheetCss(mobileMq) {
 .kiln-pubsheet .kiln-ps-notefield input{font-weight:400}
 .kiln-pubsheet .kiln-ps-actions{margin:14px -22px 0;padding:12px 22px;border-top:1px solid #eef0f3;background:#fafafb}
 .kiln-pubsheet #kiln-pubsheet-go{min-width:150px;padding:9px 18px;font-size:14px}
-.kiln-ss-page{display:flex;flex-direction:column;gap:8px;padding:0 0 10px;border-bottom:1px solid #eef0f3}
+#kiln-ss-list{display:flex;flex-direction:column;gap:14px;overflow-y:auto;min-height:0;flex:1 1 auto;margin:0 -6px;padding:0 6px 2px}
+.kiln-ss-page{display:flex;flex-direction:column;gap:8px;padding:0 0 14px;border-bottom:1px solid #eef0f3}
 .kiln-ss-page:last-child{border-bottom:0}
 .kiln-ss-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .kiln-ss-who{display:flex;flex-direction:column;gap:2px;min-width:0}
-.kiln-ss-who strong{font:600 14px/1.3 var(--kiln-font);color:#1c1c28;overflow-wrap:anywhere}
+.kiln-ss-who strong{font:600 15px/1.35 var(--kiln-font);color:#1c1c28;overflow-wrap:anywhere}
 .kiln-ss-facts{font:12px var(--kiln-font);color:#6b7280;overflow-wrap:anywhere}
 .kiln-ss-ctl{display:flex;gap:6px;flex:none}
 .kiln-setsheet #kiln-ss-go{min-width:150px;padding:9px 18px;font-size:14px}
+.kiln-setsheet #kiln-ss-only:disabled{opacity:.5;cursor:default}
 /* The first-visit guide points at the button from above: leave it a strip of its own. */
 .kiln-pubsheet.kiln-guided .kiln-ps-notefield{margin-bottom:56px}
 @media ${mobileMq}{
@@ -571,7 +576,10 @@ export function publishSheetCss(mobileMq) {
 .kiln-pubsheet .kiln-ps-actions button{min-height:46px;font-size:15px}
 .kiln-pubsheet .kiln-ps-actions .kiln-btn-ghost{flex:0 0 auto;padding:0 18px}
 .kiln-pubsheet #kiln-pubsheet-go{flex:1 1 auto}
-.kiln-setsheet #kiln-ss-go{flex:1 1 auto;min-width:0}
+/* Three buttons do not fit one row on a phone: the main one takes a row of its own, under the other two. */
+.kiln-setsheet .kiln-ps-actions{flex-wrap:wrap}
+.kiln-setsheet .kiln-ps-actions .kiln-btn-ghost{flex:1 1 0}
+.kiln-setsheet #kiln-ss-go{flex:1 1 100%;min-width:0}
 .kiln-ss-head{flex-wrap:wrap}
 .kiln-pubsheet .kiln-ps-notefield input{font-size:16px}
 .kiln-ps-drop{min-height:34px;padding:4px 14px;font-size:12.5px}

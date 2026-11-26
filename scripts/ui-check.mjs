@@ -4978,6 +4978,314 @@ async function runWholePage(browser, size) {
   }
 }
 
+/**
+ * "Waiting on other pages": an invited editor edits page A, goes to page B and
+ * edits there, and publishes both from the menu as one change. The worker and
+ * GitHub are played by this script, so every write can be counted: one tree
+ * holding both files, one commit, one branch move. Then, each from a fresh
+ * browser: a page's changes are dropped from the sheet; the same part changed
+ * on GitHub asks "Keep theirs / Use mine" before anything is written; a saved
+ * value holding a script is held back and not sent; and someone with nothing
+ * waiting elsewhere sees no menu item. A is the site's about page, B its home.
+ */
+async function runWaiting(browser, size) {
+  const phone = size.width < 600;
+  const scope = `${size.width}x${size.height} waiting on other pages`;
+  const WORKER = 'https://worker.invalid';
+  const REPO = 'acme/site';
+  const B_URL = URL_ARG, A_URL = new URL('about.html', URL_ARG).href;
+  const b64 = (text) => Buffer.from(text).toString('base64');
+  const fresh = async () => ({
+    'index.html': { text: await (await fetch(B_URL)).text(), sha: 'b0' },
+    'about.html': { text: await (await fetch(A_URL)).text(), sha: 'a0' },
+  });
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+
+  /** A fresh browser, signed in as an invited editor, on page A, with the stand-in for the worker and GitHub. */
+  async function start(name) {
+    const files = await fresh();
+    const w = { files, trees: [], commits: [], moves: [], blobs: 0, blocked: [], errors: [], leaves: 0, slow: 0 };
+    const context = await browser.newContext({ viewport: size, isMobile: phone, hasTouch: phone });
+    await context.addInitScript((repo) => {
+      try {
+        localStorage.setItem('kiln_editor', JSON.stringify({ session: 'a'.repeat(64), name: 'Sam', repo, role: 'editor' }));
+        localStorage.setItem('kiln_guide', '1');
+      } catch { /* ignore */ }
+    }, REPO);
+    await context.route('**/*', async (route) => {
+      const req = route.request();
+      const u = new URL(req.url());
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': ORIGIN }, body: JSON.stringify(body) });
+      if (u.origin === ORIGIN && u.pathname.endsWith('kiln-config.js')) {
+        return route.fulfill({ contentType: 'text/javascript', body: `window.KILN = { repo: '${REPO}', branch: 'main', worker: '${WORKER}', styles: [] };` });
+      }
+      if (u.origin === ORIGIN || u.protocol === 'data:' || u.protocol === 'blob:') return route.continue();
+      if (u.origin !== WORKER) return refuse(route, w.blocked);
+      const p = decodeURIComponent(u.pathname);
+      const m = req.method();
+      if (m === 'OPTIONS') {
+        return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': ORIGIN, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Kiln-Session', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, OPTIONS' } });
+      }
+      if (p === '/presence') return json({ ok: true, others: [], online: [], scope: { paths: [''], keys: [], features: null, mode: null } });
+      if (p === '/healthz') return json({ ok: true, modes: ['html', 'source'], adapters: ['astro'] });
+      const at = `/gh/repos/${REPO}`;
+      if (p === `${at}/contents`) return json(Object.keys(w.files).map(path => ({ path, type: 'file' })).concat([{ path: 'assets', type: 'dir' }]));
+      if (p.startsWith(`${at}/contents/`)) {
+        const f = w.files[p.slice(`${at}/contents/`.length)];
+        if (m !== 'GET') return json({ message: 'not here' }, 405);
+        return f ? json({ sha: f.sha, content: b64(f.text), encoding: 'base64' }) : json({ message: 'Not Found' }, 404);
+      }
+      if (p === `${at}/git/ref/heads/main`) return json({ object: { sha: 'head' } });
+      if (p.startsWith(`${at}/git/commits/`) && m === 'GET') return json({ sha: 'head', tree: { sha: 'tree' } });
+      if (p.startsWith(`${at}/git/trees`) && m === 'GET') {
+        return json({ sha: 'tree', truncated: false, tree: Object.entries(w.files).map(([path, f]) => ({ path, type: 'blob', sha: f.sha, size: f.text.length })).concat([{ path: 'assets/site.css', type: 'blob', sha: 'css', size: 900 }]) });
+      }
+      if (p === `${at}/git/blobs` && m === 'POST') { w.blobs++; return json({ sha: `blob${w.blobs}` }, 201); }
+      if (p === `${at}/git/trees` && m === 'POST') {
+        const body = JSON.parse(req.postData() || '{}');
+        w.trees.push(body);
+        return json({ sha: `tree${w.trees.length}` }, 201);
+      }
+      if (p === `${at}/git/commits` && m === 'POST') {
+        if (w.slow) await new Promise(r => setTimeout(r, w.slow));
+        w.commits.push(JSON.parse(req.postData() || '{}'));
+        return json({ sha: `commit${w.commits.length}`, tree: { sha: `tree${w.trees.length}` } }, 201);
+      }
+      if (p.startsWith(`${at}/git/refs/`) && m === 'PATCH') {
+        w.moves.push(JSON.parse(req.postData() || '{}'));
+        // what was written is what GitHub now holds
+        for (const t of w.trees[w.trees.length - 1]?.tree || []) if (w.files[t.path] && typeof t.content === 'string') w.files[t.path] = { text: t.content, sha: `${t.path}-${w.moves.length}` };
+        return json({ object: { sha: `commit${w.commits.length}` } });
+      }
+      if (p.includes('/deployments')) return json([]);
+      if (p.endsWith('/status')) return json({ total_count: 0 });
+      return json({ message: 'Not Found' }, 404);
+    });
+    const page = await context.newPage();
+    page.on('pageerror', (e) => w.errors.push(String(e)));
+    page.on('dialog', (d) => { if (d.type() === 'beforeunload') w.leaves++; d.accept().catch(() => {}); });
+    const shot = async (step) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${step}-${size.width}.png`) }); };
+    const ready = async () => { await page.locator('#kiln-fab').waitFor({ state: 'visible', timeout: 15000 }); await page.waitForTimeout(700); };
+    await page.goto(A_URL, { waitUntil: 'load' });
+    await ready();
+    /** Type into the page's first heading and keep it. Returns its key. */
+    const edit = async (words) => {
+      const heading = page.locator('h1.kiln-field, h2.kiln-field, h3.kiln-field').first();
+      const key = await heading.getAttribute('data-cms');
+      await heading.scrollIntoViewIfNeeded();
+      await press(heading);
+      await page.keyboard.type(words);
+      await press(page.locator('#kiln-toolbar .kiln-tb-save'));
+      await page.waitForTimeout(400);
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+      return key;
+    };
+    /** Go to the other page the way a person does, from the page itself (the browser asks "Leave site?"). */
+    const goTo = async (url) => {
+      await Promise.all([page.waitForURL(url, { timeout: 15000 }), page.evaluate((to) => { setTimeout(() => { location.href = to; }, 0); }, url)]);
+      await ready();
+    };
+    const copies = () => page.evaluate((mine) => Object.keys(localStorage).filter(n => n.startsWith(mine)).map(n => n.slice(mine.length)), `kiln_pending:${REPO}:`);
+    const menuItem = async () => {
+      await press(page.locator('#kiln-fab'));
+      await page.waitForTimeout(350);
+      const item = page.locator('#kiln-waiting');
+      const shown = await item.isVisible().catch(() => false);
+      return { item, shown, words: shown ? (await item.innerText()).trim() : '' };
+    };
+    const closeMenu = async () => { await page.keyboard.press('Escape'); await page.waitForTimeout(200); };
+    const sheet = page.locator('#kiln-modal.kiln-setsheet, #kiln-modal-under.kiln-setsheet');
+    const openSheet = async () => {
+      const m = await menuItem();
+      if (m.shown) { await press(m.item); await page.waitForTimeout(500); }
+      return m;
+    };
+    const sections = () => sheet.locator('.kiln-ss-page').evaluateAll((els) => els.map((s) => ({
+      id: s.dataset.page, title: s.querySelector('.kiln-ss-who strong')?.textContent || '',
+      rows: s.querySelectorAll('.kiln-ps-item').length,
+      beforeAfter: [...s.querySelectorAll('.kiln-ps-item')].every(r => r.querySelector('.kiln-ps-before') && r.querySelector('.kiln-ps-after')),
+      text: s.innerText.replace(/\s+/g, ' '),
+    })));
+    /** Nothing in the sheet runs past its card, and the two main buttons do not overlap. */
+    const fits = () => sheet.evaluate((m) => {
+      const card = m.querySelector('.kiln-modal-card').getBoundingClientRect();
+      const out = [...m.querySelectorAll('.kiln-modal-card *')].filter(e => e.getClientRects().length && e.getBoundingClientRect().right > card.right + 1).map(e => e.id || e.className || e.tagName);
+      const a = m.querySelector('#kiln-ss-go')?.getBoundingClientRect(), b = m.querySelector('#kiln-ss-only')?.getBoundingClientRect();
+      const overlap = a && b && b.width && !(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top);
+      return { out: out.slice(0, 4), overlap: !!overlap, wide: document.documentElement.scrollWidth > innerWidth + 1 };
+    });
+    const status = page.locator('#kiln-status');
+    const end = async () => {
+      check(scope, `${name}: no script errors`, w.errors.length === 0, w.errors.join(' | ').slice(0, 200));
+      check(scope, `${name}: nothing outside the local server was needed`, w.blocked.length === 0, w.blocked.slice(0, 3).join(', '));
+      await context.close();
+    };
+    return { w, page, shot, edit, goTo, copies, menuItem, closeMenu, sheet, openSheet, sections, fits, status, end };
+  }
+
+  // ── a, b, c: two pages, one change ─────────────────────────────────────────
+  {
+    const s = await start('two pages');
+    const { w, page } = s;
+    await s.edit(' and more');
+    check(scope, 'page A\'s edit is kept in this browser under its own file', (await s.copies()).includes('about.html'), (await s.copies()).join());
+    await s.goTo(B_URL);
+    check(scope, 'going to page B leaves A (the browser\'s "Leave site?" is answered)', new URL(page.url()).pathname === '/', `${page.url()}, ${w.leaves} leave question(s)`);
+    check(scope, 'on B, "Pick up where you left off?" is not shown (B has nothing saved)', (await page.getByText('Pick up where you left off?').count()) === 0);
+    const before = await s.menuItem();
+    check(scope, 'with nothing typed on B yet, the menu already offers "Waiting on other pages (1)"', before.words === 'Waiting on other pages (1)', before.words || 'not shown');
+    await s.closeMenu();
+    await s.edit(' Hello');
+    const m = await s.openSheet();
+    check(scope, 'after an edit on B the menu item reads "Waiting on other pages (1)"', m.words === 'Waiting on other pages (1)', m.words || 'not shown');
+    const list = await s.sections();
+    check(scope, 'the sheet lists two pages, this page first', list.length === 2 && list[0].id === 'here' && /about\.html$/.test(list[1].id), JSON.stringify(list.map(g => [g.id, g.title])));
+    check(scope, 'each page shows its change as before and after', list.length === 2 && list.every(g => g.rows >= 1 && g.beforeAfter), JSON.stringify(list.map(g => [g.rows, g.beforeAfter])));
+    check(scope, 'A\'s row says what the part read and reads now', /and more/.test(list[1]?.text || ''), (list[1]?.text || '').slice(0, 160));
+    const goWords = (await s.sheet.locator('#kiln-ss-go').innerText()).trim();
+    check(scope, 'the main button reads "Publish 2 edits on 2 pages"', goWords === 'Publish 2 edits on 2 pages', goWords);
+    check(scope, '"Only this page" is there', (await s.sheet.locator('#kiln-ss-only').isVisible()) && (await s.sheet.locator('#kiln-ss-only').innerText()).trim() === 'Only this page');
+    const lay = await s.fits();
+    check(scope, 'nothing in the sheet runs past its card, and its buttons do not overlap', !lay.out.length && !lay.overlap && !lay.wide, JSON.stringify(lay));
+    await s.shot('set-sheet-two-pages');
+    w.slow = 1500;
+    // Every line the status bar shows from here on (the deploy's own lines follow the done line).
+    await page.evaluate(() => {
+      window.__statusSeen = [];
+      const el = document.getElementById('kiln-status');
+      if (el) new MutationObserver(() => { const t = el.innerText.trim(); if (t && window.__statusSeen.at(-1) !== t) window.__statusSeen.push(t); }).observe(el, { childList: true, subtree: true, characterData: true });
+    });
+    await press(s.sheet.locator('#kiln-ss-go'));
+    await page.waitForTimeout(700);
+    const step = ((await s.sheet.locator('#kiln-ss-say').innerText().catch(() => '')) || '').trim();
+    check(scope, 'while it is sent, the sheet says where it is', !!step, step || 'no line');
+    await s.shot('set-sheet-progress');
+    await page.waitForFunction(() => /^Published 2 pages as one change\./.test(document.getElementById('kiln-status')?.innerText.trim() || ''), null, { timeout: 6000 }).catch(() => {});
+    await s.shot('set-done-line');
+    await page.waitForTimeout(1500);
+    const paths = (w.trees[0]?.tree || []).map(t => t.path).sort();
+    check(scope, 'GitHub receives ONE tree holding both pages\' files', w.trees.length === 1 && JSON.stringify(paths) === JSON.stringify(['about.html', 'index.html']), `${w.trees.length} tree(s): ${paths.join(', ')}`);
+    check(scope, 'ONE commit and ONE branch move', w.commits.length === 1 && w.moves.length === 1, `${w.commits.length} commit(s), ${w.moves.length} move(s)`);
+    const sent = Object.fromEntries((w.trees[0]?.tree || []).map(t => [t.path, t.content || '']));
+    check(scope, 'each file holds its own page\'s edit', /and more/.test(sent['about.html'] || '') && /Hello/.test(sent['index.html'] || ''));
+    const seen = await page.evaluate(() => window.__statusSeen || []);
+    check(scope, 'the status line says the pages were published as one change', seen.some(t => /^Published 2 pages as one change\./.test(t)), seen.join(' → ').slice(0, 300));
+    check(scope, 'the sheet has closed', (await s.sheet.count()) === 0);
+    check(scope, 'this page\'s published part is no longer marked as changed', (await page.locator('.kiln-modified').count()) === 0, `${await page.locator('.kiln-modified').count()} marked`);
+    const after = await s.menuItem();
+    check(scope, 'the menu item is gone', !after.shown, after.words);
+    await s.closeMenu();
+    const left = await s.copies();
+    check(scope, 'page A\'s saved copy is gone from this browser', !left.includes('about.html'), left.join() || 'none left');
+    await s.end();
+  }
+
+  // ── d: a page's changes are discarded from the sheet ───────────────────────
+  {
+    const s = await start('discard a page');
+    const { page } = s;
+    await s.edit(' and more');
+    await s.goTo(B_URL);
+    await s.edit(' Hello');
+    await s.openSheet();
+    // The page-level control that drops the page is the last of its controls (its words are changing).
+    const other = s.sheet.locator('.kiln-ss-page:not([data-page="here"])');
+    const drop = other.locator('.kiln-ss-ctl button').last();
+    check(scope, 'the other page has its own controls, a way to open it and one to drop it', (await other.locator('.kiln-ss-ctl button').count()) === 2);
+    await press(drop);
+    await page.waitForTimeout(400);
+    const ask = page.locator('#kiln-modal.kiln-ask');
+    const asked = ((await ask.innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
+    check(scope, 'Kiln asks first, in its own dialog, naming the page', (await ask.count()) === 1 && /not been published/.test(asked) && /Our story/.test(asked), asked.slice(0, 160));
+    check(scope, 'nothing is dropped before the answer', (await s.copies()).includes('about.html'));
+    await s.shot('set-discard-question');
+    await press(page.locator('#kiln-ask-go'));
+    await page.waitForTimeout(500);
+    check(scope, 'after the answer, that page\'s copy is gone', !(await s.copies()).includes('about.html'), (await s.copies()).join());
+    const list = await s.sections();
+    const title = ((await s.sheet.locator('#kiln-ss-title').innerText().catch(() => '')) || '').trim();
+    const goWords = ((await s.sheet.locator('#kiln-ss-go').innerText().catch(() => '')) || '').trim();
+    check(scope, 'the count drops: one page and one change left', list.length === 1 && list[0].id === 'here' && title === '1 change on 1 page' && goWords === 'Publish 1 edit', `${list.length} page(s), "${title}", "${goWords}"`);
+    await s.shot('set-after-discard');
+    await s.end();
+  }
+
+  // ── e: the same part changed on GitHub ─────────────────────────────────────
+  {
+    const s = await start('conflict');
+    const { w, page } = s;
+    await s.edit(' and more');
+    await s.goTo(B_URL);
+    await s.edit(' Hello');
+    // On GitHub someone changes the same part of A's file.
+    const was = await page.evaluate((name) => { try { const c = JSON.parse(localStorage.getItem(name)); return Object.values(c.more || {})[0]?.was || ''; } catch { return ''; } }, `kiln_pending:${REPO}:about.html`);
+    const a = w.files['about.html'];
+    const changed = !!was && a.text.includes(`>${was}<`);
+    w.files['about.html'] = { text: a.text.replace(`>${was}<`, '>Their own heading<'), sha: 'a-theirs' };
+    check(scope, 'the stand-in\'s copy of A now differs in the same part', changed, was.slice(0, 60));
+    await s.openSheet();
+    await press(s.sheet.locator('#kiln-ss-go'));
+    const which = page.locator('#kiln-which-theirs');
+    await which.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+    const dialog = ((await page.locator('#kiln-modal.kiln-ask-which').innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
+    check(scope, 'the "Keep theirs / Use mine" question shows, with both texts', (await which.count()) === 1 && (await page.locator('#kiln-which-mine').count()) === 1 && /Their own heading/.test(dialog) && /and more/.test(dialog), dialog.slice(0, 200));
+    check(scope, 'NO tree and NO branch move was sent before an answer', w.trees.length === 0 && w.moves.length === 0 && w.commits.length === 0, `${w.trees.length} tree(s), ${w.moves.length} move(s)`);
+    await s.shot('set-conflict');
+    await press(page.locator('#kiln-which-mine'));
+    await page.waitForTimeout(2500);
+    const paths = (w.trees[0]?.tree || []).map(t => t.path).sort();
+    check(scope, 'after "Use mine", one tree with both files and one branch move', w.trees.length === 1 && w.moves.length === 1 && JSON.stringify(paths) === JSON.stringify(['about.html', 'index.html']) && /and more/.test(w.trees[0].tree.find(t => t.path === 'about.html')?.content || ''), `${w.trees.length} tree(s): ${paths.join(', ')}`);
+    await s.end();
+  }
+
+  // ── f: a saved value holding a script is held back ─────────────────────────
+  {
+    const s = await start('held back');
+    const { w, page } = s;
+    await s.edit(' and more');
+    await s.goTo(B_URL);
+    // What this browser keeps for A is changed behind Kiln's back: its HTML holds a script tag, and its title is long.
+    const tampered = await page.evaluate((name) => {
+      try {
+        const c = JSON.parse(localStorage.getItem(name));
+        const k = Object.keys(c.edits)[0];
+        c.edits[k].html = 'Our story<script>alert(1)</script>';
+        c.page.title = 'Our story, from the first jar in a borrowed kitchen to the shop on the corner, with every recipe we kept and the ones we threw away';
+        localStorage.setItem(name, JSON.stringify(c));
+        return true;
+      } catch { return false; }
+    }, `kiln_pending:${REPO}:about.html`);
+    check(scope, 'a saved copy for A holding a script tag is put in this browser', tampered);
+    await s.edit(' Hello');
+    await s.openSheet();
+    const list = await s.sections();
+    const held = list.find(g => g.id !== 'here');
+    check(scope, 'that change\'s row says it holds code Kiln does not publish from here', !!held && held.text.includes('This change holds code Kiln does not publish from here.'), (held?.text || 'no such page').slice(0, 200));
+    const goWords = ((await s.sheet.locator('#kiln-ss-go').innerText().catch(() => '')) || '').trim();
+    check(scope, 'the held change is not counted on the button', goWords === 'Publish 1 edit', goWords);
+    const lay = await s.fits();
+    check(scope, 'a long page title wraps inside the card', !lay.out.length && !lay.overlap && !lay.wide, JSON.stringify(lay));
+    await s.shot('set-held-back');
+    await press(s.sheet.locator('#kiln-ss-go'));
+    await page.waitForTimeout(2500);
+    const paths = (w.trees[0]?.tree || []).map(t => t.path);
+    const sentA = (w.trees[0]?.tree || []).find(t => t.path === 'about.html');
+    check(scope, 'after "Publish all" the tree does not carry A\'s held value', w.trees.length === 1 && (!sentA || !/<script>alert/.test(sentA.content || '')), `${w.trees.length} tree(s): ${paths.join(', ')}`);
+    check(scope, 'the held copy is still waiting in this browser', (await s.copies()).includes('about.html'), (await s.copies()).join());
+    await s.end();
+  }
+
+  // ── g: nothing waiting elsewhere ───────────────────────────────────────────
+  {
+    const s = await start('nothing elsewhere');
+    await s.edit(' Hello');
+    const m = await s.menuItem();
+    check(scope, 'someone with edits on this page only sees no "Waiting on other pages"', !m.shown && (await s.page.locator('#kiln-waiting').count()) <= 1, m.words);
+    await s.closeMenu();
+    await s.end();
+  }
+}
+
 const browser = await chromium.launch();
 const guarded = async (label, fn) => {
   if (ONLY && !label.includes(ONLY)) return;
@@ -5007,6 +5315,8 @@ try {
   // no mouse: Tab, Enter, Esc and the arrow keys reach and edit every part, the toolbar, the dialogs and the menu
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} keyboard`, () => runKeyboard(browser, size));
   for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} signed in   `, () => runSignedIn(browser, size));
+  // edits waiting on other pages, published together as one change
+  for (const size of [SIZES[0], SIZES[1]]) await guarded(`${size.width}x${size.height} waiting on other pages`, () => runWaiting(browser, size));
   // an invited editor granted "Make things editable" on top of the defaults
   await guarded(`${SIZES[0].width}x${SIZES[0].height} granted     `, () => runSignedIn(browser, SIZES[0], { features: ['pagesettings', 'history', 'draft', 'makeeditable'] }));
   // "Make this whole page editable": offered with the grant, asked about, one write of only marks, and where it is not offered
