@@ -6,6 +6,57 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-11-26
+
+### Added
+
+- **The operator can give a site seven more free days.** `POST
+  /admin/cloud/grant` takes `more_days: true`: a site nobody pays for gets
+  seven days added to the end of its free days, or seven full days from now
+  when they are over, and is open for editing again. Kiln's two emails about
+  the end of the days can go once more for the new end. A site with a
+  subscription is refused: its dates are Stripe's.
+- **"Needs you" lists free days that ran out with nobody subscribing**, for
+  a week after they ended, with who to write to. The lines about free days
+  carry `more_days`, so the admin page can offer the seven days on the line.
+- The overview answers `customers_not_read` when the customers could not be
+  read, so the admin page can say so.
+
+### Fixed
+
+- **Setting a site to Trial from the admin page did not hold once its free
+  days were over.** The five-minute job closes any unpaid site more than
+  seven days old, so the status went back to canceled within five minutes.
+  Setting such a site to `trialing` now starts seven days from that moment.
+- **Hiding a line of "Needs you" hid the next occurrence too.** A line
+  about a day (free days that end or ended, the day editing stops after a
+  failed charge) now carries that day in its key, so next month's failed
+  charge is a new line.
+- **A customer who typed the operator's address into the dashboard was
+  treated as one of the operator's own accounts** on the overview, and left
+  out of "Needs you" and the funnel. An account is now the operator's by
+  address only when the address was confirmed for it: Google's, or one an
+  emailed sign-in link went to.
+- A dashboard sign-in begun at another address of the service (an old link
+  to its `workers.dev` address) starts again at the fixed address, where it
+  can finish. Before, its cookie and its callback were on different hosts.
+- `POST /cloud/account/came-from` answers 503 when the database cannot
+  write for the moment. It answered "not recorded" with a 200, and the
+  dashboard then threw the tags away.
+
+### Security
+
+- **A stranger could keep a known address from signing in by email for a
+  day with eight requests.** Since 0.10.2 the ninth sign-in link asked for
+  an address in a day was refused, and the count is kept for the address
+  whoever asks. Past the eighth, the email is now still sent, with the link
+  and no code: the codes, which are what the count protects, stay at 40
+  guesses a day, and the person can still get in by pressing the link.
+- **Five wrong codes void the code and no longer the link in the same
+  email.** The link cannot be guessed and only the inbox has it; voiding it
+  let whoever asked for an email cancel it for the person it went to.
+
+
 ## [0.10.4] - 2026-11-24
 
 ### Changed
