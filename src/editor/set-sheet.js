@@ -33,18 +33,21 @@ export function setLabel({ edits, pages }) {
   return `Publish ${plural(edits, 'edit')} on ${pages} pages`;
 }
 
-/** The question before a page's waiting changes are dropped. */
+/** The question before a page's waiting changes are discarded ("Discard", as everywhere else in Kiln). */
 export function dropPageCopy(count, title) {
   const name = String(title || '').trim() || 'this page';
   return {
-    title: count === 1 ? 'Drop this change?' : 'Drop these changes?',
-    body: `Drop the ${count === 1 ? 'waiting change' : `${count} waiting changes`} on ${name}? ${count === 1 ? 'It has' : 'They have'} not been published.`,
-    cancel: 'Keep them', go: 'Drop',
+    title: count === 1 ? 'Discard this change?' : 'Discard these changes?',
+    body: `Discard the ${count === 1 ? 'waiting change' : `${count} waiting changes`} on ${name}? ${count === 1 ? 'It has' : 'They have'} not been published.`,
+    cancel: 'Keep them', go: 'Discard',
   };
 }
 
-/** The words of the page heading's two controls, the design's own. */
-export const PAGE_CONTROLS = { open: 'Open', drop: 'Drop' };
+/** The words of the page heading's two controls. */
+export const PAGE_CONTROLS = { open: 'Open', drop: 'Discard' };
+
+/** What another tab is told when a page's waiting changes went from here. */
+export const OTHER_TAB_TEXT = { published: 'These were published from another tab.', dropped: 'These were discarded in another tab.' };
 
 /** The row under a change that a check held back. */
 export const HELD_TEXT = 'This change holds code Kiln does not publish from here. Open the page to look at it.';
@@ -128,6 +131,18 @@ export function withoutKeys(saved, keys) {
   const out = { ...rest, edits };
   if (saved.more) out.more = more;
   return out;
+}
+
+/**
+ * Of `keys`, the ones whose value in the copy kept now is still the value
+ * that was sent (`sent`, the copy the set published from). Only those are
+ * cleared after a set: a part edited again meanwhile (in another tab, say)
+ * stays waiting with its newer value.
+ */
+export function sentKeys(now, sent, keys) {
+  const a = now && typeof now === 'object' && now.edits && typeof now.edits === 'object' ? now.edits : {};
+  const b = sent && typeof sent === 'object' && sent.edits && typeof sent.edits === 'object' ? sent.edits : {};
+  return (keys || []).filter(k => Object.hasOwn(a, k) && Object.hasOwn(b, k) && JSON.stringify(a[k]) === JSON.stringify(b[k]));
 }
 
 /** The file a saved copy is for, read with care (saved-edits.js savedPage), or null. */

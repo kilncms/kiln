@@ -53,12 +53,22 @@ export async function forgetFiles(page, paths = null) {
   await run('readwrite', s => { for (const id of ids) s.delete(id); });
 }
 
-/** The uploads kept for a page, newest state. Entries older than a week are dropped. */
-export async function keptFiles(page, now = Date.now()) {
+/**
+ * The uploads kept for a page, newest state. Entries older than `maxAge` are
+ * dropped: a week unless something else is said (the edits they belong to are
+ * kept as long, waiting.js keptFor: 30 days in "Several pages together").
+ */
+export async function keptFiles(page, now = Date.now(), maxAge = MAX_AGE) {
+  const age = keptAge(maxAge);
   const all = (await run('readonly', s => s.getAll())) || [];
-  const old = all.filter(f => now - f.ts > MAX_AGE);
+  const old = all.filter(f => now - f.ts > age);
   if (old.length) run('readwrite', s => { for (const f of old) s.delete(f.id); }).catch(() => {});
-  return all.filter(f => f.page === page && now - f.ts <= MAX_AGE).map(f => ({ path: f.path, base64: f.base64 }));
+  return all.filter(f => f.page === page && now - f.ts <= age).map(f => ({ path: f.path, base64: f.base64 }));
+}
+
+/** How long kept uploads last: the time asked for, or the week when none (or nothing usable) is said. */
+export function keptAge(maxAge) {
+  return Number.isFinite(maxAge) && maxAge > 0 ? maxAge : MAX_AGE;
 }
 
 // ─── pure ────────────────────────────────────────────────────────────────────

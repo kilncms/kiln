@@ -412,6 +412,8 @@ export function openPublishSheet(deps) {
  *
  * deps: {
  *   modal(html)
+ *   said            optional { text, next? }: a sentence to show at once, with the
+ *                     main button's next step ({ label, run }), as ui.stop gives
  *   groups()        → [{ id, title, address, ago, here, own, gone, items, open?(), drop?() }]
  *                     `items` as openPublishSheet's; `own` says this page is
  *                     published from the page itself; drop() asks first and
@@ -496,6 +498,8 @@ export function openSetSheet(deps) {
       if (m.isConnected) render();
     },
   };
+  // Opened to say why a set sent at once could not go ("Publish without the preview"): the sentence, and the way on.
+  if (deps.said) ui.stop(deps.said.text, deps.said.next || null);
   go.addEventListener('click', async () => {
     if (busy || go.disabled) return;
     busy = true;

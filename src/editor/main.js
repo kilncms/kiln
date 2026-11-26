@@ -19,9 +19,9 @@ import {
   makeGh, getFile, resolvePageFile, editFile, putFile, putBinaryFile, commitFiles, deployState,
 } from '../github.js';
 import { publishSet, setStepText, setConflictText, SET_FILES_MAX } from './publish-set.js';
-import { waitingPages, dropPage } from './waiting.js';
+import { waitingPages, dropPage, keptFor, wayNow, wayOffered, setWay, WAYS, togetherLabel, leaveIsSafe, backLine, NO_ROOM_TEXT } from './waiting.js';
 import { EDITOR_SET_PAGES_MAX, waitingItemLabel, editedAgo, setLabel, dropPageCopy, HELD_TEXT, OWN_PUBLISH_TEXT, editorLimitText, firstPagesLabel,
-  overText, blockedText, setDoneText, holdBack, withoutKeys, copyPath, canJoinSet, firstPages } from './set-sheet.js';
+  overText, blockedText, setDoneText, holdBack, withoutKeys, copyPath, canJoinSet, firstPages, sentKeys, OTHER_TAB_TEXT } from './set-sheet.js';
 import { SOURCE_ATTR, parseSourceRef, safeSourcePath } from '../adapters/pointer.js';
 import { uploadProblem, fileRefusalText, UPLOAD_MAX_BYTES, FILE_MESSAGES } from '../file-policy.js';
 import { generatorSignals } from '../adapters/detect.js';
@@ -60,7 +60,7 @@ import { findEverywhere, replaceEverywhere, changedSinceText, previewText, noMat
 import { aiAfter, aiOffered, noAiKey } from './ai-offered.js';
 import { DRAFT_BRANCH, draftSaveMessage, draftDeleteMessage, draftPublishedMessage, blobSha, draftOfPage, draftWords, DRAFT_DELETE_REFUSED } from './draft-state.js';
 import { resumedNote, draftWasPublished, noteIsStale } from './resumed-draft.js';
-import { keepFile, forgetFiles, keptFiles, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
+import { keepFile, forgetFiles, keptFiles as keptFilesFor, filesToRestore, siteAddress, syncPlan } from './pending-files.js';
 import { openImagePicker, chooseSiteImage, clearImageCache, imagePickerCss } from './image-picker.js';
 import { openPublishSheet, openSetSheet, publishSheetCss, previewOff, setPreviewOff, noteMessage, listChanges, countChanges, plainText,
   imageSources, linkProblems, itemWarnings } from './publish-sheet.js';
@@ -461,7 +461,14 @@ async function init() {
     try { saveTypingNow(); edits = withOpenBox(state.pending); } catch { /* the staged edits are still asked about */ }
     const unpublished = !!(edits.size || state.pendingBinaries.size || state.pendingStructural.length
       || state.pendingSource.size);
-    if (asksBeforeLeaving({ toSignIn: leavingToSignIn, unpublished, sending: state.sending.any })) { e.preventDefault(); e.returnValue = ''; }
+    // "Several pages together": not asked when the copy kept in this browser is read back and holds
+    // exactly what is on the page, and the page holds nothing a set cannot carry (leaveProven).
+    let saved = false;
+    try { saved = unpublished && leaveProven(edits); } catch { saved = false; }
+    // One page at a time (and whenever the copy is not proven) asks exactly as it always did.
+    const asks = saved ? asksBeforeLeaving({ toSignIn: leavingToSignIn, unpublished, sending: state.sending.any, saved })
+      : asksBeforeLeaving({ toSignIn: leavingToSignIn, unpublished, sending: state.sending.any });
+    if (asks) { e.preventDefault(); e.returnValue = ''; }
   });
 }
 
@@ -3831,8 +3838,11 @@ function requestPublish() {
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
   if (sourceActive) commitSourceEdit();
   const anything = () => state.pending.size || state.pendingSource.size || state.pendingBinaries.size || state.pendingStructural.length || state.restoring;
-  if (!anything()) return;
+  // "Several pages together", with other pages waiting: Publish is for the whole set.
+  const together = way() === 'together' && otherWaiting().length > 0;
+  if (!anything() && !together) return;
   if (mode === 'editor' && state.scope?.mode === 'review') return;
+  if (together) return publishTogether();
   if (previewOff(localStorage)) return publish();
   const suggest = isSuggestMode();
   openPublishSheet({
@@ -3877,11 +3887,80 @@ function mayPublishSet() {
   return !cfg.sandbox && !!cfg.repo && !!state.gh && !isSuggestMode() && !(mode === 'editor' && state.scope?.mode === 'review');
 }
 
+/**
+ * This browser's way of working: 'together' ("Several pages together") or
+ * 'one' ("One page at a time", the default). Always 'one' in the demo and for
+ * a person who may only suggest or only comment (waiting.js wayNow).
+ */
+function way() {
+  let store = null;
+  try { store = localStorage; } catch { /* storage blocked: one page at a time */ }
+  return wayNow(store, wayWho());
+}
+function wayWho() {
+  return { sandbox: !!cfg.sandbox, suggest: isSuggestMode(), review: mode === 'editor' && state.scope?.mode === 'review' };
+}
+
+/** The pictures kept beside a page's edits, for as long as those edits are kept in this way of working (pending-files.js). */
+function keptFiles(page) {
+  return keptFilesFor(page, Date.now(), keptFor(way()));
+}
+
+/**
+ * "Several pages together": leaving needs no "Leave site?" question. The copy
+ * is read back from storage, never taken as written (waiting.js leaveIsSafe).
+ */
+function leaveProven(edits) {
+  if (way() !== 'together' || !keptReady) return false;
+  let stored = null;
+  try { stored = JSON.parse(localStorage.getItem(pendingStorageKey())); } catch { return false; }
+  return leaveIsSafe({ way: 'together', stored, edits, source: state.pendingSource, typed: state.typed || null,
+    path: state.page?.path || null, structural: state.pendingStructural.length, restoring: !!state.restoring,
+    pictures: [...state.pendingBinaries.keys()], kept: keptSure });
+}
+
+/** The saved copy could not be written: said once per page load, in "Several pages together" (where leaving otherwise asks nothing). */
+function noRoom() {
+  if (noRoom.said || way() !== 'together') return;
+  noRoom.said = true;
+  setStatus(NO_ROOM_TEXT, 'error', { hold: 12000 });
+}
+
+/**
+ * "Several pages together": what the Publish button says and counts while
+ * other pages hold waiting edits, or null when none do. `label` is '' for
+ * today's words (edits on this page only).
+ */
+function acrossNow() {
+  const others = otherWaiting();
+  if (!others.length) return null;
+  const entries = setEntries();
+  const pages = firstPages(entries, null).length;
+  const edits = entries.reduce((n, e) => n + (e.here ? changeCount() : Object.keys(e.copy.edits).length), 0);
+  const here = entries.some(e => e.here);
+  return { label: togetherLabel({ edits, pages, here }), total: edits + (here ? 0 : changeCount()) };
+}
+
+/**
+ * "Several pages together": Publish opens the sheet of the whole set. With
+ * "Publish without the preview" ticked the set is sent at once; a conflict
+ * still asks, and anything that stops it opens the sheet to say so. A page
+ * with a change a set cannot carry, or a set over the invited editor's
+ * limit, opens the sheet as well.
+ */
+function publishTogether() {
+  if (!previewOff(localStorage) || (hereHasAnything() && !thisPageJoins()) || setLimitLine()) return openWaitingSheet();
+  return whileSending(() => runSet('', {
+    step: (text) => setStatus(text, 'saving'),
+    stop: (text, next = null) => openWaitingSheet({ text, next }),
+  }));
+}
+
 /** The other pages of this site with edits waiting in this browser. */
 function otherWaiting() {
   if (!mayPublishSet()) return [];
   try {
-    return waitingPages(localStorage, cfg.repo, { except: [pendingStorageKey().slice(`kiln_pending:${cfg.repo}:`.length)] })
+    return waitingPages(localStorage, cfg.repo, { keep: keptFor(way()), except: [pendingStorageKey().slice(`kiln_pending:${cfg.repo}:`.length)] })
       .filter(p => !(p.path && p.path === state.page?.path));
   } catch { return []; }
 }
@@ -3999,11 +4078,12 @@ function setLimitLine() {
   return mode === 'editor' && firstPages(setEntries(), null).length > EDITOR_SET_PAGES_MAX ? editorLimitText() : '';
 }
 
-function openWaitingSheet() {
+function openWaitingSheet(said = null) {
   if (state.active) commitEdit(state.active, state.active.getAttribute('data-cms'));
   if (!mayPublishSet()) return;
   openSetSheet({
     modal, note: keptNote,
+    said: said && typeof said.text === 'string' ? said : null,
     groups: setGroups, label: setButtonLabel, limit: setLimitLine,
     only: () => hereHasAnything(),
     publishAll: (note, ui) => whileSending(() => runSet(note, ui)),
@@ -4084,9 +4164,11 @@ async function afterSet(res, going, snapshot, picFrom) {
   // Every saved copy of a page in the set, both when one file was kept under two keys.
   for (const e of going) {
     if (e.here) continue;
-    const keys = clear.get(e.path);
-    if (!keys) continue;
-    const out = withoutKeys(readSaved(e.key), keys);
+    // Only a part whose kept value is still the one sent: one edited again meanwhile (in another tab) stays waiting.
+    const now = readSaved(e.key);
+    const keys = sentKeys(now, e.copy, clear.get(e.path) || []);
+    if (!keys.length) continue;
+    const out = withoutKeys(now, keys);
     try {
       if (out) localStorage.setItem(e.key, JSON.stringify(out));
       else dropPage(localStorage, cfg.repo, e.at);
@@ -4172,7 +4254,7 @@ function onOtherTabStorage(e) {
     .catch(() => { /* the page is read again at the next publish */ })
     .finally(() => {
       refreshPublishButton();
-      setStatus(said.how === 'dropped' ? 'These were dropped in another tab.' : 'These were published from another tab.', 'idle', { hold: 9000 });
+      setStatus(said.how === 'dropped' ? OTHER_TAB_TEXT.dropped : OTHER_TAB_TEXT.published, 'idle', { hold: 9000 });
     });
 }
 // The mark is kept on the function, not in a module variable: this runs during boot, above where a variable would be set.
@@ -8726,6 +8808,10 @@ function settingsPanel() {
       <label class="kiln-role"><input type="checkbox" id="kiln-set-nopreview" ${previewOff(localStorage) ? 'checked' : ''}>
         <span><strong>Publish without the preview</strong><br><small>Publish goes live at once, without first showing what will change.</small></span></label>
     </div>
+    ${wayOffered(wayWho()) ? `<div class="kiln-roles">${WAYS.map(w => `
+      <label class="kiln-role"><input type="radio" name="kiln-way" value="${w.value}" ${way() === w.value ? 'checked' : ''}>
+        <span><strong>${escapeHtml(w.name)}</strong><br><small>${escapeHtml(w.line)}</small></span></label>`).join('')}
+    </div>` : ''}
     ${isAdmin ? `
     <h4>${ownerWords('This site (applies to everyone, saved to the repository)', state.kept)}</h4>
     <label class="kiln-role"><input type="checkbox" id="kiln-set-google" ${auth.google !== false ? 'checked' : ''}>
@@ -8740,6 +8826,9 @@ function settingsPanel() {
     const newUi = m.querySelector('input[name="kiln-uimode"]:checked').value;
     const uiChanged = newUi !== ui;
     setPreviewOff(localStorage, m.querySelector('#kiln-set-nopreview').checked);
+    // The way of working takes effect at once: the Publish button and the menu follow it.
+    const wayPicked = m.querySelector('input[name="kiln-way"]:checked');
+    if (wayPicked && wayOffered(wayWho())) { setWay(localStorage, wayPicked.value); refreshPublishButton(); }
     localStorage.setItem('kiln_ui_mode', newUi);
     const google = isAdmin ? m.querySelector('#kiln-set-google').checked : (cfg.auth?.google !== false);
     const siteChanged = isAdmin && google !== (cfg.auth?.google !== false);
@@ -9729,6 +9818,7 @@ function renderTopBar() {
     <button id="kiln-sharepreview" class="kiln-btn-ghost" hidden title="Save a draft, get a shareable link">Preview link</button>
     <button id="kiln-schedule" class="kiln-btn-ghost" hidden>Schedule</button>
     <button id="kiln-discard" class="kiln-btn-ghost" hidden>Discard</button>
+    <button id="kiln-waiting" class="kiln-btn-ghost" style="display:none">Waiting on other pages</button>
     <button id="kiln-publish" class="kiln-btn-publish" disabled>Publish</button>
     <button id="kiln-done" class="kiln-btn-ghost">Done</button>
     <button id="kiln-signout" class="kiln-btn-link">sign out</button>`;
@@ -9755,6 +9845,7 @@ function renderTopBar() {
   bar.querySelector('#kiln-comments').onclick = openComments;
   bar.querySelector('#kiln-done').onclick = doneEditing;
   bar.querySelector('#kiln-discard').onclick = discardEdits;
+  bar.querySelector('#kiln-waiting').onclick = () => openWaitingSheet();
   bar.querySelector('#kiln-draft').onclick = saveDraft;
   bar.querySelector('#kiln-sharepreview').onclick = sharePreviewPanel;
   bar.querySelector('#kiln-schedule').onclick = openScheduleItem;
@@ -10221,9 +10312,13 @@ function refreshPublishButton() {
     return;
   }
   // Suggest-mode editors propose — same button, honest label.
-  const label = publishLabel(n, { suggest: isSuggestMode() });
+  const today = publishLabel(n, { suggest: isSuggestMode() });
+  // "Several pages together": the button counts everything a set would send, and is live with edits on other pages only.
+  const across = !closed && way() === 'together' ? acrossNow() : null;
+  const label = across?.label || today;
+  const live = anything || !!across;
   if (btn) {
-    btn.disabled = !anything;
+    btn.disabled = !live;
     btn.textContent = label;
     // A suggest-only editor on a page the site builds from content files has
     // nothing a suggestion can carry: the button is not in the menu there.
@@ -10233,11 +10328,12 @@ function refreshPublishButton() {
   if (quick) {
     quick.textContent = label;
     quick.hidden = !anything;
+    if (across) quick.hidden = false;
     quick.disabled = false;
     placeQuickRow();
   }
   const badge = document.getElementById('kiln-fab-badge');
-  if (badge) { badge.hidden = !anything; badge.textContent = n || (state.pendingBinaries.size || state.pendingStructural.length || state.restoring ? '•' : ''); }
+  if (badge) { badge.hidden = !live; badge.textContent = across?.total || n || (state.pendingBinaries.size || state.pendingStructural.length || state.restoring ? '•' : ''); }
   // The whole "unpublished edits" group appears only when there's something to act on.
   const grp = document.getElementById('kiln-grp-edits');
   // Edits waiting on other pages of this site, in this browser: "Waiting on other pages (n)". None, and nothing is shown.
@@ -10276,7 +10372,7 @@ function refreshPublishButton() {
 }
 
 function disablePublish(yes) {
-  const off = yes || !(state.pending.size || state.pendingSource.size);
+  const off = yes || !(state.pending.size || state.pendingSource.size || (way() === 'together' && otherWaiting().length > 0));
   for (const id of ['kiln-publish', 'kiln-publish-quick']) {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = off;
@@ -10394,6 +10490,7 @@ function savePendingToStorage() {
   } catch {
     // No room for the copy. An older copy left in its place would hold room for edits that may be gone: remove it.
     try { localStorage.removeItem(pendingStorageKey()); } catch { /* storage blocked */ }
+    noRoom();
   }
 }
 
@@ -10486,6 +10583,7 @@ function clearSavedPending() {
 // Uploads waiting for Publish are kept beside the saved edits (pending-files.js),
 // so "Pick up where you left off?" brings the pictures back too.
 const keptHere = new Set();   // repo paths this page load has written to the browser's store
+const keptSure = new Set();   // of those, the ones the store said it holds (leaving asks nothing only for these)
 let keptReady = false;        // true once offerPendingRestore has read what an earlier visit left
 
 /** Make what is kept match what is queued. With no edits staged, a queued file is an orphan: keep none. */
@@ -10496,10 +10594,10 @@ function syncKeptFiles() {
   const { add, remove } = syncPlan(queued, [...keptHere]);
   for (const path of add) {
     keptHere.add(path);
-    keepFile(page, path, state.pendingBinaries.get(path)).catch(() => keptHere.delete(path));
+    keepFile(page, path, state.pendingBinaries.get(path)).then(() => keptSure.add(path), () => keptHere.delete(path));
   }
   if (remove.length) {
-    for (const path of remove) keptHere.delete(path);
+    for (const path of remove) { keptHere.delete(path); keptSure.delete(path); }
     forgetFiles(page, remove).catch(() => {});
   }
 }
@@ -10516,13 +10614,15 @@ function offerPendingRestore() {
   try {
     const stored = JSON.parse(localStorage.getItem(pendingStorageKey()));
     // A content-file edit comes back only to a field that is on this page and can be edited now.
-    saved = readDraft(stored, { known: (ref) => !!state.sourceFields?.get(ref)?.els.some(el => el.classList.contains('kiln-source-field') && !el.classList.contains('kiln-source-locked')) });
+    saved = readDraft(stored, { keep: keptFor(way()), known: (ref) => !!state.sourceFields?.get(ref)?.els.some(el => el.classList.contains('kiln-source-field') && !el.classList.contains('kiln-source-locked')) });
     ts = stored?.ts;
   } catch { return; }
   if (!saved) return;
   // The demo starts over after a day, and what was not published goes with it.
   if (cfg.sandbox && Date.now() - ts > SANDBOX_TTL) { clearSavedPending(); return; }
   if (back) { restoreSaved(saved, kept, true); return; }
+  // "Several pages together": the waiting edits are put back without the question, by the same steps as "Restore edits".
+  if (way() === 'together' && saved.count) { restoreSaved(saved, kept, false, true); return; }
   const names = [...Object.keys(saved.edits).map(readableName), ...Object.keys(saved.source).map(sourceName)];
   const when = new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   // What was being typed when a sign-in ended (a comment, a note, a time) is offered back with the edits, or on its own.
@@ -10543,11 +10643,12 @@ function offerPendingRestore() {
 }
 
 /** Put saved edits (what readDraft gives) back on the page, staged as they were. `kept` resolves to the uploads kept beside them. */
-async function restoreSaved(saved, kept, signedInAgain) {
+async function restoreSaved(saved, kept, signedInAgain, quiet = false) {
+  const hidBefore = notPutBack;   // parts applyKeyDom did not show: said when they came back on arrival
   // The pictures and files those edits added: queue them again, and show each
   // picture from the kept bytes (its address on the site does not exist yet).
   const files = filesToRestore(await kept, saved.edits, saved.source);
-  for (const f of files) { state.pendingBinaries.set(f.path, f.base64); keptHere.add(f.path); }
+  for (const f of files) { state.pendingBinaries.set(f.path, f.base64); keptHere.add(f.path); keptSure.add(f.path); }
   for (const [key, edit] of Object.entries(saved.edits)) {
     const target = elementForKey(key);
     if (target && !state.pending.has(key)) beginKey(key, target);   // what Undo goes back to: the part before these edits
@@ -10621,6 +10722,7 @@ async function restoreSaved(saved, kept, signedInAgain) {
   // Counted now that they are staged, as the Publish and Discard buttons count them (edit-count.js).
   const nBack = saved.count ? changeCount() || saved.count : 0;
   if (signedInAgain) setStatus(backAfterSignIn(nBack, files.length, typedName), 'saved');
+  else if (quiet) { const hid = Math.max(0, notPutBack - hidBefore); setStatus(backLine(nBack, hid), hid ? 'error' : 'saved'); }
   else if (saved.count) setStatus(restoredLine(nBack, files.length), 'saved');
 }
 

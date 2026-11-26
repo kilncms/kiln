@@ -37,10 +37,10 @@ test('the main button carries edits and pages', () => {
 
 test('dropping a page asks first, in plain words', () => {
   const c = dropPageCopy(2, 'About us');
-  assert.equal(c.body, 'Drop the 2 waiting changes on About us? They have not been published.');
+  assert.equal(c.body, 'Discard the 2 waiting changes on About us? They have not been published.');
   assert.equal(c.cancel, 'Keep them');
-  assert.equal(c.go, 'Drop');
-  assert.equal(dropPageCopy(1, '').body, 'Drop the waiting change on this page? It has not been published.');
+  assert.equal(c.go, 'Discard');
+  assert.equal(dropPageCopy(1, '').body, 'Discard the waiting change on this page? It has not been published.');
 });
 
 test('limits and blocks are said in full sentences, with no dash as punctuation', () => {

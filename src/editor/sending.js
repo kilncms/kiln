@@ -55,9 +55,15 @@ export function makeSending() {
  *   toSignIn     the person chose to leave to sign in again, in a dialog that said what is kept
  *   unpublished  the page holds edits that are not published (asked since before this file)
  *   sending      a save or a publish is on its way to the service
- * It asks in those two cases and in no other.
+ *   saved        the unpublished edits are proven to be kept in this browser:
+ *                the person works with "Several pages together", and the copy
+ *                read back from storage holds exactly what is on the page
+ *                (waiting.js leaveIsSafe). Never true otherwise.
+ * It asks while something is being sent, and for unpublished edits that are
+ * not proven saved; in no other case.
  */
-export function asksBeforeLeaving({ toSignIn = false, unpublished = false, sending = false } = {}) {
+export function asksBeforeLeaving({ toSignIn = false, unpublished = false, sending = false, saved = false } = {}) {
   if (toSignIn) return false;
-  return !!(unpublished || sending);
+  if (sending) return true;
+  return !!(unpublished && saved !== true);
 }
