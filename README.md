@@ -138,6 +138,9 @@ the way the site was built.
   message.
 - **Undo:** for ten seconds after publishing, Undo takes that publish back as one more
   commit. Ctrl+Z or ⌘Z undoes any change not yet published.
+- **Several pages in one publish:** changes on several pages wait in your browser and
+  go out as one commit, so the site rebuilds once. Up to 100 pages and 20 new pictures
+  at a time.
 - **Drafts and schedules:** save a change privately, or publish it at a chosen time.
 - **History:** every version of a page, in plain words, reaching back to the first. Any
   version can be previewed on the page and brought back, for the whole page or one

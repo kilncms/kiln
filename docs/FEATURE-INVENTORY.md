@@ -52,6 +52,7 @@ Toolbar / menu features (each grantable per-editor to invited editors):
 - **People & access** (owner only) — add editors/members by email, set role, expiry days, path scope, section keys, feature grants
 - **Presence** — "who else is editing this page right now" (advisory, per-field merge at publish)
 - Publish → GitHub commit via the worker proxy; conflict-safe per-field merge (sha-retry)
+- **Publish several pages together** (0.11.0): waiting edits on several pages, kept in the browser, go out as one commit with their new pictures and shared parts; "Waiting on other pages (N)" sheet; Settings choice "One page at a time" / "Several pages together"; Keep theirs / Use mine for the same part; up to 100 pages and 20 new pictures (20 pages for an invited editor); plain-page sites only for now (the worker's several-files source form, `sourceSets: true` on `/healthz`, waits for the next editor release)
 
 ## 4. Auth worker (`auth.kilncms.com`, `worker/index.js`)
 

@@ -232,6 +232,9 @@ attribute, exactly as they hand-annotate `data-cms` today.
 reference site, one screen shows nine event files. Group by file and commit **one commit per file**,
 each with its own `sha` guard. Do not batch across files into a tree commit in v1 — partial failure
 handling gets much harder and the benefit is cosmetic.
+Since 0.11.0 the worker also has a several-files form: `/source/commit` and `/source/revert`
+take `{ files: [...] }` and write the whole set as one commit, announced as `sourceSets: true`
+on `/healthz` (see [self-hosting.md](self-hosting.md#a-site-a-generator-builds-source-mode)).
 
 **Preserve the re-apply-at-fire-time property.** Scheduled publishing currently re-runs `applyEdits`
 against current source so concurrent edits survive. Source mode must do the same through the adapter.

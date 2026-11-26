@@ -136,6 +136,67 @@ that the line says the change is going live, and then **Live ✓** once visitors
 see it. You can keep editing meanwhile, or close the tab: the change is already
 saved.
 
+### Publishing several pages together
+
+You can change several pages and publish them all at once. The site then rebuilds
+once, instead of once for every page.
+
+Your edits on a page wait in your browser when you go to another page, as they
+always have, and nothing is sent anywhere until you press Publish. When other pages
+hold edits you have not published, the pencil's menu shows **Waiting on other pages
+(4)** under **Your unpublished edits**. It opens a sheet that lists those pages, this
+page first, each with its changes as before and after and when you made them
+("edited 2 days ago"). **Open** takes you to that page. **Discard** drops that page's
+waiting edits, and asks first: "Discard the 2 waiting changes on About us? They have
+not been published."
+
+The main button on the sheet reads, for example, **Publish 7 edits on 3 pages**, and
+sends everything as one change. **Only this page** publishes this page's edits by
+themselves, as before. The line you write under **What changed?** is saved with the
+whole change.
+
+If you often work across many pages, the menu's **Settings** has a choice under
+**Your editor (this browser)**: **One page at a time** (the usual way, where Publish
+sends this page's changes) or **Several pages together**. With Several pages
+together:
+
+- The Publish button counts every page: "Publish 7 edits on 3 pages".
+- Going to another page does not ask "Leave site?" when everything on the page is
+  safely kept in the browser.
+- Coming back to a page puts its waiting edits back at once and says so: "Your 2
+  waiting edits on this page are back. Not published yet."
+- Waiting edits are kept for 30 days from your last change to that page.
+- If the browser has no room left to keep them, the editor tells you and asks
+  before you leave the page.
+
+The choice is yours alone and is remembered in that browser only.
+
+If someone else changed the same part of a page in the meantime, nothing is
+published yet. For each such part the editor shows theirs and yours and asks: **Keep
+theirs** or **Use mine**. Then it publishes. If they changed a different part of
+the same page, their change stays beside yours. If a part you changed is no longer
+on the page, that edit keeps waiting and the rest is published. If someone publishes
+at the very same moment, Kiln checks again and tries again by itself.
+
+New pictures go out in the same change. A change to a part shared across pages, such
+as a header or a footer, goes to every page that has it.
+
+A few things to know:
+
+- What waits is kept in this one browser. Another device, another browser or a
+  private window does not have it, and clearing the browser's data removes it. To
+  carry work from one device to another, use **Save as draft** on each page.
+- In History, each page the change touched lists it as "Published with 29 other
+  pages". Bringing back an earlier version is still done page by page.
+- There is no ten-second Undo after publishing several pages together. Use History
+  to take a change back.
+- One publish takes up to 100 pages and 20 new pictures. If you were invited to
+  edit, you publish up to 20 pages at a time, and the editor offers **Publish these
+  20 first**.
+- **Schedule for later** schedules one page's changes, and they are not sent with
+  the others.
+- If you may only suggest changes or only comment, you don't see any of this.
+
 ### On a site that rebuilds itself
 
 Some sites are put together from content files each time something changes. You
@@ -144,6 +205,8 @@ edit them the same way, and a few things read differently:
 - After Publish the line says **Saved. The site is rebuilding with your change…**
   and then **Published ✓** when the new version is live, usually in a minute or
   two. If you reload meanwhile, the page still shows what you saved.
+- Each page's changes are published by themselves on these sites for now.
+  Publishing several pages together comes to them in a later version.
 - A date, a time or a number is typed the way the site stores it. A date is typed
   like `2026-09-20`, even where the page writes it out in words; the line under
   the page says so when you click one. If what you type is not a date, it is not
@@ -200,7 +263,8 @@ edit them the same way, and a few things read differently:
 
 ### Closed the tab, or not ready to publish
 
-Your unpublished edits are kept in that browser as you make them, for seven days.
+Your unpublished edits are kept in that browser as you make them, for seven days
+(30 days with **Several pages together**, above).
 Reload the page, close the tab, or open the page in another tab: the editor asks
 **Pick up where you left off?** and names the parts you had changed. **Restore
 edits** puts them back, still unpublished. They are not on the site, and not on any

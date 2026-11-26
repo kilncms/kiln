@@ -37,6 +37,12 @@ that publish back as one more ordinary commit and returns the edits to the page.
   browse every published version in plain language. Undoing always **previews on the
   page first** (keep or cancel), per section or for the whole page, and undoing a
   publish that *added* a section removes it again.
+- **Several pages together:** edits on several pages wait in the browser and go out
+  as **one commit**, so the host rebuilds once: **Waiting on other pages** in the menu
+  lists them, and **Publish 7 edits on 3 pages** sends them all. **Settings** offers
+  **Several pages together** for people who work that way. Up to 100 pages and 20 new
+  pictures in one go (20 pages for an invited editor). On generator-built sites each
+  content file is still saved by itself in this release.
 - **Site-wide** — **Site menu** edits navigation across every page in one commit;
   **Find & replace** changes a phrase everywhere at once; **Page settings** edits the
   title, description, and social image; **+ New** creates posts and pages from your

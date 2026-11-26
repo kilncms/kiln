@@ -6,6 +6,58 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-26
+
+### Added
+
+- **Edits on several pages can be published together, as one commit.** Until
+  now every Publish was one page and one commit, so a person changing 30 pages
+  made 30 commits and the host rebuilt the site 30 times. Edits still wait in
+  the person's own browser as they move from page to page, and nothing is sent
+  until Publish. When other pages hold waiting edits, the editor's menu shows
+  **Waiting on other pages** under **Your unpublished edits**: a sheet lists the
+  pages with their changes before and after, **Open** and **Discard** (which
+  asks first). **Publish 7 edits on 3 pages** sends them all as one commit and
+  the host rebuilds once; **Only this page** publishes the one page as before.
+  The note under **What changed?** becomes the commit's first line. New pictures
+  go in the same commit, and a change to a header or footer marked as shared
+  goes to every page that has it.
+- **A choice in Settings, under "Your editor (this browser)": One page at a
+  time or Several pages together.** One page at a time is the default. With
+  Several pages together the Publish button counts every page, the browser does
+  not ask "Leave site?" when the page's edits are safely kept, coming back to a
+  page puts its waiting edits back without a question, and waiting edits are
+  kept 30 days from the last change to a page. If the browser has no room to
+  keep them, the editor says so and asks before the page is left.
+- **When someone else changed the same part of a page meanwhile**, nothing is
+  published and the editor asks, part by part, **Keep theirs** or **Use mine**.
+  A change to another part of the page stands beside yours, a part no longer on
+  the page stays waiting, and when two publishes meet Kiln checks and tries
+  again by itself.
+- Each page's History lists the change as "Published with 29 other pages".
+- The worker can save several content files of a generated site as one commit,
+  and says `sourceSets: true` in `/healthz`. The editor uses it from the next
+  release; until then each content file is still saved by itself.
+- **The limits.** Up to 100 pages and 20 new pictures in one publish. An
+  invited editor publishes 20 pages at a time, and the editor offers **Publish
+  these 20 first**. What waits lives in one browser: another device, another
+  browser or a private window does not have it, and clearing the browser's data
+  removes it. **Save as draft** still carries a page's work between devices.
+  There is no ten-second Undo after publishing several pages together; History
+  takes a change back, one page at a time.
+- **What stays as it was.** Publishing one page works as before and is the
+  default. **Schedule for later** schedules one page's changes, and scheduled
+  changes are not part of a set. People who may only suggest or only comment do
+  not see any of this, and the demo on the home page does not have it.
+- **Updating.** A self-hosted site of plain pages gets all of this by updating
+  its editor files (`npx github:kilncms/kiln#release update`); its worker can
+  stay as it is. Kiln Cloud + hosting sites are updated for you, and Kiln Cloud
+  sites on your own host run the same update command.
+
+### Changed
+
+- The one address to write to is hello@kilncms.com everywhere.
+
 ## [0.10.6] - 2026-11-26
 
 ### Fixed

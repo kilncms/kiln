@@ -128,7 +128,9 @@ formatted text with the toolbar; pictures and their descriptions; link
 addresses; new entries, copies, drafts, order, schedules; History and Page
 settings. What stays read-only says why when it is clicked: a table in a text,
 a component in MDX, a picture taken from another website. The full list is in
-[source-mode.md](source-mode.md).
+[source-mode.md](source-mode.md). How these sites stand with publishing several
+pages together is under
+[Publishing several pages together](#publishing-several-pages-together).
 
 **Eleventy, Hugo and Jekyll.** Not built yet: Kiln can't edit their content
 files. The wizard and `kiln doctor` recognise them and say so, and Kiln edits
@@ -402,7 +404,9 @@ Two things worth knowing:
 
 ## Publishing, drafts, scheduling, history
 
-- **Publish** — edits stage on the page and go out together as one commit. As soon as
+- **Publish** — the edits on a page stage there and go out together as one commit.
+  Edits waiting on several pages can also go out as one commit: see
+  [Publishing several pages together](#publishing-several-pages-together). As soon as
   something is staged, a **Publish** button showing the number of edits appears beside
   the pencil (it is also the first item in the pencil's menu). It opens a sheet that
   lists every edit as before and after, lets one edit be dropped, warns about a
@@ -432,6 +436,70 @@ Two things worth knowing:
 
 If two people edit at once, each sees who else is on the page, and publishing warns
 before overwriting a field the other person changed. Different fields merge cleanly.
+
+### Publishing several pages together
+
+Until version 0.11.0 every Publish was one page and one commit, so your host
+rebuilt the site once for every page. Someone changing 30 pages made 30 commits
+and 30 rebuilds. Now the edits on several pages can go out as one commit, and the
+host rebuilds once.
+
+An editor's edits wait in their own browser as they move from page to page, as they
+always have. Nothing is sent anywhere until Publish. When other pages hold edits
+that are not published, the pencil's menu shows **Waiting on other pages (4)** under
+**Your unpublished edits**. It opens a sheet that lists those pages, the current
+page first, each with its changes as before and after, when they were made
+("edited 2 days ago"), **Open** to go to that page and **Discard**, which asks
+first. Its main button reads **Publish 7 edits on 3 pages** and makes one commit;
+**Only this page** publishes the current page by itself, as before. The note under
+**What changed?** becomes the commit's first line. Without a note the commit reads
+"Publish 30 pages together (via Kiln)", with one line for each page under it.
+
+That works without changing anything. For people who edit across many pages,
+**Settings** has a choice under **Your editor (this browser)**: **One page at a
+time** (the default) or **Several pages together**. It belongs to one person in one
+browser. With **Several pages together** the Publish button counts every waiting
+page, the browser's "Leave site?" question is skipped when everything on the page
+is safely kept in the browser, coming back to a page puts its waiting edits back
+without a question, and waiting edits are kept for 30 days from the last change to
+that page (one week with **One page at a time**). If the browser has no room to
+keep them, the editor says so and asks before the page is left.
+
+If someone else changed the same part of a page in the meantime, nothing is
+published and the editor asks, for each such part, **Keep theirs** or **Use mine**,
+then publishes. A change they made to another part of the same page stands beside
+yours. A part that is no longer on the page stays waiting and the rest is
+published. If someone publishes at the same moment, Kiln checks again and tries
+again by itself.
+
+New pictures go in the same commit. A change to a part shared across pages (a
+header or footer marked as shared) goes to every page that has it, in the same
+commit. In each page's History the change reads "Published with 29 other pages";
+bringing a version back is still done one page at a time. There is no ten-second
+Undo after publishing several pages together, so History is the way back.
+
+What to know before you rely on it:
+
+- What waits lives in one browser. Another device, another browser or a private
+  window does not have it, and clearing the browser's data removes it. For work
+  that has to move between devices, **Save as draft** (one page at a time) is
+  still there.
+- One publish takes up to 100 pages and 20 new pictures. An invited editor
+  publishes 20 pages at a time, and the editor offers **Publish these 20 first**.
+- People who may only suggest or only comment do not see any of this. The demo on
+  the home page does not have it.
+- **Schedule for later** still schedules one page's changes. Scheduled changes are
+  not part of a set.
+- On a site a generator builds (Astro), each content file is still saved by itself
+  when published from the page in this release. The service can already save
+  several content files as one commit (`/healthz` says `sourceSets: true`), and the
+  editor will use it in a later release.
+
+What updating takes: on a self-hosted site of plain pages, updating the editor
+files is enough (`npx github:kilncms/kiln#release update`, see
+[Keeping the editor up to date](#keeping-the-editor-up-to-date)), and the service
+can stay as it is. Kiln Cloud + hosting sites are updated for you. Kiln Cloud sites
+on your own host run the same update command.
 
 ## Block library
 

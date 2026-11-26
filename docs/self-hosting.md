@@ -179,6 +179,17 @@ A site whose editor files are older keeps signing in the old way until they
 are updated, so the two can be updated a day apart. There is nothing to
 configure.
 
+### Publishing several pages together
+
+From version 0.11.0 an editor can publish the edits waiting on several pages as one
+commit, so the host rebuilds once (see
+[the owner's guide](for-site-owners.md#publishing-several-pages-together)). On a
+site of plain pages this needs the editor files only: run `update` (the second
+command above). The worker can stay as it is. On a site a generator builds, the
+editor still saves each content file by itself in this release; update the worker
+too, so it already says `sourceSets: true` (below) when the next editor release
+uses it.
+
 ### A site a generator builds (source mode)
 
 Source mode edits the content files an Astro site is built from. Each part of
@@ -192,6 +203,7 @@ each with a sentence:
 | `sourceMarkdown: true` | an entry's formatted text, with the toolbar |
 | `sourceMedia: true` | replacing pictures, link addresses |
 | `sourceEntries: true` | adding, copying and removing entries, drafts, order, schedules, History and Page settings |
+| `sourceSets: true` | nothing yet: the worker can save several content files as one commit, and the next editor release uses it to publish several pages together |
 
 So after an upgrade, deploy the worker as well as the editor, and check
 `/healthz`. On the site, `src/lib/kiln-astro.mjs` is the helper file the
