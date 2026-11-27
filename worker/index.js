@@ -94,6 +94,7 @@ import { dailyCheckOn, runDailySiteChecks } from './daily-check.js';
 import { totalsOn, runDailyTotals } from './daily-totals.js';
 import { securityOn, noteSecurity, pruneSecurityLog } from './security-log.js';
 import { problemsOn, noteProblem, notePublishFailed, pruneProblems, refusedAfterRetries, refusedAtDoor } from './problems.js';
+import { featuresOn, noteFeature, pruneFeatureUse } from './feature-use.js';
 import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
 import { VIA_KILN } from './prepare.js';
 import { keepsReady, keptStands } from './keeps.js';
@@ -175,6 +176,9 @@ export default {
     // The problem tally (problems.js): rows older than 400 days, and those of sites no longer on Kiln, go. It is
     // not called while PROBLEM_TALLY is off.
     if (problemsOn(env)) await cronJob('problems', () => pruneProblems(env));
+    // Feature use (feature-use.js): weeks older than 400 days, and the rows of sites no longer on Kiln, go. It is
+    // not called while FEATURE_USE is off.
+    if (featuresOn(env)) await cronJob('features', () => pruneFeatureUse(env));
     // The schedule's heartbeat, last: when this run ended, for /healthz?deep=1 (`cron_age_s`) and the
     // outside watcher that reads it. It names no one, so it needs no setting.
     await noteHeartbeat(env);
@@ -332,35 +336,35 @@ async function routeRequest(request, env, ctx) {
     }
     if (path === '/members/check' && request.method === 'POST') return await memberCheck(request, env);
     if (path === '/admin/people' && request.method === 'GET') return await cors(env, request, await peopleList(request, env, url));
-    if (path === '/admin/people' && request.method === 'POST') return await cors(env, request, await peopleUpsert(request, env));
+    if (path === '/admin/people' && request.method === 'POST') return await cors(env, request, await used(request, env, (b) => (b?.role === 'editor' ? 'invite_editor' : b?.role === 'member' ? 'invite_member' : null), () => peopleUpsert(request, env)));
     if (path === '/admin/people/remove' && request.method === 'POST') return await cors(env, request, await peopleRemove(request, env));
     if (path === '/admin/api-tokens' && request.method === 'GET') return (await workLimited(request, env)) || await cors(env, request, await apiTokenList(request, env, url));
-    if (path === '/admin/api-tokens' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await apiTokenCreate(request, env));
+    if (path === '/admin/api-tokens' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await used(request, env, 'api_token', () => apiTokenCreate(request, env)));
     if (path === '/admin/api-tokens/revoke' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await apiTokenRevoke(request, env));
     if (path === '/api/v1/pages' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiPages(request, env, url));
     if (path === '/api/v1/fields' && request.method === 'GET') return (await rateLimited(request, env)) || await cors(env, request, await apiFields(request, env, url));
     if (path === '/api/v1/edits' && request.method === 'PATCH') return (await rateLimited(request, env)) || await cors(env, request, await apiEdits(request, env));
-    if (path === '/schedule' && request.method === 'POST') return await cors(env, request, await scheduleCreate(request, env));
+    if (path === '/schedule' && request.method === 'POST') return await cors(env, request, await used(request, env, 'schedule', () => scheduleCreate(request, env)));
     if (path === '/schedules' && request.method === 'GET') return await cors(env, request, await scheduleList(request, env, url));
     if (path === '/schedule/cancel' && request.method === 'POST') return await cors(env, request, await scheduleCancel(request, env));
     if (path === '/presence' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await presencePing(request, env));
     if (path === '/comments' && request.method === 'GET') return await cors(env, request, await commentList(request, env, url));
-    if (path === '/comments' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await commentPost(request, env));
+    if (path === '/comments' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await used(request, env, 'comment', () => commentPost(request, env)));
     if (path === '/comments/counts' && request.method === 'GET') return await cors(env, request, await commentCounts(request, env, url));
     if (path === '/comments/resolve' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await commentResolve(request, env));
     if (path === '/comments/delete' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await commentDelete(request, env));
     if (path === '/suggestions' && request.method === 'GET') return await cors(env, request, await suggestionList(request, env, url));
-    if (path === '/suggestions' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await suggestionCreate(request, env));
+    if (path === '/suggestions' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await used(request, env, 'suggestion', () => suggestionCreate(request, env)));
     if (path === '/suggestions/decide' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await suggestionDecide(request, env));
-    if (path === '/ai/assist' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await aiAssist(request, env));
-    if (path === '/source/commit' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceCommit(request, env));
+    if (path === '/ai/assist' && request.method === 'POST') return (await rateLimited(request, env)) || await cors(env, request, await used(request, env, 'writing_helper', () => aiAssist(request, env)));
+    if (path === '/source/commit' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await used(request, env, (b) => (Array.isArray(b?.files) && b.files.length > 1 ? 'publish_many' : null), () => sourceCommit(request, env)));
     if (path === '/source/read' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceReadField(request, env));
-    if (path === '/source/revert' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceRevert(request, env));
-    if (path === '/source/duplicate' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceDuplicate(request, env));
-    if (path === '/source/create' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceCreate(request, env));
-    if (path === '/source/remove' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceRemove(request, env));
+    if (path === '/source/revert' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await used(request, env, 'revert', () => sourceRevert(request, env)));
+    if (path === '/source/duplicate' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await used(request, env, 'page_added', () => sourceDuplicate(request, env)));
+    if (path === '/source/create' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await used(request, env, 'page_added', () => sourceCreate(request, env)));
+    if (path === '/source/remove' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await used(request, env, 'page_removed', () => sourceRemove(request, env)));
     if (path === '/source/fields' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceFields(request, env));
-    if (path === '/source/history' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await sourceHistory(request, env));
+    if (path === '/source/history' && request.method === 'POST') return (await workLimited(request, env)) || await cors(env, request, await used(request, env, 'history', () => sourceHistory(request, env)));
     if (path === '/google/login') return (await rateLimited(request, env)) || googleLogin(url, env);
     if (path === '/google/callback') return googleCallback(url, env, request);
     if (path === '/google/claim' && request.method === 'POST') return (await rateLimited(request, env)) || googleClaim(request, env);
@@ -408,6 +412,25 @@ async function cronAgeSeconds(env, now = Date.now()) {
  */
 async function publishNotTaken(env, repo, via) {
   await notePublishFailed(env, repo, via);
+}
+
+/**
+ * Feature use (feature-use.js): a request the service answered with success
+ * is one use of its feature, for the site its body names. `feature` is the
+ * feature, or a function of the body that answers it (null: not counted).
+ * While FEATURE_USE is off the request is answered as it always was, and its
+ * body is read once.
+ */
+async function used(request, env, feature, answer) {
+  if (!featuresOn(env)) return answer();
+  const peek = request.clone();
+  const res = await answer();
+  if (res && res.status >= 200 && res.status < 300) {
+    const body = await peek.json().catch(() => null);
+    const name = typeof feature === 'function' ? feature(body) : feature;
+    if (name && body && typeof body.repo === 'string') await noteFeature(env, { feature: name, repo: body.repo });
+  }
+  return res;
 }
 
 async function cronJob(job, fn) {
@@ -4078,6 +4101,7 @@ function validateApiEdits(edits, keys) {
 async function apiPages(request, env, url) {
   const tok = await apiTokenAuth(request, env);
   if (!tok) return tokenRefused(request);
+  await noteFeature(env, { feature: 'api', repo: tok.repo });   // feature use (feature-use.js)
   const itok = await installationToken(env, tok.repo);
   if (!itok) return json({ error: 'app not installed on repo', repo: tok.repo }, 503);
   const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA };
@@ -4107,6 +4131,7 @@ async function apiFields(request, env, url) {
   const resolved = apiPageCandidates(url.searchParams.get('path'), tok.paths);
   if (resolved.error === 400) return json({ error: 'not an HTML page path' }, 400);
   if (resolved.error) return json({ error: "outside this token's path scope" }, 403);
+  await noteFeature(env, { feature: 'api', repo: tok.repo });   // feature use (feature-use.js)
   const itok = await installationToken(env, tok.repo);
   if (!itok) return json({ error: 'app not installed on repo', repo: tok.repo }, 503);
   const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA };
@@ -4133,6 +4158,7 @@ async function apiEdits(request, env) {
   if (resolved.error) return json({ error: "outside this token's path scope" }, 403);
   const invalid = validateApiEdits(edits, tok.keys);
   if (invalid) return json({ error: invalid.error, ...(invalid.detail !== undefined && { detail: invalid.detail }) }, invalid.status);
+  await noteFeature(env, { feature: 'api', repo: tok.repo });   // feature use (feature-use.js)
   const itok = await installationToken(env, tok.repo);
   if (!itok) return json({ error: 'app not installed on repo', repo: tok.repo }, 503);
   const h = { Authorization: `Bearer ${itok}`, Accept: 'application/vnd.github+json', 'User-Agent': UA, 'Content-Type': 'application/json' };

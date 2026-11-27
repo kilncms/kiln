@@ -484,7 +484,7 @@ async function doctor(args) {
  *  them (test/cli-update-worker.test.js follows the imports and fails if a
  *  file the worker needs is missing from it). */
 const WORKER_FILES = [
-  ...['index.js', 'activity.js', 'billing.js', 'daily-check.js', 'daily-totals.js', 'bring.js', 'cloud.js', 'domain-mail.js', 'domain.js', 'firstpass.js', 'hosted.js', 'hosting.js', 'keeps.js', 'lookafter.js', 'mail.js', 'members-gate.js', 'prepare.js', 'register.js', 'runbook.js', 'sanitize-guard.js', 'section-scope.js', 'security-log.js', 'problems.js', 'signin-trouble.js', 'sitecheck.js', 'source.js', 'update.js'].map(f => ['worker', f]),
+  ...['index.js', 'activity.js', 'billing.js', 'daily-check.js', 'daily-totals.js', 'bring.js', 'cloud.js', 'domain-mail.js', 'domain.js', 'firstpass.js', 'hosted.js', 'hosting.js', 'keeps.js', 'lookafter.js', 'mail.js', 'members-gate.js', 'prepare.js', 'register.js', 'runbook.js', 'sanitize-guard.js', 'section-scope.js', 'security-log.js', 'problems.js', 'feature-use.js', 'signin-trouble.js', 'sitecheck.js', 'source.js', 'update.js'].map(f => ['worker', f]),
   ['src', 'astro-firstpass.js'],   // firstpass.js reads a site Astro builds with it
   ['src', 'autotag.js'],
   ['src', 'builder-words.js'],   // autotag.js imports it

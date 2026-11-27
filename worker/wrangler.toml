@@ -55,6 +55,10 @@ SECURITY_LOG = "off"
 # changed or a network address. Off until the privacy page says so. While it is
 # anything but "on", nothing is written or read.
 PROBLEM_TALLY = "off"
+# Feature use (worker/feature-use.js, migration 0027): for each site, how many
+# times each feature was used in a week, counts only. Off until the privacy
+# page says so. While it is anything but "on", nothing is written or read.
+FEATURE_USE = "off"
 
 # AI assist (optional, bring-your-own-key): store your Anthropic API key as a
 # SECRET — never a [vars] entry — with `npx wrangler secret put AI_API_KEY`.
@@ -179,6 +183,10 @@ SECURITY_LOG = "off"
 # changed or a network address. Off until the privacy page says so. While it is
 # anything but "on", nothing is written or read.
 PROBLEM_TALLY = "off"
+# Feature use (worker/feature-use.js, migration 0027): for each site, how many
+# times each feature was used in a week, counts only. Off until the privacy
+# page says so. While it is anything but "on", nothing is written or read.
+FEATURE_USE = "off"
 
 [[env.staging.kv_namespaces]]
 binding = "KILN"
@@ -277,6 +285,10 @@ SECURITY_LOG = "off"
 # changed or a network address. Off until the privacy page says so. While it is
 # anything but "on", nothing is written or read.
 PROBLEM_TALLY = "off"
+# Feature use (worker/feature-use.js, migration 0027): for each site, how many
+# times each feature was used in a week, counts only. Off until the privacy
+# page says so. While it is anything but "on", nothing is written or read.
+FEATURE_USE = "off"
 
 [[env.production.kv_namespaces]]
 binding = "KILN"

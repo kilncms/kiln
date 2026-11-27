@@ -41,6 +41,7 @@
  *   GET  /admin/cloud/totals     → (owner only) one line of totals a day for all of Kiln, newest first, up to 400 (daily-totals.js): ?limit=
  *   GET  /admin/cloud/security   → (owner only) the refusals of the last days by kind and hour (security-log.js): ?days= (7, at most 90)
   *   GET  /admin/cloud/problems   → (owner only) the problems of the last 14 days by kind and site, each kind marked new, ongoing or rising (problems.js)
+   *   GET  /admin/cloud/features   → (owner only) per feature, the sites that used it in the last 4 and 12 weeks and how often, unused ones too (feature-use.js)
  *   POST /admin/cloud/grant      → (owner only) manually set a site's status, or give it seven more free days
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
@@ -63,6 +64,7 @@ import { dailyCheckOn, latestChecks } from './daily-check.js';
 import { totalsOn, totalsPage } from './daily-totals.js';
 import { securityOn, noteSecurity, securityPage } from './security-log.js';
 import { problemsOn, noteProblem, forgetProblems, problemsPage } from './problems.js';
+import { featuresOn, noteFeature, forgetFeatureUse, featuresPage } from './feature-use.js';
 import { hostingOn, hostingSentence, membersGateOn, previewPattern, serviceAddress } from './hosting.js';
 import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence, keptFilesLink, keptFilesName } from './keeps.js';
 import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies, MOST_ANSWER } from './bring.js';
@@ -2025,6 +2027,7 @@ export async function notePublish(env, repo, { now = Date.now(), by = null, sche
   // The activity record (activity.js): every publish, the site and who published it (`by`: person for the
   // owner, editor for an invited editor), never what changed. It writes nothing while it is off.
   await notePublished(env, repo, { by, scheduled, at: now });
+  await noteFeature(env, { feature: 'publish', repo, at: now });   // feature use (feature-use.js)
 }
 
 async function preparedTimes(env, accountId) {
@@ -2796,7 +2799,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const out = await startKept(env, {
       accountId: sess.account_id, name, worker: selfOrigin(url, env), by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
       register: ({ id, repo, origin, name, since: began }) => { typed = name; since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began, way: 'starter' }); },
-      forget: async (id) => { const out = await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(); await forgetActivity(env, { site_id: id }); await forgetProblems(env, id); return out; },
+      forget: async (id) => { const out = await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(); await forgetActivity(env, { site_id: id }); await forgetProblems(env, id); await forgetFeatureUse(env, id); return out; },
       note: (subject, lines) => notifyOwner(env, subject, lines),
     });
     if (!out.ok) return json({ error: out.error, code: out.code }, out.status);
@@ -2823,7 +2826,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const out = await bringIn(env, {
       accountId: sess.account_id, address, name, mine, worker: selfOrigin(url, env), dashboard: dash, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
       register: ({ id, repo, origin, name, since: began }) => { since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began, way: 'copied' }); },
-      forget: async (id) => { const out = await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(); await forgetActivity(env, { site_id: id }); await forgetProblems(env, id); return out; },
+      forget: async (id) => { const out = await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(); await forgetActivity(env, { site_id: id }); await forgetProblems(env, id); await forgetFeatureUse(env, id); return out; },
       note: (subject, lines) => notifyOwner(env, subject, lines),
     });
     if (!out.site) return json({ error: out.error, code: out.code }, out.status);
@@ -3495,7 +3498,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const gone = await forgetHosting(env, site.id);   // a hosted site comes down with it, and so does its own domain
     await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).run();
     await noteSiteRemoved(env, { account_id: sess.account_id, site_id: site.id, by: 'person' });
-    await forgetProblems(env, site.id);   // the problem tally (problems.js)
+    await forgetProblems(env, site.id); await forgetFeatureUse(env, site.id);   // the problem tally and feature use go with the site
     // Its owner's editing session ends with it, at once and not a minute later (keptStands).
     if (kept && site.repo) { try { await env.KILN.delete(keptStandsKey(sess.account_id, site.repo)); } catch { /* it is forgotten within the minute anyway */ } }
     if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
@@ -3694,6 +3697,13 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       try { return json({ ok: true, recording: true, ...(await problemsPage(env)) }); }
       catch (e) { console.warn(JSON.stringify({ evt: 'problems_not_read', detail: String(e?.message || e).slice(0, 160) })); return json({ ok: true, recording: true, kinds: [], sites: [], details: [], not_read: true }); }
     }
+    // Feature use (feature-use.js): per feature, the sites that used it in the last 4 and 12 weeks and how
+    // often, those nobody used included.
+    if (path === '/admin/cloud/features' && request.method === 'GET') {
+      if (!featuresOn(env)) return json({ ok: true, recording: false, features: [] });
+      try { return json({ ok: true, recording: true, ...(await featuresPage(env)) }); }
+      catch (e) { console.warn(JSON.stringify({ evt: 'features_not_read', detail: String(e?.message || e).slice(0, 160) })); return json({ ok: true, recording: true, features: [], not_read: true }); }
+    }
     // Daily totals (daily-totals.js): one line a day for the whole of Kiln, newest first, up to 400 (`limit`).
     // Nothing is read while it is off.
     if (path === '/admin/cloud/totals' && request.method === 'GET') {
@@ -3753,7 +3763,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const gone = await forgetHosting(env, site.id);
       await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ?').bind(site.id).run();
       await noteSiteRemoved(env, { account_id: site.account_id, site_id: site.id, by: 'operator' });
-      await forgetProblems(env, site.id);   // the problem tally (problems.js)
+      await forgetProblems(env, site.id); await forgetFeatureUse(env, site.id);   // the problem tally and feature use go with the site
       // What the owner's own Remove does after the row is gone: their editing session ends, the site is marked as gone,
       // and for a site Kiln kept the files of, the operator gets the note that names the day its repository may be deleted.
       if (kept && site.repo) { try { await env.KILN.delete(keptStandsKey(site.account_id, site.repo)); } catch { /* it is forgotten within the minute anyway */ } }
