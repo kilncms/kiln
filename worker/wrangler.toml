@@ -41,6 +41,11 @@ ACTIVITY_RECORD = "off"
 # site's public address and its Kiln page are asked whether they answer. Off
 # until the privacy page says so. While it is anything but "on", nothing runs.
 SITE_CHECK_DAILY = "off"
+# Daily totals (worker/daily-totals.js, migration 0024): one line a day for the
+# whole of Kiln (accounts, sites, paying sites, money a month, sites on free
+# days), naming no one. Off until the privacy page says so. While it is
+# anything but "on", nothing is written or read.
+DAILY_TOTALS = "off"
 
 # AI assist (optional, bring-your-own-key): store your Anthropic API key as a
 # SECRET — never a [vars] entry — with `npx wrangler secret put AI_API_KEY`.
@@ -151,6 +156,11 @@ ACTIVITY_RECORD = "on"
 # site's public address and its Kiln page are asked whether they answer. Off
 # until the privacy page says so. While it is anything but "on", nothing runs.
 SITE_CHECK_DAILY = "on"
+# Daily totals (worker/daily-totals.js, migration 0024): one line a day for the
+# whole of Kiln (accounts, sites, paying sites, money a month, sites on free
+# days), naming no one. Off until the privacy page says so. While it is
+# anything but "on", nothing is written or read.
+DAILY_TOTALS = "off"
 
 [[env.staging.kv_namespaces]]
 binding = "KILN"
@@ -235,6 +245,11 @@ ACTIVITY_RECORD = "on"
 # site's public address and its Kiln page are asked whether they answer. Off
 # until the privacy page says so. While it is anything but "on", nothing runs.
 SITE_CHECK_DAILY = "on"
+# Daily totals (worker/daily-totals.js, migration 0024): one line a day for the
+# whole of Kiln (accounts, sites, paying sites, money a month, sites on free
+# days), naming no one. Off until the privacy page says so. While it is
+# anything but "on", nothing is written or read.
+DAILY_TOTALS = "off"
 
 [[env.production.kv_namespaces]]
 binding = "KILN"

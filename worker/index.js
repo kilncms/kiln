@@ -91,6 +91,7 @@ const WORKER_VERSION = '0.12.1';
 import { startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { handleCloud, selfOrigin, googleDashboardSignIn, emailDashboardSignIn, keptOwnerAtSite, keptOwnerAddress, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, userPushAnswer, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { dailyCheckOn, runDailySiteChecks } from './daily-check.js';
+import { totalsOn, runDailyTotals } from './daily-totals.js';
 import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
 import { VIA_KILN } from './prepare.js';
 import { keepsReady, keptStands } from './keeps.js';
@@ -164,6 +165,9 @@ export default {
     });
     // The daily site check (daily-check.js): a few sites a run, each once a day. It is not called while SITE_CHECK_DAILY is off.
     if (dailyCheckOn(env)) await cronJob('sitechecks', () => runDailySiteChecks(env));
+    // Daily totals (daily-totals.js): one line a day for the whole of Kiln, by the first run after midnight
+    // Eastern; later runs that day write nothing. It is not called while DAILY_TOTALS is off.
+    if (totalsOn(env)) await cronJob('totals', () => runDailyTotals(env));
     // The schedule's heartbeat, last: when this run ended, for /healthz?deep=1 (`cron_age_s`) and the
     // outside watcher that reads it. It names no one, so it needs no setting.
     await noteHeartbeat(env);

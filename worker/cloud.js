@@ -38,6 +38,7 @@
  *   POST /admin/cloud/needs/hide → (owner only) {key}: hide one line of `needs_you` for 30 days; {key, undo: true} shows it again
  *   GET  /admin/cloud/activity   → (owner only) the activity record, newest first (activity.js): ?account= or ?site=, limit, before
  *   GET  /admin/cloud/checks     → (owner only) the latest daily check of each site (daily-check.js)
+ *   GET  /admin/cloud/totals     → (owner only) one line of totals a day for all of Kiln, newest first, up to 400 (daily-totals.js): ?limit=
  *   POST /admin/cloud/grant      → (owner only) manually set a site's status, or give it seven more free days
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
@@ -47,7 +48,7 @@
  */
 
 import { RUNBOOK_HTML } from './runbook.js';
-import { billingOn, providerName, subscriptionOf, subscriptionProvider, subscriptionSql, stripeYearlyOn, stripeCloudYearlyOn, stripeCheckout, stripePortal, stripeCancel, stripeCall, verifyStripeSignature, stripeStoreMode, monthlyFromPrices, planForPrice, periodForPrice } from './billing.js';
+import { billingOn, providerName, subscriptionOf, subscriptionProvider, subscriptionSql, stripeYearlyOn, stripeCloudYearlyOn, stripeCheckout, stripePortal, stripeCancel, stripeCall, verifyStripeSignature, stripeStoreMode, monthlyPrice, planForPrice, periodForPrice } from './billing.js';
 import { troubleBody, forDashboard, githubSilent, UNCONFIRMED_GOOGLE, DASHBOARD_SIGN_IN_STOPPED, ACCOUNT_NOT_READY, NO_GOOGLE_SIGN_IN, EMAIL_ACCOUNT_NOT_READY, TWO_ACCOUNTS } from './signin-trouble.js';
 import { startSignIn, startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js';
 import { customerMailOn, mailAddress, addressSql, accountAddress, sendOnce, siteAddedMail, siteStartedMail, trialEndingMail, trialEndedMail, editingStoppedMail, hostingEndingMail, domainNameServersMail, domainLiveMail, domainReminderMail, domainPutAwayMail, domainMovedMail, forwardOnMail, forwardWaitingMail, trialEndsAt, TRIAL_NOTICE_DAYS } from './mail.js';
@@ -57,6 +58,7 @@ import { planUpdate, applyUpdate, publicUpdate, updateSentence, editorStanding, 
 import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { noteActivity, notePublished, noteSiteRemoved, forgetActivity, activityOn, activityPage } from './activity.js';
 import { dailyCheckOn, latestChecks } from './daily-check.js';
+import { totalsOn, totalsPage } from './daily-totals.js';
 import { hostingOn, hostingSentence, membersGateOn, previewPattern, serviceAddress } from './hosting.js';
 import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence, keptFilesLink, keptFilesName } from './keeps.js';
 import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies, MOST_ANSWER } from './bring.js';
@@ -3625,7 +3627,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       // What a site brings in a month: the price Stripe holds where it was read
       // (a yearly price counts as a twelfth of it each month), otherwise the
       // fixed monthly figures.
-      const price = (p, period) => monthlyFromPrices(store, p, period) ?? (p === 'managed' ? 14.99 : 4.99);
+      const price = (p, period) => monthlyPrice(store, p, period);
       const mrr = active.reduce((m, s) => m + price(s.plan, s.billing_period), 0);
       const insights = buildInsights(rows, accounts.n, price);
       // Who the customers are, where each one stopped and who needs a word from the operator (buildCustomers).
@@ -3645,6 +3647,13 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       if (!dailyCheckOn(env)) return json({ ok: true, checking: false, checks: [] });
       try { return json({ ok: true, checking: true, checks: await latestChecks(env) }); }
       catch (e) { console.warn(JSON.stringify({ evt: 'site_checks_not_read', detail: String(e?.message || e).slice(0, 160) })); return json({ ok: true, checking: true, checks: [], not_read: true }); }
+    }
+    // Daily totals (daily-totals.js): one line a day for the whole of Kiln, newest first, up to 400 (`limit`).
+    // Nothing is read while it is off.
+    if (path === '/admin/cloud/totals' && request.method === 'GET') {
+      if (!totalsOn(env)) return json({ ok: true, recording: false, totals: [] });
+      try { return json({ ok: true, recording: true, totals: await totalsPage(env, { limit: url.searchParams.get('limit') ?? undefined }) }); }
+      catch (e) { console.warn(JSON.stringify({ evt: 'daily_totals_not_read', detail: String(e?.message || e).slice(0, 160) })); return json({ ok: true, recording: true, totals: [], not_read: true }); }
     }
     // The activity record (activity.js), newest first, for the admin pages: ?account=<id> or ?site=<id> or
     // neither; `limit` up to 200; `before` is the `next` of the page before. Nothing is read while it is off.

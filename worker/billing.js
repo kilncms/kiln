@@ -252,3 +252,12 @@ export function monthlyFromPrices(store, plan, period) {
   if (!p) return null;
   return p.interval === 'year' ? p.amount / 12 : p.amount;
 }
+
+/**
+ * What a site on a plan, paid by a period, brings in a month: the price Stripe
+ * holds where it was read (monthlyFromPrices), otherwise the fixed monthly
+ * figures. The operator's overview and the daily totals both count by it.
+ */
+export function monthlyPrice(store, plan, period) {
+  return monthlyFromPrices(store, plan, period) ?? (plan === 'managed' ? 14.99 : 4.99);
+}
