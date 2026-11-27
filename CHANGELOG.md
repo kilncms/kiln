@@ -6,6 +6,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-26
+
+### Changed
+
+- Daily totals, the security log, the problem tally, feature use and campaign
+  tags are switched on in Kiln's own service, now that the privacy page says
+  what each keeps.
+
 ## [0.13.0] - 2026-11-26
 
 ### Added

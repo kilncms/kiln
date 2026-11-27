@@ -173,20 +173,22 @@ SITE_CHECK_DAILY = "on"
 # whole of Kiln (accounts, sites, paying sites, money a month, sites on free
 # days), naming no one. Off until the privacy page says so. While it is
 # anything but "on", nothing is written or read.
-DAILY_TOTALS = "off"
+DAILY_TOTALS = "on"
 # The security log (worker/security-log.js, migration 0025): the requests the
 # service refuses, counted by the hour, never a network address. Off until the
 # privacy page says so. While it is anything but "on", nothing is written or read.
-SECURITY_LOG = "off"
+SECURITY_LOG = "on"
 # The problem tally (worker/problems.js, migration 0026): the problems the
 # service meets, counted by the day, kind and site, never what was being
 # changed or a network address. Off until the privacy page says so. While it is
 # anything but "on", nothing is written or read.
-PROBLEM_TALLY = "off"
+PROBLEM_TALLY = "on"
 # Feature use (worker/feature-use.js, migration 0027): for each site, how many
 # times each feature was used in a week, counts only. Off until the privacy
 # page says so. While it is anything but "on", nothing is written or read.
-FEATURE_USE = "off"
+FEATURE_USE = "on"
+# Campaign tags (cloud.js /cloud/account/came-from): on since the privacy page says so ("Which ad or post brought you").
+CAMPAIGN_TAGS = "on"
 
 [[env.staging.kv_namespaces]]
 binding = "KILN"
@@ -275,20 +277,22 @@ SITE_CHECK_DAILY = "on"
 # whole of Kiln (accounts, sites, paying sites, money a month, sites on free
 # days), naming no one. Off until the privacy page says so. While it is
 # anything but "on", nothing is written or read.
-DAILY_TOTALS = "off"
+DAILY_TOTALS = "on"
 # The security log (worker/security-log.js, migration 0025): the requests the
 # service refuses, counted by the hour, never a network address. Off until the
 # privacy page says so. While it is anything but "on", nothing is written or read.
-SECURITY_LOG = "off"
+SECURITY_LOG = "on"
 # The problem tally (worker/problems.js, migration 0026): the problems the
 # service meets, counted by the day, kind and site, never what was being
 # changed or a network address. Off until the privacy page says so. While it is
 # anything but "on", nothing is written or read.
-PROBLEM_TALLY = "off"
+PROBLEM_TALLY = "on"
 # Feature use (worker/feature-use.js, migration 0027): for each site, how many
 # times each feature was used in a week, counts only. Off until the privacy
 # page says so. While it is anything but "on", nothing is written or read.
-FEATURE_USE = "off"
+FEATURE_USE = "on"
+# Campaign tags (cloud.js /cloud/account/came-from): on since the privacy page says so ("Which ad or post brought you").
+CAMPAIGN_TAGS = "on"
 
 [[env.production.kv_namespaces]]
 binding = "KILN"
