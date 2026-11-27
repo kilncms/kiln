@@ -93,6 +93,7 @@ import { handleCloud, selfOrigin, googleDashboardSignIn, emailDashboardSignIn, k
 import { dailyCheckOn, runDailySiteChecks } from './daily-check.js';
 import { totalsOn, runDailyTotals } from './daily-totals.js';
 import { securityOn, noteSecurity, pruneSecurityLog } from './security-log.js';
+import { problemsOn, noteProblem, notePublishFailed, pruneProblems, refusedAfterRetries, refusedAtDoor } from './problems.js';
 import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
 import { VIA_KILN } from './prepare.js';
 import { keepsReady, keptStands } from './keeps.js';
@@ -171,6 +172,9 @@ export default {
     if (totalsOn(env)) await cronJob('totals', () => runDailyTotals(env));
     // The security log (security-log.js): rows older than 90 days go. It is not called while SECURITY_LOG is off.
     if (securityOn(env)) await cronJob('security', () => pruneSecurityLog(env));
+    // The problem tally (problems.js): rows older than 400 days, and those of sites no longer on Kiln, go. It is
+    // not called while PROBLEM_TALLY is off.
+    if (problemsOn(env)) await cronJob('problems', () => pruneProblems(env));
     // The schedule's heartbeat, last: when this run ended, for /healthz?deep=1 (`cron_age_s`) and the
     // outside watcher that reads it. It names no one, so it needs no setting.
     await noteHeartbeat(env);
@@ -398,6 +402,14 @@ async function cronAgeSeconds(env, now = Date.now()) {
 }
 
 /** Run one scheduled job, and say in one structured line how it went. Never throws. */
+/**
+ * A change GitHub did not take (problems.js), for the site of `repo`, by the
+ * door it came through. Nothing is noted while PROBLEM_TALLY is off.
+ */
+async function publishNotTaken(env, repo, via) {
+  await notePublishFailed(env, repo, via);
+}
+
 async function cronJob(job, fn) {
   const t0 = Date.now();
   try {
@@ -750,6 +762,7 @@ async function authCallback(url, env) {
   if (!tok || tok.error || !tok.access_token) {
     const trouble = githubTrouble({ status: res.status, tok });
     console.warn(troubleLog('github', trouble, { status: res.status, tok }));
+    await noteProblem(env, { kind: 'signin_not_finished', repo: state?.repo, detail: `github_${trouble.code}` });   // the problem tally (problems.js)
     return html(troubleBody(trouble, { origin: state.origin }), trouble.status);
   }
 
@@ -1539,10 +1552,11 @@ async function runDueSchedules(env) {
           const h = await installationHeaders(env, target);
           if (!h) continue;
           const vs = validateSourceRequest({ file: v.path, edits: v.edits, adapter: v.adapter, actor: { name: v.by, admin: true } }, { isSensitivePath, pathInScope });
-          if (vs.error) { console.log(`[kiln-cron] ${k.name} not published: ${vs.error}`); await env.KILN.delete(k.name); continue; }
+          if (vs.error) { console.log(`[kiln-cron] ${k.name} not published: ${vs.error}`); await publishNotTaken(env, target, 'scheduled'); await env.KILN.delete(k.name); continue; }
           const r = await commitSourceEdits(h, target, v.branch, vs, { message: v.message, author: `${v.by} (via Kiln, scheduled)`, email: schedEmail(v) });
           if (r.status === 200 || r.status === 422 || r.status === 404) await env.KILN.delete(k.name);
           if (r.status === 200 && !r.body.unchanged && !KILN_BRANCH_RE.test(String(v.branch))) await notePublish(env, target, { by: v.admin === false ? 'editor' : 'person', scheduled: true });
+          if (r.status === 422 || r.status === 404) await publishNotTaken(env, target, 'scheduled');   // given up: it cannot be applied (problems.js)
           if (r.status !== 200) console.log(`[kiln-cron] ${k.name}: ${r.body.error}`);
         } catch (err) {
           console.error('[kiln-cron]', k.name, err);
@@ -1578,6 +1592,7 @@ async function runDueSchedules(env) {
             author: { name: `${v.by} (via Kiln, scheduled)`, email: schedEmail(v) } }),
         });
         if (res.ok || res.status === 409) await env.KILN.delete(k.name);
+        if (res.status === 409) await publishNotTaken(env, target, 'scheduled');   // given up (problems.js)
         if (res.ok && !KILN_BRANCH_RE.test(String(v.branch))) await notePublish(env, target, { by: v.admin === false ? 'editor' : 'person', scheduled: true });
       } catch (err) {
         console.error('[kiln-cron]', k.name, err);
@@ -2103,6 +2118,7 @@ async function suggestionDecide(request, env) {
       const conflict = put.status === 409 || (put.status === 422 && /sha/i.test(err.message || ''));
       if (!conflict) return json({ error: 'commit failed', detail: err.message || String(put.status) }, 502);
     }
+    await publishNotTaken(env, repo, 'suggestion');   // after the tries (problems.js)
     return json({ error: 'conflict: the page changed while approving — try again' }, 409);
   } catch {
     return json({ error: 'could not apply the suggestion safely' }, 502);
@@ -2526,6 +2542,7 @@ async function sourceCommit(request, env) {
     author: `${actor.name}${VIA_KILN}`,
   });
   if (r.status === 200 && !r.body.unchanged && !KILN_BRANCH_RE.test(branch)) await notePublish(env, repo, { by: actor?.admin ? 'person' : 'editor' });
+  else if (refusedAfterRetries(r.status)) await publishNotTaken(env, repo, 'source');   // the problem tally (problems.js)
   return json(r.body, r.status);
 }
 
@@ -2675,6 +2692,7 @@ async function sourceCommitSet(request, env, body) {
     author: `${actor.name}${VIA_KILN}`,
   });
   if (r.status === 200 && r.body.commit && !KILN_BRANCH_RE.test(branch)) await notePublish(env, repo, { by: actor?.admin ? 'person' : 'editor' });
+  else if (refusedAfterRetries(r.status)) await publishNotTaken(env, repo, 'several');   // the problem tally (problems.js)
   return json(r.body, r.status);
 }
 
@@ -2776,6 +2794,7 @@ async function sourceRevertSet(request, env, body) {
       if (out.sha) return json({ ok: true, set: true, commit: { sha: out.sha, parent: head }, files: back.map(o => o.file), same });
       if (out.failed) return json({ error: 'commit failed', code: 'commit_failed', detail: out.failed }, 502);
     }
+    await publishNotTaken(env, repo, 'revert');   // after the tries (problems.js)
     return json({ error: 'conflict: the site changed while reverting — try again', code: 'head_moved' }, 409);
   } catch {
     return json({ error: 'could not revert safely', code: 'unsafe' }, 502);
@@ -3042,6 +3061,7 @@ async function sourceRevert(request, env) {
       const conflict = put.status === 409 || (put.status === 422 && /sha/i.test(err.message || ''));
       if (!conflict) return json({ error: 'commit failed', detail: err.message || String(put.status) }, 502);
     }
+    await publishNotTaken(env, repo, 'revert');   // after the tries (problems.js)
     return json({ error: 'conflict: the file changed while reverting — try again' }, 409);
   } catch {
     return json({ error: 'could not revert safely' }, 502);
@@ -3313,6 +3333,7 @@ async function googleIdentity(url, env, code) {
   if (!tok || !tok.id_token) {
     const trouble = googleTrouble({ status: tokenRes.status, tok });
     console.warn(troubleLog('google', trouble, { status: tokenRes.status, tok }));
+    await noteProblem(env, { kind: 'signin_not_finished', detail: `google_${trouble.code}` });   // the problem tally (problems.js)
     return { trouble };
   }
 
@@ -4166,6 +4187,7 @@ async function apiEdits(request, env) {
       const conflict = put.status === 409 || (put.status === 422 && /sha/i.test(err.message || ''));
       if (!conflict) return json({ error: 'commit failed', detail: err.message || String(put.status) }, 502);
     }
+    await publishNotTaken(env, tok.repo, 'api');   // after the tries (problems.js)
     return json({ error: 'conflict: page changed while editing, try again' }, 409);
   } catch {
     return json({ error: 'could not apply edits safely' }, 502);
@@ -4393,6 +4415,7 @@ async function ownerProxy(request, env, owner, ghPath) {
   catch { return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502); }
   if (res.status === 401) { await endOwnerSession(env, request, owner); return signinEnded(); }
   if (res.ok && body !== undefined && savesToSite(request.method, forward, body)) await notePublish(env, sess.repo, { by: 'person' });
+  else if (body !== undefined && refusedAtDoor(res.status) && savesToSite(request.method, forward, body)) await publishNotTaken(env, sess.repo, 'owner');   // the problem tally (problems.js)
   return ownerAnswer(res);
 }
 
@@ -4513,6 +4536,7 @@ async function keptProxy(request, env, owner, ghPath) {
     catch { return json({ error: GITHUB_UNREACHABLE, code: 'github_unreachable' }, 502); }
     if (res.status !== 401) {
       if (write && res.ok && savesToSite(request.method, rest, body)) await notePublish(env, sess.repo, { by: 'person' });
+      else if (write && refusedAtDoor(res.status) && savesToSite(request.method, rest, body)) await publishNotTaken(env, sess.repo, 'owner');   // the problem tally (problems.js)
       return ownerAnswer(res);
     }
     await env.KILN.delete(`itok:${sess.repo}`);   // the service's own token went stale: ask for a new one
@@ -4748,6 +4772,7 @@ async function ghProxy(request, env, ghPath) {
   }
   const res = await fetch(`${GH}${ghPath}`, { method: request.method, headers, body });
   if (isWrite && res.ok && savesToSite(request.method, ghPath, parsedBody)) await notePublish(env, sess.repo, { by: 'editor' });
+  else if (isWrite && refusedAtDoor(res.status) && savesToSite(request.method, ghPath, parsedBody)) await publishNotTaken(env, sess.repo, 'editor');   // the problem tally (problems.js)
   return new Response(res.body, { status: res.status, headers: { 'Content-Type': res.headers.get('Content-Type') || 'application/json', 'Cache-Control': GH_ANSWER_CACHE } });
 }
 

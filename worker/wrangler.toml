@@ -50,6 +50,11 @@ DAILY_TOTALS = "off"
 # service refuses, counted by the hour, never a network address. Off until the
 # privacy page says so. While it is anything but "on", nothing is written or read.
 SECURITY_LOG = "off"
+# The problem tally (worker/problems.js, migration 0026): the problems the
+# service meets, counted by the day, kind and site, never what was being
+# changed or a network address. Off until the privacy page says so. While it is
+# anything but "on", nothing is written or read.
+PROBLEM_TALLY = "off"
 
 # AI assist (optional, bring-your-own-key): store your Anthropic API key as a
 # SECRET — never a [vars] entry — with `npx wrangler secret put AI_API_KEY`.
@@ -169,6 +174,11 @@ DAILY_TOTALS = "off"
 # service refuses, counted by the hour, never a network address. Off until the
 # privacy page says so. While it is anything but "on", nothing is written or read.
 SECURITY_LOG = "off"
+# The problem tally (worker/problems.js, migration 0026): the problems the
+# service meets, counted by the day, kind and site, never what was being
+# changed or a network address. Off until the privacy page says so. While it is
+# anything but "on", nothing is written or read.
+PROBLEM_TALLY = "off"
 
 [[env.staging.kv_namespaces]]
 binding = "KILN"
@@ -262,6 +272,11 @@ DAILY_TOTALS = "off"
 # service refuses, counted by the hour, never a network address. Off until the
 # privacy page says so. While it is anything but "on", nothing is written or read.
 SECURITY_LOG = "off"
+# The problem tally (worker/problems.js, migration 0026): the problems the
+# service meets, counted by the day, kind and site, never what was being
+# changed or a network address. Off until the privacy page says so. While it is
+# anything but "on", nothing is written or read.
+PROBLEM_TALLY = "off"
 
 [[env.production.kv_namespaces]]
 binding = "KILN"

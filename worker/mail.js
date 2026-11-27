@@ -29,6 +29,7 @@
  */
 
 import { noteEmailSent } from './activity.js';
+import { noteProblem } from './problems.js';
 
 const DAY = 86400 * 1000;
 export const TRIAL_NOTICE_DAYS = 2;   // "ends soon" goes out this many days before the end
@@ -527,7 +528,7 @@ export function customerMailOn(env) {
  * it is part of: the answer says whether it went, and a failure leaves a line
  * for the operator.
  */
-export async function sendMail(env, to, mail) {
+export async function sendMail(env, to, mail, { repo = null, site_id = null } = {}) {
   const address = mailAddress(to);
   if (!customerMailOn(env) || !address || !mail) return { ok: false, reason: !address ? 'no address' : 'mail is off' };
   try {
@@ -542,6 +543,7 @@ export async function sendMail(env, to, mail) {
     return { ok: true, id: res?.messageId || null };
   } catch (e) {
     console.warn(JSON.stringify({ evt: 'customer_mail_failed', subject: String(mail.subject).slice(0, 80), err: String(e?.message || e).slice(0, 200) }));
+    await noteProblem(env, { kind: 'email_not_sent', repo, site_id, detail: 'customer' });   // the problem tally (problems.js)
     return { ok: false, reason: 'send failed' };
   }
 }

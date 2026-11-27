@@ -28,6 +28,7 @@ import { previewPattern } from './hosting.js';
 import { keepsReady, keepOrg, keepToken, forgetKeepToken, cleanName, startKept } from './keeps.js';
 import { sendOnce, trialEndsAt, siteCopiedMail, copyFailedMail, accountAddress } from './mail.js';
 import { subscriptionSql } from './billing.js';
+import { noteProblem } from './problems.js';
 
 const CONFIG_FILE = 'assets/kiln-config.js';
 export const SETTINGS_MESSAGE = "This site's Kiln settings";
@@ -278,6 +279,7 @@ async function startJob(env, { job, address, repo, worker, sign, pkcs1, note, no
     detail = `POST ${where} answered ${r.status}`;
   } catch (e) { detail = String((e && (e.detail || e.message)) || e).slice(0, 300); }
   console.warn(JSON.stringify({ evt: 'bring_job_not_started', job, repo, detail }));
+  await noteProblem(env, { kind: 'copy_failed', repo, detail: 'not_started' });   // the problem tally (problems.js)
   try { await env.kiln_cloud.prepare("UPDATE conversions SET state = 'failed', reason = 'no_job', done_at = ?, updated_at = ? WHERE id = ? AND state = 'copying'").bind(now, now, job).run(); }
   catch { /* the five-minute job gives it up in half an hour */ }
   try {
@@ -426,6 +428,7 @@ async function writeSettings(env, { site, branch, worker, sign, pkcs1 }) {
 
 /** The mail a copy ends with: once for a try, and only where customer mail is on and the account has an address (sendOnce). */
 async function tellOwner(env, row, { site, state, reason, pages = 0, dashboard, trialDays, up = false, address = null }) {
+  if (state === 'failed') await noteProblem(env, { kind: 'copy_failed', site_id: site?.id, detail: reason });   // the problem tally (problems.js)
   try {
     const to = await ownerEmail(env, row.account_id);
     if (state === 'done') {

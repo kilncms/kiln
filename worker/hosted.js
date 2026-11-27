@@ -30,6 +30,7 @@
  */
 
 import { noteSecurity } from './security-log.js';
+import { noteProblem } from './problems.js';
 import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError, isPreviewBranch, previewAlias, previewName, BUILT_BRANCH, buildShown, buildFailed } from './hosting.js';
 import { gh, refPath, VIA_KILN } from './prepare.js';
 import { keepEditorsCurrent, finishCare, setPreviews } from './lookafter.js';
@@ -172,6 +173,7 @@ export async function publishSite(env, { site, token, wanted = null, onlyNew = f
       } catch (e) {
         const reason = e instanceof HostingError ? e.code : 'cloudflare';
         console.warn(JSON.stringify({ evt: 'hosting_failed', repo: site.repo, name: row.name, reason, detail: e instanceof HostingError ? e.detail : String(e?.message || e).slice(0, 300) }));
+        await noteProblem(env, { kind: 'hosting_failed', site_id: site.id, detail: reason });   // the problem tally (problems.js)
         await save(env, site.id, { state: 'failed', reason, ...(wanted ? { wanted_sha: wanted } : {}) });
         break;
       }
@@ -201,6 +203,7 @@ export async function publishSite(env, { site, token, wanted = null, onlyNew = f
     return publicHosting(await hostingRow(env, site.id), { repo: site.repo });
   } catch (e) {
     console.warn(JSON.stringify({ evt: 'hosting_failed', repo: site.repo, reason: 'record', detail: String(e?.message || e).slice(0, 300) }));
+    await noteProblem(env, { kind: 'hosting_failed', site_id: site.id, detail: 'record' });   // the problem tally (problems.js)
     return { state: 'failed', reason: 'cloudflare', error: hostingSentence('cloudflare') };
   } finally {
     try { await env.KILN.delete(lockKey(site.id)); } catch { /* it runs out by itself */ }
@@ -433,6 +436,7 @@ async function putPreview(env, { site, token, branch, sha = null }) {
     return { state: 'live', url: out.url, commit: out.commit };
   } catch (e) {
     console.warn(JSON.stringify({ evt: 'preview_failed', repo: site.repo, branch, name, reason: e instanceof HostingError ? e.code : 'record', detail: e instanceof HostingError ? e.detail : String(e?.message || e).slice(0, 300) }));
+    await noteProblem(env, { kind: 'hosting_failed', site_id: site.id, detail: 'preview' });   // the problem tally (problems.js)
     return { state: 'failed' };
   } finally {
     try { await env.KILN.delete(lock); } catch { /* it runs out by itself */ }

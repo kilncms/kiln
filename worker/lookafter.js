@@ -46,6 +46,7 @@ import { planPrepare, applyPrepare, prepareSentence, PrepareError, readPages, co
 import { previewPattern } from './hosting.js';
 import { planFirstPass, applyFirstPass, firstPassSentence } from './firstpass.js';
 import { planUpdate, applyUpdate, rememberLatest, noteRepoBuild, releasedBuild, knownSince } from './update.js';
+import { noteProblem } from './problems.js';
 
 const LOCK_S = 300;
 const KEPT_S = 30 * 24 * 3600;
@@ -550,6 +551,7 @@ export async function keepEditorsCurrent(env, sites, { installationToken, now = 
         console.log(JSON.stringify({ evt: 'hosting_editor_updated', repo: s.repo, from: done.from || null, to: done.to, commit: done.sha }));
       } catch (e) {
         console.warn(JSON.stringify({ evt: 'hosting_editor_not_updated', repo: s.repo, reason: e instanceof PrepareError ? e.code : 'github', detail: e instanceof PrepareError ? e.detail : String(e?.message || e).slice(0, 200) }));
+        await noteProblem(env, { kind: 'setup_failed', repo: s.repo, detail: 'hosting_editor' });   // the problem tally (problems.js)
       }
     }
   } catch (e) {

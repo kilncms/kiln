@@ -22,6 +22,7 @@
  */
 import { gh, refPath, inTurn, kilnConfigFile } from './prepare.js';
 import { hostingOn, siteName, siteAddress, previewPattern } from './hosting.js';
+import { noteProblem } from './problems.js';
 
 const CONFIG_FILE = 'assets/kiln-config.js';
 const DEFAULT_STARTER = 'kilncms/kiln-demo';
@@ -441,6 +442,7 @@ export async function startKept(env, { accountId, name, worker, by = '', sign, p
   } catch (e) {
     const detail = String((e && (e.detail || e.message)) || e).slice(0, 300);
     console.warn(JSON.stringify({ evt: 'keep_start_failed', code: (e && e.code) || 'error', repo: made ? made.repo : null, detail }));
+    await noteProblem(env, { kind: 'setup_failed', repo: made ? made.repo : null, detail: 'keep_start' });   // the problem tally (problems.js)
     if (!made) {
       if (e && e.maybe) { try { await note(`Kiln may have made ${e.maybe} and no site uses it`, [`Started by: ${by}`, `What went wrong: ${detail}`, 'Look for the repository on GitHub. If it is there, no site uses it and it may be removed by hand.']); } catch { /* logged above */ } }
       return refusal('not_started');

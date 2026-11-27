@@ -40,6 +40,7 @@
  *   GET  /admin/cloud/checks     → (owner only) the latest daily check of each site (daily-check.js)
  *   GET  /admin/cloud/totals     → (owner only) one line of totals a day for all of Kiln, newest first, up to 400 (daily-totals.js): ?limit=
  *   GET  /admin/cloud/security   → (owner only) the refusals of the last days by kind and hour (security-log.js): ?days= (7, at most 90)
+  *   GET  /admin/cloud/problems   → (owner only) the problems of the last 14 days by kind and site, each kind marked new, ongoing or rising (problems.js)
  *   POST /admin/cloud/grant      → (owner only) manually set a site's status, or give it seven more free days
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
@@ -61,6 +62,7 @@ import { noteActivity, notePublished, noteSiteRemoved, forgetActivity, activityO
 import { dailyCheckOn, latestChecks } from './daily-check.js';
 import { totalsOn, totalsPage } from './daily-totals.js';
 import { securityOn, noteSecurity, securityPage } from './security-log.js';
+import { problemsOn, noteProblem, forgetProblems, problemsPage } from './problems.js';
 import { hostingOn, hostingSentence, membersGateOn, previewPattern, serviceAddress } from './hosting.js';
 import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence, keptFilesLink, keptFilesName } from './keeps.js';
 import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies, MOST_ANSWER } from './bring.js';
@@ -716,13 +718,15 @@ export async function connectGitHub(env, accountId, { login, uid } = {}, now = D
 async function linkCameBack(request, env, url, { dash, code, state, linking, page }) {
   await env.KILN.delete(`cstate:${state}`);
   const back = (what, key = null) => signInOver(url, Response.redirect(`${linkBack(dash, what)}${key ? `#kc_link=${key}` : ''}`, 302));
-  const stopped = (stage, detail = '') => {
+  const stopped = async (stage, detail = '') => {
     console.warn(JSON.stringify({ evt: 'cloud_link_not_finished', stage, detail: String(detail || '').slice(0, 160) }));
+    await noteProblem(env, { kind: 'signin_not_finished', detail: `link_${stage}` });   // the problem tally (problems.js)
     return back('failed');
   };
   // As for a sign-in: only the browser it was started in may go on.
   if (!startedHere(request, url, state)) {
     console.warn(JSON.stringify({ evt: 'cloud_link_not_finished', stage: 'cookie', detail: '' }));
+    await noteProblem(env, { kind: 'signin_not_finished', detail: 'link_cookie' });   // the problem tally (problems.js)
     return page(troubleBody(forDashboard(STARTED_ELSEWHERE), { dashboard: dash }), STARTED_ELSEWHERE.status);
   }
   // The code works once: it is read and taken away before GitHub is asked anything.
@@ -1007,6 +1011,7 @@ export async function notifyOwner(env, subject, lines) {
     await env.NOTIFY.send(message);
   } catch (e) {
     console.warn(JSON.stringify({ evt: 'notify_failed', err: String(e?.message || e).slice(0, 200) }));
+    await noteProblem(env, { kind: 'email_not_sent', detail: 'operator' });   // the problem tally (problems.js)
   }
 }
 
@@ -2305,8 +2310,9 @@ export async function keptOwnerAddress(env, { email, repo } = {}) {
  */
 export async function googleDashboardSignIn(env, state, { identity = null, page = plainPage } = {}) {
   const dash = (state && state.dash) || env.CLOUD_DASHBOARD || 'https://app.kilncms.com';
-  const refuse = (trouble, detail = '') => {
+  const refuse = async (trouble, detail = '') => {
     console.warn(JSON.stringify({ evt: 'cloud_signin_not_finished', stage: `google_${trouble.code}`, detail: String(detail || '').slice(0, 160) }));
+    await noteProblem(env, { kind: 'signin_not_finished', detail: `dash_google_${trouble.code}` });   // the problem tally (problems.js)
     return page(troubleBody(forDashboard(trouble), { dashboard: dash }), trouble.status);
   };
   if (typeof identity !== 'function') return refuse(DASHBOARD_SIGN_IN_STOPPED);
@@ -2338,8 +2344,9 @@ export async function googleDashboardSignIn(env, state, { identity = null, page 
  */
 export async function emailDashboardSignIn(env, { email } = {}, { page = plainPage } = {}) {
   const dash = env.CLOUD_DASHBOARD || 'https://app.kilncms.com';
-  const refuse = (trouble, detail = '') => {
+  const refuse = async (trouble, detail = '') => {
     console.warn(JSON.stringify({ evt: 'cloud_signin_not_finished', stage: `email_${trouble.code}`, detail: String(detail || '').slice(0, 160) }));
+    await noteProblem(env, { kind: 'signin_not_finished', detail: `dash_email_${trouble.code}` });   // the problem tally (problems.js)
     return page(troubleBody(forDashboard(trouble), { dashboard: dash }), trouble.status);
   };
   const address = mailAddress(String(email || '').trim().toLowerCase());
@@ -2421,8 +2428,9 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // A sign-in that does not finish goes back to the dashboard, which says so
     // and offers the button again: the person used to be left on a line of
     // JSON. Why it failed is logged for the operator.
-    const notFinished = (stage, detail = '') => {
+    const notFinished = async (stage, detail = '') => {
       console.warn(JSON.stringify({ evt: 'cloud_signin_not_finished', stage, detail: String(detail).slice(0, 160) }));
+      await noteProblem(env, { kind: 'signin_not_finished', detail: `dash_github_${stage}` });   // the problem tally (problems.js)
       try { const back = new URL(dash); back.searchParams.set('signin', 'again'); return signInOver(url, Response.redirect(back.toString(), 302)); }
       catch { return json({ error: 'github sign-in failed' }, 401); }
     };
@@ -2439,6 +2447,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // did not finish, with the way back to the dashboard.
     if (!startedHere(request, url, state)) {
       console.warn(JSON.stringify({ evt: 'cloud_signin_not_finished', stage: 'cookie', detail: '' }));
+      await noteProblem(env, { kind: 'signin_not_finished', detail: 'dash_cookie' });   // the problem tally (problems.js)
       const page = typeof tools.page === 'function' ? tools.page : plainPage;
       return page(troubleBody(forDashboard(STARTED_ELSEWHERE), { dashboard: dash }), STARTED_ELSEWHERE.status);
     }
@@ -2515,6 +2524,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     try { out = await connectGitHub(env, sess.account_id, { login: back.login, uid: back.uid }); }
     catch (e) {
       console.warn(JSON.stringify({ evt: 'cloud_link_not_finished', stage: 'write', detail: String(e?.message || e).slice(0, 160) }));
+      await noteProblem(env, { kind: 'signin_not_finished', detail: 'link_write' });   // the problem tally (problems.js)
       return json({ error: LINK_NOT_NOW, code: 'not_now' }, 503);
     }
     if (!out.ok) {
@@ -2786,7 +2796,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const out = await startKept(env, {
       accountId: sess.account_id, name, worker: selfOrigin(url, env), by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
       register: ({ id, repo, origin, name, since: began }) => { typed = name; since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began, way: 'starter' }); },
-      forget: async (id) => { const out = await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(); await forgetActivity(env, { site_id: id }); return out; },
+      forget: async (id) => { const out = await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(); await forgetActivity(env, { site_id: id }); await forgetProblems(env, id); return out; },
       note: (subject, lines) => notifyOwner(env, subject, lines),
     });
     if (!out.ok) return json({ error: out.error, code: out.code }, out.status);
@@ -2813,7 +2823,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const out = await bringIn(env, {
       accountId: sess.account_id, address, name, mine, worker: selfOrigin(url, env), dashboard: dash, by: signedInAs(sess), sign: appJwt, pkcs1: tools.pkcs1 || null,
       register: ({ id, repo, origin, name, since: began }) => { since = began; return registerSite(env, { id, accountId: sess.account_id, repo, origin, plan: 'managed', kept: true, name, since: began, way: 'copied' }); },
-      forget: async (id) => { const out = await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(); await forgetActivity(env, { site_id: id }); return out; },
+      forget: async (id) => { const out = await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ? AND kept = 1').bind(id, sess.account_id).run(); await forgetActivity(env, { site_id: id }); await forgetProblems(env, id); return out; },
       note: (subject, lines) => notifyOwner(env, subject, lines),
     });
     if (!out.site) return json({ error: out.error, code: out.code }, out.status);
@@ -2934,6 +2944,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       } catch (e) {
         const code = e instanceof PrepareError ? e.code : 'github';
         console.warn(JSON.stringify({ evt: 'prepare_failed', repo: site.repo, code, detail: e instanceof PrepareError ? e.detail : String(e?.message || e).slice(0, 200) }));
+        await noteProblem(env, { kind: 'setup_failed', site_id: site.id, detail: 'add_kiln' });   // the problem tally (problems.js)
         return refused(code, code === 'moved' || code === 'protected' ? 409 : 502, code === 'protected' ? { branch: plan.branch, command: SETUP_COMMAND } : {});
       }
       await markPrepared(env, site.id, done.sha);
@@ -3007,6 +3018,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       } catch (e) {
         const code = e instanceof PrepareError ? e.code : 'github';
         console.warn(JSON.stringify({ evt: 'firstpass_failed', repo: site.repo, code, detail: e instanceof PrepareError ? e.detail : String(e?.message || e).slice(0, 200) }));
+        await noteProblem(env, { kind: 'setup_failed', site_id: site.id, detail: 'first_pass' });   // the problem tally (problems.js)
         return refused(code, code === 'moved' || code === 'protected' ? 409 : 502, code === 'protected' ? { branch: plan.branch } : {});
       }
       await markFirstPass(env, site.id, done.sha);
@@ -3142,9 +3154,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
         const { name, look, stop } = await lookAtDomain(env, site, body.name);
         const seller = look.seller ? sellerHelp(look.seller).name : null;
         if (stop) return refuse(stop, stop === 'not_a_domain' ? 400 : stop === 'not_set_up' ? 503 : 409, { name, seller });
-        const failed = (e, stage) => {
+        const failed = async (e, stage) => {
           const code = e instanceof DomainError ? e.code : 'cloudflare';
           console.warn(JSON.stringify({ evt: 'domain_setup_failed', repo: site.repo, name, stage, reason: code, detail: detail(e) }));
+          await noteProblem(env, { kind: 'domain_failed', site_id: site.id, detail: stage });   // the problem tally (problems.js)
           return refuse(code, code === 'cloudflare' ? 502 : code === 'not_set_up' ? 503 : 409, { name, seller });
         };
         const host = await hostingRow(env, site.id);
@@ -3482,6 +3495,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     const gone = await forgetHosting(env, site.id);   // a hosted site comes down with it, and so does its own domain
     await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ? AND account_id = ?').bind(site.id, sess.account_id).run();
     await noteSiteRemoved(env, { account_id: sess.account_id, site_id: site.id, by: 'person' });
+    await forgetProblems(env, site.id);   // the problem tally (problems.js)
     // Its owner's editing session ends with it, at once and not a minute later (keptStands).
     if (kept && site.repo) { try { await env.KILN.delete(keptStandsKey(sess.account_id, site.repo)); } catch { /* it is forgotten within the minute anyway */ } }
     if (site.repo) await env.KILN.put(`cloudgone:${String(site.repo).toLowerCase()}`, JSON.stringify({ at: Date.now() }));
@@ -3533,6 +3547,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       } catch (e) {
         const code = e instanceof PrepareError ? e.code : 'github';
         console.warn(JSON.stringify({ evt: 'update_failed', repo: site.repo, code, detail: e instanceof PrepareError ? e.detail : String(e?.message || e).slice(0, 200) }));
+        await noteProblem(env, { kind: 'setup_failed', site_id: site.id, detail: 'editor_update' });   // the problem tally (problems.js)
         return refused(code, code === 'moved' || code === 'protected' ? 409 : 502, code === 'protected' ? { branch: plan.branch, command: UPDATE_COMMAND } : {});
       }
       await noteRepoBuild(env, site.repo, done.to);
@@ -3672,6 +3687,13 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       try { return json({ ok: true, recording: true, ...(await securityPage(env, { days: url.searchParams.get('days') ?? undefined })) }); }
       catch (e) { console.warn(JSON.stringify({ evt: 'security_not_read', detail: String(e?.message || e).slice(0, 160) })); return json({ ok: true, recording: true, kinds: {}, hours: [], rows: [], not_read: true }); }
     }
+    // The problem tally (problems.js): the last 14 days by kind and site, each kind marked new (not seen in the 14
+    // days before), ongoing, or rising (its last 7 days at least three times its usual a day), and by detail word.
+    if (path === '/admin/cloud/problems' && request.method === 'GET') {
+      if (!problemsOn(env)) return json({ ok: true, recording: false, kinds: [], sites: [], details: [] });
+      try { return json({ ok: true, recording: true, ...(await problemsPage(env)) }); }
+      catch (e) { console.warn(JSON.stringify({ evt: 'problems_not_read', detail: String(e?.message || e).slice(0, 160) })); return json({ ok: true, recording: true, kinds: [], sites: [], details: [], not_read: true }); }
+    }
     // Daily totals (daily-totals.js): one line a day for the whole of Kiln, newest first, up to 400 (`limit`).
     // Nothing is read while it is off.
     if (path === '/admin/cloud/totals' && request.method === 'GET') {
@@ -3731,6 +3753,7 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       const gone = await forgetHosting(env, site.id);
       await env.kiln_cloud.prepare('DELETE FROM sites WHERE id = ?').bind(site.id).run();
       await noteSiteRemoved(env, { account_id: site.account_id, site_id: site.id, by: 'operator' });
+      await forgetProblems(env, site.id);   // the problem tally (problems.js)
       // What the owner's own Remove does after the row is gone: their editing session ends, the site is marked as gone,
       // and for a site Kiln kept the files of, the operator gets the note that names the day its repository may be deleted.
       if (kept && site.repo) { try { await env.KILN.delete(keptStandsKey(site.account_id, site.repo)); } catch { /* it is forgotten within the minute anyway */ } }
