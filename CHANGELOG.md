@@ -6,6 +6,23 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-26
+
+### Added
+
+- **Four more recordings for the operator, each off until the service's
+  settings say "on":** daily totals for the whole of Kiln (`DAILY_TOTALS`, no
+  person in it); a security log of refused requests, counted by the hour and
+  never with a network address (`SECURITY_LOG`; it counts the refusals the rate
+  limits make, which nothing recorded before); a daily tally of the problems
+  the service meets, by kind and site (`PROBLEM_TALLY`); and weekly counts of
+  each feature's use per site, counts only (`FEATURE_USE`). Each has an
+  operator-only read route under `/admin/cloud/`.
+- Refunds and disputes from Stripe are noted in the activity record, and a
+  dispute sends the operator an alert email.
+- `/healthz?deep=1` says how long ago the five-minute schedule last ran
+  (`cron_age_s`), for an outside watch.
+
 ## [0.12.1] - 2026-11-26
 
 ### Changed
