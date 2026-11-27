@@ -3842,6 +3842,7 @@ async function stripeWebhook(request, env) {
   if (type === 'checkout.session.completed') out = await stripeCheckoutDone(env, obj, at);
   else if (type === 'customer.subscription.created' || type === 'customer.subscription.updated' || type === 'customer.subscription.deleted') out = await stripeSubscriptionChanged(env, type, obj, at);
   else if (type === 'invoice.payment_failed') out = await stripePaymentFailed(env, obj, at);
+  else if (type === 'charge.refunded' || type === 'charge.dispute.created' || type === 'charge.dispute.closed') out = await stripeChargeEvent(env, type, obj);
   else out = { ignored: type || 'no type' };
   await env.KILN.put(evtKey, '1', { expirationTtl: 7 * 24 * 3600 });
   return json({ ok: true, ...out });
@@ -3986,6 +3987,64 @@ async function stripePaymentFailed(env, inv, at) {
     `Billing: Stripe, subscription ${subId}`,
   ]);
   return {};
+}
+
+/**
+ * A charge refunded, a payment disputed, or a dispute closed: one line in the
+ * activity record (activity.js: `refund`, `dispute_opened`, `dispute_closed`,
+ * by `stripe`) for the site the charge paid for, with the outcome of a closed
+ * dispute and nothing else: never the amount, the card or the reason given. A
+ * dispute opened is also an alert to the operator (notifyOwner, "Kiln alert:"),
+ * whether the record is on or not; the other two read nothing while it is off.
+ * The site is found by the invoice the charge carries, where Stripe sends it
+ * along, else by the charge's customer (keepStripeCustomer): the one site that
+ * customer pays for, or, when it pays for several, the account alone. A
+ * dispute's notice names only its charge, so the charge is asked of Stripe. A
+ * charge that is no site's is ignored with a log line.
+ */
+async function stripeChargeEvent(env, type, obj) {
+  const kind = type === 'charge.refunded' ? 'refund' : type === 'charge.dispute.created' ? 'dispute_opened' : 'dispute_closed';
+  if (kind !== 'dispute_opened' && !activityOn(env)) return { ignored: type };
+  const charge = kind === 'refund' ? obj : typeof obj.charge === 'string' ? await stripeChargeOf(env, obj.charge) : obj.charge;
+  const found = charge && typeof charge === 'object' ? await chargeSite(env, charge) : null;
+  if (!found) {
+    console.log(JSON.stringify({ evt: 'stripe_charge_unknown', type }));
+    return { ignored: 'no site this service knows' };
+  }
+  const { site, account_id } = found;
+  await noteActivity(env, { account_id, site_id: site ? site.id : null, kind, by: 'stripe', detail: kind === 'dispute_closed' ? { outcome: obj.status } : null });
+  if (kind === 'dispute_opened') {
+    const due = secondsToMs(obj.evidence_details && obj.evidence_details.due_by);
+    await notifyOwner(env, `Kiln alert: a payment was disputed${site ? ` (${site.repo || site.id})` : ''}`, [
+      site ? `Site: ${site.repo || site.id} (${site.origin || 'origin unknown'})` : `Account: ${account_id}, which pays for more than one site`,
+      `Dispute: ${idOf(obj) || 'no id'}, on charge ${idOf(charge) || 'unknown'}`,
+      `Answer it in Stripe before ${due ? new Date(due).toISOString() : 'its deadline'}; unanswered, the money stays with the customer.`,
+    ]);
+  }
+  return {};
+}
+
+/** A charge, asked of Stripe by its id; null where Stripe has none. It throws when Stripe could not be asked, so the notice is answered 500 and Stripe sends it again. */
+async function stripeChargeOf(env, id) {
+  if (!/^(ch|py)_[A-Za-z0-9]{1,200}$/.test(id) || !env.STRIPE_SECRET_KEY) return null;
+  const r = await stripeCall(env, 'GET', `/charges/${id}`);
+  if (r.ok && r.body && typeof r.body === 'object') return r.body;
+  if (r.status === 404) return null;
+  throw new Error(`Stripe could not be asked about a disputed charge (${r.status || 'no answer'})`);
+}
+
+/** The site a charge paid for and its account, as stripeChargeEvent says; null when it is no site's. */
+async function chargeSite(env, charge) {
+  const inv = charge.invoice && typeof charge.invoice === 'object' ? charge.invoice : null;
+  const details = (inv && inv.parent && inv.parent.subscription_details) || {};
+  const subId = inv ? idOf(details.subscription) || idOf(inv.subscription) : null;
+  const byInvoice = subId ? await stripeSite(env, details.metadata && details.metadata.site_id, subId) : null;
+  if (byInvoice) return { site: byInvoice, account_id: byInvoice.account_id };
+  const customer = idOf(charge.customer);
+  if (!customer) return null;
+  const rows = (await env.kiln_cloud.prepare(`SELECT ${SITE_COLUMNS} FROM sites WHERE stripe_customer_id = ? ORDER BY created_at LIMIT 5`).bind(String(customer)).all())?.results || [];
+  if (!rows.length || rows.some(r => r.account_id !== rows[0].account_id)) return null;
+  return { site: rows.length === 1 ? rows[0] : null, account_id: rows[0].account_id };
 }
 
 /** Revenue + lifecycle breakdowns computed from the sites table (no history table needed). */

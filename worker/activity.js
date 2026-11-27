@@ -26,13 +26,16 @@ export const ACTIVITY_KINDS = Object.freeze([
   'subscription_started', 'subscription_renewed', 'payment_failed', 'subscription_ending', 'subscription_ended',
   'free_days_ended', 'free_days_given', 'email_sent', 'site_removed',
   'hosting_down', 'hosting_up', 'domain_live', 'operator_status_set', 'operator_line_hidden',
+  // Heard from Stripe (cloud.js stripeChargeEvent): a charge refunded, a payment disputed, a dispute
+  // closed. A closed dispute's outcome is the one detail; never the amount, the card or the reason given.
+  'refund', 'dispute_opened', 'dispute_closed',
 ]);
 
 /** person: the account holder. editor: an invited editor. kiln: the service on its own. */
 export const ACTIVITY_BY = Object.freeze(['person', 'editor', 'operator', 'kiln', 'stripe']);
 
 /** The only fields `detail` may hold, each a word, a number or a yes or no. */
-export const DETAIL_FIELDS = Object.freeze(['way', 'step', 'mail', 'line', 'status', 'reason', 'plan', 'period', 'days', 'scheduled', 'undo']);
+export const DETAIL_FIELDS = Object.freeze(['way', 'step', 'mail', 'line', 'status', 'reason', 'plan', 'period', 'days', 'scheduled', 'undo', 'outcome']);
 
 /** A word or a code: no spaces, so no sentence anyone wrote, and too short for a token. */
 const WORD = /^[A-Za-z0-9_.:-]{1,32}$/;

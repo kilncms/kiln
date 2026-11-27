@@ -98,7 +98,7 @@ test('a line keeps a few named words and numbers, never sentences, tokens, marku
   } finally { console.warn = was; }
   assert.equal(warned.length, 2);
   assert.ok(warned.every(w => JSON.parse(w).evt === 'activity_not_written'));
-  assert.equal(ACTIVITY_KINDS.length, 18);   // with subscription_ending, the sign that a customer is leaving
+  assert.equal(ACTIVITY_KINDS.length, 21);   // with subscription_ending, the sign that a customer is leaving, and refund, dispute_opened, dispute_closed
 });
 
 /** What the operator's and the customer's routes answer, in one world: compared below with the record off and on. */
@@ -254,4 +254,44 @@ test('only the operator reads the record: newest first, by account or by site, a
   const last = await call(env, `/admin/cloud/activity?site=site-5&limit=500&before=${more.json.next}`);
   assert.deepEqual(last.json.activity.map(r => r.at), [1000]);
   assert.equal(last.json.next, null);
+});
+
+test('Stripe\'s refunds and disputes: one line each for the site the charge paid for, a dispute opened alerts the operator, and a charge that is no site\'s leaves nothing', { skip: d1Skip }, async () => {
+  const T = sec(Date.now()) * 1000;
+  const charges = { ch_1: { id: 'ch_1', object: 'charge', customer: 'cus_1', amount: 1499, currency: 'usd' }, ch_9: { id: 'ch_9', object: 'charge', customer: 'cus_nobody', amount: 1499, currency: 'usd' } };
+  // Stripe, as far as a dispute's notice asks it: the charge disputed. Anything else is not found.
+  const stripeApi = async (url) => { const m = /^https:\/\/api\.stripe\.com\/v1\/charges\/(\w+)$/.exec(url); return m && charges[m[1]] ? jsonRes(charges[m[1]]) : undefined; };
+  const dispute = (id, charge, status) => ({ id, object: 'dispute', charge, amount: 1499, currency: 'usd', reason: 'fraudulent', status, evidence_details: { due_by: sec(T + 7 * DAY) } });
+  const run = async ({ on }) => {
+    const { env } = world({ on });
+    const sent = [];
+    Object.assign(env, { NOTIFY_TO: 'owner@kiln.example', NOTIFY: { send: async (m) => { sent.push(m); return { messageId: 'm' }; } } });
+    addSite(env, { id: 'site-4', account_id: 'acct-uma', repo: 'uma/cafe', origin: 'https://cafe.example' });
+    env.kiln_cloud.exec('UPDATE sites SET stripe_customer_id = ? WHERE id = ?', 'cus_1', 'site-4');
+    await withFetch(stripeApi, async () => {
+      assert.equal(await stripe(env, 'charge.refunded', { ...charges.ch_1, refunded: true, amount_refunded: 1499 }, T), 200);
+      assert.equal(await stripe(env, 'charge.dispute.created', dispute('dp_1', 'ch_1', 'needs_response'), T + 1000), 200);
+      assert.equal(await stripe(env, 'charge.dispute.closed', dispute('dp_1', 'ch_1', 'won'), T + 2000), 200);
+      assert.equal(await stripe(env, 'charge.refunded', { ...charges.ch_9, refunded: true }, T + 3000), 200);                  // no site's: nothing
+      assert.equal(await stripe(env, 'charge.dispute.created', dispute('dp_9', 'ch_9', 'needs_response'), T + 4000), 200);   // nor this, and no alert
+      assert.equal(await stripe(env, 'charge.dispute.created', dispute('dp_8', 'ch_8', 'needs_response'), T + 5000), 200);   // a charge Stripe does not know
+      assert.equal(await stripe(env, 'charge.succeeded', charges.ch_1, T + 6000), 200);                                       // not listened for: answered as before
+    });
+    return { env, sent };
+  };
+  const on = await run({ on: true });
+  assert.deepEqual(lines(on.env).map(r => [r.kind, r.by, r.account_id, r.site_id, r.detail]), [
+    ['refund', 'stripe', 'acct-uma', 'site-4', null],
+    ['dispute_opened', 'stripe', 'acct-uma', 'site-4', null],
+    ['dispute_closed', 'stripe', 'acct-uma', 'site-4', { outcome: 'won' }],
+  ]);
+  const text = JSON.stringify(lines(on.env));
+  for (const never of ['1499', 'usd', 'fraudulent', 'cus_', 'ch_', 'dp_']) assert.ok(!text.includes(never), never);
+  assert.equal(on.sent.length, 1, 'one alert, for the dispute on a site\'s charge');
+  assert.match(on.sent[0].raw, /^Subject: Kiln alert: a payment was disputed \(uma\/cafe\)$/m);
+  assert.match(on.sent[0].raw, /dp_1/);
+  // Switched off, no line is written, and the dispute is still an alert.
+  const off = await run({ on: false });
+  assert.equal(count(off.env), 0);
+  assert.equal(off.sent.length, 1);
 });
