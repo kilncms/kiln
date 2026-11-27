@@ -39,6 +39,7 @@
  *   GET  /admin/cloud/activity   → (owner only) the activity record, newest first (activity.js): ?account= or ?site=, limit, before
  *   GET  /admin/cloud/checks     → (owner only) the latest daily check of each site (daily-check.js)
  *   GET  /admin/cloud/totals     → (owner only) one line of totals a day for all of Kiln, newest first, up to 400 (daily-totals.js): ?limit=
+ *   GET  /admin/cloud/security   → (owner only) the refusals of the last days by kind and hour (security-log.js): ?days= (7, at most 90)
  *   POST /admin/cloud/grant      → (owner only) manually set a site's status, or give it seven more free days
  *
  * Storage: D1 `kiln_cloud` (accounts, sites). KV `csess:<id>` for dashboard sessions.
@@ -59,6 +60,7 @@ import { checkSite, editingOffLine, domainWaitingLine } from './sitecheck.js';
 import { noteActivity, notePublished, noteSiteRemoved, forgetActivity, activityOn, activityPage } from './activity.js';
 import { dailyCheckOn, latestChecks } from './daily-check.js';
 import { totalsOn, totalsPage } from './daily-totals.js';
+import { securityOn, noteSecurity, securityPage } from './security-log.js';
 import { hostingOn, hostingSentence, membersGateOn, previewPattern, serviceAddress } from './hosting.js';
 import { keepsReady, inKeepOrg, keepSentence, keptSite, keptIds, keptNames, keptRemovedNote, keptStandsKey, startKept, freeDaysSentence, keptFilesLink, keptFilesName } from './keeps.js';
 import { bringOn, bringIn, bringAgain, copyOf, copiesForAccount, copyAnswered, sweepCopies, MOST_ANSWER } from './bring.js';
@@ -2083,13 +2085,22 @@ async function ownedSite(request, env, url, sess, tools = {}, { needToken = true
     () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status, access_until FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
     () => env.kiln_cloud.prepare('SELECT id, repo, origin, plan, status FROM sites WHERE id = ? AND account_id = ?').bind(id || '', sess.account_id).first(),
   );
-  if (!site) return { response: json({ error: 'That site is not on this account.', code: 'no_such_site' }, 404) };
+  if (!site) {
+    // The security log (security-log.js): a site on Kiln that is another account's, asked for by this one.
+    if (id && securityOn(env) && await env.kiln_cloud.prepare('SELECT 1 AS y FROM sites WHERE id = ? AND account_id != ?').bind(String(id), sess.account_id).first().catch(() => null)) {
+      await noteSecurity(env, { kind: 'cross_account', account_id: sess.account_id, site_id: id, detail: 'site' });
+    }
+    return { response: json({ error: 'That site is not on this account.', code: 'no_such_site' }, 404) };
+  }
   const access = siteHasAccess(site);
   if (!access && needAccess) {
     return { response: json({ error: 'Editing is switched off for this site, so Kiln cannot change its repository. Subscribe on the site\'s row, then try again.', code: 'plan_ended' }, 403) };
   }
   const owner = String(site.repo).split('/')[0].toLowerCase();
-  if (!mine && !(owner === String(sess.login || '').toLowerCase() || await userCanPush(sess.gh, site.repo))) return { response: json({ error: NOT_YOUR_REPO, code: 'not_yours' }, 403) };
+  if (!mine && !(owner === String(sess.login || '').toLowerCase() || await userCanPush(sess.gh, site.repo))) {
+    await noteSecurity(env, { kind: 'cross_account', account_id: sess.account_id, site_id: site.id, detail: 'repo' });   // the security log (security-log.js)
+    return { response: json({ error: NOT_YOUR_REPO, code: 'not_yours' }, 403) };
+  }
   let token = null;
   if (typeof tools.installationToken === 'function') {
     try { token = await tools.installationToken(env, site.repo); }
@@ -2448,8 +2459,11 @@ export async function handleCloud(request, env, url, path, tools = {}) {
     // registering — installation-existence is not authorization.
     // `uid` is GitHub's numeric user id: unlike the login, it cannot be
     // renamed away or registered by someone else later.
-    await env.KILN.put(`csess:${sid}`, JSON.stringify({ account_id: account.id, login: user.login, uid: user.id ?? null, gh: tok.access_token || null }), { expirationTtl: 30 * 24 * 3600 });
+    const signedIn = { account_id: account.id, login: user.login, uid: user.id ?? null, gh: tok.access_token || null };
+    await env.KILN.put(`csess:${sid}`, JSON.stringify(signedIn), { expirationTtl: 30 * 24 * 3600 });
     await noteSeen(env, account.id);
+    // The security log (security-log.js): the operator's own sign-ins to the dashboard, about the operator only.
+    if (isCloudAdmin(signedIn, env)) await noteSecurity(env, { kind: 'operator_signin', account_id: account.id, detail: 'github' });
     return signInOver(url, Response.redirect(`${dash}#kc_token=${sid}`, 302));   // dashboard reads + stores this
   }
 
@@ -3604,7 +3618,10 @@ export async function handleCloud(request, env, url, path, tools = {}) {
 
   // ── Admin (owner only) ──
   if (path.startsWith('/admin/cloud/')) {
-    if (!isCloudAdmin(sess, env)) return json({ error: 'forbidden' }, 403);
+    if (!isCloudAdmin(sess, env)) {
+      await noteSecurity(env, { kind: 'cross_account', account_id: sess ? sess.account_id : null, detail: 'admin' });   // the security log (security-log.js)
+      return json({ error: 'forbidden' }, 403);
+    }
     // The operator's playbook — served ONLY to the authenticated super-admin, so
     // the ops details never sit in public HTML. The dashboard opens it in a tab.
     if (path === '/admin/cloud/runbook') {
@@ -3647,6 +3664,13 @@ export async function handleCloud(request, env, url, path, tools = {}) {
       if (!dailyCheckOn(env)) return json({ ok: true, checking: false, checks: [] });
       try { return json({ ok: true, checking: true, checks: await latestChecks(env) }); }
       catch (e) { console.warn(JSON.stringify({ evt: 'site_checks_not_read', detail: String(e?.message || e).slice(0, 160) })); return json({ ok: true, checking: true, checks: [], not_read: true }); }
+    }
+    // The security log (security-log.js): the refusals of the last `days` (7, at most 90), the total of each
+    // kind, of each kind in each hour, and the rows behind them. Nothing is read while it is off.
+    if (path === '/admin/cloud/security' && request.method === 'GET') {
+      if (!securityOn(env)) return json({ ok: true, recording: false, kinds: {}, hours: [], rows: [] });
+      try { return json({ ok: true, recording: true, ...(await securityPage(env, { days: url.searchParams.get('days') ?? undefined })) }); }
+      catch (e) { console.warn(JSON.stringify({ evt: 'security_not_read', detail: String(e?.message || e).slice(0, 160) })); return json({ ok: true, recording: true, kinds: {}, hours: [], rows: [], not_read: true }); }
     }
     // Daily totals (daily-totals.js): one line a day for the whole of Kiln, newest first, up to 400 (`limit`).
     // Nothing is read while it is off.
@@ -3837,6 +3861,7 @@ async function stripeWebhook(request, env) {
   const bodyText = await request.text();
   if (!(await verifyStripeSignature(request.headers.get('Stripe-Signature'), bodyText, env.STRIPE_WEBHOOK_SECRET))) {
     console.warn(JSON.stringify({ evt: 'webhook_rejected', provider: 'stripe', reason: env.STRIPE_WEBHOOK_SECRET ? 'bad or old signature' : 'no webhook secret configured', bytes: bodyText.length }));
+    await noteSecurity(env, { kind: 'bad_signature', detail: 'stripe' });   // the security log (security-log.js)
     return json({ error: 'bad signature' }, 400);
   }
   let evt;

@@ -46,6 +46,10 @@ SITE_CHECK_DAILY = "off"
 # days), naming no one. Off until the privacy page says so. While it is
 # anything but "on", nothing is written or read.
 DAILY_TOTALS = "off"
+# The security log (worker/security-log.js, migration 0025): the requests the
+# service refuses, counted by the hour, never a network address. Off until the
+# privacy page says so. While it is anything but "on", nothing is written or read.
+SECURITY_LOG = "off"
 
 # AI assist (optional, bring-your-own-key): store your Anthropic API key as a
 # SECRET — never a [vars] entry — with `npx wrangler secret put AI_API_KEY`.
@@ -161,6 +165,10 @@ SITE_CHECK_DAILY = "on"
 # days), naming no one. Off until the privacy page says so. While it is
 # anything but "on", nothing is written or read.
 DAILY_TOTALS = "off"
+# The security log (worker/security-log.js, migration 0025): the requests the
+# service refuses, counted by the hour, never a network address. Off until the
+# privacy page says so. While it is anything but "on", nothing is written or read.
+SECURITY_LOG = "off"
 
 [[env.staging.kv_namespaces]]
 binding = "KILN"
@@ -250,6 +258,10 @@ SITE_CHECK_DAILY = "on"
 # days), naming no one. Off until the privacy page says so. While it is
 # anything but "on", nothing is written or read.
 DAILY_TOTALS = "off"
+# The security log (worker/security-log.js, migration 0025): the requests the
+# service refuses, counted by the hour, never a network address. Off until the
+# privacy page says so. While it is anything but "on", nothing is written or read.
+SECURITY_LOG = "off"
 
 [[env.production.kv_namespaces]]
 binding = "KILN"

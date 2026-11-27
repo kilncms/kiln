@@ -29,6 +29,7 @@
  *   pvcount:<site id>:<hour>     how many copies of previews the site got in that hour (TTL 2 hours)
  */
 
+import { noteSecurity } from './security-log.js';
 import { hostingOn, siteName, siteAddress, deploySite, removeSite, hostingSentence, HostingError, isPreviewBranch, previewAlias, previewName, BUILT_BRANCH, buildShown, buildFailed } from './hosting.js';
 import { gh, refPath, VIA_KILN } from './prepare.js';
 import { keepEditorsCurrent, finishCare, setPreviews } from './lookafter.js';
@@ -521,6 +522,7 @@ export async function handleGithubWebhook(request, env, ctx, tools) {
   for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ (given.charCodeAt(i) || 0);
   if (diff !== 0) {
     console.warn(JSON.stringify({ evt: 'github_webhook_rejected', bytes: body.length }));
+    await noteSecurity(env, { kind: 'bad_signature', detail: 'github' });   // the security log (security-log.js)
     return json({ error: 'bad signature' }, 401);
   }
   const event = request.headers.get('X-GitHub-Event') || '';

@@ -92,6 +92,7 @@ import { startedHere, signInOver, STARTED_ELSEWHERE } from './signin-trouble.js'
 import { handleCloud, selfOrigin, googleDashboardSignIn, emailDashboardSignIn, keptOwnerAtSite, keptOwnerAddress, expireStaleTrials, cloudSiteForOrigin, cloudOriginStanding, repoPlanEnded, userCanPush, userPushAnswer, ghWithNewToken, siteHasAccess, hostingDownAt, hostingEndReason, hostingEndedNote, noticeEndingHosting, sweepDomains, sweepForwards, markPrepared, markFirstPass } from './cloud.js';
 import { dailyCheckOn, runDailySiteChecks } from './daily-check.js';
 import { totalsOn, runDailyTotals } from './daily-totals.js';
+import { securityOn, noteSecurity, pruneSecurityLog } from './security-log.js';
 import { handleGithubWebhook, sweepHosting, previewDecided } from './hosted.js';
 import { VIA_KILN } from './prepare.js';
 import { keepsReady, keptStands } from './keeps.js';
@@ -168,6 +169,8 @@ export default {
     // Daily totals (daily-totals.js): one line a day for the whole of Kiln, by the first run after midnight
     // Eastern; later runs that day write nothing. It is not called while DAILY_TOTALS is off.
     if (totalsOn(env)) await cronJob('totals', () => runDailyTotals(env));
+    // The security log (security-log.js): rows older than 90 days go. It is not called while SECURITY_LOG is off.
+    if (securityOn(env)) await cronJob('security', () => pruneSecurityLog(env));
     // The schedule's heartbeat, last: when this run ended, for /healthz?deep=1 (`cron_age_s`) and the
     // outside watcher that reads it. It names no one, so it needs no setting.
     await noteHeartbeat(env);
@@ -548,7 +551,9 @@ const RETRY_AFTER_S = 60;   // both limiters count by the minute
 const addressOf = (request) => request.headers.get('CF-Connecting-IP') || 'unknown';
 
 /** What every limiter answers with: a 429 that says when to ask again, in its body and in Retry-After. */
-async function tooOften(env, request, { open = false } = {}) {
+async function tooOften(env, request, { open = false, limit = null } = {}) {
+  // The security log (security-log.js): which limit refused, never the address or session it counted.
+  await noteSecurity(env, { kind: 'rate_limited', detail: limit });
   const res = await cors(env, request, new Response(JSON.stringify({ error: TOO_OFTEN, code: 'too_often', retry_after: RETRY_AFTER_S }), {
     status: 429,
     headers: { 'Content-Type': 'application/json', 'Retry-After': String(RETRY_AFTER_S), 'Access-Control-Expose-Headers': 'Retry-After', 'Cache-Control': 'no-store' },
@@ -561,7 +566,7 @@ async function tooOften(env, request, { open = false } = {}) {
 async function rateLimited(request, env) {
   if (!env.RL) return null;
   const { success } = await env.RL.limit({ key: addressOf(request) });
-  return success ? null : tooOften(env, request);
+  return success ? null : tooOften(env, request, { limit: 'address' });
 }
 
 /** The public /standing read, which every editor's page asks once: counted for the address, apart from the sign-in routes. */
@@ -569,7 +574,7 @@ async function standingLimited(request, env) {
   const limiter = env.RL_ROOMY || env.RL;
   if (!limiter) return null;
   const { success } = await limiter.limit({ key: `standing:${addressOf(request)}` });
-  return success ? null : tooOften(env, request, { open: true });
+  return success ? null : tooOften(env, request, { open: true, limit: 'standing' });
 }
 
 const KNOWN_SESSION_MS = 5 * 60 * 1000;
@@ -617,7 +622,7 @@ async function workLimited(request, env) {
   if (!id) return rateLimited(request, env);
   const limiter = env.RL_ROOMY || env.RL;
   const { success } = await limiter.limit({ key: `session:${id.slice(0, 32)}` });
-  return success ? null : tooOften(env, request);
+  return success ? null : tooOften(env, request, { limit: 'session' });
 }
 
 // ─── One-time GitHub App setup (manifest flow) ──────────────────────────────
@@ -1073,7 +1078,11 @@ async function ownerSessionFor(request, env) {
   const kept = isKeptSession(sess);
   if (ownerSessionEnds(sess) < Date.now()) { await env.KILN.delete(`osess:${id}`); return { refuse: signinEnded(sess) }; }
   const origin = request.headers.get('Origin') || '';
-  if (!origin || origin !== sess.origin) return { refuse: json({ error: kept ? KEPT_ORIGIN : OWNER_ORIGIN, code: 'owner_origin' }, 403) };
+  if (!origin || origin !== sess.origin) {
+    // A site's session used from another address: the security log (security-log.js) counts it for the session's site.
+    await noteSecurity(env, { kind: 'cross_account', repo: typeof sess.repo === 'string' ? sess.repo : null, detail: 'other_site' });
+    return { refuse: json({ error: kept ? KEPT_ORIGIN : OWNER_ORIGIN, code: 'owner_origin' }, 403) };
+  }
   if (kept) return keptSessionFor(env, id, sess, origin);
   if (!(await originAllowed(env, origin))) return { refuse: json({ error: ORIGIN_OFF, code: 'origin_refused' }, 403) };
   const fresh = await freshOwnerSession(env, id, sess);
@@ -1178,7 +1187,10 @@ async function authAdopt(request, env) {
   const repo = body && typeof body.repo === 'string' ? body.repo : '';
   const sid = body && typeof body.sid === 'string' ? body.sid : '';
   if (!token || token.length > 512 || !REPO_RE.test(repo)) return json({ error: 'The request did not name a sign-in and a repository.', code: 'bad_request' }, 400);
-  if (!(await originServesRepo(env, origin, repo))) return json({ error: OWNER_ORIGIN, code: 'owner_origin' }, 403);
+  if (!(await originServesRepo(env, origin, repo))) {
+    await noteSecurity(env, { kind: 'cross_account', repo, detail: 'origin_repo' });   // the security log (security-log.js)
+    return json({ error: OWNER_ORIGIN, code: 'owner_origin' }, 403);
+  }
   const user = await githubUser(token);
   if (!user) return signinEnded();
   const access = await repoAccess(token, repo);
@@ -1251,8 +1263,10 @@ async function keptMayChange(request, env, repo, sess) {
 const REPO_CHANGED = 'This name now belongs to a different repository than the one these people were added to, so their list is not shown or changed here. If the repository was renamed or moved, set repo in kiln-config.js to its current owner/name. If it was deleted and made again, run kiln doctor: it says how to start a new list.';
 
 /** The answer to an owner request that requirePush turned down. */
-function forbidden(request) {
+async function forbidden(request, env, repo) {
   const why = pushRefusal.get(request);
+  // GitHub said this sign-in cannot change the repository: a reach for a site that is not the asker's (security-log.js).
+  if (!why) await noteSecurity(env, { kind: 'cross_account', repo, detail: 'no_push' });
   return json(why ? { error: why, code: pushRefusalCode.get(request) || 'repo_changed' } : { error: 'forbidden' }, 403);
 }
 
@@ -3118,7 +3132,7 @@ async function peopleHome(env, repo) {
 
 async function peopleList(request, env, url) {
   const repo = url.searchParams.get('repo') || '';
-  if (!(await requirePush(request, repo, env))) return forbidden(request);
+  if (!(await requirePush(request, repo, env))) return forbidden(request, env, repo);
   return json({ people: await getPeople(env, repo), googleConfigured: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET), aiConfigured: !!env.AI_API_KEY });
 }
 
@@ -3158,7 +3172,7 @@ function writeGrantNeeded(who, path, { adds = false, branch } = {}) {
 
 async function peopleUpsert(request, env) {
   const { repo, email, name, role, days, paths, keys, features, mode } = await request.json().catch(() => ({}));
-  if (!(await requirePush(request, repo, env))) return forbidden(request);
+  if (!(await requirePush(request, repo, env))) return forbidden(request, env, repo);
   const addr = String(email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) return json({ error: 'bad email' }, 400);
   if (!['editor', 'member'].includes(role)) return json({ error: 'bad role' }, 400);
@@ -3214,7 +3228,7 @@ async function purgeEditorSessions(env, repo, addr) {
 
 async function peopleRemove(request, env) {
   const { repo, email } = await request.json().catch(() => ({}));
-  if (!(await requirePush(request, repo, env))) return forbidden(request);
+  if (!(await requirePush(request, repo, env))) return forbidden(request, env, repo);
   const addr = String(email || '').trim().toLowerCase();
   const home = await peopleHome(env, repo);
   const people = (await getPeople(env, home)).filter(p => p.email !== addr);
@@ -3258,7 +3272,10 @@ async function googleLogin(url, env) {
   const repo = url.searchParams.get('repo') || '';
   if (!(await originAllowed(env, origin))) return originRefused(env, origin);
   if (!returnTo.startsWith('/') || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return html('<h1>Bad request</h1>', 400);
-  if (!(await originServesRepo(env, origin, repo))) return html('<h1>This sign-in link is for a different site</h1><p>The address in the link does not belong to the site it asks to sign you in to, so nothing happened. Sign in from the site itself.</p>', 403);
+  if (!(await originServesRepo(env, origin, repo))) {
+    await noteSecurity(env, { kind: 'cross_account', repo, detail: 'origin_repo' });   // the security log (security-log.js)
+    return html('<h1>This sign-in link is for a different site</h1><p>The address in the link does not belong to the site it asks to sign you in to, so nothing happened. Sign in from the site itself.</p>', 403);
+  }
 
   const nonce = crypto.randomUUID();
   await env.KILN.put(`gstate:${nonce}`, JSON.stringify({ origin, returnTo, repo }), { expirationTtl: 600 });
@@ -3515,7 +3532,10 @@ async function emailPlace(env, get) {
   const repo = String(get('repo') || '');
   if (!(await originAllowed(env, origin))) return { res: await originRefused(env, origin) };
   if (!returnTo.startsWith('/') || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return { res: html('<h1>Bad request</h1>', 400) };
-  if (!(await originServesRepo(env, origin, repo))) return { res: html('<h1>This sign-in link is for a different site</h1><p>The address in the link does not belong to the site it asks to sign you in to, so nothing happened. Sign in from the site itself.</p>', 403) };
+  if (!(await originServesRepo(env, origin, repo))) {
+    await noteSecurity(env, { kind: 'cross_account', repo, detail: 'origin_repo' });   // the security log (security-log.js)
+    return { res: html('<h1>This sign-in link is for a different site</h1><p>The address in the link does not belong to the site it asks to sign you in to, so nothing happened. Sign in from the site itself.</p>', 403) };
+  }
   return { place: { origin, returnTo, repo } };
 }
 
@@ -3587,6 +3607,7 @@ async function emailLoginSend(request, url, env) {
   const count = was && was.until > now ? was : { n: 0, until: now + EMAIL_SIGN_IN_SECONDS * 1000 };
   const today = wasToday && wasToday.until > now ? wasToday : { n: 0, until: now + 24 * 3600 * 1000 };
   if (count.n >= EMAIL_LINKS_PER_ADDRESS) {
+    await noteSecurity(env, { kind: 'rate_limited', repo: place.repo, detail: 'signin_email' });   // the security log (security-log.js): never the address
     return privatePage(html(`<h1>Too many sign-in links for this address</h1>
       <p>Sign-in links for this address were asked for ${EMAIL_LINKS_PER_ADDRESS} times in the last 15 minutes, so no more are sent for now. Use a link or code you already have, or try again in 15 minutes.</p>
       ${backToSite(place)}`, 429));
@@ -3599,6 +3620,7 @@ async function emailLoginSend(request, url, env) {
   if (env.RL_MAIL) {
     const { success } = await env.RL_MAIL.limit({ key: addressOf(request) });
     if (!success) {
+      await noteSecurity(env, { kind: 'rate_limited', repo: place.repo, detail: 'signin_network' });   // the security log (security-log.js)
       return privatePage(html(`<h1>Too many sign-in links from here</h1>
         <p>Many sign-in links were asked for from this network in the last minute, so this one was not sent. Wait a minute and try again.</p>
         ${backToSite(place)}`, 429));
@@ -3692,8 +3714,11 @@ async function emailCodeFinish(request, env) {
   }
   const right = !!rec.code && /^\d{6}$/.test(code) && (await sha256Hex(`${req}:${code}`)) === rec.code;
   if (!right) {
+    // The security log (security-log.js): a code typed wrong, for the site it was asked at; never the code or the address.
+    await noteSecurity(env, { kind: 'wrong_code', repo: place.repo });
     const tries = (Number(rec.tries) || 0) + 1;
     if (tries >= EMAIL_CODE_TRIES) {
+      await noteSecurity(env, { kind: 'rate_limited', repo: place.repo, detail: 'code_tries' });
       await env.KILN.delete(key);
       return privatePage(html(`<h1>This code no longer works</h1>
         <p>The code was typed wrong ${EMAIL_CODE_TRIES} times, so it no longer works. The link in the same email still does, until its 15 minutes are over.</p>
@@ -3840,7 +3865,7 @@ async function sha256Hex(text) {
 
 async function apiTokenCreate(request, env) {
   const { repo, name, paths, keys, readonly, days } = await request.json().catch(() => ({}));
-  if (!(await requirePush(request, repo, env))) return forbidden(request);
+  if (!(await requirePush(request, repo, env))) return forbidden(request, env, repo);
   const label = String(name || '').trim().slice(0, 60);
   if (!label) return json({ error: 'missing name' }, 400);
   const d = Math.min(Math.max(Number(days) || 0, 0), 3650);   // 0 / absent = never expires
@@ -3869,7 +3894,7 @@ async function apiTokenCreate(request, env) {
 
 async function apiTokenList(request, env, url) {
   const repo = url.searchParams.get('repo') || '';
-  if (!(await requirePush(request, repo, env))) return forbidden(request);
+  if (!(await requirePush(request, repo, env))) return forbidden(request, env, repo);
   const mine = new Set([repo, ...(await shelf(env, repo)).names]);
   const tokens = [];
   let cursor;
@@ -3886,7 +3911,7 @@ async function apiTokenList(request, env, url) {
 
 async function apiTokenRevoke(request, env) {
   const { repo, id } = await request.json().catch(() => ({}));
-  if (!(await requirePush(request, repo, env))) return forbidden(request);
+  if (!(await requirePush(request, repo, env))) return forbidden(request, env, repo);
   if (!/^[a-f0-9]{8}$/.test(id || '')) return json({ error: 'bad id' }, 400);
   const mine = new Set([repo, ...(await shelf(env, repo)).names]);
   let cursor;

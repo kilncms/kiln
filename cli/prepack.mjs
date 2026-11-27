@@ -41,6 +41,8 @@ const items = [
   ['worker/sitecheck.js', 'worker/sitecheck.js'],           // ditto — the "Check this site" checklist
   ['worker/activity.js', 'worker/activity.js'],
   ['worker/daily-check.js', 'worker/daily-check.js'],       // ditto — the daily site check (switched off until SITE_CHECK_DAILY is "on")             // ditto — the activity record (switched off until ACTIVITY_RECORD is "on")
+  ['worker/daily-totals.js', 'worker/daily-totals.js'],     // ditto — the daily totals (switched off until DAILY_TOTALS is "on")
+  ['worker/security-log.js', 'worker/security-log.js'],     // ditto — the security log (switched off until SECURITY_LOG is "on")
   ['worker/section-scope.js', 'worker/section-scope.js'],   // ditto — section limits on page writes
   ['worker/source.js', 'worker/source.js'],                 // ditto — source-mode endpoints
   ['worker/lookafter.js', 'worker/lookafter.js'],           // imported by worker/cloud.js and worker/hosted.js: a hosted site gets Kiln, a character set, a first pass and a current editor by itself
