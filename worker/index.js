@@ -164,6 +164,9 @@ export default {
     });
     // The daily site check (daily-check.js): a few sites a run, each once a day. It is not called while SITE_CHECK_DAILY is off.
     if (dailyCheckOn(env)) await cronJob('sitechecks', () => runDailySiteChecks(env));
+    // The schedule's heartbeat, last: when this run ended, for /healthz?deep=1 (`cron_age_s`) and the
+    // outside watcher that reads it. It names no one, so it needs no setting.
+    await noteHeartbeat(env);
   },
   async fetch(request, env, ctx) {
     // Plain http is never answered: it is sent to the same address over https, a sign-in and a form
@@ -267,7 +270,9 @@ async function routeRequest(request, env, ctx) {
         const limited = await rateLimited(request, env);
         if (limited) return limited;
         const deep = await deepHealth(env);
-        return await cors(env, request, json({ ...basic, ok: deep.failed.length === 0, checks: deep.checks, failed: deep.failed }, deep.failed.length ? 503 : 200));
+        // `cron_age_s`: seconds since the five-minute schedule last ran (noteHeartbeat), or null. Information
+        // for the outside watcher only: it is never one of the checks that can fail, which the release script reads.
+        return await cors(env, request, json({ ...basic, ok: deep.failed.length === 0, checks: deep.checks, failed: deep.failed, cron_age_s: await cronAgeSeconds(env) }, deep.failed.length ? 503 : 200));
       }
       return await cors(env, request, json(basic));
     }
@@ -367,6 +372,22 @@ async function routeRequest(request, env, ctx) {
     // The detail stays in the log: an error's text can name internals.
     return await cors(env, request, json({ error: 'internal', message: 'Something went wrong on the Kiln service. Try again; if it keeps happening, write to hello@kilncms.com.' }, 500));
   }
+}
+
+const CRON_HEARTBEAT = 'hb:cron';
+
+/** The five-minute run's heartbeat in KV: the time it ended. Never throws; one not written is said in a log line. */
+async function noteHeartbeat(env, now = Date.now()) {
+  try { await env.KILN.put(CRON_HEARTBEAT, String(now)); }
+  catch (e) { console.warn(JSON.stringify({ evt: 'cron_heartbeat_not_written', detail: String(e?.message || e).slice(0, 160) })); }
+}
+
+/** Seconds since the five-minute run last wrote its heartbeat; null when it never has, or KV could not be asked. */
+async function cronAgeSeconds(env, now = Date.now()) {
+  try {
+    const at = Number(await env.KILN.get(CRON_HEARTBEAT));
+    return at > 0 ? Math.max(0, Math.round((now - at) / 1000)) : null;
+  } catch { return null; }
 }
 
 /** Run one scheduled job, and say in one structured line how it went. Never throws. */
